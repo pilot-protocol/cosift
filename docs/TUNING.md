@@ -87,8 +87,12 @@ The eval delta is what tells you. Single-anecdote tuning leads in circles.
 
 ## Pitfalls / non-obvious behavior
 
-- **`?expand=true` is silent without `cfg.Chat.Model`.** The response's `expand` field will still echo `"true"`, but `effective_query` won't change — meaning no chat call fired. Set `cfg.Chat.Model` (and `OPENAI_API_KEY` or equivalent), or accept that the flag is a no-op for your deployment.
-- **`?rerank=true` is silent without a reranker.** Same shape — flag accepted, no rerank applied. `/stats` shows `reranker` when one is configured; absent means rerank is a no-op.
+Most of these used to be silent; iters 292/309/310/311/313 added a `warnings[]` field to every retrieval/synth response that names the specific issue. `jq .warnings` on a response is the fastest way to spot any of the no-op patterns below.
+
+- **`?expand=true` is silent without `cfg.Chat.Model`.** The response's `expand` field echoes the canonical strategy (`hyde` / `paraphrase`); `effective_query` only changes when the chat call actually fired. Without a chat client the response `warnings[]` carries `"expand=... requested but no chat client configured"`. Set `cfg.Chat.Model` (and `OPENAI_API_KEY` or equivalent), or accept that the flag is a no-op for your deployment.
+- **`?rerank=true` is silent without a reranker.** Same shape — flag accepted, no rerank applied. Response `warnings[]` flags it. `/stats` shows `reranker` when one is configured; absent means rerank is a no-op.
+- **Unknown `?expand=` / `?sort=` values silently use the default.** Iter 309/310 added warnings (`expand=foo is not a known strategy`, `sort=newest is not a known mode`). Pass valid values from `{hyde, paraphrase}` and `{relevance, date_desc, date_asc}`.
+- **`?include_domains=https://example.com/foo` matches nothing.** The dot-boundary matcher expects bare hostnames; passing a URL silently filters everything out. Iter 313 catches this with a warning when any entry contains `/` or `://`.
 - **`include_text=true` payload size is k × avg_doc_len.** A 500 KB doc at k=20 is 10 MB returned per call. Fine for backend pipelines, dangerous for browsers.
 - **Pebble's single-writer lock blocks reads during crawl.** `cosift stats --backend=pebble` from a sidecar will fail. Use `cosift status-file` (lock-free) or curl `/stats` against a running `pebble-serve` instead.
 - **`expand=paraphrase` is N+1 LLM calls per /search, more for /research.** Defaults are 3 paraphrases — so /search?expand=paraphrase is 1 chat (generate) + 4 BM25, /research is 1 chat (plan) + N×(1 chat + 4 BM25). The paraphrase cache (iter 259/276) absorbs repeats; watch `cosift_paraphrase_cache_hits_total`.
