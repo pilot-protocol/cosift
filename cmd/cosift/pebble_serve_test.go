@@ -136,6 +136,42 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if vresp.StatusCode != 200 {
 		t.Errorf("/verify: want 200, got %d", vresp.StatusCode)
 	}
+
+	// POST /search (iter 277) — JSON body equivalent of GET ?q=&k=. The
+	// re-encode-to-URL.Values handoff makes this a thin pass-through; this
+	// assertion guards against a regression that breaks the wrapper.
+	postBody := strings.NewReader(`{"q":"raft consensus","k":3}`)
+	pres, err := http.Post(base+"/search", "application/json", postBody)
+	if err != nil {
+		t.Fatalf("POST /search: %v", err)
+	}
+	pbody, _ := io.ReadAll(pres.Body)
+	pres.Body.Close()
+	if pres.StatusCode != 200 {
+		t.Fatalf("POST /search: HTTP %d: %s", pres.StatusCode, pbody)
+	}
+	var pj map[string]any
+	if err := json.Unmarshal(pbody, &pj); err != nil {
+		t.Fatalf("POST /search decode: %v", err)
+	}
+	if hits, _ := pj["hits"].([]any); len(hits) == 0 {
+		t.Errorf("POST /search: expected hits, got %s", pbody)
+	}
+
+	// /metrics (iter 231) — Prometheus exposition format. Just confirm
+	// 200 + Content-Type + at least one expected metric name.
+	mresp, err := http.Get(base + "/metrics")
+	if err != nil {
+		t.Fatalf("/metrics: %v", err)
+	}
+	mbody, _ := io.ReadAll(mresp.Body)
+	mresp.Body.Close()
+	if mresp.StatusCode != 200 {
+		t.Errorf("/metrics: want 200, got %d", mresp.StatusCode)
+	}
+	if !strings.Contains(string(mbody), "cosift_indexed_docs") {
+		t.Errorf("/metrics: missing cosift_indexed_docs in body: %s", mbody)
+	}
 }
 
 // mustGet GETs the URL and JSON-decodes the response. Fails the test on
