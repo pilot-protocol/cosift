@@ -1464,14 +1464,15 @@ type answerSource struct {
 }
 
 type answerResponse struct {
-	Query          string         `json:"query"`
-	EffectiveQuery string         `json:"effective_query,omitempty"`
-	Expand         string         `json:"expand,omitempty"`
-	Answer         string         `json:"answer"`
-	Sources        []answerSource `json:"sources"`
-	Model          string         `json:"model"`
-	Warnings       []string       `json:"warnings,omitempty"`
-	Took           string         `json:"took"`
+	Query           string         `json:"query"`
+	EffectiveQuery  string         `json:"effective_query,omitempty"`
+	Expand          string         `json:"expand,omitempty"`
+	Answer          string         `json:"answer"`
+	Sources         []answerSource `json:"sources"`
+	Model           string         `json:"model"`
+	Warnings        []string       `json:"warnings,omitempty"`
+	TotalCandidates int            `json:"total_candidates,omitempty"`
+	Took            string         `json:"took"`
 }
 
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
@@ -1625,7 +1626,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	if len(sources) == 0 {
 		empty := answerResponse{
 			Query: q, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources in the index.",
-			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
+			Sources: sources, Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 		}
 		if effectiveQuery != q {
 			empty.EffectiveQuery = effectiveQuery
@@ -1664,7 +1665,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := answerResponse{
 		Query: q, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
-		Model: s.chat.Model(), Took: time.Since(start).String(),
+		Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 	}
 	if effectiveQuery != q {
 		resp.EffectiveQuery = effectiveQuery
@@ -1717,14 +1718,15 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 - Keep the answer focused on what the sources actually say.`
 
 type researchResponse struct {
-	Query    string         `json:"query"`
-	Plan     []string       `json:"plan"`
-	Expand   string         `json:"expand,omitempty"`
-	Answer   string         `json:"answer"`
-	Sources  []answerSource `json:"sources"`
-	Model    string         `json:"model"`
-	Warnings []string       `json:"warnings,omitempty"`
-	Took     string         `json:"took"`
+	Query           string         `json:"query"`
+	Plan            []string       `json:"plan"`
+	Expand          string         `json:"expand,omitempty"`
+	Answer          string         `json:"answer"`
+	Sources         []answerSource `json:"sources"`
+	Model           string         `json:"model"`
+	Warnings        []string       `json:"warnings,omitempty"`
+	TotalCandidates int            `json:"total_candidates,omitempty"`
+	Took            string         `json:"took"`
 }
 
 func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
@@ -1894,7 +1896,8 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
 			Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources for any sub-query.",
-			Sources: sources, Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
+			Sources: sources, Model: s.chat.Model(), Warnings: s.warningsFor(r),
+			TotalCandidates: len(best), Took: time.Since(start).String(),
 		})
 		return
 	}
@@ -1909,7 +1912,8 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
 		Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
-		Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
+		Model: s.chat.Model(), Warnings: s.warningsFor(r),
+		TotalCandidates: len(best), Took: time.Since(start).String(),
 	})
 }
 
