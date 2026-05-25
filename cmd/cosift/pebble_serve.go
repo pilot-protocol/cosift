@@ -796,8 +796,26 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
+	// Iter 256: ?expand=true asks the chat client for a HyDE-style passage and
+	// appends it to q for retrieval. Same trick /search has had since iter 252;
+	// /answer benefits even more because its synth step downstream is the
+	// quality-sensitive bit and missing relevant sources upstream is the
+	// dominant failure mode. Reranker (if also enabled) still scores against
+	// the original q.
+	effectiveQuery := q
+	if r.URL.Query().Get("expand") == "true" && s.chat != nil {
+		if passage, perr := s.chat.Chat(r.Context(), []embed.ChatMsg{
+			{Role: "system", Content: hydeSystemPrompt},
+			{Role: "user", Content: q},
+		}); perr == nil {
+			passage = strings.TrimSpace(passage)
+			if passage != "" {
+				effectiveQuery = q + " " + passage
+			}
+		}
+	}
 
-	hits, err := s.idx.Search(r.Context(), q, fetchK)
+	hits, err := s.idx.Search(r.Context(), effectiveQuery, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
