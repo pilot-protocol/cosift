@@ -58,6 +58,19 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 	defer ps.Close()
 
+	// Iter 282: configurable HyDE + paraphrase cache caps (defaults 256).
+	hydeCap := 256
+	if v := os.Getenv("COSIFT_HYDE_CACHE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			hydeCap = n
+		}
+	}
+	paraCap := 256
+	if v := os.Getenv("COSIFT_PARA_CACHE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			paraCap = n
+		}
+	}
 	idx := index.NewPebbleBM25(ps)
 	// Iter 279: COSIFT_BM25_K1 / COSIFT_BM25_B override the BM25 scoring
 	// parameters per instance. Operators tuning for a specific corpus
@@ -76,11 +89,13 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 	srv := &pebbleHTTP{
-		store:     ps,
-		idx:       idx,
-		hydeCache: make(map[string]string, 256),
-		paraCache: make(map[string][]string, 256),
-		started:   time.Now(),
+		store:        ps,
+		idx:          idx,
+		hydeCache:    make(map[string]string, hydeCap),
+		hydeCacheCap: hydeCap,
+		paraCache:    make(map[string][]string, paraCap),
+		paraCacheCap: paraCap,
+		started:      time.Now(),
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
@@ -169,14 +184,16 @@ type pebbleHTTP struct {
 	// sub-query rephrasings from the planner) hits the chat provider many
 	// times for the same passage. Cap at 256 entries; on overflow drop one
 	// arbitrary entry (Go map iteration order is randomized, good enough).
-	hydeMu    sync.RWMutex
-	hydeCache map[string]string
+	hydeMu       sync.RWMutex
+	hydeCache    map[string]string
+	hydeCacheCap int // iter 282: env-configurable via COSIFT_HYDE_CACHE_SIZE
 
 	// Iter 276: bounded paraphrase cache. /research?expand=paraphrase fans
 	// out 3 paraphrases × N sub-queries — same hot path as HyDE but each
 	// miss is 3x larger by output volume. Keyed on q only (fixed n=3 today).
 	paraMu       sync.RWMutex
 	paraCache    map[string][]string
+	paraCacheCap int // iter 282: env-configurable via COSIFT_PARA_CACHE_SIZE
 	paraHits     atomic.Int64
 	paraMisses   atomic.Int64
 
@@ -1156,7 +1173,7 @@ Example output for "go programming language": ["golang concurrent compiled langu
 	}
 	if len(out) > 0 {
 		s.paraMu.Lock()
-		if len(s.paraCache) >= 256 {
+		if len(s.paraCache) >= s.paraCacheCap {
 			for k := range s.paraCache {
 				delete(s.paraCache, k)
 				break
@@ -1271,7 +1288,7 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 		return q
 	}
 	s.hydeMu.Lock()
-	if len(s.hydeCache) >= 256 {
+	if len(s.hydeCache) >= s.hydeCacheCap {
 		// Bounded: drop one arbitrary entry (Go map range is randomized).
 		for k := range s.hydeCache {
 			delete(s.hydeCache, k)

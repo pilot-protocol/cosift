@@ -70,7 +70,7 @@ See [docs/PEBBLE.md](PEBBLE.md) for the full Pebble env-var reference. Headline:
 - `rate(cosift_request_duration_seconds_sum{endpoint="/search"}) / rate(cosift_requests_total{endpoint="/search"})` — mean /search latency. Compare before/after a rerank flip.
 - `rate(cosift_chat_duration_seconds_sum) / rate(cosift_chat_attempts_total)` — mean chat latency, isolated from retrieval.
 - `rate(cosift_chat_failures_total) / rate(cosift_chat_attempts_total)` — chat provider health.
-- `rate(cosift_hyde_cache_hits_total) / (rate(cosift_hyde_cache_hits_total) + rate(cosift_hyde_cache_misses_total))` — HyDE cache hit rate. < 50% suggests raising the 256-entry cap (rebuild required today).
+- `rate(cosift_hyde_cache_hits_total) / (rate(cosift_hyde_cache_hits_total) + rate(cosift_hyde_cache_misses_total))` — HyDE cache hit rate. < 50% suggests raising `COSIFT_HYDE_CACHE_SIZE` (default 256). Same shape for paraphrase via `COSIFT_PARA_CACHE_SIZE`.
 - `rate(cosift_rerank_failures_total) / rate(cosift_rerank_attempts_total)` — reranker provider health.
 
 ## Target-specific website tuning
