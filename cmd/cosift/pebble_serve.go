@@ -184,9 +184,12 @@ func (s *pebbleHTTP) handleVerify(w http.ResponseWriter, r *http.Request) {
 // parity (highlight, excerpt, calibration, paragraph filters) grows as
 // follow-up iters port each one through the Pebble side.
 type searchHit struct {
-	URL   string  `json:"url"`
-	Title string  `json:"title"`
-	Score float64 `json:"score"`
+	URL          string     `json:"url"`
+	Title        string     `json:"title"`
+	Score        float64    `json:"score"`
+	Excerpt      string     `json:"excerpt,omitempty"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
+	Author       string     `json:"author,omitempty"`
 }
 
 type searchResponse struct {
@@ -228,6 +231,11 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Iter 233: enrich each surviving hit with Excerpt + PublishedAt + Author
+	// via a single GetDocByURL per hit. Cost: k extra Gets — block-cache hot,
+	// ~ms-scale at the k≤100 we accept. Opt out with ?enrich=false for callers
+	// that only need scoring (e.g. reranker pipelines that fetch downstream).
+	enrich := r.URL.Query().Get("enrich") != "false"
 	out := make([]searchHit, 0, k)
 	for _, h := range hits {
 		if len(include) > 0 || len(exclude) > 0 {
@@ -239,7 +247,18 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		out = append(out, searchHit{URL: h.URL, Title: h.Title, Score: h.Score})
+		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
+		if enrich {
+			if doc, derr := s.store.GetDocByURL(r.Context(), h.URL); derr == nil && doc != nil {
+				hit.Excerpt = textExcerpt(doc.Text, 320)
+				if !doc.PublishedAt.IsZero() {
+					t := doc.PublishedAt
+					hit.PublishedAt = &t
+				}
+				hit.Author = doc.Author
+			}
+		}
+		out = append(out, hit)
 		if len(out) >= k {
 			break
 		}
@@ -283,6 +302,25 @@ func hostOf(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// textExcerpt returns a body-prefix excerpt no longer than maxBytes, cut at a
+// word boundary if one is available within the trailing 16 bytes. Iter 233.
+// Static prefix (not query-aware) — matches the SQLite-side DocMeta.Excerpt
+// shape; a query-aware passage extractor is the iter-199 path on the index
+// hot path and lives there, not in the HTTP handler.
+func textExcerpt(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	cut := text[:maxBytes]
+	for i := len(cut) - 1; i >= len(cut)-16 && i > 0; i-- {
+		if cut[i] == ' ' || cut[i] == '\n' || cut[i] == '\t' {
+			cut = cut[:i]
+			break
+		}
+	}
+	return strings.TrimSpace(cut) + "…"
 }
 
 func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
