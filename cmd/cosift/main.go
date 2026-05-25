@@ -828,11 +828,16 @@ func consumeResearchSSE(body io.Reader, format string) error {
 				Detail string `json:"detail"`
 				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
 				Error string `json:"error"`
+				// Iter 337: pebble-serve tags errors with the phase that failed.
+				Phase string `json:"phase"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
 			msg := e.Detail
 			if msg == "" {
 				msg = e.Error
+			}
+			if e.Phase != "" {
+				return fmt.Errorf("server stream error (phase=%s): %s", e.Phase, msg)
 			}
 			return fmt.Errorf("server stream error: %s", msg)
 		}
@@ -966,11 +971,16 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 				Detail string `json:"detail"`
 				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
 				Error string `json:"error"`
+				// Iter 337: pebble-serve tags errors with the phase that failed.
+				Phase string `json:"phase"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
 			msg := e.Detail
 			if msg == "" {
 				msg = e.Error
+			}
+			if e.Phase != "" {
+				return fmt.Errorf("server stream error (phase=%s): %s", e.Phase, msg)
 			}
 			return fmt.Errorf("server stream error: %s", msg)
 		}
