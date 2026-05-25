@@ -274,4 +274,5 @@ iter 314 — pebble-serve startup WARNs on unparseable COSIFT_* env vars (silent
 iter 315 — docs/TUNING.md pitfalls section updated to point at the iter-292+ warnings field as the primary diagnostic
 iter 316 — /answer + /research responses carry `total_candidates` (parity with iter-283 /search)
 iter 317 — /answer + /research SSE `sources` events also carry `total_candidates` (sync↔stream parity)
+iter 318 — `cosift verify -json` for CI integration (matches GET /verify body shape)
 ```
