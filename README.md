@@ -35,6 +35,12 @@ echo 'OPENAI_API_KEY=sk-...' > .env
 
 # 5. Serve the API
 ./cosift serve
+
+# Or — for scale past the SQLite ceiling — crawl + serve via Pebble.
+# Lives at <cfg.DataDir>/pebble (default ./data/pebble).
+# See docs/PEBBLE.md for sizing, docs/API.md for the endpoint surface.
+./cosift crawl --backend=pebble https://docs.example.com
+./cosift pebble-serve -dir ./data/pebble
 ```
 
 Once `serve` is up:

@@ -277,4 +277,5 @@ iter 317 — /answer + /research SSE `sources` events also carry `total_candidat
 iter 318 — `cosift verify -json` for CI integration (matches GET /verify body shape)
 iter 319 — docs/API.md SSE event-sequence docs reflect iter-284/292/317 fields (warnings, expand, total_candidates)
 iter 320 — `cosift` usage string lists doctor + pebble-serve/info, verify, status-file, migrate-to-pebble
+iter 321 — README Quick start mentions the Pebble path (crawl --backend + pebble-serve) so new self-hosters don't miss it
 ```
