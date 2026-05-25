@@ -1072,6 +1072,13 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	textInput := fs.String("text", "", "arbitrary text for content-based MLT (no positional URL needed)")
 	textFile := fs.String("text-file", "", "read MLT source text from FILE")
 	textTitle := fs.String("text-title", "", "optional title (×3 boost) when using -text or -text-file")
+	// Iter 306: surface the iter-245 filter + rerank flags on the CLI.
+	rerank := fs.Bool("rerank", false, "rerank neighbors against the MLT query (server must have rerank configured)")
+	since := fs.String("since", "", "ISO date — only neighbors published on or after")
+	until := fs.String("until", "", "ISO date — only neighbors published on or before")
+	includeDomains := fs.String("include-domains", "", "CSV allowlist of neighbor domains")
+	excludeDomains := fs.String("exclude-domains", "", "CSV denylist of neighbor domains")
+	qExtra := fs.String("q", "", "extra query terms appended to the auto-derived MLT query")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1104,6 +1111,25 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		v.Set("title", *textTitle)
 	}
 	v.Set("k", strconv.Itoa(*k))
+	// Iter 306: filter + rerank passthroughs.
+	if *rerank {
+		v.Set("rerank", "true")
+	}
+	if *since != "" {
+		v.Set("since", *since)
+	}
+	if *until != "" {
+		v.Set("until", *until)
+	}
+	if *includeDomains != "" {
+		v.Set("include_domains", *includeDomains)
+	}
+	if *excludeDomains != "" {
+		v.Set("exclude_domains", *excludeDomains)
+	}
+	if *qExtra != "" {
+		v.Set("q", *qExtra)
+	}
 
 	// Iter 300: switch GET → POST when -text is large (URL params have practical
 	// limits ~8 KB). The POST endpoint accepts the same flag set as a JSON body.
@@ -1121,6 +1147,24 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		}
 		if *textTitle != "" {
 			body["title"] = *textTitle
+		}
+		if *rerank {
+			body["rerank"] = true
+		}
+		if *since != "" {
+			body["since"] = *since
+		}
+		if *until != "" {
+			body["until"] = *until
+		}
+		if *includeDomains != "" {
+			body["include_domains"] = *includeDomains
+		}
+		if *excludeDomains != "" {
+			body["exclude_domains"] = *excludeDomains
+		}
+		if *qExtra != "" {
+			body["q"] = *qExtra
 		}
 		jb, _ := json.Marshal(body)
 		bodyBuf = bytes.NewReader(jb)
