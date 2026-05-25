@@ -159,3 +159,172 @@ func TestPebbleStats(t *testing.T) {
 		t.Errorf("documents: want 7, got %d", s.Documents)
 	}
 }
+
+// trivialTokenize splits on whitespace + lowercases. Adequate for tests;
+// the real BM25 tokenizer with stopwords is in package index.
+func trivialTokenize(s string) []string {
+	var out []string
+	cur := []rune{}
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '.' {
+			flush()
+		} else {
+			if r >= 'A' && r <= 'Z' {
+				r = r + 32
+			}
+			cur = append(cur, r)
+		}
+	}
+	flush()
+	return out
+}
+
+// TestPebbleIndexAndPostings — IndexDocument writes term metadata + postings
+// + doc_len; GetTermInfo / IteratePostings / GetDocLen read them back.
+func TestPebbleIndexAndPostings(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+
+	// Two docs sharing tokens.
+	if err := p.IndexDocument(ctx, 1, "Hello World", "hello again", trivialTokenize, 3); err != nil {
+		t.Fatalf("index doc 1: %v", err)
+	}
+	if err := p.IndexDocument(ctx, 2, "Goodbye World", "world peace", trivialTokenize, 3); err != nil {
+		t.Fatalf("index doc 2: %v", err)
+	}
+
+	// "hello": doc_freq=1 (only doc 1)
+	info, ok, err := p.GetTermInfo(ctx, "hello")
+	if err != nil || !ok {
+		t.Fatalf("term 'hello': ok=%v err=%v", ok, err)
+	}
+	if info.DocFreq != 1 {
+		t.Errorf("hello doc_freq: want 1, got %d", info.DocFreq)
+	}
+
+	// "world": doc_freq=2 (both docs have it)
+	info, ok, _ = p.GetTermInfo(ctx, "world")
+	if !ok {
+		t.Fatalf("term 'world' missing")
+	}
+	if info.DocFreq != 2 {
+		t.Errorf("world doc_freq: want 2, got %d", info.DocFreq)
+	}
+
+	// Iterate postings for "world" — both docs, with title-boosted tf for the
+	// docs whose title carries the term.
+	type p2 struct {
+		docID int64
+		tf    int64
+	}
+	var got []p2
+	if err := p.IteratePostings(ctx, info.ID, func(e PostingEntry) bool {
+		got = append(got, p2{e.DocID, e.TF})
+		return true
+	}); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("postings for 'world': want 2, got %d: %v", len(got), got)
+	}
+	// Both docs have "world" in title (boost=3) + maybe body — doc 1: title+nothing → 3
+	// doc 2: title + body "world peace" → 3+1 = 4
+	for _, e := range got {
+		if e.docID == 1 && e.tf != 3 {
+			t.Errorf("doc 1 'world' tf: want 3, got %d", e.tf)
+		}
+		if e.docID == 2 && e.tf != 4 {
+			t.Errorf("doc 2 'world' tf: want 4 (title-boost 3 + body 1), got %d", e.tf)
+		}
+	}
+
+	// doc_len: doc 1 has 4 tokens ("hello world hello again"); doc 2 has 4 too.
+	dl1, ok, _ := p.GetDocLen(ctx, 1)
+	if !ok || dl1 != 4 {
+		t.Errorf("doc 1 doc_len: want 4, got %d (ok=%v)", dl1, ok)
+	}
+	dl2, ok, _ := p.GetDocLen(ctx, 2)
+	if !ok || dl2 != 4 {
+		t.Errorf("doc 2 doc_len: want 4, got %d", dl2)
+	}
+}
+
+// TestPebbleReindexSameDocIsIdempotent — calling IndexDocument again with
+// the same docID must not double-count doc_freq.
+func TestPebbleReindexSameDocIsIdempotent(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	if err := p.IndexDocument(ctx, 1, "Hello", "world", trivialTokenize, 1); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if err := p.IndexDocument(ctx, 1, "Hello", "world", trivialTokenize, 1); err != nil {
+		t.Fatalf("re-index: %v", err)
+	}
+	info, ok, _ := p.GetTermInfo(ctx, "hello")
+	if !ok || info.DocFreq != 1 {
+		t.Errorf("re-index should not bump doc_freq: want 1, got %d", info.DocFreq)
+	}
+}
+
+// TestPebbleIteratePostingsEmpty — non-existent term ID yields no entries.
+func TestPebbleIteratePostingsEmpty(t *testing.T) {
+	p := newPebbleStore(t)
+	called := false
+	err := p.IteratePostings(context.Background(), 9999, func(e PostingEntry) bool {
+		called = true
+		return true
+	})
+	if err != nil {
+		t.Errorf("iterate empty: %v", err)
+	}
+	if called {
+		t.Errorf("callback should not fire on empty prefix")
+	}
+}
+
+// TestPebblePostingsPersistAcrossReopen — close + reopen preserves postings.
+func TestPebblePostingsPersistAcrossReopen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	p, err := OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("open 1: %v", err)
+	}
+	ctx := context.Background()
+	if err := p.IndexDocument(ctx, 1, "Title", "body of stuff", trivialTokenize, 1); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	info, _, _ := p.GetTermInfo(ctx, "body")
+	originalID := info.ID
+	if err := p.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	p2, err := OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("open 2: %v", err)
+	}
+	defer p2.Close()
+	info2, ok, _ := p2.GetTermInfo(ctx, "body")
+	if !ok {
+		t.Fatalf("term 'body' lost on reopen")
+	}
+	if info2.ID != originalID {
+		t.Errorf("term ID changed on reopen: %d → %d", originalID, info2.ID)
+	}
+
+	// A new IndexDocument call must assign a NEW term ID for unseen terms,
+	// not collide with the existing ones.
+	if err := p2.IndexDocument(ctx, 2, "Title", "unseen vocabulary", trivialTokenize, 1); err != nil {
+		t.Fatalf("post-reopen index: %v", err)
+	}
+	infoNew, ok, _ := p2.GetTermInfo(ctx, "unseen")
+	if !ok || infoNew.ID == originalID {
+		t.Errorf("new term ID should differ from existing: existing=%d new=%d", originalID, infoNew.ID)
+	}
+}

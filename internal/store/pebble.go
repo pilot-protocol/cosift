@@ -46,10 +46,13 @@ type PebbleStore struct {
 }
 
 const (
-	famDoc  byte = 'd'
-	famURL  byte = 'u'
-	famHost byte = 'h'
-	famMeta byte = 'm'
+	famDoc     byte = 'd'
+	famURL     byte = 'u'
+	famHost    byte = 'h'
+	famMeta    byte = 'm'
+	famTerm    byte = 't' // 't' + term-string → (termID, doc_freq) packed
+	famPosting byte = 'p' // 'p' + termID + docID → tf (varint)
+	famDocLen  byte = 'l' // 'l' + docID → doc_len (varint)
 )
 
 // OpenPebble opens (or creates) a Pebble store at path. On open it
@@ -241,4 +244,255 @@ func metaKey(name string) []byte {
 	k[0] = famMeta
 	copy(k[1:], name)
 	return k
+}
+
+func termKey(term string) []byte {
+	k := make([]byte, 1+len(term))
+	k[0] = famTerm
+	copy(k[1:], term)
+	return k
+}
+
+func postingKey(termID, docID int64) []byte {
+	k := make([]byte, 1+8+8)
+	k[0] = famPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(termID))
+	binary.BigEndian.PutUint64(k[9:], uint64(docID))
+	return k
+}
+
+func postingPrefix(termID int64) []byte {
+	k := make([]byte, 1+8)
+	k[0] = famPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(termID))
+	return k
+}
+
+// postingPrefixUpper returns the exclusive upper bound for a termID prefix scan.
+func postingPrefixUpper(termID int64) []byte {
+	k := make([]byte, 1+8)
+	k[0] = famPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(termID+1))
+	return k
+}
+
+func docLenKey(docID int64) []byte {
+	k := make([]byte, 1+8)
+	k[0] = famDocLen
+	binary.BigEndian.PutUint64(k[1:], uint64(docID))
+	return k
+}
+
+// TermInfo bundles per-term metadata: stable integer ID and document
+// frequency (how many docs contain the term).
+type TermInfo struct {
+	ID     int64
+	DocFreq int64
+}
+
+// IndexDocument tokenizes (title, text) and writes a complete set of
+// postings for docID under the Pebble schema. Replaces any existing
+// postings for the same docID (re-indexing is idempotent — the caller
+// is expected to call this exactly once per doc state).
+//
+// Tokenization happens here, not in the caller, because the Pebble store
+// owns the postings layout. Title tokens contribute the iter-197 title
+// boost (3x TF). doc_len records raw token count for BM25 length norm.
+func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, text string, tokenize func(string) []string, titleBoost int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if titleBoost <= 0 {
+		titleBoost = 1
+	}
+	titleTokens := tokenize(title)
+	bodyTokens := tokenize(text)
+	if len(titleTokens)+len(bodyTokens) == 0 {
+		return nil
+	}
+	tf := make(map[string]int, len(titleTokens)+len(bodyTokens))
+	for _, t := range titleTokens {
+		tf[t] += titleBoost
+	}
+	for _, t := range bodyTokens {
+		tf[t]++
+	}
+
+	docLen := len(titleTokens) + len(bodyTokens)
+	lenBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(lenBuf, uint64(docLen))
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+
+	if err := batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
+		return err
+	}
+	for term, freq := range tf {
+		info, ok, err := p.getTermInfoLocked(term)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			info.ID = p.nextTermID()
+			info.DocFreq = 1
+		} else {
+			// Re-indexing the same doc: don't bump doc_freq if this docID
+			// already has a posting for the term. Simple approach for now:
+			// look up the existing posting; if present, leave doc_freq alone.
+			if exists, err := p.postingExistsLocked(info.ID, docID); err != nil {
+				return err
+			} else if !exists {
+				info.DocFreq++
+			}
+		}
+		if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
+			return err
+		}
+		tfBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(tfBuf, uint64(freq))
+		if err := batch.Set(postingKey(info.ID, docID), tfBuf, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+// GetTermInfo looks up a term's (ID, DocFreq) by term string. ok=false
+// when the term has never been indexed.
+func (p *PebbleStore) GetTermInfo(ctx context.Context, term string) (TermInfo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return TermInfo{}, false, err
+	}
+	return p.getTermInfoLocked(term)
+}
+
+func (p *PebbleStore) getTermInfoLocked(term string) (TermInfo, bool, error) {
+	val, closer, err := p.db.Get(termKey(term))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return TermInfo{}, false, nil
+	}
+	if err != nil {
+		return TermInfo{}, false, err
+	}
+	defer closer.Close()
+	return unpackTermInfo(val)
+}
+
+func (p *PebbleStore) postingExistsLocked(termID, docID int64) (bool, error) {
+	_, closer, err := p.db.Get(postingKey(termID, docID))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = closer.Close()
+	return true, nil
+}
+
+// PostingEntry is one (docID, tf) pair returned by IteratePostings.
+type PostingEntry struct {
+	DocID int64
+	TF    int64
+}
+
+// IteratePostings prefix-scans the 'p' family for the given termID and
+// invokes fn(docID, tf) for each. Returning false from fn stops the scan.
+// Used by BM25.Search to walk a term's posting list without loading it all.
+func (p *PebbleStore) IteratePostings(ctx context.Context, termID int64, fn func(PostingEntry) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: postingPrefix(termID),
+		UpperBound: postingPrefixUpper(termID),
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := it.Key()
+		if len(key) != 17 {
+			continue
+		}
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return err
+		}
+		if len(val) != 8 {
+			continue
+		}
+		entry := PostingEntry{
+			DocID: int64(binary.BigEndian.Uint64(key[9:])),
+			TF:    int64(binary.BigEndian.Uint64(val)),
+		}
+		if !fn(entry) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// GetDocLen returns the indexed doc_len (raw token count) for docID, or
+// (0, false) if no postings have been written for this doc.
+func (p *PebbleStore) GetDocLen(ctx context.Context, docID int64) (int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	val, closer, err := p.db.Get(docLenKey(docID))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer closer.Close()
+	if len(val) != 8 {
+		return 0, false, fmt.Errorf("malformed doc_len: len=%d", len(val))
+	}
+	return int64(binary.BigEndian.Uint64(val)), true, nil
+}
+
+// nextTermID atomically allocates the next term ID. Called under p.mu.
+func (p *PebbleStore) nextTermID() int64 {
+	val, closer, err := p.db.Get(metaKey("next_term_id"))
+	var current int64
+	if !errors.Is(err, pebble.ErrNotFound) && err == nil {
+		if len(val) == 8 {
+			current = int64(binary.BigEndian.Uint64(val))
+		}
+		_ = closer.Close()
+	}
+	next := current + 1
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(next))
+	// Persist immediately; this is called inside an unflushed batch but the
+	// counter race with concurrent IndexDocument is held off by p.mu above.
+	_ = p.db.Set(metaKey("next_term_id"), buf, nil)
+	return next
+}
+
+func packTermInfo(t TermInfo) []byte {
+	b := make([]byte, 16)
+	binary.BigEndian.PutUint64(b[0:8], uint64(t.ID))
+	binary.BigEndian.PutUint64(b[8:16], uint64(t.DocFreq))
+	return b
+}
+
+func unpackTermInfo(b []byte) (TermInfo, bool, error) {
+	if len(b) != 16 {
+		return TermInfo{}, false, fmt.Errorf("malformed term value: len=%d", len(b))
+	}
+	return TermInfo{
+		ID:      int64(binary.BigEndian.Uint64(b[0:8])),
+		DocFreq: int64(binary.BigEndian.Uint64(b[8:16])),
+	}, true, nil
 }
