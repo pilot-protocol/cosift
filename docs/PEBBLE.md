@@ -260,4 +260,5 @@ iter 300 — `cosift find-similar` CLI accepts -text / -text-file / -text-title 
 iter 301 — `cosift query --backend=pebble` honors COSIFT_BM25_K1 / _B (shared helper with pebble-serve)
 iter 302 — /research logs per-sub-query BM25 failures (was silent continue on both paths)
 iter 303 — `status-file -target N` displays `100%, reached` when goal is met instead of growing past 100
+iter 304 — `cosift answer` CLI gains -rerank, -since, -until, -include-domains, -exclude-domains
 ```

@@ -1323,6 +1323,12 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 95.")
 	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE. Iter 109.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
+	// Iter 304: expose the iter-249/241 quality + scope flags on the CLI.
+	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth (server must have rerank configured)")
+	since := fs.String("since", "", "ISO date — only sources published on or after")
+	until := fs.String("until", "", "ISO date — only sources published on or before")
+	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
+	excludeDomains := fs.String("exclude-domains", "", "CSV denylist of source domains")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1341,6 +1347,21 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	v.Set("k", strconv.Itoa(*k))
 	if *expand {
 		v.Set("expand", "true")
+	}
+	if *rerank {
+		v.Set("rerank", "true")
+	}
+	if *since != "" {
+		v.Set("since", *since)
+	}
+	if *until != "" {
+		v.Set("until", *until)
+	}
+	if *includeDomains != "" {
+		v.Set("include_domains", *includeDomains)
+	}
+	if *excludeDomains != "" {
+		v.Set("exclude_domains", *excludeDomains)
 	}
 	if *stream {
 		v.Set("stream", "true")
