@@ -354,10 +354,11 @@ type searchHit struct {
 }
 
 type searchResponse struct {
-	Query     string      `json:"query"`
-	Retriever string      `json:"retriever"`
-	Hits      []searchHit `json:"hits"`
-	Took      string      `json:"took"`
+	Query          string      `json:"query"`
+	EffectiveQuery string      `json:"effective_query,omitempty"`
+	Retriever      string      `json:"retriever"`
+	Hits           []searchHit `json:"hits"`
+	Took           string      `json:"took"`
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -536,12 +537,19 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if wantRerank {
 		retrieverLabel += "+rerank:" + s.reranker.Name()
 	}
-	writeJSON(w, http.StatusOK, searchResponse{
+	resp := searchResponse{
 		Query:     q,
 		Retriever: retrieverLabel,
 		Hits:      out,
 		Took:      time.Since(start).String(),
-	})
+	}
+	// Iter 265: surface the post-HyDE query when it actually changed, so callers
+	// can debug whether expand=true contributed any extra terms or returned q
+	// unchanged (chat down, empty passage, etc).
+	if effectiveQuery != q {
+		resp.EffectiveQuery = effectiveQuery
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // sortHitsByDate orders hits by PublishedAt. Hits with no PublishedAt sink to

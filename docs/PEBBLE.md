@@ -216,4 +216,5 @@ iter 261 — pebble-serve `/metrics` exposes cosift_requests_total{endpoint="…
 iter 262 — pebble-serve `/metrics` adds cosift_request_duration_seconds_sum (mean latency via PromQL)
 iter 263 — pebble-serve `/metrics` adds cosift_rerank_attempts_total / _failures_total
 iter 264 — pebble-serve `/metrics` adds cosift_chat_attempts_total / _failures_total (all 7 sites)
+iter 265 — pebble-serve `/search` response includes `effective_query` when HyDE expand actually fired
 ```
