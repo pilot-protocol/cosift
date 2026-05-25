@@ -287,4 +287,5 @@ iter 325 — `cosift pebble-info` + `cosift verify` print a friendly hint on loc
 iter 326 — `cosift crawl --backend=pebble`, `cosift query`, `cosift stats`, `cosift migrate-to-pebble` use the iter-325 helper
 iter 327 — `make check` includes `cmd/cosift/...` tests (~24s; httptest-based, no live network)
 iter 328 — PEBBLE.md lead with a status paragraph + cross-doc links so first-time readers land oriented
+iter 329 — README mentions `make check` alongside `make smoke` so contributors know about the offline sweep
 ```

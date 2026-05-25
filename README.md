@@ -53,7 +53,7 @@ curl -N -H 'Accept: text/event-stream' \
      'http://127.0.0.1:7777/research?q=compare+go+and+rust+for+systems+programming'
 ```
 
-Run `./cosift doctor` for a local config sanity check (data dir writable, schema migrated, key present where features need it). Run `make smoke` for an end-to-end real-runner check that crawls a public seed, exercises both CLI subcommands and HTTP endpoints, and reports in ~30 seconds.
+Run `./cosift doctor` for a local config sanity check (data dir writable, schema migrated, key present where features need it). `make check` runs the offline compile + vet + unit-test sweep in ~30s (no network, no LLM key); `make smoke` adds an end-to-end real-runner check that crawls a public seed and exercises CLI + HTTP endpoints (~30s, needs network).
 
 ## What's in the box
 
