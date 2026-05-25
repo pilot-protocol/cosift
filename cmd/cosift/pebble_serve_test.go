@@ -208,6 +208,21 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
+	// /search with include_domains (iter 232). The dot-boundary matcher
+	// excludes hosts outside the allowlist. The corpus has 'x' as the only
+	// host, so include_domains=x should keep everything and =other.tld
+	// should drop everything.
+	dresp := mustGet(t, base+"/search?q=consensus&k=5&include_domains=other.tld")
+	dhits, _ := dresp["hits"].([]any)
+	if len(dhits) != 0 {
+		t.Errorf("/search?include_domains=other.tld: want 0 hits, got %d", len(dhits))
+	}
+	dresp2 := mustGet(t, base+"/search?q=consensus&k=5&include_domains=x")
+	dhits2, _ := dresp2["hits"].([]any)
+	if len(dhits2) == 0 {
+		t.Errorf("/search?include_domains=x: want hits from corpus, got 0")
+	}
+
 	// POST /contents batch (iter 254/255). Up to 100 URLs; each result has
 	// found+title+text or found:false+error.
 	batchBody := strings.NewReader(`{"urls":["https://x/raft","https://x/missing"]}`)
