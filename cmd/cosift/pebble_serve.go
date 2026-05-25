@@ -438,6 +438,13 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		terms[i] = scored[i].term
 	}
 	queryStr := strings.Join(terms, " ")
+	// Iter 239: optional ?q= augments the auto-derived MLT query so callers
+	// can constrain "more like this URL" with an extra concept (e.g.
+	// /find_similar?url=...&q=pricing). Appended verbatim — supports the
+	// same quoted-phrase shape /search accepts.
+	if extra := strings.TrimSpace(r.URL.Query().Get("q")); extra != "" {
+		queryStr = queryStr + " " + extra
+	}
 
 	hits, err := s.idx.Search(r.Context(), queryStr, k+1)
 	if err != nil {

@@ -190,4 +190,5 @@ iter 235 — pebble-serve `/search` sort=date_desc / date_asc
 iter 236 — pebble-serve `/find_similar` (BM25 more-like-this, no embeddings)
 iter 237 — pebble-serve `/search?include_text=true` (inline full text, no N+1)
 iter 238 — pebble-serve `/stats` includes indexed_docs / sum_doc_len / avg_doc_len
+iter 239 — pebble-serve `/find_similar?q=` augments the auto-derived MLT query
 ```
