@@ -99,6 +99,14 @@ func OpenPebble(path string) (*PebbleStore, error) {
 // Close flushes and closes the underlying Pebble DB.
 func (p *PebbleStore) Close() error { return p.db.Close() }
 
+// Metrics returns Pebble's built-in metrics — LSM-level breakdown,
+// on-disk size, WAL state, compaction stats. Iter 217 — surfaced via
+// `cosift pebble-info` for operator sizing + diagnosis.
+//
+// The returned *pebble.Metrics has a String() that formats a multi-line
+// human-readable table; callers usually want that directly.
+func (p *PebbleStore) Metrics() *pebble.Metrics { return p.db.Metrics() }
+
 // UpsertDocument writes (or overwrites) a document. Returns the assigned ID.
 // New URLs get a fresh monotonic ID; existing URLs reuse their ID and the
 // document row is rewritten with the new payload — same semantics as the

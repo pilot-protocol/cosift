@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -182,6 +183,37 @@ func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
 		"published_at": doc.PublishedAt,
 		"fetched_at":   doc.FetchedAt,
 	})
+}
+
+// runPebbleInfo prints Pebble's built-in metrics for the store at -dir.
+// Iter 217 — operator visibility into LSM levels, WAL state, on-disk
+// size, and compaction queue, surfaced via pebble.Metrics().String().
+func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("pebble-info", flag.ExitOnError)
+	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	d := *dir
+	if d == "" {
+		d = filepath.Join(cfg.DataDir, "pebble")
+	}
+	ps, err := store.OpenPebble(d)
+	if err != nil {
+		return fmt.Errorf("open pebble at %s: %w", d, err)
+	}
+	defer ps.Close()
+
+	st, err := ps.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("PebbleStore: %s\n\n", d)
+	fmt.Printf("  documents:   %d\n", st.Documents)
+	fmt.Println()
+	fmt.Println("--- pebble.Metrics ---")
+	fmt.Println(ps.Metrics().String())
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
