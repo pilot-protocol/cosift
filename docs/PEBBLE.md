@@ -239,4 +239,5 @@ iter 280 — pebble-serve `/stats` surfaces bm25_k1, bm25_b, reranker name, chat
 iter 281 — docs/TUNING.md: operator's compass for when each knob actually moves quality
 iter 282 — COSIFT_HYDE_CACHE_SIZE / COSIFT_PARA_CACHE_SIZE env overrides for cache caps
 iter 283 — /search + /find_similar surface `total_candidates` (BM25 pool size before filter)
+iter 284 — /research SSE plan event includes `expand` field (so UI knows strategy upfront)
 ```

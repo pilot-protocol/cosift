@@ -1790,7 +1790,14 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if len(subs) > 5 {
 		subs = subs[:5]
 	}
-	sse(map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()})
+	// Iter 284: surface the active expansion strategy on the plan event so
+	// UIs can render 'using paraphrase' or 'using HyDE' as soon as the plan
+	// arrives, before per-sub-query expansion fires.
+	planEvent := map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()}
+	if expandMode := r.URL.Query().Get("expand"); expandMode != "" {
+		planEvent["expand"] = expandMode
+	}
+	sse(planEvent)
 
 	type ranked struct {
 		score float64
