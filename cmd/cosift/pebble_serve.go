@@ -78,6 +78,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /metrics", srv.handleMetrics)
 	mux.HandleFunc("GET /find_similar", srv.handleFindSimilar)
 	mux.HandleFunc("GET /answer", srv.handleAnswer)
+	mux.HandleFunc("GET /research", srv.handleResearch)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -677,6 +678,147 @@ func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChat
 		return
 	}
 	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
+}
+
+// Iter 243: /research — multi-step retrieval + synthesis. LLM decomposes the
+// question into 2-3 sub-queries, each sub-query runs BM25, results are deduped
+// by URL keeping the best score, top-k feed a cited synthesis. Mirrors the
+// SQLite-side /research planner strategy. No streaming, no rerank, no
+// paraphrase strategy yet — those follow once this surface is exercised.
+const researchPlanPrompt = `Decompose the user's research question into 2-3 focused sub-queries that, taken together, would cover the answer. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["sub-query 1", "sub-query 2"]`
+
+const researchSynthPrompt = `You are a research assistant. Synthesize an answer to the original question using ONLY the provided sources.
+- Cite sources by their numeric id, e.g. [1] or [2,3]. Every factual claim needs a citation.
+- If the sources don't cover something, say so plainly — do not invent.
+- Keep the answer focused on what the sources actually say.`
+
+type researchResponse struct {
+	Query   string         `json:"query"`
+	Plan    []string       `json:"plan"`
+	Answer  string         `json:"answer"`
+	Sources []answerSource `json:"sources"`
+	Model   string         `json:"model"`
+	Took    string         `json:"took"`
+}
+
+func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented,
+			"/research requires cfg.Chat.Model to be set")
+		return
+	}
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 8
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			k = n
+		}
+	}
+
+	// Plan
+	planRaw, err := s.chat.Chat(r.Context(), []embed.ChatMsg{
+		{Role: "system", Content: researchPlanPrompt},
+		{Role: "user", Content: q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "plan: "+err.Error())
+		return
+	}
+	subs := parseSubQueries(planRaw, q)
+	if len(subs) > 5 {
+		subs = subs[:5]
+	}
+
+	// Retrieve per sub-query, dedupe by URL keeping best score.
+	type ranked struct {
+		score float64
+		hit   index.Hit
+	}
+	best := make(map[string]ranked, k*len(subs))
+	perSub := k * 2
+	if perSub > 40 {
+		perSub = 40
+	}
+	for _, sq := range subs {
+		hits, err := s.idx.Search(r.Context(), sq, perSub)
+		if err != nil {
+			continue // one sub-query failure shouldn't fail the whole research
+		}
+		for _, h := range hits {
+			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+				best[h.URL] = ranked{score: h.Score, hit: h}
+			}
+		}
+	}
+	pooled := make([]ranked, 0, len(best))
+	for _, v := range best {
+		pooled = append(pooled, v)
+	}
+	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
+	if len(pooled) > k {
+		pooled = pooled[:k]
+	}
+
+	// Materialize sources + prompt
+	sources := make([]answerSource, 0, len(pooled))
+	var promptSources strings.Builder
+	for i, p := range pooled {
+		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
+		if derr != nil || doc == nil {
+			continue
+		}
+		excerpt := textExcerpt(doc.Text, 1200)
+		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
+		if !doc.PublishedAt.IsZero() {
+			t := doc.PublishedAt
+			src.PublishedAt = &t
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+	}
+	if len(sources) == 0 {
+		writeJSON(w, http.StatusOK, researchResponse{
+			Query: q, Plan: subs, Answer: "No matching sources for any sub-query.",
+			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
+		})
+		return
+	}
+
+	answer, err := s.chat.Chat(r.Context(), []embed.ChatMsg{
+		{Role: "system", Content: researchSynthPrompt},
+		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, researchResponse{
+		Query: q, Plan: subs, Answer: answer, Sources: sources,
+		Model: s.chat.Model(), Took: time.Since(start).String(),
+	})
+}
+
+func parseSubQueries(raw, fallback string) []string {
+	raw = strings.TrimSpace(raw)
+	for _, fence := range []string{"```json", "```"} {
+		raw = strings.TrimPrefix(raw, fence)
+		raw = strings.TrimSuffix(raw, "```")
+	}
+	raw = strings.TrimSpace(raw)
+	startIdx := strings.Index(raw, "[")
+	endIdx := strings.LastIndex(raw, "]")
+	if startIdx >= 0 && endIdx > startIdx {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw[startIdx:endIdx+1]), &arr); err == nil && len(arr) > 0 {
+			return arr
+		}
+	}
+	return []string{fallback}
 }
 
 func splitDomainsCSV(s string) []string {
