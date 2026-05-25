@@ -238,4 +238,5 @@ iter 279 — PebbleBM25 per-instance k1/b + COSIFT_BM25_K1 / COSIFT_BM25_B env o
 iter 280 — pebble-serve `/stats` surfaces bm25_k1, bm25_b, reranker name, chat_model
 iter 281 — docs/TUNING.md: operator's compass for when each knob actually moves quality
 iter 282 — COSIFT_HYDE_CACHE_SIZE / COSIFT_PARA_CACHE_SIZE env overrides for cache caps
+iter 283 — /search + /find_similar surface `total_candidates` (BM25 pool size before filter)
 ```

@@ -427,11 +427,12 @@ type searchHit struct {
 }
 
 type searchResponse struct {
-	Query          string      `json:"query"`
-	EffectiveQuery string      `json:"effective_query,omitempty"`
-	Retriever      string      `json:"retriever"`
-	Hits           []searchHit `json:"hits"`
-	Took           string      `json:"took"`
+	Query           string      `json:"query"`
+	EffectiveQuery  string      `json:"effective_query,omitempty"`
+	Retriever       string      `json:"retriever"`
+	Hits            []searchHit `json:"hits"`
+	TotalCandidates int         `json:"total_candidates,omitempty"`
+	Took            string      `json:"took"`
 }
 
 // Iter 277: POST /search with JSON body — for callers whose query lists,
@@ -800,10 +801,16 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		retrieverLabel += "+rerank:" + s.reranker.Name()
 	}
 	resp := searchResponse{
-		Query:     q,
-		Retriever: retrieverLabel,
-		Hits:      out,
-		Took:      time.Since(start).String(),
+		Query:           q,
+		Retriever:       retrieverLabel,
+		Hits:            out,
+		// Iter 283: total_candidates = BM25 candidates considered before
+		// filter (capped at fetchK). Operators tuning over-fetch can see
+		// whether their filter is dropping a lot — when out=k but
+		// total_candidates is close to fetchK, the filter is restrictive
+		// enough that you may want to raise k or relax filters.
+		TotalCandidates: len(hits),
+		Took:            time.Since(start).String(),
 	}
 	// Iter 265: surface the post-HyDE query when it actually changed, so callers
 	// can debug whether expand=true contributed any extra terms or returned q
@@ -1061,10 +1068,11 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		retrieverLabel = "bm25-mlt+rerank:" + s.reranker.Name()
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
-		Query:     queryStr,
-		Retriever: retrieverLabel,
-		Hits:      out,
-		Took:      time.Since(start).String(),
+		Query:           queryStr,
+		Retriever:       retrieverLabel,
+		Hits:            out,
+		TotalCandidates: len(hits),
+		Took:            time.Since(start).String(),
 	})
 }
 
