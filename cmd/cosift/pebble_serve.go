@@ -318,6 +318,10 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.chat != nil {
 		out["chat_model"] = s.chat.Model()
+		// Iter 345: surface the iter-282 cache caps so operators can verify
+		// COSIFT_HYDE_CACHE_SIZE / _PARA_CACHE_SIZE overrides took effect.
+		out["hyde_cache_size"] = s.hydeCacheCap
+		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
 	writeJSON(w, http.StatusOK, out)
 }

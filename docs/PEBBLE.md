@@ -303,4 +303,5 @@ iter 341 — pebble-serve answerSource emits `id` (1-based citation N) so the CL
 iter 342 — TestPebbleServeEndToEnd asserts /find_similar text mode + /verify (closes the iter-322 regression class)
 iter 343 — TestPebbleServeEndToEnd also asserts POST /search + /metrics shape (regression coverage)
 iter 344 — TestPebbleServeEndToEnd asserts warnings array emits on `?sort=newest` (covers iter-292/310 machinery)
+iter 345 — /stats surfaces hyde_cache_size + paraphrase_cache_size (verify iter-282 env overrides landed)
 ```
