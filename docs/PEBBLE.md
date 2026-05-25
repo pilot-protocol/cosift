@@ -183,4 +183,5 @@ iter 228 — `cosift verify` (counter-drift detection)
 iter 229 — `cosift status-file -json` (Prometheus / jq output)
 iter 230 — pebble-serve `/verify` endpoint (HTTP counter-drift check)
 iter 231 — pebble-serve `/metrics` (Prometheus exposition, no client dep)
+iter 232 — pebble-serve `/search` include_domains / exclude_domains
 ```

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/calinteodor/cosift/internal/config"
@@ -208,14 +209,40 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
-	hits, err := s.idx.Search(r.Context(), q, k)
+	// Iter 232: include_domains / exclude_domains — mirrors the
+	// SQLite-side server semantics (CSV, dot-boundary suffix match).
+	// When a filter is active we over-fetch 5x so the post-filter has
+	// enough candidates to fill k; this is the same brute-force shape
+	// that the SQLite path used before iter-79 added a proper index.
+	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
+	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
+	fetchK := k
+	if len(include) > 0 || len(exclude) > 0 {
+		fetchK = k * 5
+		if fetchK > 500 {
+			fetchK = 500
+		}
+	}
+	hits, err := s.idx.Search(r.Context(), q, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := make([]searchHit, 0, len(hits))
+	out := make([]searchHit, 0, k)
 	for _, h := range hits {
+		if len(include) > 0 || len(exclude) > 0 {
+			host := hostOf(h.URL)
+			if len(include) > 0 && !matchesAnyDomain(host, include) {
+				continue
+			}
+			if len(exclude) > 0 && matchesAnyDomain(host, exclude) {
+				continue
+			}
+		}
 		out = append(out, searchHit{URL: h.URL, Title: h.Title, Score: h.Score})
+		if len(out) >= k {
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:     q,
@@ -223,6 +250,39 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Hits:      out,
 		Took:      time.Since(start).String(),
 	})
+}
+
+func splitDomainsCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.ToLower(strings.TrimSpace(p))
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func matchesAnyDomain(host string, patterns []string) bool {
+	host = strings.ToLower(host)
+	for _, p := range patterns {
+		if host == p || strings.HasSuffix(host, "."+p) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
