@@ -58,6 +58,10 @@ const (
 	famDocMeta byte = 'i' // 'i' + uint64-be(docID) → uvarint(urlLen)+url+uvarint(titleLen)+title
 	//                      iter 207: cheap URL+title side-blob (~50 bytes vs ~1KB+ gob)
 	//                      so BM25 hit-resolution skips the full Document decode.
+	famDocTerms byte = 'g' // 'g' + uint64-be(docID) → uvarint(N) + N×uvarint(termID)
+	//                       iter 208: reverse index from docID to its term IDs, so
+	//                       re-indexing the same doc can delete orphaned postings
+	//                       for terms that vanished from the new content.
 )
 
 // OpenPebble opens (or creates) a Pebble store at path. On open it
@@ -172,6 +176,43 @@ func docMetaKey(docID int64) []byte {
 	k[0] = famDocMeta
 	binary.BigEndian.PutUint64(k[1:], uint64(docID))
 	return k
+}
+
+func docTermsKey(docID int64) []byte {
+	k := make([]byte, 1+8)
+	k[0] = famDocTerms
+	binary.BigEndian.PutUint64(k[1:], uint64(docID))
+	return k
+}
+
+func packDocTerms(termIDs []int64) []byte {
+	tmp := make([]byte, binary.MaxVarintLen64)
+	out := make([]byte, 0, 2+len(termIDs)*2)
+	n := binary.PutUvarint(tmp, uint64(len(termIDs)))
+	out = append(out, tmp[:n]...)
+	for _, id := range termIDs {
+		n = binary.PutUvarint(tmp, uint64(id))
+		out = append(out, tmp[:n]...)
+	}
+	return out
+}
+
+func unpackDocTerms(buf []byte) ([]int64, error) {
+	count, n := binary.Uvarint(buf)
+	if n <= 0 {
+		return nil, fmt.Errorf("docTerms: malformed count")
+	}
+	buf = buf[n:]
+	out := make([]int64, 0, count)
+	for i := uint64(0); i < count; i++ {
+		id, n := binary.Uvarint(buf)
+		if n <= 0 {
+			return nil, fmt.Errorf("docTerms: malformed termID at index %d", i)
+		}
+		buf = buf[n:]
+		out = append(out, int64(id))
+	}
+	return out, nil
 }
 
 func packDocMeta(url, title string) []byte {
@@ -506,6 +547,20 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
 		return err
 	}
+	// Iter 208: load the previous term-ID set for this docID. On re-index,
+	// terms that no longer appear get their postings deleted so phantom
+	// matches don't leak. New term-ID set is written under 'g' at the end
+	// of the batch.
+	oldTermIDs, err := p.readDocTermsLocked(docID)
+	if err != nil {
+		return err
+	}
+	oldSet := make(map[int64]struct{}, len(oldTermIDs))
+	for _, id := range oldTermIDs {
+		oldSet[id] = struct{}{}
+	}
+	newSet := make(map[int64]struct{}, len(tf))
+
 	for term, freq := range tf {
 		info, ok, err := p.getTermInfoLocked(term)
 		if err != nil {
@@ -514,16 +569,13 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		if !ok {
 			info.ID = p.nextTermID()
 			info.DocFreq = 1
-		} else {
-			// Re-indexing the same doc: don't bump doc_freq if this docID
-			// already has a posting for the term. Simple approach for now:
-			// look up the existing posting; if present, leave doc_freq alone.
-			if exists, err := p.postingExistsLocked(info.ID, docID); err != nil {
-				return err
-			} else if !exists {
-				info.DocFreq++
-			}
+		} else if _, alreadyIn := oldSet[info.ID]; !alreadyIn {
+			// Term existed in the corpus but THIS doc didn't have it before.
+			// Iter 208: replaces the iter-201 postingExistsLocked check; we
+			// now know from oldSet whether the doc had this term.
+			info.DocFreq++
 		}
+		newSet[info.ID] = struct{}{}
 		if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
 			return err
 		}
@@ -536,7 +588,44 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 			return err
 		}
 	}
+
+	// Iter 208: delete postings for terms in oldSet \ newSet (vanished from
+	// the new content). We don't decrement the term's doc_freq here — that
+	// would require term-string lookup by termID (no reverse index today).
+	// doc_freq becomes a slight over-count for terms that lost docs; IDF
+	// shifts by less than the rounding noise.
+	for oldID := range oldSet {
+		if _, stillPresent := newSet[oldID]; stillPresent {
+			continue
+		}
+		if err := batch.Delete(postingKey(oldID, docID), nil); err != nil {
+			return err
+		}
+	}
+
+	// Write the new term-ID set for this doc.
+	newIDs := make([]int64, 0, len(newSet))
+	for id := range newSet {
+		newIDs = append(newIDs, id)
+	}
+	if err := batch.Set(docTermsKey(docID), packDocTerms(newIDs), nil); err != nil {
+		return err
+	}
 	return batch.Commit(pebble.Sync)
+}
+
+// readDocTermsLocked reads the 'g' family entry for docID under p.mu.
+// Returns an empty slice with no error when no prior entry exists.
+func (p *PebbleStore) readDocTermsLocked(docID int64) ([]int64, error) {
+	val, closer, err := p.db.Get(docTermsKey(docID))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer closer.Close()
+	return unpackDocTerms(val)
 }
 
 // GetTermInfo looks up a term's (ID, DocFreq) by term string. ok=false

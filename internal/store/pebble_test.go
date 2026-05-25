@@ -328,3 +328,104 @@ func TestPebblePostingsPersistAcrossReopen(t *testing.T) {
 		t.Errorf("new term ID should differ from existing: existing=%d new=%d", originalID, infoNew.ID)
 	}
 }
+
+// TestPebbleReindexDeletesOrphanedPostings — iter 208. Index a doc with
+// terms {alpha, beta, gamma}; re-index with {alpha, delta}; beta and
+// gamma postings for the doc MUST be deleted (or queries for those terms
+// return the doc as a phantom hit).
+func TestPebbleReindexDeletesOrphanedPostings(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+
+	// 1. First index — doc 1 has {alpha, beta, gamma}.
+	if err := p.IndexDocument(ctx, 1, "", "alpha beta gamma", trivialTokenize, 1); err != nil {
+		t.Fatalf("index 1: %v", err)
+	}
+
+	betaInfo, ok, _ := p.GetTermInfo(ctx, "beta")
+	if !ok {
+		t.Fatal("term 'beta' should exist after first index")
+	}
+	// Verify the posting is there.
+	var betaCount int
+	_ = p.IteratePostings(ctx, betaInfo.ID, func(e PostingEntry) bool {
+		if e.DocID == 1 {
+			betaCount++
+		}
+		return true
+	})
+	if betaCount != 1 {
+		t.Fatalf("pre-reindex: doc 1 should have 1 posting under 'beta', got %d", betaCount)
+	}
+
+	// 2. Re-index doc 1 with new term set: {alpha, delta}.
+	if err := p.IndexDocument(ctx, 1, "", "alpha delta", trivialTokenize, 1); err != nil {
+		t.Fatalf("reindex: %v", err)
+	}
+
+	// 3. Verify orphan deletion: 'beta' and 'gamma' postings for doc 1 are gone.
+	for _, term := range []string{"beta", "gamma"} {
+		info, ok, _ := p.GetTermInfo(ctx, term)
+		if !ok {
+			continue // term entirely gone — fine
+		}
+		var hits int
+		_ = p.IteratePostings(ctx, info.ID, func(e PostingEntry) bool {
+			if e.DocID == 1 {
+				hits++
+			}
+			return true
+		})
+		if hits != 0 {
+			t.Errorf("orphan posting for %q: doc 1 should not appear anymore, found %d", term, hits)
+		}
+	}
+
+	// 4. Sanity: new terms 'alpha' (kept) and 'delta' (new) still have doc 1.
+	for _, term := range []string{"alpha", "delta"} {
+		info, ok, _ := p.GetTermInfo(ctx, term)
+		if !ok {
+			t.Errorf("term %q missing after reindex", term)
+			continue
+		}
+		var hits int
+		_ = p.IteratePostings(ctx, info.ID, func(e PostingEntry) bool {
+			if e.DocID == 1 {
+				hits++
+			}
+			return true
+		})
+		if hits != 1 {
+			t.Errorf("term %q: doc 1 should appear exactly once after reindex, got %d", term, hits)
+		}
+	}
+}
+
+// TestPebbleReindexDoesNotAffectOtherDocs — when doc 1 is re-indexed,
+// postings from doc 2 (which shared some terms) must be untouched.
+func TestPebbleReindexDoesNotAffectOtherDocs(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	if err := p.IndexDocument(ctx, 1, "", "alpha beta", trivialTokenize, 1); err != nil {
+		t.Fatalf("index 1: %v", err)
+	}
+	if err := p.IndexDocument(ctx, 2, "", "alpha gamma", trivialTokenize, 1); err != nil {
+		t.Fatalf("index 2: %v", err)
+	}
+	// Re-index doc 1 to drop 'beta'.
+	if err := p.IndexDocument(ctx, 1, "", "alpha", trivialTokenize, 1); err != nil {
+		t.Fatalf("reindex 1: %v", err)
+	}
+	// 'gamma' should still have doc 2 — untouched by the doc-1 reindex.
+	gammaInfo, _, _ := p.GetTermInfo(ctx, "gamma")
+	var gammaCount int
+	_ = p.IteratePostings(ctx, gammaInfo.ID, func(e PostingEntry) bool {
+		if e.DocID == 2 {
+			gammaCount++
+		}
+		return true
+	})
+	if gammaCount != 1 {
+		t.Errorf("doc 2's posting under 'gamma' should survive doc-1 reindex, got %d", gammaCount)
+	}
+}
