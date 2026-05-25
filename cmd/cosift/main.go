@@ -927,6 +927,14 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 95.")
 	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE. Iter 98.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
+	// Iter 305: expose the iter-241/246/250/257 quality + scope flags on the CLI.
+	k := fs.Int("k", 0, "number of sources fed to synth (1-20, server default if 0)")
+	expand := fs.String("expand", "", "retrieval expansion: hyde | paraphrase (empty = no expansion)")
+	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth")
+	since := fs.String("since", "", "ISO date — only sources published on or after")
+	until := fs.String("until", "", "ISO date — only sources published on or before")
+	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
+	excludeDomains := fs.String("exclude-domains", "", "CSV denylist of source domains")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -936,11 +944,35 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	if *stream && *jsonOut {
 		return errors.New("-stream and -json are mutually exclusive (stream is event-by-event, json is the final blob)")
 	}
+	if *k < 0 || *k > 20 {
+		return errors.New("k must be in [1, 20] or 0 to use server default")
+	}
 
 	v := url.Values{}
 	v.Set("q", q)
 	if *strategy != "" {
 		v.Set("strategy", *strategy)
+	}
+	if *k > 0 {
+		v.Set("k", strconv.Itoa(*k))
+	}
+	if *expand != "" {
+		v.Set("expand", *expand)
+	}
+	if *rerank {
+		v.Set("rerank", "true")
+	}
+	if *since != "" {
+		v.Set("since", *since)
+	}
+	if *until != "" {
+		v.Set("until", *until)
+	}
+	if *includeDomains != "" {
+		v.Set("include_domains", *includeDomains)
+	}
+	if *excludeDomains != "" {
+		v.Set("exclude_domains", *excludeDomains)
 	}
 	if *stream {
 		v.Set("stream", "true")
