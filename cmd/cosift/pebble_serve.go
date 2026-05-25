@@ -970,14 +970,28 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		pooled = append(pooled, v)
 	}
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
-	if len(pooled) > k {
-		pooled = pooled[:k]
+	// Iter 250: same rerank wiring as /search and /answer — pool widens to
+	// rerankCandK before materialization, rerank reorders the pool, truncate
+	// to k after rerank so citation numbers track the final order.
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	keepCap := k
+	if wantRerank {
+		keepCap = s.rerankCandK
+		if keepCap < k {
+			keepCap = k
+		}
+	}
+	if len(pooled) > keepCap {
+		pooled = pooled[:keepCap]
 	}
 
-	// Materialize sources + prompt
-	sources := make([]answerSource, 0, len(pooled))
-	var promptSources strings.Builder
-	idx := 0
+	// Materialize candidates; defer sources + prompt build until after rerank.
+	type cand struct {
+		src        answerSource
+		excerpt    string
+		rerankText string
+	}
+	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
 		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 		if derr != nil || doc == nil {
@@ -986,7 +1000,6 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		if !filt.allow(doc.URL, doc.PublishedAt) {
 			continue
 		}
-		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -996,8 +1009,42 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			src.Text = doc.Text
 		}
-		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
+		c := cand{src: src, excerpt: excerpt}
+		if wantRerank {
+			c.rerankText = doc.Title + "\n" + doc.Text
+		}
+		cands = append(cands, c)
+	}
+	if wantRerank && len(cands) > 1 {
+		rc := make([]rerank.Candidate, len(cands))
+		for i := range cands {
+			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
+		}
+		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+			reordered := make([]cand, 0, len(cands))
+			seen := make(map[int]bool, len(cands))
+			for _, id := range order {
+				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(cands) && !seen[n] {
+					reordered = append(reordered, cands[n])
+					seen[n] = true
+				}
+			}
+			for i, c := range cands {
+				if !seen[i] {
+					reordered = append(reordered, c)
+				}
+			}
+			cands = reordered
+		}
+	}
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	sources := make([]answerSource, 0, len(cands))
+	var promptSources strings.Builder
+	for i, c := range cands {
+		sources = append(sources, c.src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
@@ -1083,13 +1130,27 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		pooled = append(pooled, v)
 	}
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
-	if len(pooled) > k {
-		pooled = pooled[:k]
+	// Iter 250: same rerank wiring as /research sync. Pool widens to
+	// rerankCandK, rerank reorders, then truncate to k before SSE 'sources'
+	// fires so the client sees the final rank-ordered list.
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	keepCap := k
+	if wantRerank {
+		keepCap = s.rerankCandK
+		if keepCap < k {
+			keepCap = k
+		}
+	}
+	if len(pooled) > keepCap {
+		pooled = pooled[:keepCap]
 	}
 
-	sources := make([]answerSource, 0, len(pooled))
-	var promptSources strings.Builder
-	idx := 0
+	type cand struct {
+		src        answerSource
+		excerpt    string
+		rerankText string
+	}
+	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
 		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 		if derr != nil || doc == nil {
@@ -1098,7 +1159,6 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		if !filt.allow(doc.URL, doc.PublishedAt) {
 			continue
 		}
-		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -1108,8 +1168,42 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		if includeText {
 			src.Text = doc.Text
 		}
-		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
+		c := cand{src: src, excerpt: excerpt}
+		if wantRerank {
+			c.rerankText = doc.Title + "\n" + doc.Text
+		}
+		cands = append(cands, c)
+	}
+	if wantRerank && len(cands) > 1 {
+		rc := make([]rerank.Candidate, len(cands))
+		for i := range cands {
+			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
+		}
+		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+			reordered := make([]cand, 0, len(cands))
+			seen := make(map[int]bool, len(cands))
+			for _, id := range order {
+				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(cands) && !seen[n] {
+					reordered = append(reordered, cands[n])
+					seen[n] = true
+				}
+			}
+			for i, c := range cands {
+				if !seen[i] {
+					reordered = append(reordered, c)
+				}
+			}
+			cands = reordered
+		}
+	}
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	sources := make([]answerSource, 0, len(cands))
+	var promptSources strings.Builder
+	for i, c := range cands {
+		sources = append(sources, c.src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
 	sse(map[string]any{"type": "sources", "sources": sources})
 	if len(sources) == 0 {
