@@ -961,8 +961,20 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		topN = len(scored)
 	}
 	if topN == 0 {
+		// Iter 322: previously referenced `decoded` (only in scope in the
+		// url-mode branch) — broken since iter 298's text-mode addition.
+		// Use srcURL when present, else echo the bare text/title as the
+		// source identifier so the empty response still tells the caller
+		// what was searched.
+		emptyQuery := srcURL
+		if emptyQuery == "" {
+			emptyQuery = srcTitle
+			if emptyQuery == "" {
+				emptyQuery = srcText
+			}
+		}
 		writeJSON(w, http.StatusOK, searchResponse{
-			Query: decoded, Retriever: "bm25-mlt",
+			Query: emptyQuery, Retriever: "bm25-mlt",
 			Hits: []searchHit{}, Took: time.Since(start).String(),
 		})
 		return
