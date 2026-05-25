@@ -720,6 +720,28 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 // expansions and operators don't have to learn two prompt shapes.
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
+// expandQuery returns q + " " + a HyDE-generated passage when a chat client is
+// configured. On any error (no chat client, chat call fails, empty passage),
+// returns q unchanged so callers can compose safely without explicit guards.
+// Iter 257.
+func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
+	if s.chat == nil {
+		return q
+	}
+	passage, err := s.chat.Chat(ctx, []embed.ChatMsg{
+		{Role: "system", Content: hydeSystemPrompt},
+		{Role: "user", Content: q},
+	})
+	if err != nil {
+		return q
+	}
+	passage = strings.TrimSpace(passage)
+	if passage == "" {
+		return q
+	}
+	return q + " " + passage
+}
+
 type answerSource struct {
 	URL         string     `json:"url"`
 	Title       string     `json:"title"`
@@ -1055,8 +1077,13 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if perSub > 40 {
 		perSub = 40
 	}
+	wantExpand := r.URL.Query().Get("expand") == "true"
 	for _, sq := range subs {
-		hits, err := s.idx.Search(r.Context(), sq, perSub)
+		effective := sq
+		if wantExpand {
+			effective = s.expandQuery(r.Context(), sq)
+		}
+		hits, err := s.idx.Search(r.Context(), effective, perSub)
 		if err != nil {
 			continue // one sub-query failure shouldn't fail the whole research
 		}
@@ -1215,8 +1242,13 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if perSub > 40 {
 		perSub = 40
 	}
+	wantExpand := r.URL.Query().Get("expand") == "true"
 	for _, sq := range subs {
-		hits, err := s.idx.Search(r.Context(), sq, perSub)
+		effective := sq
+		if wantExpand {
+			effective = s.expandQuery(r.Context(), sq)
+		}
+		hits, err := s.idx.Search(r.Context(), effective, perSub)
 		if err != nil {
 			continue
 		}
