@@ -1011,6 +1011,55 @@ func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, erro
 	return s, nil
 }
 
+// CountQueuedPerHost returns a host → queued-URL-count map for the given
+// hosts. Iter 211 — Pebble parity for iter-195 SQLite primitive. Used by
+// crawler.enqueueLinks to enforce the per-host enqueue cap; one
+// prefix-count per host against the 'f'+'q' secondary index.
+//
+// Hosts with zero queued URLs simply don't appear in the result map.
+func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (map[string]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(hosts))
+	for _, host := range hosts {
+		if host == "" {
+			continue
+		}
+		// Prefix bound: 'f' + 'q' + host + 0x00 .. 'f' + 'q' + host + 0x01
+		lo := make([]byte, 2+len(host)+1)
+		lo[0] = famFrontier
+		lo[1] = 'q'
+		copy(lo[2:], host)
+		lo[2+len(host)] = 0x00
+		hi := append([]byte{}, lo...)
+		hi[2+len(host)] = 0x01
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		if err != nil {
+			return nil, err
+		}
+		var n int
+		for valid := it.First(); valid; valid = it.Next() {
+			n++
+		}
+		it.Close()
+		if n > 0 {
+			out[host] = n
+		}
+	}
+	return out, nil
+}
+
+// RecrawlURL transitions an existing URL back to queued status, regardless
+// of its current state (done / error / even queued). Used by admin
+// /recrawl + cosift crawl -refresh. Iter 211 — Pebble parity for the
+// SQLite Store's same-named method.
+//
+// Returns ErrNotFound if the URL was never enqueued.
+func (p *PebbleStore) RecrawlURL(ctx context.Context, url string) error {
+	return p.transitionFrontier(ctx, url, FrontierStatusQueued, "")
+}
+
 // RecoverInFlight moves all in_flight rows back to queued. Called at
 // crawler startup to recover work that was claimed but not completed
 // before a previous crash.

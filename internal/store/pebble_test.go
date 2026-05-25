@@ -583,3 +583,81 @@ func TestPebbleFrontierHostFair(t *testing.T) {
 		t.Errorf("4th claim should be hostA; got %q (url=%s)", h, it.URL)
 	}
 }
+
+// TestPebbleCountQueuedPerHost — iter 211. Queue URLs across distinct hosts,
+// query per-host counts. Hosts with no queued URLs are absent from the map.
+func TestPebbleCountQueuedPerHost(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	for _, u := range []string{
+		"https://a.example.com/1",
+		"https://a.example.com/2",
+		"https://a.example.com/3",
+		"https://b.example.com/x",
+		"https://c.example.com/y",
+	} {
+		if err := p.PushFrontier(ctx, u, 0, 0); err != nil {
+			t.Fatalf("push %s: %v", u, err)
+		}
+	}
+	got, err := p.CountQueuedPerHost(ctx, []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com"})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got["a.example.com"] != 3 {
+		t.Errorf("a.example.com: want 3, got %d", got["a.example.com"])
+	}
+	if got["b.example.com"] != 1 {
+		t.Errorf("b.example.com: want 1, got %d", got["b.example.com"])
+	}
+	if got["c.example.com"] != 1 {
+		t.Errorf("c.example.com: want 1, got %d", got["c.example.com"])
+	}
+	if _, present := got["d.example.com"]; present {
+		t.Errorf("d.example.com had no URLs queued; should be absent from result map")
+	}
+
+	// After claiming one, the count drops by one (queued → in_flight).
+	if _, _, err := p.ClaimFrontier(ctx); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	got, _ = p.CountQueuedPerHost(ctx, []string{"a.example.com", "b.example.com", "c.example.com"})
+	totalAfter := got["a.example.com"] + got["b.example.com"] + got["c.example.com"]
+	if totalAfter != 4 {
+		t.Errorf("post-claim total queued: want 4 (5 - 1 claimed), got %d", totalAfter)
+	}
+}
+
+// TestPebbleRecrawlURL — done URL transitions back to queued; non-existent
+// URL returns ErrNotFound.
+func TestPebbleRecrawlURL(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+
+	// Push + claim + complete a URL.
+	if err := p.PushFrontier(ctx, "https://x/done", 0, 0); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	it, _, _ := p.ClaimFrontier(ctx)
+	if err := p.CompleteFrontier(ctx, it.URL); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	stats, _ := p.GetFrontierStats(ctx)
+	if stats.Done != 1 {
+		t.Fatalf("setup: want done=1, got %d", stats.Done)
+	}
+
+	// Recrawl flips it back to queued.
+	if err := p.RecrawlURL(ctx, "https://x/done"); err != nil {
+		t.Fatalf("recrawl: %v", err)
+	}
+	stats, _ = p.GetFrontierStats(ctx)
+	if stats.Queued != 1 || stats.Done != 0 {
+		t.Errorf("post-recrawl: want queued=1 done=0, got queued=%d done=%d", stats.Queued, stats.Done)
+	}
+
+	// Non-existent URL returns ErrNotFound.
+	if err := p.RecrawlURL(ctx, "https://nonexistent/"); err != ErrNotFound {
+		t.Errorf("missing URL: want ErrNotFound, got %v", err)
+	}
+}
