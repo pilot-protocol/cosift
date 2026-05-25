@@ -5581,7 +5581,15 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 	// Rate is averaged since the dumper's first poll, not instantaneous.
 	if *target > 0 && d.IndexedDocs > 0 {
 		pct := float64(d.IndexedDocs) / float64(*target) * 100
-		fmt.Printf("  target:     %d / %d (%.1f%%)\n", d.IndexedDocs, *target, pct)
+		// Iter 303: cap pct display at 100% and append a 'reached' marker when
+		// the crawl has met or exceeded the goal — operators watching a long
+		// crawl see the win line instead of '237.4%' growing confusingly.
+		switch {
+		case d.IndexedDocs >= *target:
+			fmt.Printf("  target:     %d / %d (100.0%%, reached)\n", d.IndexedDocs, *target)
+		default:
+			fmt.Printf("  target:     %d / %d (%.1f%%)\n", d.IndexedDocs, *target, pct)
+		}
 		gained := d.IndexedDocs - d.IndexedDocsAtStart
 		elapsed := d.WrittenAt.Sub(d.StartedAt)
 		if gained > 0 && elapsed > time.Second && d.IndexedDocs < *target {
