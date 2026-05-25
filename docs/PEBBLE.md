@@ -79,6 +79,8 @@ COSIFT_PEBBLE_CACHE_MB=128     # default; lower for tight VMs
 COSIFT_PEBBLE_MEMTABLE_MB=32   # default; per-memtable budget
 COSIFT_PEBBLE_MEMTABLES=2      # default; max in-memory tables
 COSIFT_PEBBLE_SYNC=false       # opt-in: skip fsync per commit (iter 219)
+COSIFT_BM25_K1=1.2             # BM25 term-frequency saturation (iter 279)
+COSIFT_BM25_B=0.75             # BM25 length normalization (iter 279)
 ```
 
 `COSIFT_PEBBLE_SYNC=false` is the single biggest crawler-throughput win on commodity disks. Tradeoff: WAL writes survive process crash but not VM crash. Crawler resumes cleanly from frontier on next start, so the loss window is bounded.
@@ -230,4 +232,5 @@ iter 275 — pebble-serve /research uses retrieveWithExpansion per sub-query (?e
 iter 276 — pebble-serve bounded paraphrase cache + hit/miss counters on /metrics
 iter 277 — pebble-serve `POST /search` (JSON body re-encoded as URL.Values, hands off to GET handler)
 iter 278 — pebble-serve POST coverage for /find_similar, /answer, /research (same pattern)
+iter 279 — PebbleBM25 per-instance k1/b + COSIFT_BM25_K1 / COSIFT_BM25_B env overrides
 ```

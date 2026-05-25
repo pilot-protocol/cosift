@@ -59,6 +59,22 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	defer ps.Close()
 
 	idx := index.NewPebbleBM25(ps)
+	// Iter 279: COSIFT_BM25_K1 / COSIFT_BM25_B override the BM25 scoring
+	// parameters per instance. Operators tuning for a specific corpus
+	// (long-form vs short-form, narrow vocabulary, etc.) can flip these
+	// without code changes. Invalid values silently keep the defaults.
+	if v := os.Getenv("COSIFT_BM25_K1"); v != "" {
+		if k1, err := strconv.ParseFloat(v, 64); err == nil && k1 > 0 {
+			idx.WithBM25Params(k1, 0)
+			log.Printf("pebble-serve: BM25 k1 override = %.2f", k1)
+		}
+	}
+	if v := os.Getenv("COSIFT_BM25_B"); v != "" {
+		if b, err := strconv.ParseFloat(v, 64); err == nil && b > 0 {
+			idx.WithBM25Params(0, b)
+			log.Printf("pebble-serve: BM25 b override = %.2f", b)
+		}
+	}
 	srv := &pebbleHTTP{
 		store:     ps,
 		idx:       idx,

@@ -22,13 +22,32 @@ import (
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.
 type PebbleBM25 struct {
 	store *store.PebbleStore
+	// Iter 279: per-instance BM25 parameters. Default to the package
+	// constants (K1=1.2, B=0.75); operators tuning for a specific corpus
+	// can override via WithBM25Params(). Length normalization (B) is the
+	// knob most likely to want tuning — long-doc corpora often prefer
+	// B≈0.5; short-doc corpora often prefer B=1.0.
+	k1 float64
+	b  float64
 }
 
 // NewPebbleBM25 returns a search-only handle over the given PebbleStore.
 // Indexing happens via store.PebbleStore.IndexDocument (caller passes
 // Tokenize + TitleBoost from this package).
 func NewPebbleBM25(s *store.PebbleStore) *PebbleBM25 {
-	return &PebbleBM25{store: s}
+	return &PebbleBM25{store: s, k1: K1, b: B}
+}
+
+// WithBM25Params overrides the default k1 / b for this instance. Values ≤0
+// are ignored (keep the package-constant default for that knob). Chainable.
+func (b *PebbleBM25) WithBM25Params(k1, blen float64) *PebbleBM25 {
+	if k1 > 0 {
+		b.k1 = k1
+	}
+	if blen > 0 {
+		b.b = blen
+	}
+	return b
 }
 
 // IndexDocument is a convenience wrapper that calls PebbleStore.IndexDocument
@@ -82,8 +101,8 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 				docLen = 1
 			}
 			tfF := float64(p.TF)
-			lenNorm := 1.0 - B + B*(float64(docLen)/avgDocLen)
-			score := idf * ((tfF * (K1 + 1.0)) / (tfF + K1*lenNorm))
+			lenNorm := 1.0 - b.b + b.b*(float64(docLen)/avgDocLen)
+			score := idf * ((tfF * (b.k1 + 1.0)) / (tfF + b.k1*lenNorm))
 			scores[p.DocID] += score
 			return true
 		})
