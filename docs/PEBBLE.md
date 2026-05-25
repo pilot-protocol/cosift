@@ -302,4 +302,5 @@ iter 340 — sync research/answer CLI renderers + markdown renderer also use the
 iter 341 — pebble-serve answerSource emits `id` (1-based citation N) so the CLI fallback is now defense-in-depth
 iter 342 — TestPebbleServeEndToEnd asserts /find_similar text mode + /verify (closes the iter-322 regression class)
 iter 343 — TestPebbleServeEndToEnd also asserts POST /search + /metrics shape (regression coverage)
+iter 344 — TestPebbleServeEndToEnd asserts warnings array emits on `?sort=newest` (covers iter-292/310 machinery)
 ```
