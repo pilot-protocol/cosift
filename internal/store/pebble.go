@@ -53,6 +53,8 @@ const (
 	famTerm    byte = 't' // 't' + term-string → (termID, doc_freq) packed
 	famPosting byte = 'p' // 'p' + termID + docID → tf (varint)
 	famDocLen  byte = 'l' // 'l' + docID → doc_len (varint)
+	famVector  byte = 'v' // 'v' + 0x01 + uint64-be(nodeID) → hnsw node blob
+	//                       'v' + 0x00 + "meta"           → hnsw graph meta
 )
 
 // OpenPebble opens (or creates) a Pebble store at path. On open it
@@ -281,6 +283,89 @@ func docLenKey(docID int64) []byte {
 	k[0] = famDocLen
 	binary.BigEndian.PutUint64(k[1:], uint64(docID))
 	return k
+}
+
+// Two sub-prefixes under the 'v' family: 0x00 for meta, 0x01 for nodes.
+// Sorting on Pebble's byte ordering puts meta before nodes, so a startup
+// iterator can read meta first and use it to size the node slice.
+func vectorMetaKey() []byte { return []byte{famVector, 0x00, 'm', 'e', 't', 'a'} }
+
+func vectorNodeKey(nodeID uint64) []byte {
+	k := make([]byte, 1+1+8)
+	k[0] = famVector
+	k[1] = 0x01
+	binary.BigEndian.PutUint64(k[2:], nodeID)
+	return k
+}
+
+// PutVectorMeta / GetVectorMeta — opaque blob holder under the 'v' family
+// for index-level metadata (entry point, max level, dim, node count). Format
+// is owned by the index package; store stays format-agnostic.
+func (p *PebbleStore) PutVectorMeta(ctx context.Context, blob []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.db.Set(vectorMetaKey(), blob, pebble.Sync)
+}
+
+func (p *PebbleStore) GetVectorMeta(ctx context.Context) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	val, closer, err := p.db.Get(vectorMetaKey())
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer closer.Close()
+	out := make([]byte, len(val))
+	copy(out, val)
+	return out, true, nil
+}
+
+// PutVectorNode writes one HNSW-node blob under its ID. Caller-owned format.
+func (p *PebbleStore) PutVectorNode(ctx context.Context, nodeID uint64, blob []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.db.Set(vectorNodeKey(nodeID), blob, pebble.Sync)
+}
+
+// IterateVectorNodes scans every persisted HNSW node in ascending ID order,
+// invoking fn(nodeID, blob) for each. Returning false from fn stops the scan.
+func (p *PebbleStore) IterateVectorNodes(ctx context.Context, fn func(nodeID uint64, blob []byte) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo := []byte{famVector, 0x01}
+	hi := []byte{famVector, 0x02}
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := it.Key()
+		if len(key) != 10 {
+			continue
+		}
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return err
+		}
+		blob := make([]byte, len(val))
+		copy(blob, val)
+		id := binary.BigEndian.Uint64(key[2:])
+		if !fn(id, blob) {
+			return nil
+		}
+	}
+	return nil
 }
 
 // TermInfo bundles per-term metadata: stable integer ID and document

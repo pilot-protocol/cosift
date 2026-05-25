@@ -1,0 +1,200 @@
+package index
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"path/filepath"
+	"sort"
+	"testing"
+
+	"github.com/calinteodor/cosift/internal/store"
+)
+
+// TestHNSWPersistRoundTrip — build, persist, load into a fresh HNSW,
+// verify Search returns the same top-k hits as the original. Locks in
+// the iter-203 binary format contract.
+func TestHNSWPersistRoundTrip(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const (
+		n   = 500
+		dim = 32
+	)
+	original := NewHNSW(dim)
+	original.rng = rand.New(rand.NewSource(13))
+	rng := rand.New(rand.NewSource(7))
+
+	for i := 0; i < n; i++ {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = float32(rng.NormFloat64())
+		}
+		original.AddPassage(fmt.Sprintf("https://x/%d", i), fmt.Sprintf("doc %d", i), i*100, 50, v)
+	}
+
+	// Capture top-k hits from the original on a fixed set of queries.
+	queries := make([][]float32, 10)
+	for i := range queries {
+		q := make([]float32, dim)
+		for j := range q {
+			q[j] = float32(rng.NormFloat64())
+		}
+		queries[i] = q
+	}
+	originalHits := make([][]string, len(queries))
+	for i, q := range queries {
+		hits := original.Search(ctx, q, 10)
+		urls := make([]string, len(hits))
+		for j, h := range hits {
+			urls[j] = h.URL
+		}
+		originalHits[i] = urls
+	}
+
+	// Persist + reload.
+	if err := original.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !ok {
+		t.Fatal("loaded ok=false; expected persisted index")
+	}
+	if loaded.Len() != n {
+		t.Errorf("loaded.Len(): want %d, got %d", n, loaded.Len())
+	}
+	if loaded.maxLevel != original.maxLevel {
+		t.Errorf("maxLevel mismatch: want %d, got %d", original.maxLevel, loaded.maxLevel)
+	}
+	if loaded.entryPoint != original.entryPoint {
+		t.Errorf("entryPoint mismatch: want %d, got %d", original.entryPoint, loaded.entryPoint)
+	}
+
+	// Re-run the same queries through the loaded index. With deterministic
+	// graph + identical vectors, top-k order must match exactly — no
+	// approximate-recall slack here.
+	for i, q := range queries {
+		hits := loaded.Search(ctx, q, 10)
+		urls := make([]string, len(hits))
+		for j, h := range hits {
+			urls[j] = h.URL
+		}
+		if !sameURLOrder(urls, originalHits[i]) {
+			t.Errorf("query %d: loaded hits don't match original\n  original: %v\n  loaded:   %v", i, originalHits[i], urls)
+		}
+	}
+}
+
+// TestLoadHNSWAbsent — fresh Pebble store: LoadHNSW returns (nil, false, nil).
+func TestLoadHNSWAbsent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	h, ok, err := LoadHNSW(context.Background(), ps)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if ok {
+		t.Errorf("expected ok=false on empty store")
+	}
+	if h != nil {
+		t.Errorf("expected nil HNSW")
+	}
+}
+
+// TestHNSWNodeEncodingExact — a single-node round-trip with controlled
+// values asserts every field survives encode→decode bit-for-bit.
+func TestHNSWNodeEncodingExact(t *testing.T) {
+	n := &hnswNode{
+		vecDoc: vecDoc{
+			url:    "https://example.com/path/to/doc",
+			title:  "A Title With Spaces",
+			offset: 12345,
+			length: 6789,
+			vec:    []float32{0.1, -0.5, 3.14, 42.0, 0.0, 1.0},
+		},
+		level: 2,
+		neighbors: [][]int{
+			{1, 2, 3, 4, 5},   // layer 0
+			{1, 3, 5},          // layer 1
+			{2, 4},             // layer 2
+		},
+	}
+	blob := encodeHNSWNode(n)
+	decoded, err := decodeHNSWNode(blob, 6)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.url != n.url || decoded.title != n.title {
+		t.Errorf("url/title mismatch: %+v", decoded.vecDoc)
+	}
+	if decoded.offset != n.offset || decoded.length != n.length || decoded.level != n.level {
+		t.Errorf("scalar mismatch: %+v", decoded)
+	}
+	if len(decoded.vec) != len(n.vec) {
+		t.Fatalf("vec len: got %d, want %d", len(decoded.vec), len(n.vec))
+	}
+	for i := range n.vec {
+		if decoded.vec[i] != n.vec[i] {
+			t.Errorf("vec[%d]: got %f, want %f", i, decoded.vec[i], n.vec[i])
+		}
+	}
+	if len(decoded.neighbors) != len(n.neighbors) {
+		t.Fatalf("neighbor layers: got %d, want %d", len(decoded.neighbors), len(n.neighbors))
+	}
+	for l := range n.neighbors {
+		if !sameIntSlice(decoded.neighbors[l], n.neighbors[l]) {
+			t.Errorf("layer %d: got %v, want %v", l, decoded.neighbors[l], n.neighbors[l])
+		}
+	}
+}
+
+// TestDecodeHNSWMetaMagicMismatch — load against a corrupt blob fails cleanly.
+func TestDecodeHNSWMetaMagicMismatch(t *testing.T) {
+	buf := []byte("NOPE\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	if _, err := decodeHNSWMeta(buf); err == nil {
+		t.Errorf("expected magic-mismatch error")
+	}
+}
+
+func sameURLOrder(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameIntSlice(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]int, len(a))
+	bc := make([]int, len(b))
+	copy(ac, a)
+	copy(bc, b)
+	sort.Ints(ac)
+	sort.Ints(bc)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
+}
