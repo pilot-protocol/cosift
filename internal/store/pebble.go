@@ -44,9 +44,10 @@ import (
 // PebbleStore is a Pebble-backed implementation of the hot Store API surface.
 // Currently supports Document CRUD; postings + frontier come in follow-up iters.
 type PebbleStore struct {
-	db     *pebble.DB
-	nextID atomic.Int64
-	mu     sync.Mutex // serializes the rare URL→ID race during Upsert
+	db        *pebble.DB
+	nextID    atomic.Int64
+	mu        sync.Mutex            // serializes the rare URL→ID race during Upsert
+	writeOpts *pebble.WriteOptions  // iter 219: Sync (default) or NoSync (crawl-workload opt-in)
 }
 
 const (
@@ -103,7 +104,18 @@ func OpenPebble(path string) (*PebbleStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pebble.Open(%s): %w", path, err)
 	}
-	p := &PebbleStore{db: db}
+	// Iter 219: write-sync mode. Sync (default) fsyncs each commit — safe
+	// against VM crash but expensive under sustained write load (the iter-
+	// 218 OOM root cause: batches stacked faster than fsync could drain).
+	// NoSync skips the fsync; durability stays vs PROCESS crash (WAL is
+	// still written), drops vs OS crash (OS buffer cache could lose seconds
+	// of writes). Acceptable for crawl workloads since the frontier
+	// resumes cleanly on next start.
+	wopts := pebble.Sync
+	if os.Getenv("COSIFT_PEBBLE_SYNC") == "false" {
+		wopts = pebble.NoSync
+	}
+	p := &PebbleStore{db: db, writeOpts: wopts}
 	val, closer, err := db.Get(metaKey("next_doc_id"))
 	switch {
 	case errors.Is(err, pebble.ErrNotFound):
@@ -199,7 +211,7 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 	if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
 		return 0, err
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(p.writeOpts); err != nil {
 		return 0, fmt.Errorf("commit batch: %w", err)
 	}
 	return id, nil
@@ -595,7 +607,7 @@ func (p *PebbleStore) PutVectorMeta(ctx context.Context, blob []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return p.db.Set(vectorMetaKey(), blob, pebble.Sync)
+	return p.db.Set(vectorMetaKey(), blob, p.writeOpts)
 }
 
 func (p *PebbleStore) GetVectorMeta(ctx context.Context) ([]byte, bool, error) {
@@ -620,7 +632,7 @@ func (p *PebbleStore) PutVectorNode(ctx context.Context, nodeID uint64, blob []b
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return p.db.Set(vectorNodeKey(nodeID), blob, pebble.Sync)
+	return p.db.Set(vectorNodeKey(nodeID), blob, p.writeOpts)
 }
 
 // IterateVectorNodes scans every persisted HNSW node in ascending ID order,
@@ -798,7 +810,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err := batch.Set(docTermsKey(docID), packDocTerms(newIDs), nil); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(p.writeOpts)
 }
 
 // PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
@@ -832,7 +844,7 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 	if err := batch.Set(frontierStatusIndexKey('q', host, url), nil, nil); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(p.writeOpts)
 }
 
 // ClaimFrontier picks one queued URL, atomically marks it in_flight, and
@@ -940,7 +952,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
 		return FrontierItem{}, false, err
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(p.writeOpts); err != nil {
 		return FrontierItem{}, false, err
 	}
 	return FrontierItem{URL: pickedURL, Depth: int(entry.Depth), Priority: entry.Priority}, true, nil
@@ -1015,7 +1027,7 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(p.writeOpts)
 }
 
 // GetFrontierStats walks the frontier and tallies by status. O(N); iter
@@ -1153,7 +1165,7 @@ func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(p.writeOpts)
 }
 
 // readDocTermsLocked reads the 'g' family entry for docID under p.mu.
