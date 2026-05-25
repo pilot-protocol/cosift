@@ -175,10 +175,12 @@ The same override map applies to `crawler.max_depth`, `crawler.max_body_bytes`, 
 ```text
 cosift init [-site URL] [-force]              write a default cosift.json
 cosift serve                                  run the HTTP API
-cosift crawl <urls...> [-backend sqlite|pebble]
+cosift crawl <urls...> [-backend sqlite|pebble] [-duration 30m]
                                               seed the persistent frontier and crawl. -backend
                                               selects storage: sqlite (default) or pebble (LSM-tree;
-                                              scales past SQLite's million-row ceiling)
+                                              scales past SQLite's million-row ceiling). -duration
+                                              (iter 223) caps wall time for bounded runs; default 0
+                                              runs until frontier empty or SIGTERM
 cosift crawl -sitemap https://x/sitemap.xml   seed from a sitemap (urlset or index)
 cosift crawl -refresh <urls...>               force re-crawl of URLs already in the frontier
 cosift check-robots [-user-agent UA] <urls>   report robots.txt allow/deny for each URL

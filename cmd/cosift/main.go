@@ -280,12 +280,23 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	refresh := fs.Bool("refresh", false, "force re-crawl of URLs already in the frontier")
 	sitemap := fs.String("sitemap", "", "URL of a sitemap.xml (or sitemap index) to seed from")
 	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
+	duration := fs.Duration("duration", 0, "iter 223: stop the crawl cleanly after this much time (0 = run until frontier empty or SIGTERM)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	urls := fs.Args()
 	if len(urls) == 0 && *sitemap == "" {
 		return errors.New("crawl: at least one URL or -sitemap is required")
+	}
+
+	// Iter 223: bounded crawl via -duration. Wraps the caller's ctx with a
+	// timeout; workers see ctx.Err() != nil and exit cleanly. Pebble flushes
+	// on Close (via the deferred ps.Close() below) so durability is preserved.
+	if *duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *duration)
+		defer cancel()
+		log.Printf("crawler: bounded run, will stop after %s", *duration)
 	}
 
 	var c *crawler.Crawler
