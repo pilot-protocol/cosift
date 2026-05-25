@@ -32,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,11 +73,33 @@ const (
 	//                       (host-fair claim) land in iter 210.
 )
 
-// OpenPebble opens (or creates) a Pebble store at path. On open it
-// reconciles the persistent next_doc_id counter so concurrent Upserts pick
-// up unique IDs from the right baseline.
+// OpenPebble opens (or creates) a Pebble store at path with memory-bounded
+// defaults. Iter 218 — caps the block cache + memtables so cosift fits on
+// commodity VMs (16 GB RAM was OOM-killed under sustained crawl load
+// because Pebble's defaults are sized for CockroachDB-style servers).
+//
+// Tunable via env vars:
+//   COSIFT_PEBBLE_CACHE_MB     — block cache size in MB (default 128)
+//   COSIFT_PEBBLE_MEMTABLE_MB  — single memtable size in MB (default 32)
+//   COSIFT_PEBBLE_MEMTABLES    — max memtables in memory (default 2)
+//
+// Total Pebble memory ceiling ≈ cache + memtables × memtable_size, so the
+// defaults pin Pebble at roughly 128 + 2×32 = 192 MB. Real working set
+// climbs higher (compaction, write batches, block readers) but the
+// OOM-prone block cache growth is bounded.
 func OpenPebble(path string) (*PebbleStore, error) {
-	db, err := pebble.Open(path, &pebble.Options{})
+	cacheMB := envInt("COSIFT_PEBBLE_CACHE_MB", 128)
+	memtableMB := envInt("COSIFT_PEBBLE_MEMTABLE_MB", 32)
+	memtables := envInt("COSIFT_PEBBLE_MEMTABLES", 2)
+
+	cache := pebble.NewCache(int64(cacheMB) << 20)
+	defer cache.Unref()
+	opts := &pebble.Options{
+		Cache:                       cache,
+		MemTableSize:                uint64(memtableMB) << 20,
+		MemTableStopWritesThreshold: memtables + 2,
+	}
+	db, err := pebble.Open(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("pebble.Open(%s): %w", path, err)
 	}
@@ -98,6 +122,19 @@ func OpenPebble(path string) (*PebbleStore, error) {
 
 // Close flushes and closes the underlying Pebble DB.
 func (p *PebbleStore) Close() error { return p.db.Close() }
+
+// envInt reads an env var as int with a default. Empty / malformed → default.
+func envInt(name string, defaultV int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return defaultV
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return defaultV
+	}
+	return n
+}
 
 // Metrics returns Pebble's built-in metrics — LSM-level breakdown,
 // on-disk size, WAL state, compaction stats. Iter 217 — surfaced via
