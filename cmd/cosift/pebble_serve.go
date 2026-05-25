@@ -524,7 +524,9 @@ func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 // alternative for callers whose payloads don't fit cleanly into a query string.
 
 type findSimilarRequest struct {
-	URL            string `json:"url"`
+	URL            string `json:"url,omitempty"`
+	Text           string `json:"text,omitempty"`  // iter 298: content-based MLT, no source URL needed
+	Title          string `json:"title,omitempty"` // iter 298: optional title-boost when using text mode
 	K              int    `json:"k,omitempty"`
 	Q              string `json:"q,omitempty"`
 	IncludeDomains string `json:"include_domains,omitempty"`
@@ -544,6 +546,12 @@ func (s *pebbleHTTP) handleFindSimilarPOST(w http.ResponseWriter, r *http.Reques
 	v := url.Values{}
 	if req.URL != "" {
 		v.Set("url", req.URL)
+	}
+	if req.Text != "" {
+		v.Set("text", req.Text)
+	}
+	if req.Title != "" {
+		v.Set("title", req.Title)
 	}
 	if req.K > 0 {
 		v.Set("k", strconv.Itoa(req.K))
@@ -870,24 +878,35 @@ func sortHitsByDate(hits []searchHit, asc bool) {
 // follow-up), this is the cheapest credible /find_similar we can ship.
 func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Iter 298: accept either ?url= (existing behavior) or ?text= (content-
+	// based similarity for unindexed drafts). text path skips the source-URL
+	// exclusion since there's no source URL to exclude.
 	rawURL := r.URL.Query().Get("url")
-	if rawURL == "" {
-		writeProblem(w, http.StatusBadRequest, "missing url parameter")
+	rawText := r.URL.Query().Get("text")
+	if rawURL == "" && rawText == "" {
+		writeProblem(w, http.StatusBadRequest, "missing url or text parameter")
 		return
 	}
-	decoded, err := url.QueryUnescape(rawURL)
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "url parameter is not URL-encoded")
-		return
-	}
-	src, err := s.store.GetDocByURL(r.Context(), decoded)
-	if errors.Is(err, store.ErrNotFound) {
-		writeProblem(w, http.StatusNotFound, "url not in index")
-		return
-	}
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, err.Error())
-		return
+	var srcTitle, srcText, srcURL string
+	if rawURL != "" {
+		decoded, err := url.QueryUnescape(rawURL)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "url parameter is not URL-encoded")
+			return
+		}
+		src, err := s.store.GetDocByURL(r.Context(), decoded)
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, http.StatusNotFound, "url not in index")
+			return
+		}
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		srcTitle, srcText, srcURL = src.Title, src.Text, src.URL
+	} else {
+		srcText = rawText
+		srcTitle = r.URL.Query().Get("title") // optional title boost when text mode
 	}
 	k := 10
 	if v := r.URL.Query().Get("k"); v != "" {
@@ -899,10 +918,10 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	// Tokenize title (×3) and body; mirror IndexDocument's title boost so
 	// title terms dominate the similarity query.
 	tf := make(map[string]int, 256)
-	for _, t := range index.Tokenize(src.Title) {
+	for _, t := range index.Tokenize(srcTitle) {
 		tf[t] += 3
 	}
-	for _, t := range index.Tokenize(src.Text) {
+	for _, t := range index.Tokenize(srcText) {
 		tf[t]++
 	}
 
@@ -1009,7 +1028,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	cands := make([]fsCand, 0, keepCap)
 	for _, h := range hits {
-		if h.URL == src.URL {
+		if srcURL != "" && h.URL == srcURL {
 			continue
 		}
 		if len(include) > 0 || len(exclude) > 0 {

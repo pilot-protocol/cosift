@@ -254,4 +254,5 @@ iter 294 — `cosift_warnings_emitted_total` on /metrics (alert on rate of misco
 iter 295 — docs/EXAMPLES.md: ready-to-paste curl recipes for search/answer/research/ops
 iter 296 — `cosift doctor` reports active COSIFT_* env vars so operators see overrides in one place
 iter 297 — PEBBLE.md known-limitations table updated to reflect post-iter-292 state
+iter 298 — `/find_similar` accepts `text` (+ optional `title`) for content-based MLT — no source URL required
 ```
