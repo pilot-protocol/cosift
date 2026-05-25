@@ -196,8 +196,10 @@ cosift migrate-to-pebble -output DIR [-progress 5s]
                                               Documents + postings (re-indexed via PebbleBM25 to
                                               preserve title boost). Refuses non-empty -output
 cosift pebble-serve -dir DIR [-addr HOST:PORT]
-                                              minimal HTTP server backed by PebbleStore + PebbleBM25.
-                                              Read-only: /healthz, /stats, /search, /contents.
+                                              HTTP server backed by PebbleStore + PebbleBM25. Endpoints:
+                                              /healthz /stats /metrics /verify /contents
+                                              /search /find_similar (BM25 + optional rerank + HyDE expand)
+                                              /answer /research (sync + SSE; opt-in via cfg.Chat.Model)
                                               Companion to cosift serve (SQLite-backed) — pick whichever
                                               storage backend fits the deployment scale
 cosift reembed [-drop-old] [-progress 5s]     re-embed every doc with the configured model
@@ -348,7 +350,11 @@ cosift stats --backend=pebble
 # Migrate an existing SQLite store to Pebble
 cosift migrate-to-pebble -output /var/lib/cosift/data/pebble
 
-# Serve search HTTP against a Pebble store (read-only minimal API)
+# Serve HTTP against a Pebble store.
+# Endpoints: /healthz /stats /metrics /verify /contents /search /find_similar,
+# plus /answer + /research (sync or SSE) when cfg.Chat.Model is set.
+# All retrieval endpoints support include_domains / exclude_domains / since /
+# until / rerank; /search additionally supports sort + HyDE expand.
 cosift pebble-serve -dir /var/lib/cosift/data/pebble
 ```
 

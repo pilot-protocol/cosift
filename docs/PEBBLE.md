@@ -204,4 +204,5 @@ iter 249 — pebble-serve `/answer?rerank=true` (rerank pool feeds synth; citati
 iter 250 — pebble-serve `/research?rerank=true` (sync + SSE; SSE 'sources' fires after rerank)
 iter 251 — pebble-serve `/find_similar?rerank=true` (full rerank coverage across retrieval endpoints)
 iter 252 — pebble-serve `/search?expand=true` (HyDE-style query expansion; reranker still scores against original q)
+iter 253 — README updated to reflect full pebble-serve endpoint set + capabilities
 ```
