@@ -272,6 +272,10 @@ func main() {
 		if err := runPebbleInfo(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("pebble-info: %v", err)
 		}
+	case "verify":
+		if err := runVerifyPebble(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("verify: %v", err)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		flag.Usage()

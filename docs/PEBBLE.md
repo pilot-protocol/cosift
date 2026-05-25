@@ -144,7 +144,6 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /contents) | Server unification deferred — synthesis endpoints (`/answer`, `/research`, `/find_similar`) on Pebble require porting ~1000 LOC of internal/server |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
-| No `cosift verify --backend=pebble` for counter-drift detection | Manual: open store, compare iter-207 counters to `SumDocLengths()` scan |
 
 ## Iter map (path-2 rework)
 
@@ -177,4 +176,5 @@ iter 223 — `cosift crawl -duration` for bounded runs
 iter 224 — status.json crawler dump
 iter 225 — `cosift status-file` reader
 iter 226 — status.json carries indexed_docs + avg_doc_len
+iter 228 — `cosift verify` (counter-drift detection)
 ```

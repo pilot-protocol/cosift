@@ -216,6 +216,51 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	return nil
 }
 
+// Iter 228: verify the iter-207 running counters ('m'+indexed_docs,
+// 'm'+sum_doc_len) against an authoritative scan of the 'l' family.
+// Drift would mean a crash or bug left the counter inconsistent —
+// flagged here so it can be re-derived from the scan.
+func runVerifyPebble(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	d := *dir
+	if d == "" {
+		d = filepath.Join(cfg.DataDir, "pebble")
+	}
+	ps, err := store.OpenPebble(d)
+	if err != nil {
+		return fmt.Errorf("open pebble at %s: %w", d, err)
+	}
+	defer ps.Close()
+
+	counterSum, counterCount, err := ps.CorpusStats(ctx)
+	if err != nil {
+		return fmt.Errorf("read counters: %w", err)
+	}
+	scanSum, scanCount, err := ps.SumDocLengths(ctx)
+	if err != nil {
+		return fmt.Errorf("scan 'l' family: %w", err)
+	}
+
+	fmt.Printf("PebbleStore: %s\n\n", d)
+	fmt.Printf("  indexed_docs (counter): %d\n", counterCount)
+	fmt.Printf("  indexed_docs (scan):    %d\n", scanCount)
+	fmt.Printf("  sum_doc_len  (counter): %d\n", counterSum)
+	fmt.Printf("  sum_doc_len  (scan):    %d\n", scanSum)
+
+	driftCount := counterCount - scanCount
+	driftSum := counterSum - scanSum
+	if driftCount == 0 && driftSum == 0 {
+		fmt.Println("\nOK: counters match the 'l' family scan.")
+		return nil
+	}
+	fmt.Printf("\nDRIFT: indexed_docs Δ=%+d, sum_doc_len Δ=%+d\n", driftCount, driftSum)
+	return fmt.Errorf("counter drift detected")
+}
+
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
