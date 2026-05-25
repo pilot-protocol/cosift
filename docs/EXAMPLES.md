@@ -68,6 +68,18 @@ curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fra
 curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&exclude_domains=docs.example.com'
 ```
 
+### Content-based: feed arbitrary text, find similar indexed docs
+
+```bash
+curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_similar \
+  -d '{
+    "text": "Raft is a consensus protocol that elects a leader to manage a replicated log...",
+    "title": "draft notes",
+    "k": 5,
+    "rerank": true
+  }'
+```
+
 ## Answer
 
 ### Default sync

@@ -255,4 +255,5 @@ iter 295 — docs/EXAMPLES.md: ready-to-paste curl recipes for search/answer/res
 iter 296 — `cosift doctor` reports active COSIFT_* env vars so operators see overrides in one place
 iter 297 — PEBBLE.md known-limitations table updated to reflect post-iter-292 state
 iter 298 — `/find_similar` accepts `text` (+ optional `title`) for content-based MLT — no source URL required
+iter 299 — docs/API.md + docs/EXAMPLES.md cover the iter-298 content-based MLT flow
 ```

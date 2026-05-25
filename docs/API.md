@@ -9,7 +9,8 @@ These compose across `/search`, `/find_similar`, `/answer`, `/research`:
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `q` | string | — | required for /search /answer /research |
-| `url` | string | — | required for /find_similar (URL-encoded) |
+| `url` | string | — | /find_similar: indexed source URL (URL-encoded). Either `url` or `text` required |
+| `text` | string | — | /find_similar: arbitrary text for content-based MLT (no source URL needed); optional `title` for ×3 boost |
 | `k` | int | 10 (5 for /answer, 8 for /research) | top-k results / sources |
 | `include_domains` | CSV | — | dot-boundary suffix match: `example.com` matches `blog.example.com`, not `evilexample.com` |
 | `exclude_domains` | CSV | — | same matcher; applied after include |
@@ -114,10 +115,15 @@ curl 'http://127.0.0.1:7777/search?q=raft&rerank=true&expand=true'
 
 ## `GET /find_similar` / `POST /find_similar`
 
-"More like this URL" via BM25 MLT (top-tf·idf terms from the source doc → BM25 → exclude source). Same common params as `/search`. Add `?q=...` to constrain neighbors with extra terms.
+"More like this" via BM25 MLT (top-tf·idf terms → BM25). Either `url` (use an indexed doc as the source, neighbors exclude it) or `text` (arbitrary content, no source to exclude). Same common params as `/search`. Add `?q=...` to constrain neighbors with extra terms.
 
 ```bash
+# Source is an indexed URL — find what's similar
 curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&k=5'
+
+# Source is arbitrary text (an unindexed draft, a snippet) — find similar indexed docs
+curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_similar \
+  -d '{"text": "Raft is a consensus protocol that elects a leader...", "title": "draft on raft", "k": 5}'
 ```
 
 ```json
