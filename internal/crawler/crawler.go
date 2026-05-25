@@ -8,12 +8,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -169,8 +171,64 @@ func (c *Crawler) Run(ctx context.Context) error {
 	}
 	go c.terminator(runCtx, cancel)
 
+	// Iter 224: periodic status dump. Pebble's single-writer lock blocks
+	// `cosift stats -backend=pebble` from any sidecar process during a live
+	// crawl. The crawler — which holds the lock — periodically writes a
+	// small status.json file alongside the data dir so operators can
+	// `cat status.json` (or jq it, watch -n it) without contending.
+	if c.cfg.StatusFile != "" {
+		go c.statusDumper(runCtx, c.cfg.StatusFile)
+	}
+
 	wg.Wait()
 	return nil
+}
+
+// statusDumper writes a JSON snapshot of crawl progress every 10s to path.
+// Cheap: just reads the iter-194/207 running counters from the store.
+// Stops when ctx is cancelled.
+func (c *Crawler) statusDumper(ctx context.Context, path string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("statusDumper panicked, recovering: %v", r)
+		}
+	}()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fStats, err := c.store.GetFrontierStats(ctx)
+			if err != nil {
+				continue
+			}
+			doc := struct {
+				Queued    int64     `json:"frontier_queued"`
+				InFlight  int64     `json:"frontier_in_flight"`
+				Done      int64     `json:"frontier_done"`
+				Errored   int64     `json:"frontier_errored"`
+				WrittenAt time.Time `json:"written_at"`
+			}{
+				Queued:    fStats.Queued,
+				InFlight:  fStats.InFlight,
+				Done:      fStats.Done,
+				Errored:   fStats.Errored,
+				WrittenAt: time.Now(),
+			}
+			buf, err := json.Marshal(doc)
+			if err != nil {
+				continue
+			}
+			// Write+rename for atomic publish — readers never see a partial file.
+			tmp := path + ".tmp"
+			if err := os.WriteFile(tmp, buf, 0o644); err != nil {
+				continue
+			}
+			_ = os.Rename(tmp, path)
+		}
+	}
 }
 
 func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate) {

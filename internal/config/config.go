@@ -105,6 +105,13 @@ type Crawler struct {
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
+	// StatusFile (iter 224) — when non-empty, the crawler writes a JSON
+	// snapshot of frontier counts to this path every 10s. Operators reading
+	// the file (cat / watch / jq) don't contend with the Pebble single-
+	// writer lock that blocks `cosift stats -backend=pebble` mid-crawl.
+	// Empty string disables; recommended value: <data_dir>/crawl-status.json
+	StatusFile string `json:"status_file,omitempty"`
+
 	// MaxURLsPerHost (iter 195) caps how many URLs from any single host can be
 	// queued in the frontier at once. New outbound-link enqueues for a host
 	// already at the cap are silently skipped; the cap is checked against
