@@ -105,7 +105,7 @@ curl 'http://127.0.0.1:7777/search?q=raft&rerank=true&expand=true'
 
 `retriever` becomes `bm25+hyde+rerank:<reranker name>`. `effective_query` appears when HyDE actually contributed terms.
 
-## `GET /find_similar`
+## `GET /find_similar` / `POST /find_similar`
 
 "More like this URL" via BM25 MLT (top-tf·idf terms from the source doc → BM25 → exclude source). Same common params as `/search`. Add `?q=...` to constrain neighbors with extra terms.
 
@@ -138,7 +138,7 @@ curl -X POST -H 'Content-Type: application/json' \
 
 Batch response: `{"results":[{url, found, title, text, lang, cached, fetched_at, error?}, ...], "took": "..."}` — URLs not in the index get `found:false` in place.
 
-## `GET /answer`
+## `GET /answer` / `POST /answer`
 
 Single-question grounded answer with cited sources. Requires `cfg.Chat.Model` set; returns 501 otherwise.
 
@@ -168,7 +168,7 @@ curl -N -H 'Accept: text/event-stream' \
 
 Event sequence: `sources` (once, after retrieval) → `chunk` (per delta) → `done`. Falls back to sync when the chat client doesn't implement streaming.
 
-## `GET /research`
+## `GET /research` / `POST /research`
 
 Multi-step research: LLM plans 2-3 sub-queries → BM25 each → dedupe by URL keeping best score → optional rerank → cited synth. Requires `cfg.Chat.Model`.
 

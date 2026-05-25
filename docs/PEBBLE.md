@@ -229,4 +229,5 @@ iter 274 — pebble-serve extract `retrieveWithExpansion` helper (DRY across /se
 iter 275 — pebble-serve /research uses retrieveWithExpansion per sub-query (?expand=paraphrase now applies)
 iter 276 — pebble-serve bounded paraphrase cache + hit/miss counters on /metrics
 iter 277 — pebble-serve `POST /search` (JSON body re-encoded as URL.Values, hands off to GET handler)
+iter 278 — pebble-serve POST coverage for /find_similar, /answer, /research (same pattern)
 ```

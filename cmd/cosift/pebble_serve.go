@@ -110,8 +110,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /verify", srv.count(srv.handleVerify))
 	mux.HandleFunc("GET /metrics", srv.count(srv.handleMetrics))
 	mux.HandleFunc("GET /find_similar", srv.count(srv.handleFindSimilar))
+	mux.HandleFunc("POST /find_similar", srv.count(srv.handleFindSimilarPOST))
 	mux.HandleFunc("GET /answer", srv.count(srv.handleAnswer))
+	mux.HandleFunc("POST /answer", srv.count(srv.handleAnswerPOST))
 	mux.HandleFunc("GET /research", srv.count(srv.handleResearch))
+	mux.HandleFunc("POST /research", srv.count(srv.handleResearchPOST))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -448,6 +451,129 @@ func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	r.URL.RawQuery = v.Encode()
 	s.handleSearch(w, r)
+}
+
+// Iter 278: POST variants of /find_similar, /answer, /research. Same pattern
+// as POST /search — re-encode JSON body as URL.Values, hand off to the GET
+// handler. The GET handlers own the param semantics; POST is a wire-level
+// alternative for callers whose payloads don't fit cleanly into a query string.
+
+type findSimilarRequest struct {
+	URL            string `json:"url"`
+	K              int    `json:"k,omitempty"`
+	Q              string `json:"q,omitempty"`
+	IncludeDomains string `json:"include_domains,omitempty"`
+	ExcludeDomains string `json:"exclude_domains,omitempty"`
+	Since          string `json:"since,omitempty"`
+	Until          string `json:"until,omitempty"`
+	IncludeText    bool   `json:"include_text,omitempty"`
+	Rerank         bool   `json:"rerank,omitempty"`
+}
+
+func (s *pebbleHTTP) handleFindSimilarPOST(w http.ResponseWriter, r *http.Request) {
+	var req findSimilarRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	v := url.Values{}
+	if req.URL != "" {
+		v.Set("url", req.URL)
+	}
+	if req.K > 0 {
+		v.Set("k", strconv.Itoa(req.K))
+	}
+	if req.Q != "" {
+		v.Set("q", req.Q)
+	}
+	if req.IncludeDomains != "" {
+		v.Set("include_domains", req.IncludeDomains)
+	}
+	if req.ExcludeDomains != "" {
+		v.Set("exclude_domains", req.ExcludeDomains)
+	}
+	if req.Since != "" {
+		v.Set("since", req.Since)
+	}
+	if req.Until != "" {
+		v.Set("until", req.Until)
+	}
+	if req.IncludeText {
+		v.Set("include_text", "true")
+	}
+	if req.Rerank {
+		v.Set("rerank", "true")
+	}
+	r.URL.RawQuery = v.Encode()
+	s.handleFindSimilar(w, r)
+}
+
+type synthRequest struct {
+	Q              string `json:"q"`
+	K              int    `json:"k,omitempty"`
+	IncludeDomains string `json:"include_domains,omitempty"`
+	ExcludeDomains string `json:"exclude_domains,omitempty"`
+	Since          string `json:"since,omitempty"`
+	Until          string `json:"until,omitempty"`
+	IncludeText    bool   `json:"include_text,omitempty"`
+	Rerank         bool   `json:"rerank,omitempty"`
+	Expand         string `json:"expand,omitempty"`
+	Stream         bool   `json:"stream,omitempty"`
+}
+
+func (req synthRequest) toValues() url.Values {
+	v := url.Values{}
+	if req.Q != "" {
+		v.Set("q", req.Q)
+	}
+	if req.K > 0 {
+		v.Set("k", strconv.Itoa(req.K))
+	}
+	if req.IncludeDomains != "" {
+		v.Set("include_domains", req.IncludeDomains)
+	}
+	if req.ExcludeDomains != "" {
+		v.Set("exclude_domains", req.ExcludeDomains)
+	}
+	if req.Since != "" {
+		v.Set("since", req.Since)
+	}
+	if req.Until != "" {
+		v.Set("until", req.Until)
+	}
+	if req.IncludeText {
+		v.Set("include_text", "true")
+	}
+	if req.Rerank {
+		v.Set("rerank", "true")
+	}
+	if req.Expand != "" {
+		v.Set("expand", req.Expand)
+	}
+	if req.Stream {
+		v.Set("stream", "true")
+	}
+	return v
+}
+
+func (s *pebbleHTTP) handleAnswerPOST(w http.ResponseWriter, r *http.Request) {
+	var req synthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	r.URL.RawQuery = req.toValues().Encode()
+	s.handleAnswer(w, r)
+}
+
+func (s *pebbleHTTP) handleResearchPOST(w http.ResponseWriter, r *http.Request) {
+	var req synthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	r.URL.RawQuery = req.toValues().Encode()
+	s.handleResearch(w, r)
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
