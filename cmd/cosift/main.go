@@ -144,13 +144,16 @@ func main() {
 			log.Fatalf("research: %v", err)
 		}
 	case "find-similar":
-		// Iter 92: HTTP-via-server find-similar. Completes the CLI matrix
-		// (query / search / research / find-similar). URL is the positional
-		// arg — finds documents semantically close to it via dense retrieval.
-		if flag.NArg() < 2 {
-			log.Fatal("find-similar: url required (usage: cosift find-similar <url> [-server URL] [-k N] [-json])")
+		// Iter 92: HTTP-via-server find-similar. URL was positional-required.
+		// Iter 300: relax to accept either positional URL OR -text/-text-file
+		// (iter 298 content-based MLT). Treat first non-flag arg as URL.
+		fsArgs := flag.Args()[1:]
+		var sourceURL string
+		if len(fsArgs) > 0 && !strings.HasPrefix(fsArgs[0], "-") {
+			sourceURL = fsArgs[0]
+			fsArgs = fsArgs[1:]
 		}
-		if err := runFindSimilarCLI(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
+		if err := runFindSimilarCLI(ctx, cfg, sourceURL, fsArgs); err != nil {
 			log.Fatalf("find-similar: %v", err)
 		}
 	case "contents":
@@ -1027,6 +1030,11 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	k := fs.Int("k", 10, "max results")
 	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 97.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable list")
+	// Iter 300: alternative inputs — feed arbitrary text (or a file of text)
+	// instead of an indexed source URL. Mirrors iter-298 /find_similar text mode.
+	textInput := fs.String("text", "", "arbitrary text for content-based MLT (no positional URL needed)")
+	textFile := fs.String("text-file", "", "read MLT source text from FILE")
+	textTitle := fs.String("text-title", "", "optional title (×3 boost) when using -text or -text-file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1037,14 +1045,56 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		return err
 	}
 
+	if *textFile != "" {
+		buf, err := os.ReadFile(*textFile)
+		if err != nil {
+			return fmt.Errorf("read -text-file %s: %w", *textFile, err)
+		}
+		*textInput = string(buf)
+	}
+	if sourceURL == "" && *textInput == "" {
+		return errors.New("find-similar: positional URL or -text/-text-file required")
+	}
+
 	v := url.Values{}
-	v.Set("url", sourceURL)
+	if sourceURL != "" {
+		v.Set("url", sourceURL)
+	}
+	if *textInput != "" {
+		v.Set("text", *textInput)
+	}
+	if *textTitle != "" {
+		v.Set("title", *textTitle)
+	}
 	v.Set("k", strconv.Itoa(*k))
 
+	// Iter 300: switch GET → POST when -text is large (URL params have practical
+	// limits ~8 KB). The POST endpoint accepts the same flag set as a JSON body.
+	useMethod := http.MethodGet
 	endpoint := strings.TrimRight(*serverURL, "/") + "/find_similar?" + v.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	var bodyBuf io.Reader
+	if len(*textInput) > 4096 {
+		useMethod = http.MethodPost
+		body := map[string]any{"k": *k}
+		if sourceURL != "" {
+			body["url"] = sourceURL
+		}
+		if *textInput != "" {
+			body["text"] = *textInput
+		}
+		if *textTitle != "" {
+			body["title"] = *textTitle
+		}
+		jb, _ := json.Marshal(body)
+		bodyBuf = bytes.NewReader(jb)
+		endpoint = strings.TrimRight(*serverURL, "/") + "/find_similar"
+	}
+	req, err := http.NewRequestWithContext(ctx, useMethod, endpoint, bodyBuf)
 	if err != nil {
 		return err
+	}
+	if useMethod == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	// /find_similar embeds the source doc (one embedder call) and does a vector
 	// search — 30s mirrors search's timeout.
