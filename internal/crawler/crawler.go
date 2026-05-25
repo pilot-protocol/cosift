@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +175,16 @@ func (c *Crawler) Run(ctx context.Context) error {
 
 func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate) {
 	defer wg.Done()
+	// Iter 220: per-worker panic recovery. A single un-recovered panic in
+	// any worker (network library, parser corner case, Pebble write under
+	// load) would silently exit the entire crawl process without a stack
+	// trace, leaving no signal in crawl.log for diagnosis. Recover at the
+	// worker boundary, log the stack, and let sibling workers continue.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("crawler worker panicked, recovering: %v\n%s", r, debug.Stack())
+		}
+	}()
 	for {
 		if ctx.Err() != nil {
 			return
