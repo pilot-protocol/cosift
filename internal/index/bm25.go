@@ -23,6 +23,16 @@ import (
 const (
 	K1 = 1.2
 	B  = 0.75
+
+	// TitleBoost is the per-occurrence multiplier applied to title tokens at
+	// index time. Iter 197: title text is far more informative per token than
+	// body text — modern search systems weight it 2-5x. We boost TF (not
+	// doc_len), so docs with title-matching terms get a higher score without
+	// changing length normalization. 3.0 is the value most IR literature
+	// converges on; lower values undershoot, higher values over-promote
+	// short pages with keyword-stuffed titles. Tunable per build; not a
+	// per-corpus runtime knob yet (would need a re-index pass to take effect).
+	TitleBoost = 3
 )
 
 // BM25 is the indexer + searcher.
@@ -44,15 +54,23 @@ func NewBM25(s *store.Store) *BM25 {
 
 // IndexDocument tokenizes and writes postings for the given doc.
 // Replaces any existing postings for the doc.
+//
+// Iter 197: title tokens get TitleBoost-weighted TF. doc_len keeps the raw
+// token count, so length normalization remains correct. Net effect: docs
+// with the query term in their title rank above body-only matches.
 func (b *BM25) IndexDocument(ctx context.Context, docID int64, title, text string) error {
-	tokens := Tokenize(title + " " + text)
-	if len(tokens) == 0 {
+	titleTokens := Tokenize(title)
+	bodyTokens := Tokenize(text)
+	if len(titleTokens)+len(bodyTokens) == 0 {
 		return nil
 	}
 
-	// term -> tf in this doc
-	tf := make(map[string]int, len(tokens))
-	for _, t := range tokens {
+	// term -> tf in this doc. Title tokens contribute TitleBoost each.
+	tf := make(map[string]int, len(titleTokens)+len(bodyTokens))
+	for _, t := range titleTokens {
+		tf[t] += TitleBoost
+	}
+	for _, t := range bodyTokens {
 		tf[t]++
 	}
 
