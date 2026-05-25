@@ -462,7 +462,36 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		queryStr = queryStr + " " + extra
 	}
 
-	hits, err := s.idx.Search(r.Context(), queryStr, k+1)
+	// Iter 245: scope MLT with the same retrieval filters /search and /answer
+	// accept. 'find pages similar to X but only on docs.example.com' is the
+	// archetype EXA findSimilar shape. Over-fetch enough that the source
+	// exclusion + filter still fills k.
+	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
+	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
+	since, sinceErr := parseDateBound(r.URL.Query().Get("since"))
+	if sinceErr != nil {
+		writeProblem(w, http.StatusBadRequest, "since: "+sinceErr.Error())
+		return
+	}
+	until, untilErr := parseDateBound(r.URL.Query().Get("until"))
+	if untilErr != nil {
+		writeProblem(w, http.StatusBadRequest, "until: "+untilErr.Error())
+		return
+	}
+	dateFilter := !since.IsZero() || !until.IsZero()
+	fetchK := k + 1
+	if len(include) > 0 || len(exclude) > 0 || dateFilter {
+		mult := 5
+		if dateFilter {
+			mult = 10
+		}
+		fetchK = k * mult
+		if fetchK > 500 {
+			fetchK = 500
+		}
+	}
+
+	hits, err := s.idx.Search(r.Context(), queryStr, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -472,15 +501,37 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		if h.URL == src.URL {
 			continue
 		}
-		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
-		if doc, derr := s.store.GetDocByURL(r.Context(), h.URL); derr == nil && doc != nil {
-			hit.Excerpt = textExcerpt(doc.Text, 320)
-			if !doc.PublishedAt.IsZero() {
-				t := doc.PublishedAt
-				hit.PublishedAt = &t
+		if len(include) > 0 || len(exclude) > 0 {
+			host := hostOf(h.URL)
+			if len(include) > 0 && !matchesAnyDomain(host, include) {
+				continue
 			}
-			hit.Author = doc.Author
+			if len(exclude) > 0 && matchesAnyDomain(host, exclude) {
+				continue
+			}
 		}
+		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
+		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
+		if derr != nil || doc == nil {
+			continue
+		}
+		if dateFilter {
+			if doc.PublishedAt.IsZero() {
+				continue
+			}
+			if !since.IsZero() && doc.PublishedAt.Before(since) {
+				continue
+			}
+			if !until.IsZero() && doc.PublishedAt.After(until) {
+				continue
+			}
+		}
+		hit.Excerpt = textExcerpt(doc.Text, 320)
+		if !doc.PublishedAt.IsZero() {
+			t := doc.PublishedAt
+			hit.PublishedAt = &t
+		}
+		hit.Author = doc.Author
 		out = append(out, hit)
 		if len(out) >= k {
 			break
