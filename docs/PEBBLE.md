@@ -243,4 +243,5 @@ iter 284 — /research SSE plan event includes `expand` field (so UI knows strat
 iter 285 — `cosift pebble-info` surfaces indexed_docs / sum_doc_len / avg_doc_len
 iter 286 — pebble-serve startup logs indexed_docs + cache-size overrides when set
 iter 287 — `cosift doctor` adds a 'pebble store' check (PASS/SKIP/FAIL on open + counters)
+iter 288 — /research sync response carries `expand` (parity with iter-284 SSE plan event)
 ```

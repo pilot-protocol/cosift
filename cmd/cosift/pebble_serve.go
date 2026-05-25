@@ -1575,6 +1575,7 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 type researchResponse struct {
 	Query   string         `json:"query"`
 	Plan    []string       `json:"plan"`
+	Expand  string         `json:"expand,omitempty"`
 	Answer  string         `json:"answer"`
 	Sources []answerSource `json:"sources"`
 	Model   string         `json:"model"`
@@ -1744,7 +1745,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
-			Query: q, Plan: subs, Answer: "No matching sources for any sub-query.",
+			Query: q, Plan: subs, Expand: expandMode, Answer: "No matching sources for any sub-query.",
 			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
 		})
 		return
@@ -1759,7 +1760,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
-		Query: q, Plan: subs, Answer: answer, Sources: sources,
+		Query: q, Plan: subs, Expand: expandMode, Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
 	})
 }
