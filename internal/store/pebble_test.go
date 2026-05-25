@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -532,5 +533,53 @@ func TestPebbleFrontierFailTruncatesLongErrors(t *testing.T) {
 	}
 	if len(entry.LastError) > 500 {
 		t.Errorf("LastError should be ≤ 500 chars, got %d", len(entry.LastError))
+	}
+}
+
+// TestPebbleFrontierHostFair — iter 210. The same contract as
+// TestClaimFrontierHostFairness on the SQLite side: when many URLs are
+// queued from hostA and only one each from B and C, the first three claims
+// (without intervening Completes) must each pick a distinct host. The 4th
+// claim falls through to hostA since B and C have no queued URLs left.
+func TestPebbleFrontierHostFair(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		if err := p.PushFrontier(ctx, fmt.Sprintf("https://a.example.com/%d", i), 0, 0); err != nil {
+			t.Fatalf("push hostA %d: %v", i, err)
+		}
+	}
+	if err := p.PushFrontier(ctx, "https://b.example.com/x", 0, 0); err != nil {
+		t.Fatalf("push hostB: %v", err)
+	}
+	if err := p.PushFrontier(ctx, "https://c.example.com/y", 0, 0); err != nil {
+		t.Fatalf("push hostC: %v", err)
+	}
+
+	seen := map[string]int{}
+	for i := 0; i < 3; i++ {
+		it, ok, err := p.ClaimFrontier(ctx)
+		if err != nil || !ok {
+			t.Fatalf("claim %d: ok=%v err=%v", i, ok, err)
+		}
+		seen[extractHost(it.URL)]++
+	}
+	for host, n := range seen {
+		if n > 1 {
+			t.Errorf("host %q claimed %d times in first 3 claims; want ≤1 (host-fair)", host, n)
+		}
+	}
+	if len(seen) != 3 {
+		t.Errorf("expected 3 distinct hosts in first 3 claims; got %d: %v", len(seen), seen)
+	}
+
+	// Fourth claim must fall through to hostA (B and C have no queued URLs).
+	it, ok, err := p.ClaimFrontier(ctx)
+	if err != nil || !ok {
+		t.Fatalf("4th claim: ok=%v err=%v", ok, err)
+	}
+	if h := extractHost(it.URL); h != "a.example.com" {
+		t.Errorf("4th claim should be hostA; got %q (url=%s)", h, it.URL)
 	}
 }

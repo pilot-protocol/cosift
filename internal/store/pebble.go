@@ -192,14 +192,47 @@ func docTermsKey(docID int64) []byte {
 	return k
 }
 
-// frontierKey is 'f' + 'u' + url. 'u' subprefix reserves room for iter-210's
-// 'q' (queued) and 'i' (in-flight) secondary-index subprefixes.
+// frontierKey is 'f' + 'u' + url (primary, dedup-by-URL).
 func frontierKey(url string) []byte {
 	k := make([]byte, 2+len(url))
 	k[0] = famFrontier
 	k[1] = 'u'
 	copy(k[2:], url)
 	return k
+}
+
+// Iter 210: two secondary indexes keyed by host so ClaimFrontier can pick
+// host-fair without an O(N) scan over every queued URL.
+//
+//	'f' + 'q' + host + 0x00 + url → empty   (present iff status='queued')
+//	'f' + 'i' + host + 0x00 + url → empty   (present iff status='in_flight')
+//
+// The 0x00 separator keeps the host field prefix-disambiguated so a URL
+// can't slide into a different host's row even if it byte-prefixes a
+// host name.
+func frontierStatusIndexKey(sub byte, host, url string) []byte {
+	k := make([]byte, 2+len(host)+1+len(url))
+	k[0] = famFrontier
+	k[1] = sub
+	copy(k[2:], host)
+	k[2+len(host)] = 0x00
+	copy(k[2+len(host)+1:], url)
+	return k
+}
+
+// frontierStatusIndexHost extracts the host portion of a secondary-index
+// key. Returns "" if the key shape is wrong.
+func frontierStatusIndexHost(key []byte) string {
+	if len(key) < 3 || key[0] != famFrontier {
+		return ""
+	}
+	rest := key[2:]
+	for i, b := range rest {
+		if b == 0x00 {
+			return string(rest[:i])
+		}
+	}
+	return ""
 }
 
 // FrontierStatus is the lifecycle position of a frontier URL.
@@ -725,6 +758,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 
 // PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
 // if the URL already exists in any state, this is a no-op. Iter 209.
+// Iter 210: also writes the 'f'+'q' secondary index for host-fair claim.
 func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -737,19 +771,37 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 	} else if !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
+	host := extractHost(url)
 	entry := frontierEntry{
 		Status:     FrontierStatusQueued,
 		Depth:      int64(depth),
 		Priority:   priority,
 		EnqueuedAt: time.Now().Unix(),
-		Host:       extractHost(url),
+		Host:       host,
 	}
-	return p.db.Set(frontierKey(url), packFrontierEntry(entry), pebble.Sync)
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
+		return err
+	}
+	if err := batch.Set(frontierStatusIndexKey('q', host, url), nil, nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 // ClaimFrontier picks one queued URL, atomically marks it in_flight, and
-// returns the FrontierItem. ok=false when the queue is empty. Iter 209:
-// simple FIFO order by enqueued_at; host-fair ordering lands in iter 210.
+// returns the FrontierItem. ok=false when the queue is empty. Iter 210:
+// host-fair via two secondary-index scans — O(distinct in-flight hosts +
+// distinct queued URLs walked until a free host found). At a healthy
+// crawl where most hosts are NOT in-flight, this is effectively O(1).
+//
+// Tradeoff: priority ordering is no longer enforced across hosts. The
+// iter-209 implementation traversed every queued URL to honor strict
+// (priority DESC, enqueued ASC) order; iter 210 trades that for the
+// host-fair scheduling that the iter-190 SQLite-side Claim provides.
+// Within a host's queued URLs Pebble returns them in URL-byte order,
+// which approximates enqueue order for outbound-link discovery.
 func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return FrontierItem{}, false, err
@@ -757,53 +809,96 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	lo := []byte{famFrontier, 'u'}
-	hi := []byte{famFrontier, 'u' + 1}
-	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	// Step 1: build the set of hosts currently in-flight.
+	inflightHosts := make(map[string]struct{}, 32)
+	iIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'i'},
+		UpperBound: []byte{famFrontier, 'i' + 1},
+	})
 	if err != nil {
 		return FrontierItem{}, false, err
 	}
-
-	// Iter 209: O(N) scan to find the highest-priority queued entry.
-	// Iter 210 replaces with a secondary-index prefix scan over 'f' + 'q'.
-	var best frontierEntry
-	var bestURL string
-	bestFound := false
-	for valid := it.First(); valid; valid = it.Next() {
-		val, err := it.ValueAndErr()
-		if err != nil {
-			it.Close()
-			return FrontierItem{}, false, err
-		}
-		entry, err := unpackFrontierEntry(val)
-		if err != nil {
-			continue
-		}
-		if entry.Status != FrontierStatusQueued {
-			continue
-		}
-		urlBytes := it.Key()[2:]
-		urlStr := string(urlBytes)
-		// Higher priority wins; within equal priority, earlier enqueued wins.
-		if !bestFound ||
-			entry.Priority > best.Priority ||
-			(entry.Priority == best.Priority && entry.EnqueuedAt < best.EnqueuedAt) {
-			best = entry
-			bestURL = urlStr
-			bestFound = true
+	for valid := iIt.First(); valid; valid = iIt.Next() {
+		h := frontierStatusIndexHost(iIt.Key())
+		if h != "" {
+			inflightHosts[h] = struct{}{}
 		}
 	}
-	it.Close()
-	if !bestFound {
-		return FrontierItem{}, false, nil
-	}
+	iIt.Close()
 
-	// Atomically flip status to in_flight + persist.
-	best.Status = FrontierStatusInFlight
-	if err := p.db.Set(frontierKey(bestURL), packFrontierEntry(best), pebble.Sync); err != nil {
+	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
+	// whose host is NOT in inflightHosts. Fall back to first overall if all
+	// hosts are busy.
+	qIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'q'},
+		UpperBound: []byte{famFrontier, 'q' + 1},
+	})
+	if err != nil {
 		return FrontierItem{}, false, err
 	}
-	return FrontierItem{URL: bestURL, Depth: int(best.Depth), Priority: best.Priority}, true, nil
+	defer qIt.Close()
+
+	var pickedHost, pickedURL string
+	var fallbackHost, fallbackURL string
+	var fallbackFound bool
+	for valid := qIt.First(); valid; valid = qIt.Next() {
+		host := frontierStatusIndexHost(qIt.Key())
+		if host == "" {
+			continue
+		}
+		// The URL portion follows host + 0x00.
+		key := qIt.Key()
+		urlOffset := 2 + len(host) + 1
+		if urlOffset > len(key) {
+			continue
+		}
+		url := string(key[urlOffset:])
+		if !fallbackFound {
+			fallbackHost = host
+			fallbackURL = url
+			fallbackFound = true
+		}
+		if _, busy := inflightHosts[host]; !busy {
+			pickedHost = host
+			pickedURL = url
+			break
+		}
+	}
+	if pickedURL == "" {
+		if !fallbackFound {
+			return FrontierItem{}, false, nil
+		}
+		pickedHost = fallbackHost
+		pickedURL = fallbackURL
+	}
+
+	// Step 3: atomic transition. Read primary, flip status, swap indexes.
+	val, closer, err := p.db.Get(frontierKey(pickedURL))
+	if err != nil {
+		return FrontierItem{}, false, err
+	}
+	entry, err := unpackFrontierEntry(val)
+	_ = closer.Close()
+	if err != nil {
+		return FrontierItem{}, false, err
+	}
+	entry.Status = FrontierStatusInFlight
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(frontierKey(pickedURL), packFrontierEntry(entry), nil); err != nil {
+		return FrontierItem{}, false, err
+	}
+	if err := batch.Delete(frontierStatusIndexKey('q', pickedHost, pickedURL), nil); err != nil {
+		return FrontierItem{}, false, err
+	}
+	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
+		return FrontierItem{}, false, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return FrontierItem{}, false, err
+	}
+	return FrontierItem{URL: pickedURL, Depth: int(entry.Depth), Priority: entry.Priority}, true, nil
 }
 
 // CompleteFrontier marks a URL as successfully processed.
@@ -839,12 +934,43 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 	if err != nil {
 		return err
 	}
+	oldStatus := entry.Status
 	entry.Status = newStatus
 	if newStatus == FrontierStatusError {
 		entry.Attempts++
 		entry.LastError = errMsg
 	}
-	return p.db.Set(frontierKey(url), packFrontierEntry(entry), pebble.Sync)
+	// Iter 210: keep secondary indexes consistent with the primary status.
+	// Done/Error rows are not in any 'f'+q/'f'+i index — only queued and
+	// in_flight have a secondary entry. So a transition out of in_flight
+	// deletes 'f'+'i'; into in_flight adds 'f'+'i'; into queued (recovery)
+	// re-adds 'f'+'q'; out of queued deletes 'f'+'q'.
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
+		return err
+	}
+	switch oldStatus {
+	case FrontierStatusQueued:
+		if err := batch.Delete(frontierStatusIndexKey('q', entry.Host, url), nil); err != nil {
+			return err
+		}
+	case FrontierStatusInFlight:
+		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
+			return err
+		}
+	}
+	switch newStatus {
+	case FrontierStatusQueued:
+		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
+			return err
+		}
+	case FrontierStatusInFlight:
+		if err := batch.Set(frontierStatusIndexKey('i', entry.Host, url), nil, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 // GetFrontierStats walks the frontier and tallies by status. O(N); iter
@@ -915,9 +1041,21 @@ func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
 		if entry.Status != FrontierStatusInFlight {
 			continue
 		}
+		// Extract URL from primary key ('f' + 'u' + url) — defensive copy
+		// because Pebble reuses the iterator's underlying buffer.
+		urlBytes := append([]byte{}, it.Key()[2:]...)
+		url := string(urlBytes)
+
 		entry.Status = FrontierStatusQueued
 		key := append([]byte{}, it.Key()...)
 		if err := batch.Set(key, packFrontierEntry(entry), nil); err != nil {
+			return err
+		}
+		// Iter 210: rebuild secondary indexes for the transition.
+		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
+			return err
+		}
+		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	}
