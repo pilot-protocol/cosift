@@ -622,6 +622,24 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		{Role: "system", Content: answerSystemPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
 	}
+
+	// Iter 242: SSE streaming. Opt in via ?stream=true OR
+	// Accept: text/event-stream. Emits three event types:
+	//   sources — once, immediately after retrieval (so the client can render
+	//             links / citations while the LLM is still thinking)
+	//   chunk   — per chat delta; payload = {"delta": "..."}
+	//   done    — once, with the final {"took": "..."}
+	// Falls back to sync if the chat client doesn't implement StreamingChatClient.
+	wantStream := r.URL.Query().Get("stream") == "true" ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	if wantStream {
+		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
+			streamAnswer(w, r, sc, msgs, sources, q, start)
+			return
+		}
+		// Not a streaming client — degrade silently to sync rather than 501.
+	}
+
 	answer, err := s.chat.Chat(r.Context(), msgs)
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "chat: "+err.Error())
@@ -631,6 +649,34 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		Query: q, Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
 	})
+}
+
+func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, start time.Time) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	sse := func(payload any) {
+		buf, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "data: %s\n\n", buf)
+		flusher.Flush()
+	}
+	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model()})
+
+	_, err := sc.ChatStream(r.Context(), msgs, func(delta string) {
+		sse(map[string]any{"type": "chunk", "delta": delta})
+	})
+	if err != nil {
+		sse(map[string]any{"type": "error", "error": err.Error()})
+		return
+	}
+	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
 }
 
 func splitDomainsCSV(s string) []string {
