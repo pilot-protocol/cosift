@@ -241,11 +241,47 @@ var dropTags = map[string]bool{
 	"button":   true,
 }
 
-// boilerplateClass matches class/id substrings indicating non-content.
-var boilerplateClass = []string{
-	"nav", "menu", "sidebar", "footer", "header", "ad-", "ads",
-	"banner", "cookie", "promo", "comment", "share", "social",
-	"breadcrumb", "newsletter", "subscribe",
+// boilerplateClassTokens matches whole class/id tokens indicating non-content.
+//
+// Token-level match — NOT substring. Substring matching collided catastrophically
+// with modern feature-flag class names: e.g. Wikipedia's `<html>` element carries
+// a class like `vector-feature-main-menu-pinned-disabled` which contains "menu"
+// as a hyphen-bounded sub-word, but the element itself is the document root, not
+// a menu. Substring "menu" would drop the entire page tree.
+//
+// A class attribute is space-separated tokens; this set matches the whole token.
+// `<div class="nav">` matches "nav"; `<div class="navigation">` matches
+// "navigation"; `<div class="vector-feature-language-in-main-menu-disabled">`
+// matches NOTHING (the token is the full hyphenated string).
+var boilerplateClassTokens = map[string]bool{
+	"nav":            true,
+	"navbar":         true,
+	"navigation":     true,
+	"menu":           true,
+	"sidebar":        true,
+	"side-bar":       true,
+	"footer":         true,
+	"site-footer":    true,
+	"header":         true,
+	"site-header":    true,
+	"page-header":    true,
+	"banner":         true,
+	"cookie-banner":  true,
+	"cookie-notice":  true,
+	"ad":             true,
+	"ads":            true,
+	"advert":         true,
+	"advertisement":  true,
+	"promo":          true,
+	"comment":        true,
+	"comments":       true,
+	"share":          true,
+	"social":         true,
+	"social-share":   true,
+	"breadcrumb":     true,
+	"breadcrumbs":    true,
+	"newsletter":     true,
+	"subscribe":      true,
 }
 
 // Parse extracts main content from an HTML byte slice.
@@ -525,9 +561,14 @@ func hasBoilerplateAttr(n *html.Node) bool {
 		if k != "class" && k != "id" && k != "role" {
 			continue
 		}
-		v := strings.ToLower(a.Val)
-		for _, bp := range boilerplateClass {
-			if strings.Contains(v, bp) {
+		v := strings.ToLower(strings.TrimSpace(a.Val))
+		if v == "" {
+			continue
+		}
+		// class is space-separated tokens; id is a single token; role is a
+		// single token. Splitting on whitespace handles all three uniformly.
+		for _, tok := range strings.Fields(v) {
+			if boilerplateClassTokens[tok] {
 				return true
 			}
 		}
