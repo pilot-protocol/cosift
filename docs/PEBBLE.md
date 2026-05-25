@@ -2,6 +2,8 @@
 
 The Pebble (pure-Go LSM-tree) storage backend is cosift's path-to-scale beyond SQLite's effective million-row ceiling. It coexists with the SQLite store; both implement the same operator-visible API surface (`cosift crawl --backend=…`, `cosift stats --backend=…`, `cosift query --backend=…`). This document is a one-page reference for what's there and how to operate it.
 
+> **Status (as of iter 327):** `cosift pebble-serve` mirrors the full `cosift serve` API surface — `/search`, `/find_similar` (URL or arbitrary text), `/answer` and `/research` (sync + SSE), `/contents` (single + batch), plus `/healthz` / `/stats` / `/metrics` / `/verify`. All retrieval/synth endpoints compose `include_domains` / `exclude_domains` / `since` / `until` filters with optional `rerank=true` and `expand=hyde|paraphrase`. Observability covers per-endpoint count + duration, HyDE/paraphrase cache hits, rerank/chat attempts + failures + duration, and warnings emission. Cross-references: [API.md](API.md) for the HTTP surface, [TUNING.md](TUNING.md) for knob choices, [EXAMPLES.md](EXAMPLES.md) for curl + CLI recipes.
+
 ## When to pick Pebble vs SQLite
 
 | If your corpus is… | Use |
@@ -284,4 +286,5 @@ iter 324 — `cosift doctor` distinguishes Pebble writer-lock contention (INFO) 
 iter 325 — `cosift pebble-info` + `cosift verify` print a friendly hint on lock contention (point at HTTP endpoints)
 iter 326 — `cosift crawl --backend=pebble`, `cosift query`, `cosift stats`, `cosift migrate-to-pebble` use the iter-325 helper
 iter 327 — `make check` includes `cmd/cosift/...` tests (~24s; httptest-based, no live network)
+iter 328 — PEBBLE.md lead with a status paragraph + cross-doc links so first-time readers land oriented
 ```
