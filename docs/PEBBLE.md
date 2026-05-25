@@ -251,4 +251,5 @@ iter 292 — `warnings[]` field on /search /find_similar /answer /research respo
 iter 293 — `warnings` event on /answer + /research SSE paths (parity with sync responses)
 iter 294 — `cosift_warnings_emitted_total` on /metrics (alert on rate of misconfigured requests)
 iter 295 — docs/EXAMPLES.md: ready-to-paste curl recipes for search/answer/research/ops
+iter 296 — `cosift doctor` reports active COSIFT_* env vars so operators see overrides in one place
 ```

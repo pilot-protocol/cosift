@@ -4171,6 +4171,26 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		add("pebble store", "PASS", fmt.Sprintf("%d indexed docs", n))
 	}
 
+	// 2c. COSIFT_* env vars (iter 296). Lists which path-2 env overrides are
+	// set so operators can confirm 'is my override actually live'. Silent
+	// typos previously hid behind 'env unset → keep default' branches.
+	cosiftEnvs := []string{
+		"COSIFT_PEBBLE_CACHE_MB", "COSIFT_PEBBLE_MEMTABLE_MB", "COSIFT_PEBBLE_MEMTABLES", "COSIFT_PEBBLE_SYNC",
+		"COSIFT_BM25_K1", "COSIFT_BM25_B",
+		"COSIFT_HYDE_CACHE_SIZE", "COSIFT_PARA_CACHE_SIZE",
+	}
+	var setEnvs []string
+	for _, name := range cosiftEnvs {
+		if v := os.Getenv(name); v != "" {
+			setEnvs = append(setEnvs, name+"="+v)
+		}
+	}
+	if len(setEnvs) == 0 {
+		add("COSIFT_* env", "INFO", "no path-2 overrides set (using defaults)")
+	} else {
+		add("COSIFT_* env", "INFO", strings.Join(setEnvs, ", "))
+	}
+
 	// 3. Config recognized.
 	add("config", "PASS", fmt.Sprintf("addr=%s, data_dir=%s", cfg.Server.Addr, cfg.DataDir))
 
