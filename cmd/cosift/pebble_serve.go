@@ -1468,6 +1468,11 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 }
 
 type answerSource struct {
+	// Iter 341: citation ID (1-based). Matches the [N] tokens the synth
+	// prompt produces in the answer text. SQLite-side AnswerSource has had
+	// this since iter 84; pebble's was missing, which caused the CLI to
+	// render every source as '[0]' before iter 339/340's i+1 fallback.
+	ID          int        `json:"id"`
 	URL         string     `json:"url"`
 	Title       string     `json:"title"`
 	Excerpt     string     `json:"excerpt,omitempty"`
@@ -1633,6 +1638,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
+		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// citation tokens we emit in the synth prompt below.
+		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
@@ -1903,6 +1911,9 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
+		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// citation tokens we emit in the synth prompt below.
+		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
@@ -2081,6 +2092,9 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
+		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// citation tokens we emit in the synth prompt below.
+		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
