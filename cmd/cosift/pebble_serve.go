@@ -1306,6 +1306,15 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
 	}
+	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
+	if sortVal := r.URL.Query().Get("sort"); sortVal != "" {
+		switch sortVal {
+		case "relevance", "date_desc", "date_asc":
+			// valid
+		default:
+			w = append(w, "sort="+sortVal+" is not a known mode (try: relevance, date_desc, date_asc) — treated as relevance")
+		}
+	}
 	if len(w) > 0 {
 		s.warningsEmitted.Add(1)
 	}

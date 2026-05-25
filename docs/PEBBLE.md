@@ -266,4 +266,5 @@ iter 306 — `cosift find-similar` CLI gains -rerank, -q, -since, -until, -inclu
 iter 307 — docs/EXAMPLES.md adds a 'CLI shortcuts' section so headless users see the cosift-* equivalents
 iter 308 — `expand` response field normalizes to canonical name ('true'→'hyde', unknown→'')
 iter 309 — `warnings` now flags unknown `expand` values (was silently ignored)
+iter 310 — `warnings` flags unknown `sort` values too (silent-treat-as-relevance closed)
 ```
