@@ -868,12 +868,21 @@ func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 	if len(sources) == 0 {
 		return
 	}
+	// Iter 339: fall back to position-based numbering when ID is unset
+	// (pebble-serve's source payload doesn't emit a citation id field, so
+	// without this fallback every source rendered as '0.').
+	idOf := func(i int, s server.AnswerSource) int {
+		if s.ID > 0 {
+			return s.ID
+		}
+		return i + 1
+	}
 	if useMarkdown {
 		fmt.Println()
 		fmt.Println("## Sources")
 		fmt.Println()
-		for _, s := range sources {
-			fmt.Fprintf(os.Stdout, "%d. [%s](%s)", s.ID, s.Title, s.URL)
+		for i, s := range sources {
+			fmt.Fprintf(os.Stdout, "%d. [%s](%s)", idOf(i, s), s.Title, s.URL)
 			var trailing []string
 			if s.Domain != "" {
 				trailing = append(trailing, s.Domain)
@@ -890,7 +899,7 @@ func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 	}
 	fmt.Println()
 	fmt.Println("Sources:")
-	for _, s := range sources {
+	for i, s := range sources {
 		date := ""
 		if s.PublishedAt != nil {
 			date = " " + s.PublishedAt.Format("2006-01-02")
@@ -899,7 +908,7 @@ func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 		if s.Domain != "" {
 			domain = " [" + s.Domain + "]"
 		}
-		fmt.Printf("  [%d]%s%s %s\n      %s\n", s.ID, domain, date, s.Title, s.URL)
+		fmt.Printf("  [%d]%s%s %s\n      %s\n", idOf(i, s), domain, date, s.Title, s.URL)
 	}
 }
 
