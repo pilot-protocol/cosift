@@ -5427,6 +5427,7 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 	fs := flag.NewFlagSet("status-file", flag.ExitOnError)
 	path := fs.String("file", "", "path to crawl-status.json (defaults to <data_dir>/crawl-status.json)")
 	asJSON := fs.Bool("json", false, "emit raw status JSON plus a derived 'age_seconds' field; suitable for jq / Prometheus")
+	target := fs.Int64("target", 0, "doc count target — show indexed/target progress percent (default 0 = no target line)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -5481,6 +5482,12 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 		processed := d.Done + d.Errored
 		fmt.Printf("  processed:  %d / %d (%.1f%%)\n",
 			processed, total, float64(processed)/float64(total)*100)
+	}
+	// Iter 270: ?-target N → 'indexed/target (pct)' line for long crawls toward
+	// a known doc-count goal. No-op when target is unset or already met.
+	if *target > 0 && d.IndexedDocs > 0 {
+		pct := float64(d.IndexedDocs) / float64(*target) * 100
+		fmt.Printf("  target:     %d / %d (%.1f%%)\n", d.IndexedDocs, *target, pct)
 	}
 	if age > 30*time.Second {
 		fmt.Printf("\n  WARNING: status is %s old; crawler may have stopped\n", age)
