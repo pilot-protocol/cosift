@@ -214,14 +214,30 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	// Iter 232: include_domains / exclude_domains — mirrors the
 	// SQLite-side server semantics (CSV, dot-boundary suffix match).
-	// When a filter is active we over-fetch 5x so the post-filter has
-	// enough candidates to fill k; this is the same brute-force shape
-	// that the SQLite path used before iter-79 added a proper index.
+	// Iter 234: since / until — ISO-date filters on doc.PublishedAt.
+	// When any filter is active we over-fetch so the post-filter has
+	// enough candidates to fill k; same brute-force shape SQLite used
+	// before it grew a proper index, fine at pebble-serve's scale.
 	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
 	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
+	since, sinceErr := parseDateBound(r.URL.Query().Get("since"))
+	if sinceErr != nil {
+		writeProblem(w, http.StatusBadRequest, "since: "+sinceErr.Error())
+		return
+	}
+	until, untilErr := parseDateBound(r.URL.Query().Get("until"))
+	if untilErr != nil {
+		writeProblem(w, http.StatusBadRequest, "until: "+untilErr.Error())
+		return
+	}
+	dateFilter := !since.IsZero() || !until.IsZero()
 	fetchK := k
-	if len(include) > 0 || len(exclude) > 0 {
-		fetchK = k * 5
+	if len(include) > 0 || len(exclude) > 0 || dateFilter {
+		mult := 5
+		if dateFilter {
+			mult = 10
+		}
+		fetchK = k * mult
 		if fetchK > 500 {
 			fetchK = 500
 		}
@@ -234,7 +250,8 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Iter 233: enrich each surviving hit with Excerpt + PublishedAt + Author
 	// via a single GetDocByURL per hit. Cost: k extra Gets — block-cache hot,
 	// ~ms-scale at the k≤100 we accept. Opt out with ?enrich=false for callers
-	// that only need scoring (e.g. reranker pipelines that fetch downstream).
+	// that only need scoring. The date filter (iter 234) forces a doc fetch
+	// even when enrich=false, since PublishedAt lives on the gob.
 	enrich := r.URL.Query().Get("enrich") != "false"
 	out := make([]searchHit, 0, k)
 	for _, h := range hits {
@@ -248,8 +265,23 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
-		if enrich {
-			if doc, derr := s.store.GetDocByURL(r.Context(), h.URL); derr == nil && doc != nil {
+		if enrich || dateFilter {
+			doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
+			if derr != nil || doc == nil {
+				continue
+			}
+			if dateFilter {
+				if doc.PublishedAt.IsZero() {
+					continue // zero PublishedAt = unknown; drop under any date filter
+				}
+				if !since.IsZero() && doc.PublishedAt.Before(since) {
+					continue
+				}
+				if !until.IsZero() && doc.PublishedAt.After(until) {
+					continue
+				}
+			}
+			if enrich {
 				hit.Excerpt = textExcerpt(doc.Text, 320)
 				if !doc.PublishedAt.IsZero() {
 					t := doc.PublishedAt
@@ -302,6 +334,22 @@ func hostOf(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// parseDateBound accepts the same forms as the SQLite-side server: empty
+// (zero time), RFC3339 ("2026-01-15T00:00:00Z"), or a bare date
+// ("2026-01-15", treated as UTC midnight). Iter 234.
+func parseDateBound(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("expected YYYY-MM-DD or RFC3339, got %q", s)
 }
 
 // textExcerpt returns a body-prefix excerpt no longer than maxBytes, cut at a

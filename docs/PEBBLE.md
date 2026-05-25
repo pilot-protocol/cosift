@@ -185,4 +185,5 @@ iter 230 — pebble-serve `/verify` endpoint (HTTP counter-drift check)
 iter 231 — pebble-serve `/metrics` (Prometheus exposition, no client dep)
 iter 232 — pebble-serve `/search` include_domains / exclude_domains
 iter 233 — pebble-serve `/search` hit enrichment (excerpt, published_at, author)
+iter 234 — pebble-serve `/search` since / until date filters
 ```
