@@ -215,6 +215,10 @@ func main() {
 		if err := runExport(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("export: %v", err)
 		}
+	case "migrate-to-pebble":
+		if err := runMigrateToPebble(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("migrate-to-pebble: %v", err)
+		}
 	case "gc":
 		if err := runGC(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("gc: %v", err)
@@ -3223,6 +3227,87 @@ func runRefreshDue(ctx context.Context, cfg *config.Config, args []string) error
 //
 // Documents only — passages (embeddings) aren't exported because the receiver
 // likely uses a different embedding model.
+// runMigrateToPebble copies a SQLite-backed cosift data directory into a
+// fresh Pebble store. Iter 204 — fifth piece of the path-2 storage rework.
+//
+// Migrates:
+//   - documents (URL, title, text, metadata) via PebbleStore.UpsertDocument
+//   - BM25 postings (re-tokenized + re-indexed to preserve iter-197 title
+//     boost; the SQLite postings table is NOT copied directly because
+//     re-indexing through PebbleBM25 is the same code path that production
+//     uses going forward — eliminates the divergence risk of two
+//     posting-write paths)
+//
+// Does NOT migrate (deferred): frontier rows, query_outcomes feedback,
+// paraphrase/HyDE caches, vector embeddings. Operators starting from a
+// migrated Pebble store get a working BM25 index immediately; dense + LLM
+// caches rebuild from scratch on the new instance.
+//
+// The destination directory must be empty; the migration refuses to
+// overwrite existing data so a mistyped path can't clobber a working store.
+func runMigrateToPebble(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("migrate-to-pebble", flag.ExitOnError)
+	output := fs.String("output", "", "output directory for the Pebble store (required)")
+	progress := fs.Duration("progress", 5*time.Second, "log progress every N (0 disables)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *output == "" {
+		return errors.New("migrate-to-pebble: -output is required")
+	}
+	// Refuse to write into a directory that already contains a Pebble store.
+	if entries, err := os.ReadDir(*output); err == nil && len(entries) > 0 {
+		return fmt.Errorf("migrate-to-pebble: -output %s is non-empty; refusing to overwrite (move or remove first)", *output)
+	}
+
+	src, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("open source SQLite store at %s: %w", cfg.DataDir, err)
+	}
+	defer src.Close()
+
+	dst, err := store.OpenPebble(*output)
+	if err != nil {
+		return fmt.Errorf("open destination Pebble store at %s: %w", *output, err)
+	}
+	defer dst.Close()
+
+	pidx := index.NewPebbleBM25(dst)
+
+	docs, err := src.ListDocuments(ctx, 0)
+	if err != nil {
+		return fmt.Errorf("list source documents: %w", err)
+	}
+	log.Printf("migrate-to-pebble: %d documents to copy (source: %s → destination: %s)",
+		len(docs), cfg.DataDir, *output)
+
+	reporter := newProgressReporter("migrate docs", len(docs), *progress)
+	for i, d := range docs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Upsert the doc into Pebble — assigns a fresh Pebble-side ID.
+		newID, err := dst.UpsertDocument(ctx, d)
+		if err != nil {
+			return fmt.Errorf("upsert doc %s: %w", d.URL, err)
+		}
+		// Re-index in Pebble BM25. Uses the same Tokenize + TitleBoost that
+		// production reads through, so behavior of the migrated index matches
+		// what a fresh crawl would produce.
+		if err := pidx.IndexDocument(ctx, newID, d.Title, d.Text); err != nil {
+			return fmt.Errorf("index doc %s: %w", d.URL, err)
+		}
+		reporter.maybeLog(i + 1)
+	}
+
+	stats, err := dst.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	log.Printf("migrate-to-pebble: %d documents indexed into Pebble at %s", stats.Documents, *output)
+	return nil
+}
+
 func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 	output := fs.String("output", "", "output path (default depends on -format: corpus-export.{json,jsonl,txt,md})")

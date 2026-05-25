@@ -186,6 +186,10 @@ cosift ingest -corpus PATH [-format auto|json|jsonl] [-progress 5s]
 cosift export [-output PATH] [-format json|jsonl|text|md] [-limit N] [-include-domains CSV]
               [-exclude-domains CSV] [-since DATE] [-until DATE]
                                               dump the index. json round-trips with ingest
+cosift migrate-to-pebble -output DIR [-progress 5s]
+                                              copy a SQLite cosift data dir into a fresh Pebble store.
+                                              Documents + postings (re-indexed via PebbleBM25 to
+                                              preserve title boost). Refuses non-empty -output
 cosift reembed [-drop-old] [-progress 5s]     re-embed every doc with the configured model
 cosift outcomes -format json|csv              dump query_outcomes for offline calibration
 cosift gc [-min-attempts N] [-vacuum]         drop errored frontier rows and VACUUM
