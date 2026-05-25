@@ -1,0 +1,395 @@
+// Package index — HNSW vector index, pure Go, no external deps.
+//
+// Hierarchical Navigable Small World graph (Malkov & Yashunin 2018) for
+// approximate kNN at logarithmic query cost. Sized for the iter-199 rework:
+// the existing VectorIndex (brute-force cosine over the full passage set) is
+// adequate to ~200k passages, then per-query cost grows linearly. HNSW is
+// O(log N) per query with recall ≥95% at standard parameters, so a single
+// process can serve ~10–100M passages on commodity hardware before memory
+// becomes the bottleneck.
+//
+// Conforms to the same Add/Search shape as VectorIndex so the server can
+// switch implementations via config without rewiring the retrieval pipeline.
+//
+// Storage is in-memory only at this layer; persistence (memory-mapped
+// segment files) is a follow-up. For now, the index rebuilds on startup
+// from the persisted passage embeddings — same constraint as the
+// brute-force VectorIndex.
+package index
+
+import (
+	"container/heap"
+	"context"
+	"math"
+	"math/rand"
+	"sort"
+	"sync"
+)
+
+// HNSW default parameters. Tunable per build; suitable for general-purpose
+// dense retrieval at the 1M–100M passage scale.
+const (
+	// HNSWM is the target neighbor count per node per layer. 16 is the
+	// Malkov & Yashunin reference value; tradeoff between recall (more
+	// neighbors = better) and memory + build time (more neighbors = costlier).
+	HNSWM = 16
+	// HNSWMmax0 is the neighbor cap at layer 0. The bottom layer carries
+	// every node and typically benefits from a higher cap (2*M is the
+	// convention).
+	HNSWMmax0 = 32
+	// HNSWefConstruction is the candidate-list size during build. Bigger
+	// values produce a better graph at higher index-build cost.
+	HNSWefConstruction = 200
+	// HNSWefSearch is the candidate-list size during query. Bigger values
+	// raise recall at proportional query cost. Operators can tune at runtime
+	// if needed; the default targets ≥95% recall at ~1ms/query for 1M-passage
+	// indexes.
+	HNSWefSearch = 50
+)
+
+// HNSW is an approximate kNN index conforming to the same Search/Add
+// interface as VectorIndex (brute-force) so callers can swap freely.
+type HNSW struct {
+	mu  sync.RWMutex
+	dim int
+	rng *rand.Rand
+
+	M              int
+	Mmax0          int
+	efConstruction int
+	efSearch       int
+	levelMult      float64 // 1 / ln(M), used for stochastic level assignment
+
+	nodes      []hnswNode
+	entryPoint int // index into nodes; -1 when empty
+	maxLevel   int // current top layer
+}
+
+type hnswNode struct {
+	vecDoc           // embed: url, title, offset, length, vec (unit-normalized)
+	level     int    // top layer this node participates in
+	neighbors [][]int // per-layer adjacency lists (layer 0 .. level)
+}
+
+// NewHNSW constructs an empty HNSW index for vectors of the given dim.
+// Uses default parameters; tunable via the public fields after construction.
+func NewHNSW(dim int) *HNSW {
+	return &HNSW{
+		dim:            dim,
+		rng:            rand.New(rand.NewSource(1)), // deterministic by default
+		M:              HNSWM,
+		Mmax0:          HNSWMmax0,
+		efConstruction: HNSWefConstruction,
+		efSearch:       HNSWefSearch,
+		levelMult:      1.0 / math.Log(float64(HNSWM)),
+		entryPoint:     -1,
+	}
+}
+
+// Len reports the number of inserted vectors.
+func (h *HNSW) Len() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.nodes)
+}
+
+// Add inserts a doc-level embedding without span info. Mirrors
+// VectorIndex.Add — equivalent to AddPassage(url, title, 0, 0, vec).
+func (h *HNSW) Add(url, title string, vec []float32) {
+	h.AddPassage(url, title, 0, 0, vec)
+}
+
+// AddPassage inserts a passage with explicit byte-span info. The vector is
+// L2-normalized in place before storage. Bidirectional links are created
+// from the new node to its nearest neighbors at every layer up to its
+// stochastic level.
+func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) {
+	if len(vec) != h.dim {
+		return
+	}
+	cp := make([]float32, len(vec))
+	copy(cp, vec)
+	normalizeInPlace(cp)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	level := h.randLevel()
+	newIdx := len(h.nodes)
+	h.nodes = append(h.nodes, hnswNode{
+		vecDoc:    vecDoc{url: url, title: title, offset: offset, length: length, vec: cp},
+		level:     level,
+		neighbors: make([][]int, level+1),
+	})
+
+	// First node: becomes the entry point trivially.
+	if newIdx == 0 {
+		h.entryPoint = 0
+		h.maxLevel = level
+		return
+	}
+
+	// 1. Greedy-descend from the current entry point down to level+1.
+	curEntry := h.entryPoint
+	for lvl := h.maxLevel; lvl > level; lvl-- {
+		curEntry = h.greedyDescend(cp, curEntry, lvl)
+	}
+
+	// 2. For each layer ≤ level, find efConstruction candidates and link
+	//    the new node to its top-M nearest among them. Then make the link
+	//    bidirectional, pruning the neighbor's list if it overflows.
+	for lvl := minInt(level, h.maxLevel); lvl >= 0; lvl-- {
+		cands := h.searchLayer(cp, []int{curEntry}, h.efConstruction, lvl)
+		mCap := h.M
+		if lvl == 0 {
+			mCap = h.Mmax0
+		}
+		// Pick the top-M nearest from cands.
+		topM := selectTopM(cands, mCap)
+		// Wire neighbors both ways.
+		h.nodes[newIdx].neighbors[lvl] = make([]int, 0, len(topM))
+		for _, c := range topM {
+			h.nodes[newIdx].neighbors[lvl] = append(h.nodes[newIdx].neighbors[lvl], c.idx)
+			// Add back-link, pruning if overfull.
+			h.addBackLink(c.idx, newIdx, lvl)
+		}
+		// Set next layer's entry to the best candidate at this layer.
+		if len(topM) > 0 {
+			curEntry = topM[0].idx
+		}
+	}
+
+	// 3. Update entry point if the new node sits above maxLevel.
+	if level > h.maxLevel {
+		h.entryPoint = newIdx
+		h.maxLevel = level
+	}
+}
+
+// Search returns the top-k by cosine similarity, deduplicated by URL.
+// Same semantics as VectorIndex.Search.
+func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
+	if len(query) != h.dim {
+		return nil
+	}
+	q := make([]float32, len(query))
+	copy(q, query)
+	normalizeInPlace(q)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.nodes) == 0 {
+		return nil
+	}
+
+	// 1. Greedy-descend through upper layers to find the layer-0 entry.
+	ep := h.entryPoint
+	for lvl := h.maxLevel; lvl > 0; lvl-- {
+		ep = h.greedyDescend(q, ep, lvl)
+	}
+
+	// 2. ef-search at layer 0.
+	ef := h.efSearch
+	if ef < k {
+		ef = k
+	}
+	cands := h.searchLayer(q, []int{ep}, ef, 0)
+
+	// 3. Doc-level max-passage aggregation (mirrors VectorIndex.Search).
+	type best struct {
+		nodeIdx int
+		score   float32
+	}
+	bestByURL := make(map[string]best, len(cands))
+	for _, c := range cands {
+		url := h.nodes[c.idx].url
+		score := -c.dist
+		cur, ok := bestByURL[url]
+		if !ok || score > cur.score {
+			bestByURL[url] = best{nodeIdx: c.idx, score: score}
+		}
+	}
+	out := make([]best, 0, len(bestByURL))
+	for _, e := range bestByURL {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].score > out[b].score })
+	if k > len(out) {
+		k = len(out)
+	}
+	hits := make([]VectorHit, 0, k)
+	for i := 0; i < k; i++ {
+		n := h.nodes[out[i].nodeIdx]
+		hits = append(hits, VectorHit{
+			URL:    n.url,
+			Title:  n.title,
+			Score:  float64(out[i].score),
+			Offset: n.offset,
+			Length: n.length,
+		})
+	}
+	return hits
+}
+
+// greedyDescend walks the graph at a single layer toward the query, always
+// stepping to the neighbor closer to the query than the current node.
+// Returns the index of the local minimum found at this layer.
+func (h *HNSW) greedyDescend(q []float32, start int, lvl int) int {
+	cur := start
+	curDist := -dot(q, h.nodes[cur].vec)
+	for {
+		moved := false
+		for _, nb := range h.nodes[cur].neighbors[minInt(lvl, len(h.nodes[cur].neighbors)-1)] {
+			d := -dot(q, h.nodes[nb].vec)
+			if d < curDist {
+				curDist = d
+				cur = nb
+				moved = true
+			}
+		}
+		if !moved {
+			return cur
+		}
+	}
+}
+
+// candEntry tracks a candidate in the search frontier (heap).
+type candEntry struct {
+	idx  int
+	dist float32 // 1 - cos(q, v); smaller = closer
+}
+
+// searchLayer is the core HNSW search routine. From the given entry points,
+// expands the nearest-first frontier until the top ef candidates are stable.
+// Returns the ef best candidates at this layer, sorted by ascending dist.
+func (h *HNSW) searchLayer(q []float32, entryPoints []int, ef int, lvl int) []candEntry {
+	visited := make(map[int]struct{}, ef*2)
+	// Candidates: min-heap by dist (front-of-queue is the nearest to expand).
+	cands := &candMinHeap{}
+	heap.Init(cands)
+	// Results: max-heap by dist (front is the farthest, evicted first when full).
+	results := &candMaxHeap{}
+	heap.Init(results)
+
+	for _, ep := range entryPoints {
+		d := -dot(q, h.nodes[ep].vec)
+		heap.Push(cands, candEntry{idx: ep, dist: d})
+		heap.Push(results, candEntry{idx: ep, dist: d})
+		visited[ep] = struct{}{}
+	}
+
+	for cands.Len() > 0 {
+		nearest := heap.Pop(cands).(candEntry)
+		// If the closest unexplored candidate is farther than the worst kept
+		// result, expansion can't improve the result set — stop.
+		if results.Len() >= ef && nearest.dist > (*results)[0].dist {
+			break
+		}
+		// Expand neighbors at this layer.
+		nbIdx := minInt(lvl, len(h.nodes[nearest.idx].neighbors)-1)
+		for _, nb := range h.nodes[nearest.idx].neighbors[nbIdx] {
+			if _, ok := visited[nb]; ok {
+				continue
+			}
+			visited[nb] = struct{}{}
+			d := -dot(q, h.nodes[nb].vec)
+			if results.Len() < ef {
+				heap.Push(cands, candEntry{idx: nb, dist: d})
+				heap.Push(results, candEntry{idx: nb, dist: d})
+			} else if d < (*results)[0].dist {
+				heap.Push(cands, candEntry{idx: nb, dist: d})
+				heap.Pop(results) // drop the current worst
+				heap.Push(results, candEntry{idx: nb, dist: d})
+			}
+		}
+	}
+
+	// Drain results — convert max-heap to ascending-by-dist slice.
+	out := make([]candEntry, results.Len())
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = heap.Pop(results).(candEntry)
+	}
+	return out
+}
+
+// addBackLink wires a back-edge from neighbor to newIdx at the given layer,
+// pruning neighbor's list if it overflows the per-layer cap.
+func (h *HNSW) addBackLink(neighbor, newIdx, lvl int) {
+	if lvl >= len(h.nodes[neighbor].neighbors) {
+		return // neighbor doesn't participate at this layer
+	}
+	mCap := h.M
+	if lvl == 0 {
+		mCap = h.Mmax0
+	}
+	h.nodes[neighbor].neighbors[lvl] = append(h.nodes[neighbor].neighbors[lvl], newIdx)
+	if len(h.nodes[neighbor].neighbors[lvl]) <= mCap {
+		return
+	}
+	// Overfull — re-rank neighbors by distance to this node, keep top mCap.
+	nbVec := h.nodes[neighbor].vec
+	cands := make([]candEntry, 0, len(h.nodes[neighbor].neighbors[lvl]))
+	for _, nb := range h.nodes[neighbor].neighbors[lvl] {
+		cands = append(cands, candEntry{idx: nb, dist: -dot(nbVec, h.nodes[nb].vec)})
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
+	cands = cands[:mCap]
+	out := make([]int, len(cands))
+	for i, c := range cands {
+		out[i] = c.idx
+	}
+	h.nodes[neighbor].neighbors[lvl] = out
+}
+
+// randLevel draws a level from the geometric distribution used by HNSW.
+// Level 0 is the densest (every node); higher levels are exponentially sparser.
+func (h *HNSW) randLevel() int {
+	return int(math.Floor(-math.Log(h.rng.Float64()) * h.levelMult))
+}
+
+// selectTopM returns the M candidates with smallest dist, from a sorted-by-dist
+// candidate list (ascending). Defensive against shorter input.
+func selectTopM(cands []candEntry, m int) []candEntry {
+	if len(cands) <= m {
+		return cands
+	}
+	return cands[:m]
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// candMinHeap is a min-heap of candEntries by dist (smaller = front).
+type candMinHeap []candEntry
+
+func (h candMinHeap) Len() int            { return len(h) }
+func (h candMinHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
+func (h candMinHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *candMinHeap) Push(x interface{}) { *h = append(*h, x.(candEntry)) }
+func (h *candMinHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+// candMaxHeap is a max-heap of candEntries by dist (larger = front, evict-first).
+type candMaxHeap []candEntry
+
+func (h candMaxHeap) Len() int            { return len(h) }
+func (h candMaxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
+func (h candMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *candMaxHeap) Push(x interface{}) { *h = append(*h, x.(candEntry)) }
+func (h *candMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
