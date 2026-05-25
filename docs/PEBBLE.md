@@ -145,12 +145,13 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 
 ## Known limitations (today)
 
+`cosift pebble-serve` now mirrors `cosift serve`'s API surface (search, find_similar, answer, research with SSE, contents, verify, metrics) with full HyDE + paraphrase + rerank composition. The remaining gaps:
+
 | Gap | Workaround |
 |---|---|
-| Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer (sync+SSE), /research (sync+SSE), /contents, /verify, /metrics) | All retrieval-driven endpoints support HyDE + paraphrase; cost on /research?expand=paraphrase scales as 3 paraphrases × N sub-queries |
-| HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
-| Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
+| Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) or curl `/stats` on a running pebble-serve |
+| HNSW vector indexing during crawl isn't auto-wired | Compose manually: `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` — iter-214 bridge exists; default crawl path is BM25-only |
+| Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise. Counter-drift is still detectable via `cosift verify` / GET `/verify` (iter 228/230) |
 
 ## Iter map (path-2 rework)
 
@@ -252,4 +253,5 @@ iter 293 — `warnings` event on /answer + /research SSE paths (parity with sync
 iter 294 — `cosift_warnings_emitted_total` on /metrics (alert on rate of misconfigured requests)
 iter 295 — docs/EXAMPLES.md: ready-to-paste curl recipes for search/answer/research/ops
 iter 296 — `cosift doctor` reports active COSIFT_* env vars so operators see overrides in one place
+iter 297 — PEBBLE.md known-limitations table updated to reflect post-iter-292 state
 ```
