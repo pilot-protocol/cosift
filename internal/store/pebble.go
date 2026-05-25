@@ -55,6 +55,9 @@ const (
 	famDocLen  byte = 'l' // 'l' + docID → doc_len (varint)
 	famVector  byte = 'v' // 'v' + 0x01 + uint64-be(nodeID) → hnsw node blob
 	//                       'v' + 0x00 + "meta"           → hnsw graph meta
+	famDocMeta byte = 'i' // 'i' + uint64-be(docID) → uvarint(urlLen)+url+uvarint(titleLen)+title
+	//                      iter 207: cheap URL+title side-blob (~50 bytes vs ~1KB+ gob)
+	//                      so BM25 hit-resolution skips the full Document decode.
 )
 
 // OpenPebble opens (or creates) a Pebble store at path. On open it
@@ -127,6 +130,11 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 	if err := batch.Set(urlKey(d.URL), idBuf, nil); err != nil {
 		return 0, err
 	}
+	// Iter 207: cheap (url, title) side-blob so hit-meta lookups skip the
+	// gob decode of the full Document.
+	if err := batch.Set(docMetaKey(id), packDocMeta(d.URL, d.Title), nil); err != nil {
+		return 0, err
+	}
 	if d.Domain != "" {
 		if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
 			return 0, err
@@ -139,6 +147,60 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 		return 0, fmt.Errorf("commit batch: %w", err)
 	}
 	return id, nil
+}
+
+// GetDocMeta returns (URL, title) for docID via the cheap 'i' side blob.
+// ok=false when nothing was indexed for the ID. Iter 207 — avoids the full
+// Document gob decode that GetDocByID does.
+func (p *PebbleStore) GetDocMeta(ctx context.Context, docID int64) (url, title string, ok bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", false, err
+	}
+	val, closer, err := p.db.Get(docMetaKey(docID))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	defer closer.Close()
+	return unpackDocMeta(val)
+}
+
+func docMetaKey(docID int64) []byte {
+	k := make([]byte, 1+8)
+	k[0] = famDocMeta
+	binary.BigEndian.PutUint64(k[1:], uint64(docID))
+	return k
+}
+
+func packDocMeta(url, title string) []byte {
+	buf := make([]byte, 0, 4+len(url)+2+len(title))
+	tmp := make([]byte, binary.MaxVarintLen64)
+	n := binary.PutUvarint(tmp, uint64(len(url)))
+	buf = append(buf, tmp[:n]...)
+	buf = append(buf, url...)
+	n = binary.PutUvarint(tmp, uint64(len(title)))
+	buf = append(buf, tmp[:n]...)
+	buf = append(buf, title...)
+	return buf
+}
+
+func unpackDocMeta(buf []byte) (url, title string, ok bool, err error) {
+	urlLen, n := binary.Uvarint(buf)
+	if n <= 0 || int(urlLen) > len(buf)-n {
+		return "", "", false, fmt.Errorf("docMeta: malformed url length")
+	}
+	buf = buf[n:]
+	url = string(buf[:urlLen])
+	buf = buf[urlLen:]
+	titleLen, n := binary.Uvarint(buf)
+	if n <= 0 || int(titleLen) > len(buf)-n {
+		return "", "", false, fmt.Errorf("docMeta: malformed title length")
+	}
+	buf = buf[n:]
+	title = string(buf[:titleLen])
+	return url, title, true, nil
 }
 
 // GetDocByURL retrieves a single document, or ErrNotFound if missing.
@@ -410,10 +472,38 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Iter 207: maintain running (sum_doc_len, indexed_doc_count) counters
+	// under 'm' so corpusStats is O(1) per query instead of O(N) per query.
+	// On re-index we subtract the OLD doc_len; on first-index we just add.
+	oldLen, hadOld, err := p.readDocLenLocked(docID)
+	if err != nil {
+		return err
+	}
+	sumLen, _ := p.readMetaInt64Locked("sum_doc_len")
+	indexedCount, _ := p.readMetaInt64Locked("indexed_docs")
+	if hadOld {
+		sumLen -= oldLen
+	} else {
+		indexedCount++
+	}
+	sumLen += int64(docLen)
+
 	batch := p.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
+		return err
+	}
+	// Counters are appended to the same batch so all-or-nothing semantics
+	// hold — a torn write can't leave the counters out of sync with 'l'.
+	sumBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+		return err
+	}
+	countBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
+	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
 		return err
 	}
 	for term, freq := range tf {
@@ -437,9 +527,12 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
 			return err
 		}
-		tfBuf := make([]byte, 8)
-		binary.BigEndian.PutUint64(tfBuf, uint64(freq))
-		if err := batch.Set(postingKey(info.ID, docID), tfBuf, nil); err != nil {
+		// Iter 207: pack (tf, docLen) into the posting value so the search
+		// path doesn't need a separate GetDocLen per posting.
+		pvBuf := make([]byte, 16)
+		binary.BigEndian.PutUint64(pvBuf[0:8], uint64(freq))
+		binary.BigEndian.PutUint64(pvBuf[8:16], uint64(docLen))
+		if err := batch.Set(postingKey(info.ID, docID), pvBuf, nil); err != nil {
 			return err
 		}
 	}
@@ -479,10 +572,14 @@ func (p *PebbleStore) postingExistsLocked(termID, docID int64) (bool, error) {
 	return true, nil
 }
 
-// PostingEntry is one (docID, tf) pair returned by IteratePostings.
+// PostingEntry is one (docID, tf, docLen) tuple returned by IteratePostings.
+// Iter 207: docLen moved INSIDE the posting value (was a separate GetDocLen
+// per posting). At N=10k this saves ~25k Pebble Gets per query, the
+// dominant remaining cost after the iter-207 GetDocMeta + corpusStats fixes.
 type PostingEntry struct {
-	DocID int64
-	TF    int64
+	DocID  int64
+	TF     int64
+	DocLen int64
 }
 
 // IteratePostings prefix-scans the 'p' family for the given termID and
@@ -512,18 +609,70 @@ func (p *PebbleStore) IteratePostings(ctx context.Context, termID int64, fn func
 		if err != nil {
 			return err
 		}
-		if len(val) != 8 {
+		// Iter 207 format: 16 bytes (tf, docLen). Iter 201 legacy 8-byte tf
+		// is no longer valid; fresh stores after iter-207 commit only.
+		if len(val) != 16 {
 			continue
 		}
 		entry := PostingEntry{
-			DocID: int64(binary.BigEndian.Uint64(key[9:])),
-			TF:    int64(binary.BigEndian.Uint64(val)),
+			DocID:  int64(binary.BigEndian.Uint64(key[9:])),
+			TF:     int64(binary.BigEndian.Uint64(val[0:8])),
+			DocLen: int64(binary.BigEndian.Uint64(val[8:16])),
 		}
 		if !fn(entry) {
 			return nil
 		}
 	}
 	return nil
+}
+
+// readDocLenLocked is the unlocked variant used inside IndexDocument's
+// existing p.mu critical section.
+func (p *PebbleStore) readDocLenLocked(docID int64) (int64, bool, error) {
+	val, closer, err := p.db.Get(docLenKey(docID))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer closer.Close()
+	if len(val) != 8 {
+		return 0, false, fmt.Errorf("malformed doc_len: len=%d", len(val))
+	}
+	return int64(binary.BigEndian.Uint64(val)), true, nil
+}
+
+// readMetaInt64Locked fetches an int64 counter under the 'm' family.
+// Missing key returns 0 with no error — counters bootstrap to zero.
+func (p *PebbleStore) readMetaInt64Locked(name string) (int64, bool) {
+	val, closer, err := p.db.Get(metaKey(name))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false
+	}
+	if err != nil {
+		return 0, false
+	}
+	defer closer.Close()
+	if len(val) != 8 {
+		return 0, false
+	}
+	return int64(binary.BigEndian.Uint64(val)), true
+}
+
+// CorpusStats returns (sum_doc_len, indexed_docs) in O(1) via the running
+// counters maintained by IndexDocument. Iter 207 — replaces the per-query
+// O(N) scan over the 'l' family that the iter-206 bench surfaced as
+// PebbleBM25.Search's dominant cost.
+func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int64, err error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sumLen, _ = p.readMetaInt64Locked("sum_doc_len")
+	count, _ = p.readMetaInt64Locked("indexed_docs")
+	return sumLen, count, nil
 }
 
 // SumDocLengths scans the 'l' family and returns (total doc_len, count).
