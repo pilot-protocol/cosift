@@ -293,4 +293,5 @@ iter 331 — `cosift verify -server URL` routes through the HTTP /verify endpoin
 iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` mode
 iter 333 — CLI SSE consumers handle pebble-serve's `warnings` event (surfaces silent no-ops on streamed answer/research)
 iter 334 — wire: rename pebble SSE `chunk{delta}` → `answer_chunk{text}` so `cosift answer/research -stream` against pebble-serve renders text
+iter 335 — CLI SSE consumers handle pebble's `sources` event + tolerate pebble's minimal `done` payload + pebble's `error{error:...}` field shape
 ```

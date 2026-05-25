@@ -773,6 +773,17 @@ func consumeResearchSSE(body io.Reader, format string) error {
 				return nil
 			}
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", s.Sources)
+		case "sources":
+			// Iter 335: pebble-serve emits one 'sources' event after retrieval
+			// that combines what the SQLite server splits across
+			// retrieved+synthesizing. Render the same progress line.
+			var s struct {
+				Sources []json.RawMessage `json:"sources"`
+			}
+			if err := json.Unmarshal([]byte(data), &s); err != nil {
+				return nil
+			}
+			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", len(s.Sources))
 		case "answer_chunk":
 			var c struct {
 				Text string `json:"text"`
@@ -789,16 +800,25 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			}
 			var rr server.ResearchResponse
 			if err := json.Unmarshal([]byte(data), &rr); err != nil {
-				return fmt.Errorf("parse done event: %w", err)
+				// Iter 335: pebble's done event has a minimal payload (just
+				// took/empty); tolerate the missing fields and let the
+				// answer text be the visible output.
+				return errSSEDone
 			}
 			renderStreamingSources(rr.Sources, useMarkdown)
 			return errSSEDone
 		case "error":
 			var e struct {
 				Detail string `json:"detail"`
+				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
+				Error string `json:"error"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
-			return fmt.Errorf("server stream error: %s", e.Detail)
+			msg := e.Detail
+			if msg == "" {
+				msg = e.Error
+			}
+			return fmt.Errorf("server stream error: %s", msg)
 		}
 		return nil
 	})
@@ -894,6 +914,16 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 				return nil
 			}
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", s.Sources)
+		case "sources":
+			// Iter 335: pebble-serve emits 'sources' as the combined
+			// retrieved+synthesizing signal. Render the synthesizing line.
+			var s struct {
+				Sources []json.RawMessage `json:"sources"`
+			}
+			if err := json.Unmarshal([]byte(data), &s); err != nil {
+				return nil
+			}
+			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", len(s.Sources))
 		case "answer_chunk":
 			var c struct {
 				Text string `json:"text"`
@@ -910,16 +940,23 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 			}
 			var ar server.AnswerResponse
 			if err := json.Unmarshal([]byte(data), &ar); err != nil {
-				return fmt.Errorf("parse done event: %w", err)
+				// Iter 335: tolerate pebble-serve's minimal done payload (took only).
+				return errSSEDone
 			}
 			renderStreamingSources(ar.Sources, useMarkdown)
 			return errSSEDone
 		case "error":
 			var e struct {
 				Detail string `json:"detail"`
+				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
+				Error string `json:"error"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
-			return fmt.Errorf("server stream error: %s", e.Detail)
+			msg := e.Detail
+			if msg == "" {
+				msg = e.Error
+			}
+			return fmt.Errorf("server stream error: %s", msg)
 		}
 		return nil
 	})
