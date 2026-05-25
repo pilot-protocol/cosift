@@ -107,6 +107,7 @@ The config file lives in the working directory by default; override with `-confi
     "max_depth": 3,
     "respect_robots": true,
     "include_domains": ["docs.example.com"],
+    "max_urls_per_host": 1000,
     "chunk_size": 320,
     "chunk_overlap": 64
   },

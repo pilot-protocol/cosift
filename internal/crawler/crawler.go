@@ -420,6 +420,17 @@ func (c *Crawler) maxBodyBytesFor(host string) int64 {
 }
 
 func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
+	// Iter 195: per-host enqueue cap. First pass canonicalizes + filters by
+	// domain + depth, then batches a single host-count query, then enqueues
+	// only links whose host hasn't hit cfg.MaxURLsPerHost. Without this cap,
+	// fanout-heavy hosts (github.com, en.wikipedia.org) grow their queue
+	// unboundedly to tens of thousands of URLs, starving the worker pool.
+	type candidate struct {
+		canon string
+		host  string
+	}
+	candidates := make([]candidate, 0, len(links))
+	hosts := make(map[string]struct{})
 	for _, l := range links {
 		canon, err := canonicalize(l)
 		if err != nil {
@@ -432,11 +443,49 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 		// A child on a host with override=1 is dropped if depth would exceed 1,
 		// even if the default MaxDepth is much higher (and vice versa).
 		u, err := url.Parse(canon)
-		if err == nil && depth > c.maxDepthFor(u.Host) {
+		if err != nil {
+			continue
+		}
+		if depth > c.maxDepthFor(u.Host) {
+			continue
+		}
+		h := strings.ToLower(u.Host)
+		candidates = append(candidates, candidate{canon: canon, host: h})
+		hosts[h] = struct{}{}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Per-host cap: one batched COUNT(*) GROUP BY host, then in-memory
+	// accounting as we enqueue. The accounting needs to track BOTH the count
+	// already in the queue AND additions made in this batch — otherwise a
+	// 300-link page with 280 github links would push all 280 past the cap.
+	cap := c.cfg.MaxURLsPerHost
+	var queuedPerHost map[string]int
+	if cap > 0 {
+		hostList := make([]string, 0, len(hosts))
+		for h := range hosts {
+			hostList = append(hostList, h)
+		}
+		var err error
+		queuedPerHost, err = c.store.CountQueuedPerHost(ctx, hostList)
+		if err != nil {
+			// Falling back to no-cap is preferable to dropping links outright
+			// on a transient SQLite error.
+			queuedPerHost = map[string]int{}
+		}
+	}
+
+	for _, cand := range candidates {
+		if cap > 0 && queuedPerHost[cand.host] >= cap {
 			continue
 		}
 		// PushFrontier is INSERT OR IGNORE — dedup is at the persistent layer.
-		_ = c.store.PushFrontier(ctx, canon, depth, 0.5)
+		_ = c.store.PushFrontier(ctx, cand.canon, depth, 0.5)
+		if cap > 0 {
+			queuedPerHost[cand.host]++
+		}
 	}
 }
 

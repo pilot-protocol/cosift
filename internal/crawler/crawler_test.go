@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -398,5 +399,69 @@ func TestCrawlGzipEncodedResponse(t *testing.T) {
 	}
 	if !strings.Contains(doc.Text, "body text about Go programming") {
 		t.Errorf("gzip-decoded body text missing: %q", doc.Text)
+	}
+}
+
+// TestEnqueueLinksRespectsPerHostCap — iter 195. Verifies cfg.MaxURLsPerHost
+// caps the per-host queue. A page with 30 outbound links to host-A and a cap
+// of 5 must produce exactly 5 queued URLs on host-A (not 30). Without the cap
+// fix, fanout-heavy hosts grow their queue unboundedly into the tens of
+// thousands and starve the host-fair scheduler.
+func TestEnqueueLinksRespectsPerHostCap(t *testing.T) {
+	s := newStoreT(t)
+	cfg := config.Default().Crawler
+	cfg.MaxConcurrent = 1
+	cfg.RespectRobots = false
+	cfg.MaxDepth = 5
+	cfg.MaxURLsPerHost = 5
+	c := New(cfg, s)
+
+	// Synthesize 30 links to the same host.
+	links := make([]string, 30)
+	for i := range links {
+		links[i] = fmt.Sprintf("https://fanout.example.com/page-%d", i)
+	}
+	c.enqueueLinks(context.Background(), links, 1)
+
+	// Frontier should have exactly 5 queued URLs from fanout.example.com.
+	var got int
+	row := s.DB().QueryRow(
+		"SELECT COUNT(*) FROM frontier WHERE status='queued' AND host=?",
+		"fanout.example.com")
+	if err := row.Scan(&got); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got != 5 {
+		t.Errorf("queued count: want 5 (cap), got %d", got)
+	}
+}
+
+// TestEnqueueLinksUnlimitedWhenCapIsZero — backward compatibility. When
+// MaxURLsPerHost is 0 (the default, pre-iter-195 behavior), the crawler
+// must enqueue all valid links without any cap.
+func TestEnqueueLinksUnlimitedWhenCapIsZero(t *testing.T) {
+	s := newStoreT(t)
+	cfg := config.Default().Crawler
+	cfg.MaxConcurrent = 1
+	cfg.RespectRobots = false
+	cfg.MaxDepth = 5
+	cfg.MaxURLsPerHost = 0 // disabled
+	c := New(cfg, s)
+
+	links := make([]string, 30)
+	for i := range links {
+		links[i] = fmt.Sprintf("https://other.example.com/page-%d", i)
+	}
+	c.enqueueLinks(context.Background(), links, 1)
+
+	var got int
+	row := s.DB().QueryRow(
+		"SELECT COUNT(*) FROM frontier WHERE status='queued' AND host=?",
+		"other.example.com")
+	if err := row.Scan(&got); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got != 30 {
+		t.Errorf("queued count without cap: want 30, got %d", got)
 	}
 }

@@ -105,6 +105,23 @@ type Crawler struct {
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
+	// MaxURLsPerHost (iter 195) caps how many URLs from any single host can be
+	// queued in the frontier at once. New outbound-link enqueues for a host
+	// already at the cap are silently skipped; the cap is checked against
+	// frontier.host count for status='queued'.
+	//
+	// Without this cap, fanout-heavy hosts (github.com, en.wikipedia.org)
+	// grow their queue unboundedly as link discovery follows internal links.
+	// Observed: a 6,632-doc crawl had github.com at 18,646 queued URLs — the
+	// host-fair scheduler distributes WORK across hosts but doesn't limit
+	// how much each host can queue. Crawler ends up spending most workers
+	// fetching same-host duplicates that all redirect to canonical doc URLs
+	// already in the index (fetched_at bumps, no new docs).
+	//
+	// Zero / unset = no cap (pre-iter-195 behavior). Recommended starting
+	// value: 1000 for general crawls; 100-200 for tight target-site crawls.
+	MaxURLsPerHost int `json:"max_urls_per_host,omitempty"`
+
 	// ChunkSize and ChunkOverlap (iter 142) control passage windowing for the
 	// dense indexer during crawl. ChunkSize is the target word count per chunk
 	// (~0.6 BPE tokens/word for English → 320 words ≈ 512 tokens). ChunkOverlap

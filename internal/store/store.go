@@ -1098,6 +1098,52 @@ type FrontierStats struct {
 	Errored  int64
 }
 
+// CountQueuedPerHost returns a host→queued-count map for the given hosts.
+// Iter 195: used by crawler.enqueueLinks to enforce the per-host cap in a
+// single SQL query, avoiding N queries per link batch. Hosts with zero queued
+// rows simply don't appear in the result map (callers should treat absent as
+// 0). Backed by the idx_frontier_host_status index (iter 190).
+func (s *Store) CountQueuedPerHost(ctx context.Context, hosts []string) (map[string]int, error) {
+	if len(hosts) == 0 {
+		return map[string]int{}, nil
+	}
+	// Build a parameterized IN clause. SQLite caps parameters at 999 by
+	// default; chunk if the caller ever passes more.
+	const chunk = 800
+	out := make(map[string]int, len(hosts))
+	for start := 0; start < len(hosts); start += chunk {
+		end := start + chunk
+		if end > len(hosts) {
+			end = len(hosts)
+		}
+		batch := hosts[start:end]
+		placeholders := strings.Repeat("?,", len(batch))
+		placeholders = placeholders[:len(placeholders)-1]
+		query := fmt.Sprintf(
+			"SELECT host, COUNT(*) FROM frontier WHERE status='queued' AND host IN (%s) GROUP BY host;",
+			placeholders)
+		args := make([]any, len(batch))
+		for i, h := range batch {
+			args[i] = h
+		}
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var host string
+			var n int
+			if err := rows.Scan(&host, &n); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[host] = n
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // extractHost returns the lowercased host portion of a URL string.
 // Pure-string parsing — avoids the cost of url.Parse on the hot enqueue path,
 // and the input is already canonicalized when it reaches the store.
