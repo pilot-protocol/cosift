@@ -158,6 +158,13 @@ type pebbleHTTP struct {
 	hydeHits   atomic.Int64
 	hydeMisses atomic.Int64
 
+	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
+	// to BM25 order silently — that's the right reliability move, but without
+	// a counter operators can't tell whether their LLM/HTTP reranker is
+	// healthy or quietly broken.
+	rerankAttempts atomic.Int64
+	rerankFailures atomic.Int64
+
 	// Iter 261/262: per-endpoint request counters + duration sums via a
 	// counting middleware wrapping every mux entry. sync.Map keeps the hot
 	// path lock-free; /metrics reads via Range. Path is the label so a
@@ -261,6 +268,12 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_misses_total HyDE cache misses (expandQuery called the LLM).\n")
 	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_misses_total counter\n")
 	fmt.Fprintf(w, "cosift_hyde_cache_misses_total %d\n", s.hydeMisses.Load())
+	fmt.Fprintf(w, "# HELP cosift_rerank_attempts_total Rerank calls invoked (any endpoint with ?rerank=true).\n")
+	fmt.Fprintf(w, "# TYPE cosift_rerank_attempts_total counter\n")
+	fmt.Fprintf(w, "cosift_rerank_attempts_total %d\n", s.rerankAttempts.Load())
+	fmt.Fprintf(w, "# HELP cosift_rerank_failures_total Rerank calls that returned an error (silently fell back to BM25 order).\n")
+	fmt.Fprintf(w, "# TYPE cosift_rerank_failures_total counter\n")
+	fmt.Fprintf(w, "cosift_rerank_failures_total %d\n", s.rerankFailures.Load())
 	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)
@@ -473,7 +486,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		for i := range out {
 			cands[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: rerankTexts[i]}
 		}
-		if order, rerr := s.reranker.Rerank(r.Context(), q, cands); rerr == nil && len(order) > 0 {
+		if order, rerr := s.doRerank(r.Context(), q, cands); rerr == nil && len(order) > 0 {
 			reordered := make([]searchHit, 0, len(out))
 			seen := make(map[int]bool, len(out))
 			for _, id := range order {
@@ -736,7 +749,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		for i := range cands {
 			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
 		}
-		if order, rerr := s.reranker.Rerank(r.Context(), queryStr, rc); rerr == nil && len(order) > 0 {
+		if order, rerr := s.doRerank(r.Context(), queryStr, rc); rerr == nil && len(order) > 0 {
 			reordered := make([]fsCand, 0, len(cands))
 			seen := make(map[int]bool, len(cands))
 			for _, id := range order {
@@ -786,6 +799,18 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 // internal/server/hyde.go so the SQLite and Pebble paths produce comparable
 // expansions and operators don't have to learn two prompt shapes.
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
+
+// doRerank wraps s.reranker.Rerank with attempt/failure counters. Iter 263.
+// Returning the original error unchanged so callers keep their existing
+// silent-fallback behavior; only the operator-side visibility changed.
+func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Candidate) ([]string, error) {
+	s.rerankAttempts.Add(1)
+	order, err := s.reranker.Rerank(ctx, q, cands)
+	if err != nil {
+		s.rerankFailures.Add(1)
+	}
+	return order, err
+}
 
 // expandQuery returns q + " " + a HyDE-generated passage when a chat client is
 // configured. On any error (no chat client, chat call fails, empty passage),
@@ -972,7 +997,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		for i := range cands {
 			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
 		}
-		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+		if order, rerr := s.doRerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
 			reordered := make([]cand, 0, len(cands))
 			seen := make(map[int]bool, len(cands))
 			for _, id := range order {
@@ -1222,7 +1247,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		for i := range cands {
 			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
 		}
-		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+		if order, rerr := s.doRerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
 			reordered := make([]cand, 0, len(cands))
 			seen := make(map[int]bool, len(cands))
 			for _, id := range order {
@@ -1386,7 +1411,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		for i := range cands {
 			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
 		}
-		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+		if order, rerr := s.doRerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
 			reordered := make([]cand, 0, len(cands))
 			seen := make(map[int]bool, len(cands))
 			for _, id := range order {

@@ -214,4 +214,5 @@ iter 259 — pebble-serve bounded in-memory HyDE cache (256 entries, drop-arbitr
 iter 260 — pebble-serve `/metrics` exposes cosift_hyde_cache_hits_total / misses_total
 iter 261 — pebble-serve `/metrics` exposes cosift_requests_total{endpoint="…"} via counting middleware
 iter 262 — pebble-serve `/metrics` adds cosift_request_duration_seconds_sum (mean latency via PromQL)
+iter 263 — pebble-serve `/metrics` adds cosift_rerank_attempts_total / _failures_total
 ```
