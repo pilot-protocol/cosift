@@ -144,7 +144,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Gap | Workaround |
 |---|---|
 | Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /find_similar, /contents, /verify, /metrics) | Server unification deferred — synthesis endpoints (`/answer`, `/research`) on Pebble require porting ~1000 LOC of internal/server |
+| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer, /contents, /verify, /metrics) | `/research` and streaming `/answer` still SQLite-only; rerank + query-expansion wrappers also not ported yet |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
 
@@ -191,4 +191,5 @@ iter 236 — pebble-serve `/find_similar` (BM25 more-like-this, no embeddings)
 iter 237 — pebble-serve `/search?include_text=true` (inline full text, no N+1)
 iter 238 — pebble-serve `/stats` includes indexed_docs / sum_doc_len / avg_doc_len
 iter 239 — pebble-serve `/find_similar?q=` augments the auto-derived MLT query
+iter 240 — pebble-serve `/answer` (BM25 retrieval + OpenAI-compatible chat synth)
 ```

@@ -22,6 +22,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/calinteodor/cosift/internal/config"
+	"github.com/calinteodor/cosift/internal/embed"
 	"github.com/calinteodor/cosift/internal/index"
 	"github.com/calinteodor/cosift/internal/store"
 )
@@ -55,6 +57,17 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 
 	idx := index.NewPebbleBM25(ps)
 	srv := &pebbleHTTP{store: ps, idx: idx, started: time.Now()}
+	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
+	// client the SQLite-side server uses; works against OpenAI, Together,
+	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
+	if cfg.Chat.Model != "" {
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENAI")
+		}
+		srv.chat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
+		log.Printf("pebble-serve: /answer enabled (chat model=%s)", cfg.Chat.Model)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", srv.handleHealthz)
@@ -64,6 +77,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /verify", srv.handleVerify)
 	mux.HandleFunc("GET /metrics", srv.handleMetrics)
 	mux.HandleFunc("GET /find_similar", srv.handleFindSimilar)
+	mux.HandleFunc("GET /answer", srv.handleAnswer)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -93,6 +107,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 type pebbleHTTP struct {
 	store   *store.PebbleStore
 	idx     *index.PebbleBM25
+	chat    embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
 	started time.Time
 }
 
@@ -475,6 +490,95 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		Retriever: "bm25-mlt",
 		Hits:      out,
 		Took:      time.Since(start).String(),
+	})
+}
+
+// Iter 240: /answer — synthesis over BM25 retrieval. Mirrors the SQLite-side
+// /answer in spirit (top-k sources → cited synthesis) but stays minimal: no
+// streaming, no rerank, no query expansion. Those land in follow-up iters
+// once this surface is exercised. Returns 501 when no chat model is
+// configured so the absent capability fails loud instead of silent.
+const answerSystemPrompt = `You are a research assistant. Answer the user's question using ONLY the provided sources.
+- Cite sources by their numeric id in square brackets, e.g. [1] or [2,3]. Every factual claim needs a citation.
+- If the sources do not contain the answer, say so plainly. Do not invent facts.
+- Keep the answer focused on what the sources actually say; do not pad.`
+
+type answerSource struct {
+	URL         string     `json:"url"`
+	Title       string     `json:"title"`
+	Excerpt     string     `json:"excerpt,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	Author      string     `json:"author,omitempty"`
+}
+
+type answerResponse struct {
+	Query   string         `json:"query"`
+	Answer  string         `json:"answer"`
+	Sources []answerSource `json:"sources"`
+	Model   string         `json:"model"`
+	Took    string         `json:"took"`
+}
+
+func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented,
+			"/answer requires cfg.Chat.Model to be set (point cosift.json's chat.url at any OpenAI-compatible endpoint)")
+		return
+	}
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 5
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			k = n
+		}
+	}
+
+	hits, err := s.idx.Search(r.Context(), q, k)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sources := make([]answerSource, 0, len(hits))
+	var promptSources strings.Builder
+	for i, h := range hits {
+		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
+		if derr != nil || doc == nil {
+			continue
+		}
+		excerpt := textExcerpt(doc.Text, 1200)
+		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
+		if !doc.PublishedAt.IsZero() {
+			t := doc.PublishedAt
+			src.PublishedAt = &t
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+	}
+	if len(sources) == 0 {
+		writeJSON(w, http.StatusOK, answerResponse{
+			Query: q, Answer: "No matching sources in the index.", Sources: sources,
+			Model: s.chat.Model(), Took: time.Since(start).String(),
+		})
+		return
+	}
+
+	msgs := []embed.ChatMsg{
+		{Role: "system", Content: answerSystemPrompt},
+		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
+	}
+	answer, err := s.chat.Chat(r.Context(), msgs)
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "chat: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, answerResponse{
+		Query: q, Answer: answer, Sources: sources,
+		Model: s.chat.Model(), Took: time.Since(start).String(),
 	})
 }
 
