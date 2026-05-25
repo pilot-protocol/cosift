@@ -442,6 +442,7 @@ type searchResponse struct {
 	Retriever       string      `json:"retriever"`
 	Hits            []searchHit `json:"hits"`
 	TotalCandidates int         `json:"total_candidates,omitempty"`
+	Warnings        []string    `json:"warnings,omitempty"`
 	Took            string      `json:"took"`
 }
 
@@ -829,6 +830,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if effectiveQuery != q {
 		resp.EffectiveQuery = effectiveQuery
 	}
+	resp.Warnings = s.warningsFor(r)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1083,6 +1085,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		Retriever:       retrieverLabel,
 		Hits:            out,
 		TotalCandidates: len(hits),
+		Warnings:        s.warningsFor(r),
 		Took:            time.Since(start).String(),
 	})
 }
@@ -1241,6 +1244,20 @@ func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
 	return out
 }
 
+// Iter 292: warningsFor surfaces silent no-ops that callers used to have to
+// derive from absent effective_query / retriever fields. Each warning is one
+// human-readable sentence; consumers programmatically inspect the slice.
+func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
+	var w []string
+	if mode := r.URL.Query().Get("expand"); mode != "" && s.chat == nil {
+		w = append(w, "expand="+mode+" requested but no chat client configured (set cfg.Chat.Model)")
+	}
+	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
+		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
+	}
+	return w
+}
+
 // Iter 274: retrieveWithExpansion dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
@@ -1335,6 +1352,7 @@ type answerResponse struct {
 	Answer         string         `json:"answer"`
 	Sources        []answerSource `json:"sources"`
 	Model          string         `json:"model"`
+	Warnings       []string       `json:"warnings,omitempty"`
 	Took           string         `json:"took"`
 }
 
@@ -1494,6 +1512,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if effectiveQuery != q {
 			empty.EffectiveQuery = effectiveQuery
 		}
+		empty.Warnings = s.warningsFor(r)
 		writeJSON(w, http.StatusOK, empty)
 		return
 	}
@@ -1532,6 +1551,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	if effectiveQuery != q {
 		resp.EffectiveQuery = effectiveQuery
 	}
+	resp.Warnings = s.warningsFor(r)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1576,13 +1596,14 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 - Keep the answer focused on what the sources actually say.`
 
 type researchResponse struct {
-	Query   string         `json:"query"`
-	Plan    []string       `json:"plan"`
-	Expand  string         `json:"expand,omitempty"`
-	Answer  string         `json:"answer"`
-	Sources []answerSource `json:"sources"`
-	Model   string         `json:"model"`
-	Took    string         `json:"took"`
+	Query    string         `json:"query"`
+	Plan     []string       `json:"plan"`
+	Expand   string         `json:"expand,omitempty"`
+	Answer   string         `json:"answer"`
+	Sources  []answerSource `json:"sources"`
+	Model    string         `json:"model"`
+	Warnings []string       `json:"warnings,omitempty"`
+	Took     string         `json:"took"`
 }
 
 func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
@@ -1749,7 +1770,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
 			Query: q, Plan: subs, Expand: expandMode, Answer: "No matching sources for any sub-query.",
-			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
+			Sources: sources, Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
 		})
 		return
 	}
@@ -1764,7 +1785,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
 		Query: q, Plan: subs, Expand: expandMode, Answer: answer, Sources: sources,
-		Model: s.chat.Model(), Took: time.Since(start).String(),
+		Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
 	})
 }
 
