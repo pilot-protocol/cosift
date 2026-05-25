@@ -738,21 +738,37 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			var p struct {
 				Strategy string   `json:"strategy"`
 				Variants []string `json:"variants"`
+				// Iter 336: pebble-serve uses 'plan' for the sub-query list and
+				// emits an 'expand' label instead of 'strategy'. Decode both
+				// shapes; fall back to "planner" when only plan is set.
+				Plan   []string `json:"plan"`
+				Expand string   `json:"expand"`
 			}
 			if err := json.Unmarshal([]byte(data), &p); err != nil {
 				return nil // tolerate malformed mid-stream event
 			}
+			strategy := p.Strategy
+			variants := p.Variants
+			if strategy == "" && len(p.Plan) > 0 {
+				strategy = "planner"
+				if p.Expand != "" {
+					strategy = "planner+" + p.Expand
+				}
+			}
+			if len(variants) == 0 {
+				variants = p.Plan
+			}
 			if useMarkdown {
-				fmt.Printf("> Strategy: `%s`", p.Strategy)
-				if len(p.Variants) > 0 {
-					fmt.Printf(" (plan: %s)", strings.Join(p.Variants, " | "))
+				fmt.Printf("> Strategy: `%s`", strategy)
+				if len(variants) > 0 {
+					fmt.Printf(" (plan: %s)", strings.Join(variants, " | "))
 				}
 				fmt.Println()
 				fmt.Println()
 			} else {
-				fmt.Printf("Strategy: %s", p.Strategy)
-				if len(p.Variants) > 0 {
-					fmt.Printf(" (plan: %s)", strings.Join(p.Variants, " | "))
+				fmt.Printf("Strategy: %s", strategy)
+				if len(variants) > 0 {
+					fmt.Printf(" (plan: %s)", strings.Join(variants, " | "))
 				}
 				fmt.Println()
 			}

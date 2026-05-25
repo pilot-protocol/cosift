@@ -294,4 +294,5 @@ iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` m
 iter 333 — CLI SSE consumers handle pebble-serve's `warnings` event (surfaces silent no-ops on streamed answer/research)
 iter 334 — wire: rename pebble SSE `chunk{delta}` → `answer_chunk{text}` so `cosift answer/research -stream` against pebble-serve renders text
 iter 335 — CLI SSE consumers handle pebble's `sources` event + tolerate pebble's minimal `done` payload + pebble's `error{error:...}` field shape
+iter 336 — CLI SSE `plan` handler accepts pebble's `{plan, expand}` shape alongside SQLite's `{strategy, variants}`
 ```
