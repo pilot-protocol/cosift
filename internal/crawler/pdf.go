@@ -18,7 +18,20 @@ import (
 // Lang is left empty (PDFs don't carry HTML lang attributes). Links are
 // extracted only if the PDF embeds annotation links (rare in text-only PDFs);
 // extracting embedded URL annotations isn't critical for retrieval.
-func ParsePDF(body []byte, finalURL string) (*ParsedDoc, error) {
+func ParsePDF(body []byte, finalURL string) (parsed *ParsedDoc, err error) {
+	// Iter 191: the ledongthuc/pdf library uses panic() for non-local error
+	// flow on malformed PDFs (observed error: "missing endobj after indirect
+	// object definition"). Without recovery, one bad PDF takes down the entire
+	// `cosift crawl` process — observed in production after ~2200 docs.
+	// Convert library panics into ordinary errors so the crawler's existing
+	// FailFrontier path handles them and the worker pool keeps going.
+	defer func() {
+		if r := recover(); r != nil {
+			parsed = nil
+			err = fmt.Errorf("pdf: parser panicked: %v", r)
+		}
+	}()
+
 	if len(body) == 0 {
 		return nil, fmt.Errorf("empty pdf body")
 	}
@@ -30,6 +43,8 @@ func ParsePDF(body []byte, finalURL string) (*ParsedDoc, error) {
 
 	var sb strings.Builder
 	for i := 1; i <= r.NumPage(); i++ {
+		// Page() can also panic on malformed indirect refs — recovery above
+		// catches that too.
 		p := r.Page(i)
 		if p.V.IsNull() {
 			continue

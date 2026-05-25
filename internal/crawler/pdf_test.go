@@ -101,3 +101,30 @@ func TestCrawlerHandlesPDFContentType(t *testing.T) {
 		t.Errorf("expected 'tessellation' in PDF text, got: %q", r.Text)
 	}
 }
+
+// TestParsePDFNeverPanics — iter 191. The ledongthuc/pdf library uses panic()
+// for non-local error flow on malformed PDFs. A single malformed PDF in the
+// crawl frontier was killing the entire `cosift crawl` process mid-run after
+// indexing ~2200 docs. The fix wraps ParsePDF in defer/recover; this test
+// locks in the invariant that no input — random bytes, truncated headers,
+// garbage that looks like a PDF header, even an HTML response misidentified
+// as PDF — can ever propagate a panic out of ParsePDF.
+func TestParsePDFNeverPanics(t *testing.T) {
+	cases := map[string][]byte{
+		"empty":             nil,
+		"random_bytes":      []byte{0x00, 0x01, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF},
+		"pdf_header_only":   []byte("%PDF-1.4\n"),
+		"truncated_pdf":     []byte("%PDF-1.4\n1 0 obj\n<</Type /Catalog>>\nendobj"),
+		"missing_endobj":    []byte("%PDF-1.4\n1 0 obj\n<</Type /Catalog>>\n%%EOF"),
+		"html_as_pdf":       []byte("<!doctype html><html><body>not a pdf</body></html>"),
+		"junk_after_header": []byte("%PDF-1.4\n" + strings.Repeat("xyz\n", 100)),
+	}
+	for name, body := range cases {
+		_, err := ParsePDF(body, "https://example.com/"+name+".pdf")
+		// We don't care WHAT the error is — only that we got one back, NOT a
+		// panic. Pre-fix, several of these cases would panic and crash.
+		if err == nil {
+			t.Errorf("%s: expected an error (or nil parsed doc); panic-free is what we're locking in", name)
+		}
+	}
+}
