@@ -4321,11 +4321,19 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 
 	// 2b. Pebble open + counters (iter 287). Pebble is optional; "absent" is
 	// not a failure, just a SKIP. When present, verify open + read counters.
+	// Iter 324: the open can fail because pebble-serve / a crawl holds the
+	// single-writer lock — that's a healthy state, not a FAIL. Distinguish
+	// the lock error from real corruption.
 	pebbleDir := filepath.Join(cfg.DataDir, "pebble")
 	if _, statErr := os.Stat(pebbleDir); statErr != nil {
 		add("pebble store", "SKIP", "no pebble dir (sqlite-only deployment)")
 	} else if ps, err := store.OpenPebble(pebbleDir); err != nil {
-		add("pebble store", "FAIL", err.Error())
+		msg := err.Error()
+		if strings.Contains(msg, "lock") || strings.Contains(msg, "resource temporarily unavailable") {
+			add("pebble store", "INFO", "another process holds the writer lock (pebble-serve / crawl in flight)")
+		} else {
+			add("pebble store", "FAIL", msg)
+		}
 	} else {
 		_, n, _ := ps.CorpusStats(ctx)
 		_ = ps.Close()

@@ -280,4 +280,5 @@ iter 320 — `cosift` usage string lists doctor + pebble-serve/info, verify, sta
 iter 321 — README Quick start mentions the Pebble path (crawl --backend + pebble-serve) so new self-hosters don't miss it
 iter 322 — fix: /find_similar topN==0 branch referenced out-of-scope `decoded` (broken since iter 298)
 iter 323 — `make check` target: compile + vet + offline unit tests (~10s, catches iter-322-class breakage)
+iter 324 — `cosift doctor` distinguishes Pebble writer-lock contention (INFO) from real corruption (FAIL)
 ```
