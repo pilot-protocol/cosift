@@ -1652,7 +1652,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			s.streamAnswer(w, r, sc, msgs, sources, q, start)
+			s.streamAnswer(w, r, sc, msgs, sources, q, len(hits), start)
 			return
 		}
 		// Not a streaming client — degrade silently to sync rather than 501.
@@ -1674,7 +1674,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, start time.Time) {
+func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, totalCandidates int, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
@@ -1693,7 +1693,7 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 	if warns := s.warningsFor(r); len(warns) > 0 {
 		sse(map[string]any{"type": "warnings", "warnings": warns})
 	}
-	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model()})
+	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model(), "total_candidates": totalCandidates})
 
 	_, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
 		sse(map[string]any{"type": "chunk", "delta": delta})
@@ -2071,7 +2071,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	sse(map[string]any{"type": "sources", "sources": sources})
+	sse(map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)}) // iter 317
 	if len(sources) == 0 {
 		sse(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
 		return
