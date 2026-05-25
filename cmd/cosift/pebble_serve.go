@@ -907,11 +907,12 @@ type answerSource struct {
 }
 
 type answerResponse struct {
-	Query   string         `json:"query"`
-	Answer  string         `json:"answer"`
-	Sources []answerSource `json:"sources"`
-	Model   string         `json:"model"`
-	Took    string         `json:"took"`
+	Query          string         `json:"query"`
+	EffectiveQuery string         `json:"effective_query,omitempty"`
+	Answer         string         `json:"answer"`
+	Sources        []answerSource `json:"sources"`
+	Model          string         `json:"model"`
+	Took           string         `json:"took"`
 }
 
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
@@ -1067,10 +1068,14 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
 	if len(sources) == 0 {
-		writeJSON(w, http.StatusOK, answerResponse{
+		empty := answerResponse{
 			Query: q, Answer: "No matching sources in the index.", Sources: sources,
 			Model: s.chat.Model(), Took: time.Since(start).String(),
-		})
+		}
+		if effectiveQuery != q {
+			empty.EffectiveQuery = effectiveQuery
+		}
+		writeJSON(w, http.StatusOK, empty)
 		return
 	}
 
@@ -1101,10 +1106,14 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadGateway, "chat: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, answerResponse{
+	resp := answerResponse{
 		Query: q, Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
-	})
+	}
+	if effectiveQuery != q {
+		resp.EffectiveQuery = effectiveQuery
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, start time.Time) {
