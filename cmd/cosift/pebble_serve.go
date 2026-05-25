@@ -2353,7 +2353,7 @@ func openPebbleOrFriendlyErr(d string) (*store.PebbleStore, error) {
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "lock") || strings.Contains(msg, "resource temporarily unavailable") {
-			return nil, fmt.Errorf("open pebble at %s: writer lock is held by another process (pebble-serve / crawl in flight); stop the running service or use HTTP endpoints instead", d)
+			return nil, fmt.Errorf("open pebble at %s: writer lock is held by another process (pebble-serve / crawl in flight); stop the running service first", d)
 		}
 		return nil, fmt.Errorf("open pebble at %s: %w", d, err)
 	}

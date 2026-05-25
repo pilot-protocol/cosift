@@ -333,9 +333,9 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		// data dir layout under cfg.DataDir for Pebble: a sibling "pebble"
 		// subdir so SQLite and Pebble stores can coexist during migration.
 		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
-		ps, err := store.OpenPebble(pebbleDir)
+		ps, err := openPebbleOrFriendlyErr(pebbleDir)
 		if err != nil {
-			return fmt.Errorf("open pebble at %s: %w", pebbleDir, err)
+			return err
 		}
 		defer ps.Close()
 		c = crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
@@ -414,9 +414,9 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 		idx = index.NewBM25(s)
 	case "pebble":
 		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
-		ps, err := store.OpenPebble(pebbleDir)
+		ps, err := openPebbleOrFriendlyErr(pebbleDir)
 		if err != nil {
-			return fmt.Errorf("open pebble: %w", err)
+			return err
 		}
 		defer ps.Close()
 		// Iter 301: honor COSIFT_BM25_K1 / _B here too. runQuery previously
@@ -3590,9 +3590,9 @@ func runMigrateToPebble(ctx context.Context, cfg *config.Config, args []string) 
 	}
 	defer src.Close()
 
-	dst, err := store.OpenPebble(*output)
+	dst, err := openPebbleOrFriendlyErr(*output)
 	if err != nil {
-		return fmt.Errorf("open destination Pebble store at %s: %w", *output, err)
+		return err
 	}
 	defer dst.Close()
 
@@ -5597,9 +5597,9 @@ func runStats(ctx context.Context, cfg *config.Config, args []string) error {
 			stats.Documents, stats.Terms, cfg.DataDir)
 	case "pebble":
 		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
-		ps, err := store.OpenPebble(pebbleDir)
+		ps, err := openPebbleOrFriendlyErr(pebbleDir)
 		if err != nil {
-			return fmt.Errorf("open pebble: %w", err)
+			return err
 		}
 		defer ps.Close()
 		stats, err := ps.Stats(ctx)
