@@ -215,4 +215,5 @@ iter 260 — pebble-serve `/metrics` exposes cosift_hyde_cache_hits_total / miss
 iter 261 — pebble-serve `/metrics` exposes cosift_requests_total{endpoint="…"} via counting middleware
 iter 262 — pebble-serve `/metrics` adds cosift_request_duration_seconds_sum (mean latency via PromQL)
 iter 263 — pebble-serve `/metrics` adds cosift_rerank_attempts_total / _failures_total
+iter 264 — pebble-serve `/metrics` adds cosift_chat_attempts_total / _failures_total (all 7 sites)
 ```

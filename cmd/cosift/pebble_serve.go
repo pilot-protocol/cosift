@@ -165,6 +165,13 @@ type pebbleHTTP struct {
 	rerankAttempts atomic.Int64
 	rerankFailures atomic.Int64
 
+	// Iter 264: chat call attempt + failure counters across HyDE expansion,
+	// /answer synth (sync + SSE), and /research plan + synth (sync + SSE).
+	// A spike in failures (provider 429s, network blips) is the clearest
+	// early signal that synth endpoints are degraded.
+	chatAttempts atomic.Int64
+	chatFailures atomic.Int64
+
 	// Iter 261/262: per-endpoint request counters + duration sums via a
 	// counting middleware wrapping every mux entry. sync.Map keeps the hot
 	// path lock-free; /metrics reads via Range. Path is the label so a
@@ -274,6 +281,12 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_rerank_failures_total Rerank calls that returned an error (silently fell back to BM25 order).\n")
 	fmt.Fprintf(w, "# TYPE cosift_rerank_failures_total counter\n")
 	fmt.Fprintf(w, "cosift_rerank_failures_total %d\n", s.rerankFailures.Load())
+	fmt.Fprintf(w, "# HELP cosift_chat_attempts_total Chat-client calls invoked (HyDE, /answer synth, /research plan + synth).\n")
+	fmt.Fprintf(w, "# TYPE cosift_chat_attempts_total counter\n")
+	fmt.Fprintf(w, "cosift_chat_attempts_total %d\n", s.chatAttempts.Load())
+	fmt.Fprintf(w, "# HELP cosift_chat_failures_total Chat-client calls that returned an error.\n")
+	fmt.Fprintf(w, "# TYPE cosift_chat_failures_total counter\n")
+	fmt.Fprintf(w, "cosift_chat_failures_total %d\n", s.chatFailures.Load())
 	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)
@@ -800,6 +813,28 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 // expansions and operators don't have to learn two prompt shapes.
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
+// doChat wraps ChatClient.Chat with attempt/failure counters. Iter 264.
+// Takes the client as a parameter so it works for both s.chat and the
+// StreamingChatClient passed into streamResearch/streamAnswer.
+func (s *pebbleHTTP) doChat(ctx context.Context, c embed.ChatClient, msgs []embed.ChatMsg) (string, error) {
+	s.chatAttempts.Add(1)
+	out, err := c.Chat(ctx, msgs)
+	if err != nil {
+		s.chatFailures.Add(1)
+	}
+	return out, err
+}
+
+// doChatStream wraps StreamingChatClient.ChatStream with the same counters.
+func (s *pebbleHTTP) doChatStream(ctx context.Context, c embed.StreamingChatClient, msgs []embed.ChatMsg, onChunk func(string)) (string, error) {
+	s.chatAttempts.Add(1)
+	out, err := c.ChatStream(ctx, msgs, onChunk)
+	if err != nil {
+		s.chatFailures.Add(1)
+	}
+	return out, err
+}
+
 // doRerank wraps s.reranker.Rerank with attempt/failure counters. Iter 263.
 // Returning the original error unchanged so callers keep their existing
 // silent-fallback behavior; only the operator-side visibility changed.
@@ -830,7 +865,7 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 		return q + " " + cached
 	}
 	s.hydeMisses.Add(1)
-	passage, err := s.chat.Chat(ctx, []embed.ChatMsg{
+	passage, err := s.doChat(ctx, s.chat, []embed.ChatMsg{
 		{Role: "system", Content: hydeSystemPrompt},
 		{Role: "user", Content: q},
 	})
@@ -1053,7 +1088,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		// Not a streaming client — degrade silently to sync rather than 501.
 	}
 
-	answer, err := s.chat.Chat(r.Context(), msgs)
+	answer, err := s.doChat(r.Context(), s.chat, msgs)
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "chat: "+err.Error())
 		return
@@ -1082,7 +1117,7 @@ func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChat
 	}
 	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model()})
 
-	_, err := sc.ChatStream(r.Context(), msgs, func(delta string) {
+	_, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
 		sse(map[string]any{"type": "chunk", "delta": delta})
 	})
 	if err != nil {
@@ -1153,7 +1188,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Plan
-	planRaw, err := s.chat.Chat(r.Context(), []embed.ChatMsg{
+	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
 		{Role: "user", Content: q},
 	})
@@ -1281,7 +1316,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := s.chat.Chat(r.Context(), []embed.ChatMsg{
+	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
 		{Role: "system", Content: researchSynthPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
 	})
@@ -1318,7 +1353,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		flusher.Flush()
 	}
 
-	planRaw, err := sc.Chat(r.Context(), []embed.ChatMsg{
+	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
 		{Role: "user", Content: q},
 	})
@@ -1443,7 +1478,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		return
 	}
 
-	_, err = sc.ChatStream(r.Context(), []embed.ChatMsg{
+	_, err = s.doChatStream(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchSynthPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
 	}, func(delta string) {
