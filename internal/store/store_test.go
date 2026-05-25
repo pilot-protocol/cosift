@@ -406,3 +406,87 @@ func TestFrontierClaimConcurrencyNoLockErrors(t *testing.T) {
 		t.Errorf("queue not drained: queued=%d in_flight=%d", stats.Queued, stats.InFlight)
 	}
 }
+
+// TestClaimFrontierHostFairness — iter 190. ClaimFrontier should prefer URLs
+// whose host has no in-flight row, so the worker pool spreads across hosts
+// instead of stacking on a single fanout-heavy domain. Locks in the
+// scheduling contract surfaced by the iter-190 v2 crawl analysis where 96%
+// of indexed docs came from 2 hosts despite 13 hosts being in the frontier.
+func TestClaimFrontierHostFairness(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenMemory()
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer s.Close()
+
+	// Enqueue 10 URLs from hostA (fanout-heavy domain), then 1 each from
+	// hostB and hostC. With pure priority+age ordering, all 12 claims would
+	// drain hostA first. With host-fair ordering, after claiming the first
+	// hostA URL, hostB and hostC must be picked before claiming a SECOND
+	// hostA URL.
+	for i := 0; i < 10; i++ {
+		if err := s.PushFrontier(ctx, fmt.Sprintf("https://a.example.com/%d", i), 0, 0); err != nil {
+			t.Fatalf("push hostA %d: %v", i, err)
+		}
+	}
+	if err := s.PushFrontier(ctx, "https://b.example.com/x", 0, 0); err != nil {
+		t.Fatalf("push hostB: %v", err)
+	}
+	if err := s.PushFrontier(ctx, "https://c.example.com/y", 0, 0); err != nil {
+		t.Fatalf("push hostC: %v", err)
+	}
+
+	// Three claims back-to-back, no Complete between them so all three stay
+	// in_flight. The fairness invariant: each host appears AT MOST once in
+	// the first three claims.
+	seen := map[string]int{}
+	for i := 0; i < 3; i++ {
+		it, ok, err := s.ClaimFrontier(ctx)
+		if err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		if !ok {
+			t.Fatalf("claim %d: no item returned", i)
+		}
+		host := extractHost(it.URL)
+		seen[host]++
+	}
+	for host, n := range seen {
+		if n > 1 {
+			t.Errorf("host %q claimed %d times in first 3 claims; expected ≤1 (host-fair)", host, n)
+		}
+	}
+	if len(seen) != 3 {
+		t.Errorf("expected 3 distinct hosts in first 3 claims; got %d: %v", len(seen), seen)
+	}
+
+	// Fourth claim must come from hostA (the only host with queued+no-in-flight
+	// rows left, since b and c each had only 1 URL and are now in-flight).
+	it, ok, err := s.ClaimFrontier(ctx)
+	if err != nil || !ok {
+		t.Fatalf("4th claim: %v %v", ok, err)
+	}
+	if h := extractHost(it.URL); h != "a.example.com" {
+		t.Errorf("4th claim should be hostA; got %q", h)
+	}
+}
+
+// TestExtractHost locks in the URL→host parser. Pure-string; avoids url.Parse
+// on the hot enqueue path.
+func TestExtractHost(t *testing.T) {
+	cases := []struct{ url, want string }{
+		{"https://en.wikipedia.org/wiki/Goroutine", "en.wikipedia.org"},
+		{"http://Example.COM/path", "example.com"},
+		{"https://docs.example.com", "docs.example.com"},
+		{"https://x.com?q=foo", "x.com"},
+		{"https://x.com:8080/", "x.com:8080"},
+		{"//no-scheme.com/", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := extractHost(c.url); got != c.want {
+			t.Errorf("extractHost(%q) = %q; want %q", c.url, got, c.want)
+		}
+	}
+}

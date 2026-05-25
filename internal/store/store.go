@@ -269,6 +269,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// `cosift crawl-errors` for operator visibility on why URLs failed.
 		// Empty string means "no error" (queued/in_flight/done items).
 		{"frontier", "last_error", "TEXT NOT NULL DEFAULT ''"},
+		// Iter 190: hostname extracted from URL at enqueue time. Populated by
+		// PushFrontier; used by ClaimFrontier for host-fair scheduling so the
+		// worker pool spreads across hosts instead of stacking on a single
+		// fanout-heavy host (cppreference, Wikipedia, ...).
+		{"frontier", "host", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, err := s.columnExists(ctx, m.table, m.column)
 		if err != nil {
@@ -281,6 +286,25 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("add %s.%s: %w", m.table, m.column, err)
 		}
+	}
+	// Iter 190: backfill host for any frontier rows missing it (existing data
+	// dirs predate the column). Cheap one-shot UPDATE using SQLite string fns.
+	// instr/substr extract the host portion between '://' and the next '/'.
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE frontier
+SET host = CASE
+  WHEN instr(substr(url, instr(url, '://') + 3), '/') > 0
+    THEN substr(substr(url, instr(url, '://') + 3), 1, instr(substr(url, instr(url, '://') + 3), '/') - 1)
+  ELSE substr(url, instr(url, '://') + 3)
+END
+WHERE host = '' AND url LIKE '%://%';`); err != nil {
+		return fmt.Errorf("backfill frontier.host: %w", err)
+	}
+	// Iter 190: index for host-fair claim. EXISTS subquery on in_flight rows
+	// per host needs this to stay fast as the queue grows to 100k+.
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_frontier_host_status ON frontier(host, status);`); err != nil {
+		return fmt.Errorf("create idx_frontier_host_status: %w", err)
 	}
 	return nil
 }
@@ -937,11 +961,29 @@ type FrontierStats struct {
 	Errored  int64
 }
 
+// extractHost returns the lowercased host portion of a URL string.
+// Pure-string parsing — avoids the cost of url.Parse on the hot enqueue path,
+// and the input is already canonicalized when it reaches the store.
+func extractHost(rawURL string) string {
+	i := strings.Index(rawURL, "://")
+	if i < 0 {
+		return ""
+	}
+	rest := rawURL[i+3:]
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		rest = rest[:j]
+	}
+	if k := strings.IndexByte(rest, '?'); k >= 0 {
+		rest = rest[:k]
+	}
+	return strings.ToLower(rest)
+}
+
 // PushFrontier inserts a URL into the queue at the given depth/priority.
 // No-op if the URL is already present (regardless of its current status).
 func (s *Store) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
-	const q = `INSERT OR IGNORE INTO frontier (url, depth, priority, enqueued_at) VALUES (?, ?, ?, ?);`
-	_, err := s.db.ExecContext(ctx, q, url, depth, priority, time.Now().Unix())
+	const q = `INSERT OR IGNORE INTO frontier (url, depth, priority, enqueued_at, host) VALUES (?, ?, ?, ?, ?);`
+	_, err := s.db.ExecContext(ctx, q, url, depth, priority, time.Now().Unix(), extractHost(url))
 	return err
 }
 
@@ -959,13 +1001,25 @@ func (s *Store) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
 	// Surfaced by the iter-181 real-crawl integration test (`cosift crawl
 	// https://go.dev/doc/effective_go` with default max_concurrent=8) — unit
 	// tests against a single-goroutine OpenMemory store never hit the race.
+	// Iter 190: host-fair scheduling. Prefer URLs whose host has no in-flight
+	// row — keeps the worker pool spread across hosts instead of stacking on a
+	// single fanout-heavy domain (cppreference, Wikipedia, ...) and waiting on
+	// its per-host delay gate. The first ORDER BY term evaluates to 0 when no
+	// in-flight row exists for the same host, 1 when one does, so SQLite picks
+	// the fairest URL first and falls back to priority + age within ties.
 	var it FrontierItem
 	err := s.db.QueryRowContext(ctx, `
 UPDATE frontier SET status = 'in_flight'
 WHERE url = (
-  SELECT url FROM frontier
-  WHERE status = 'queued'
-  ORDER BY priority DESC, enqueued_at ASC
+  SELECT f1.url FROM frontier f1
+  WHERE f1.status = 'queued'
+  ORDER BY
+    EXISTS (
+      SELECT 1 FROM frontier f2
+      WHERE f2.status = 'in_flight' AND f2.host = f1.host
+    ) ASC,
+    f1.priority DESC,
+    f1.enqueued_at ASC
   LIMIT 1
 )
 RETURNING url, depth, priority;`).Scan(&it.URL, &it.Depth, &it.Priority)
