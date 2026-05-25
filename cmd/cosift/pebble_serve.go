@@ -1480,20 +1480,23 @@ func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Iter 254: POST /contents — batch URL → document. Operators following a
-// /search with full-text fetch shouldn't N+1 individual GETs; one POST with
-// up to 100 URLs returns all docs. URLs not in the index emit a {url, error}
-// stub in the same slot so the caller can correlate positionally. Same wire
-// shape as the SQLite-side /contents POST so the two backends stay
-// interchangeable.
+// Iter 254/255: POST /contents — batch URL → document. Up to 100 URLs in
+// one round-trip. URLs not in the index emit a {url, found:false, error}
+// stub in the same slot so the caller can correlate positionally. Wire
+// shape (results+took, per-item found+cached+lang) mirrors the SQLite-side
+// /contents POST so `cosift contents <url> <url>` works against either
+// backend without code changes.
 type contentsBatchReq struct {
 	URLs []string `json:"urls"`
 }
 
 type contentsBatchItem struct {
 	URL         string    `json:"url"`
+	Found       bool      `json:"found"`
 	Title       string    `json:"title,omitempty"`
 	Text        string    `json:"text,omitempty"`
+	Lang        string    `json:"lang,omitempty"`
+	Cached      bool      `json:"cached"`
 	Author      string    `json:"author,omitempty"`
 	PublishedAt time.Time `json:"published_at,omitempty"`
 	FetchedAt   time.Time `json:"fetched_at,omitempty"`
@@ -1501,6 +1504,7 @@ type contentsBatchItem struct {
 }
 
 func (s *pebbleHTTP) handleContentsBatch(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var req contentsBatchReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -1514,27 +1518,33 @@ func (s *pebbleHTTP) handleContentsBatch(w http.ResponseWriter, r *http.Request)
 		writeProblem(w, http.StatusBadRequest, "urls: at most 100 per request")
 		return
 	}
-	items := make([]contentsBatchItem, 0, len(req.URLs))
+	results := make([]contentsBatchItem, 0, len(req.URLs))
 	for _, u := range req.URLs {
 		item := contentsBatchItem{URL: u}
 		doc, err := s.store.GetDocByURL(r.Context(), u)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			item.Error = "url not in index"
+			item.Error = "not in index"
 		case err != nil:
 			item.Error = err.Error()
 		case doc == nil:
-			item.Error = "url not in index"
+			item.Error = "not in index"
 		default:
+			item.Found = true
+			item.Cached = true
 			item.Title = doc.Title
 			item.Text = doc.Text
+			item.Lang = doc.Lang
 			item.Author = doc.Author
 			item.PublishedAt = doc.PublishedAt
 			item.FetchedAt = doc.FetchedAt
 		}
-		items = append(items, item)
+		results = append(results, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results": results,
+		"took":    time.Since(start).String(),
+	})
 }
 
 // runPebbleInfo prints Pebble's built-in metrics for the store at -dir.
