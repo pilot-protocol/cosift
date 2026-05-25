@@ -1315,6 +1315,14 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "sort="+sortVal+" is not a known mode (try: relevance, date_desc, date_asc) — treated as relevance")
 		}
 	}
+	// Iter 311: catch obviously-bad ?k= values that silently fell back to the
+	// per-endpoint default. Upper-bound clamping varies per endpoint so we
+	// flag only the universally-invalid cases (non-integer, zero, negative).
+	if kVal := r.URL.Query().Get("k"); kVal != "" {
+		if n, err := strconv.Atoi(kVal); err != nil || n <= 0 {
+			w = append(w, "k="+kVal+" is not a positive integer — using server default")
+		}
+	}
 	if len(w) > 0 {
 		s.warningsEmitted.Add(1)
 	}
