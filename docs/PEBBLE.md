@@ -192,4 +192,5 @@ iter 237 — pebble-serve `/search?include_text=true` (inline full text, no N+1)
 iter 238 — pebble-serve `/stats` includes indexed_docs / sum_doc_len / avg_doc_len
 iter 239 — pebble-serve `/find_similar?q=` augments the auto-derived MLT query
 iter 240 — pebble-serve `/answer` (BM25 retrieval + OpenAI-compatible chat synth)
+iter 241 — pebble-serve `/answer` honors include_domains / exclude_domains / since / until
 ```

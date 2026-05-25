@@ -537,19 +537,67 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
+	// Iter 241: /answer respects the same retrieval filters /search does —
+	// scoping research to a domain or date window is the common EXA shape.
+	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
+	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
+	since, sinceErr := parseDateBound(r.URL.Query().Get("since"))
+	if sinceErr != nil {
+		writeProblem(w, http.StatusBadRequest, "since: "+sinceErr.Error())
+		return
+	}
+	until, untilErr := parseDateBound(r.URL.Query().Get("until"))
+	if untilErr != nil {
+		writeProblem(w, http.StatusBadRequest, "until: "+untilErr.Error())
+		return
+	}
+	dateFilter := !since.IsZero() || !until.IsZero()
+	fetchK := k
+	if len(include) > 0 || len(exclude) > 0 || dateFilter {
+		mult := 5
+		if dateFilter {
+			mult = 10
+		}
+		fetchK = k * mult
+		if fetchK > 200 {
+			fetchK = 200 // /answer caps tighter than /search — full doc text per source is expensive
+		}
+	}
 
-	hits, err := s.idx.Search(r.Context(), q, k)
+	hits, err := s.idx.Search(r.Context(), q, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sources := make([]answerSource, 0, len(hits))
+	sources := make([]answerSource, 0, k)
 	var promptSources strings.Builder
-	for i, h := range hits {
+	idx := 0
+	for _, h := range hits {
+		if len(include) > 0 || len(exclude) > 0 {
+			host := hostOf(h.URL)
+			if len(include) > 0 && !matchesAnyDomain(host, include) {
+				continue
+			}
+			if len(exclude) > 0 && matchesAnyDomain(host, exclude) {
+				continue
+			}
+		}
 		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 		if derr != nil || doc == nil {
 			continue
 		}
+		if dateFilter {
+			if doc.PublishedAt.IsZero() {
+				continue
+			}
+			if !since.IsZero() && doc.PublishedAt.Before(since) {
+				continue
+			}
+			if !until.IsZero() && doc.PublishedAt.After(until) {
+				continue
+			}
+		}
+		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -557,7 +605,10 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			src.PublishedAt = &t
 		}
 		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
+		if len(sources) >= k {
+			break
+		}
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, answerResponse{
