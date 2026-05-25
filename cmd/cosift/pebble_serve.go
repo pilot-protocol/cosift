@@ -1730,7 +1730,10 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	for _, sq := range subs {
 		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
 		if err != nil {
-			continue // one sub-query failure shouldn't fail the whole research
+			// Iter 302: log the specific sub-query so operators can diagnose
+			// 'why was this research thin on sources' — previously silent.
+			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
+			continue
 		}
 		for _, h := range hits {
 			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
@@ -1906,6 +1909,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	for _, sq := range subs {
 		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
 		if err != nil {
+			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err) // iter 302
 			continue
 		}
 		for _, h := range hits {
