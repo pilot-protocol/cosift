@@ -234,4 +234,5 @@ iter 277 — pebble-serve `POST /search` (JSON body re-encoded as URL.Values, ha
 iter 278 — pebble-serve POST coverage for /find_similar, /answer, /research (same pattern)
 iter 279 — PebbleBM25 per-instance k1/b + COSIFT_BM25_K1 / COSIFT_BM25_B env overrides
 iter 280 — pebble-serve `/stats` surfaces bm25_k1, bm25_b, reranker name, chat_model
+iter 281 — docs/TUNING.md: operator's compass for when each knob actually moves quality
 ```
