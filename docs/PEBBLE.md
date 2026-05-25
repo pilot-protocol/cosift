@@ -210,4 +210,5 @@ iter 255 — pebble-serve `POST /contents` wire shape aligned with SQLite (resul
 iter 256 — pebble-serve `/answer?expand=true` (HyDE expansion on the retrieval step)
 iter 257 — pebble-serve `/research?expand=true` (per-sub-query HyDE) + shared `expandQuery` helper
 iter 258 — pebble-serve /search + /answer migrated to the shared expandQuery helper
+iter 259 — pebble-serve bounded in-memory HyDE cache (256 entries, drop-arbitrary on overflow)
 ```

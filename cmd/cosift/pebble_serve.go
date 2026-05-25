@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/calinteodor/cosift/internal/config"
@@ -57,7 +58,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	defer ps.Close()
 
 	idx := index.NewPebbleBM25(ps)
-	srv := &pebbleHTTP{store: ps, idx: idx, started: time.Now()}
+	srv := &pebbleHTTP{
+		store:     ps,
+		idx:       idx,
+		hydeCache: make(map[string]string, 256),
+		started:   time.Now(),
+	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
@@ -135,6 +141,15 @@ type pebbleHTTP struct {
 	chat       embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
 	reranker   rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
 	rerankCandK int            // candidates pulled for rerank; default 20
+
+	// Iter 259: bounded in-memory HyDE cache. /research?expand=true issues a
+	// chat call PER sub-query, so a sticky workload (repeated queries, slow
+	// sub-query rephrasings from the planner) hits the chat provider many
+	// times for the same passage. Cap at 256 entries; on overflow drop one
+	// arbitrary entry (Go map iteration order is randomized, good enough).
+	hydeMu    sync.RWMutex
+	hydeCache map[string]string
+
 	started    time.Time
 }
 
@@ -712,10 +727,18 @@ const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that wo
 // expandQuery returns q + " " + a HyDE-generated passage when a chat client is
 // configured. On any error (no chat client, chat call fails, empty passage),
 // returns q unchanged so callers can compose safely without explicit guards.
-// Iter 257.
+// Iter 257; iter 259 added a bounded in-memory cache to skip the chat call on
+// repeat queries — important for /research?expand=true where the same
+// sub-query rephrasing can fire across many similar research requests.
 func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 	if s.chat == nil {
 		return q
+	}
+	s.hydeMu.RLock()
+	cached, hit := s.hydeCache[q]
+	s.hydeMu.RUnlock()
+	if hit {
+		return q + " " + cached
 	}
 	passage, err := s.chat.Chat(ctx, []embed.ChatMsg{
 		{Role: "system", Content: hydeSystemPrompt},
@@ -728,6 +751,16 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 	if passage == "" {
 		return q
 	}
+	s.hydeMu.Lock()
+	if len(s.hydeCache) >= 256 {
+		// Bounded: drop one arbitrary entry (Go map range is randomized).
+		for k := range s.hydeCache {
+			delete(s.hydeCache, k)
+			break
+		}
+	}
+	s.hydeCache[q] = passage
+	s.hydeMu.Unlock()
 	return q + " " + passage
 }
 
