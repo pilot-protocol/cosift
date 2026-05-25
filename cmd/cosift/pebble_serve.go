@@ -719,6 +719,18 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
+	// Iter 244: SSE streaming for /research. Same trigger as /answer.
+	// Emits phase-aware events so the UI can render the plan and source list
+	// before the synth call completes — /research often runs 10–30s
+	// (2-3 plan→retrieve→synth chat rounds), so phase visibility matters.
+	wantStream := r.URL.Query().Get("stream") == "true" ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	if wantStream {
+		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
+			s.streamResearch(w, r, sc, q, k, start)
+			return
+		}
+	}
 
 	// Plan
 	planRaw, err := s.chat.Chat(r.Context(), []embed.ChatMsg{
@@ -801,6 +813,106 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		Query: q, Plan: subs, Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
 	})
+}
+
+// streamResearch is the SSE form of handleResearch. Event sequence:
+//   plan    — sub-queries returned by the planner
+//   sources — deduped + ranked pool fed to the synthesizer
+//   chunk   — per chat delta during synth
+//   done    — final {"took": "..."}
+//   error   — terminal; either plan, retrieval, or synth failed
+func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, q string, k int, start time.Time) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	sse := func(payload any) {
+		buf, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "data: %s\n\n", buf)
+		flusher.Flush()
+	}
+
+	planRaw, err := sc.Chat(r.Context(), []embed.ChatMsg{
+		{Role: "system", Content: researchPlanPrompt},
+		{Role: "user", Content: q},
+	})
+	if err != nil {
+		sse(map[string]any{"type": "error", "phase": "plan", "error": err.Error()})
+		return
+	}
+	subs := parseSubQueries(planRaw, q)
+	if len(subs) > 5 {
+		subs = subs[:5]
+	}
+	sse(map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()})
+
+	type ranked struct {
+		score float64
+		hit   index.Hit
+	}
+	best := make(map[string]ranked, k*len(subs))
+	perSub := k * 2
+	if perSub > 40 {
+		perSub = 40
+	}
+	for _, sq := range subs {
+		hits, err := s.idx.Search(r.Context(), sq, perSub)
+		if err != nil {
+			continue
+		}
+		for _, h := range hits {
+			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+				best[h.URL] = ranked{score: h.Score, hit: h}
+			}
+		}
+	}
+	pooled := make([]ranked, 0, len(best))
+	for _, v := range best {
+		pooled = append(pooled, v)
+	}
+	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
+	if len(pooled) > k {
+		pooled = pooled[:k]
+	}
+
+	sources := make([]answerSource, 0, len(pooled))
+	var promptSources strings.Builder
+	for i, p := range pooled {
+		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
+		if derr != nil || doc == nil {
+			continue
+		}
+		excerpt := textExcerpt(doc.Text, 1200)
+		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
+		if !doc.PublishedAt.IsZero() {
+			t := doc.PublishedAt
+			src.PublishedAt = &t
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+	}
+	sse(map[string]any{"type": "sources", "sources": sources})
+	if len(sources) == 0 {
+		sse(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
+		return
+	}
+
+	_, err = sc.ChatStream(r.Context(), []embed.ChatMsg{
+		{Role: "system", Content: researchSynthPrompt},
+		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
+	}, func(delta string) {
+		sse(map[string]any{"type": "chunk", "delta": delta})
+	})
+	if err != nil {
+		sse(map[string]any{"type": "error", "phase": "synth", "error": err.Error()})
+		return
+	}
+	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
 }
 
 func parseSubQueries(raw, fallback string) []string {
