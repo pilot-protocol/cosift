@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/calinteodor/cosift/internal/config"
@@ -150,6 +151,13 @@ type pebbleHTTP struct {
 	hydeMu    sync.RWMutex
 	hydeCache map[string]string
 
+	// Iter 260: atomic counters surfaced on /metrics so operators can size the
+	// HyDE cache against a real workload — if misses dominate, raise the cap
+	// or move to an L2 store; if hits dominate at a tight working set, the
+	// cap is sufficient and you can mostly forget about it.
+	hydeHits   atomic.Int64
+	hydeMisses atomic.Int64
+
 	started    time.Time
 }
 
@@ -213,6 +221,14 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_uptime_seconds Seconds since pebble-serve started.\n")
 	fmt.Fprintf(w, "# TYPE cosift_uptime_seconds counter\n")
 	fmt.Fprintf(w, "cosift_uptime_seconds %.0f\n", uptime)
+	// Iter 260: HyDE cache effectiveness. Hits/misses both monotonic so
+	// Prometheus rate() over these gives cache pressure under load.
+	fmt.Fprintf(w, "# HELP cosift_hyde_cache_hits_total HyDE cache hits (expandQuery served from memory).\n")
+	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_hits_total counter\n")
+	fmt.Fprintf(w, "cosift_hyde_cache_hits_total %d\n", s.hydeHits.Load())
+	fmt.Fprintf(w, "# HELP cosift_hyde_cache_misses_total HyDE cache misses (expandQuery called the LLM).\n")
+	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_misses_total counter\n")
+	fmt.Fprintf(w, "cosift_hyde_cache_misses_total %d\n", s.hydeMisses.Load())
 }
 
 // Iter 230: HTTP form of `cosift verify`. Same comparison (iter-207 running
@@ -738,8 +754,10 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 	cached, hit := s.hydeCache[q]
 	s.hydeMu.RUnlock()
 	if hit {
+		s.hydeHits.Add(1)
 		return q + " " + cached
 	}
+	s.hydeMisses.Add(1)
 	passage, err := s.chat.Chat(ctx, []embed.ChatMsg{
 		{Role: "system", Content: hydeSystemPrompt},
 		{Role: "user", Content: q},
