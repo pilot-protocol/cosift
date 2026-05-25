@@ -2183,8 +2183,17 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	if err != nil {
 		return err
 	}
+	sumLen, indexedDocs, _ := ps.CorpusStats(ctx)
 	fmt.Printf("PebbleStore: %s\n\n", d)
-	fmt.Printf("  documents:   %d\n", st.Documents)
+	fmt.Printf("  documents:    %d\n", st.Documents)
+	// Iter 285: surface iter-207 counters here too. pebble-info already needs
+	// to read the store; reading them costs O(1) and gives operators 'is this
+	// store healthy' without round-tripping through pebble-serve /stats.
+	if indexedDocs > 0 {
+		fmt.Printf("  indexed_docs: %d\n", indexedDocs)
+		fmt.Printf("  sum_doc_len:  %d\n", sumLen)
+		fmt.Printf("  avg_doc_len:  %.2f\n", float64(sumLen)/float64(indexedDocs))
+	}
 	fmt.Println()
 	fmt.Println("--- pebble.Metrics ---")
 	fmt.Println(ps.Metrics().String())
