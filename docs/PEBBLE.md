@@ -311,4 +311,5 @@ iter 349 — TestPebbleServeEndToEnd exercises `?include_domains=` filter (iter 
 iter 350 — TestPebbleServeEndToEnd asserts /search emits total_candidates > 0 (iter 283 regression guard)
 iter 351 — TestPebbleServeEndToEnd asserts /find_similar URL mode excludes the source URL (iter 236/245 guard)
 iter 352 — TestPebbleServeEndToEnd asserts /search retriever label == 'bm25' on bare query (iter 234/248/252 guard)
+iter 353 — helpers_test.go: unit tests for normalizeExpandMode (iter 308), sourceIDOf (iter 339/340), peekWarnings (iter 330)
 ```
