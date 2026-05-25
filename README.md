@@ -190,6 +190,11 @@ cosift migrate-to-pebble -output DIR [-progress 5s]
                                               copy a SQLite cosift data dir into a fresh Pebble store.
                                               Documents + postings (re-indexed via PebbleBM25 to
                                               preserve title boost). Refuses non-empty -output
+cosift pebble-serve -dir DIR [-addr HOST:PORT]
+                                              minimal HTTP server backed by PebbleStore + PebbleBM25.
+                                              Read-only: /healthz, /stats, /search, /contents.
+                                              Companion to cosift serve (SQLite-backed) — pick whichever
+                                              storage backend fits the deployment scale
 cosift reembed [-drop-old] [-progress 5s]     re-embed every doc with the configured model
 cosift outcomes -format json|csv              dump query_outcomes for offline calibration
 cosift gc [-min-attempts N] [-vacuum]         drop errored frontier rows and VACUUM

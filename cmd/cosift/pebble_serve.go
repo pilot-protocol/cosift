@@ -1,0 +1,201 @@
+// Iter 205 — minimal HTTP server backed by PebbleStore + PebbleBM25.
+//
+// Parallel to the SQLite-backed `cosift serve`. Read-only endpoints only:
+// /healthz, /stats, /search, /contents. No crawler, no admin, no /answer
+// or /research yet — those need the SQLite-side server's chat-client +
+// admin-token plumbing, which is the iter-206+ work.
+//
+// Purpose: proves the path-2 storage rework works end-to-end through HTTP,
+// and gives a clean benchmark surface against the existing SQLite server.
+// Operators evaluating cosift's billion-scale capability run this against
+// a Pebble store and compare /search latency + index size to the SQLite
+// equivalent.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+
+	"github.com/calinteodor/cosift/internal/config"
+	"github.com/calinteodor/cosift/internal/index"
+	"github.com/calinteodor/cosift/internal/store"
+)
+
+func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("pebble-serve", flag.ExitOnError)
+	dir := fs.String("dir", "", "PebbleStore directory (required; the SQLite cfg.DataDir is ignored)")
+	addr := fs.String("addr", cfg.Server.Addr, "listen address (defaults to server.addr from cosift.json)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dir == "" {
+		return errors.New("pebble-serve: -dir is required")
+	}
+	if *addr == "" {
+		*addr = "127.0.0.1:7777"
+	}
+
+	ps, err := store.OpenPebble(*dir)
+	if err != nil {
+		return fmt.Errorf("open pebble: %w", err)
+	}
+	defer ps.Close()
+
+	idx := index.NewPebbleBM25(ps)
+	srv := &pebbleHTTP{store: ps, idx: idx, started: time.Now()}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", srv.handleHealthz)
+	mux.HandleFunc("GET /stats", srv.handleStats)
+	mux.HandleFunc("GET /search", srv.handleSearch)
+	mux.HandleFunc("GET /contents", srv.handleContents)
+
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+	}
+
+	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
+	go func() {
+		<-ctx.Done()
+		log.Printf("pebble-serve: shutting down")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// pebbleHTTP holds the read-side handles. Stays small on purpose — the
+// SQLite-side Server struct accumulated a lot of config knobs over many iters;
+// the Pebble surface starts minimal and grows feature-by-feature.
+type pebbleHTTP struct {
+	store   *store.PebbleStore
+	idx     *index.PebbleBM25
+	started time.Time
+}
+
+func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store.Stats(r.Context())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"documents": st.Documents,
+		"terms":     st.Terms,
+		"uptime":    time.Since(s.started).String(),
+		"backend":   "pebble",
+	})
+}
+
+// searchHit is the minimal hit shape returned by pebble-serve's /search.
+// Intentionally narrower than the SQLite server's SearchHit — feature
+// parity (highlight, excerpt, calibration, paragraph filters) grows as
+// follow-up iters port each one through the Pebble side.
+type searchHit struct {
+	URL   string  `json:"url"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+type searchResponse struct {
+	Query     string      `json:"query"`
+	Retriever string      `json:"retriever"`
+	Hits      []searchHit `json:"hits"`
+	Took      string      `json:"took"`
+}
+
+func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 10
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			k = n
+		}
+	}
+	hits, err := s.idx.Search(r.Context(), q, k)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]searchHit, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, searchHit{URL: h.URL, Title: h.Title, Score: h.Score})
+	}
+	writeJSON(w, http.StatusOK, searchResponse{
+		Query:     q,
+		Retriever: "bm25",
+		Hits:      out,
+		Took:      time.Since(start).String(),
+	})
+}
+
+func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		writeProblem(w, http.StatusBadRequest, "missing url parameter")
+		return
+	}
+	decoded, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "url parameter is not URL-encoded")
+		return
+	}
+	doc, err := s.store.GetDocByURL(r.Context(), decoded)
+	if errors.Is(err, store.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "url not in index")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":          doc.URL,
+		"title":        doc.Title,
+		"text":         doc.Text,
+		"author":       doc.Author,
+		"published_at": doc.PublishedAt,
+		"fetched_at":   doc.FetchedAt,
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeProblem(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":  http.StatusText(status),
+		"status": status,
+		"detail": detail,
+	})
+}

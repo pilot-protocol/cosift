@@ -260,6 +260,10 @@ func main() {
 		if err := runServe(ctx, cfg); err != nil {
 			log.Fatalf("serve: %v", err)
 		}
+	case "pebble-serve":
+		if err := runPebbleServe(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("pebble-serve: %v", err)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		flag.Usage()
