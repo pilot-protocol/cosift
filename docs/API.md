@@ -1,0 +1,208 @@
+# pebble-serve HTTP API
+
+Operator reference for `cosift pebble-serve` (the Pebble-backed companion to `cosift serve`). Endpoints below assume the default `127.0.0.1:7777` bind; substitute your `-addr`. All responses are JSON unless noted (`/metrics` is Prometheus text; SSE endpoints emit `text/event-stream`).
+
+## Common query parameters
+
+These compose across `/search`, `/find_similar`, `/answer`, `/research`:
+
+| Param | Type | Default | Notes |
+|-------|------|---------|-------|
+| `q` | string | — | required for /search /answer /research |
+| `url` | string | — | required for /find_similar (URL-encoded) |
+| `k` | int | 10 (5 for /answer, 8 for /research) | top-k results / sources |
+| `include_domains` | CSV | — | dot-boundary suffix match: `example.com` matches `blog.example.com`, not `evilexample.com` |
+| `exclude_domains` | CSV | — | same matcher; applied after include |
+| `since` / `until` | YYYY-MM-DD or RFC3339 | — | filters on `doc.PublishedAt`; zero-date docs dropped under any date filter |
+| `rerank` | bool | false | no-op when no reranker is configured |
+| `expand` | bool | false | HyDE-style query expansion via the chat client; no-op when no chat client is configured |
+| `include_text` | bool | false | inline full `doc.Text` on each hit/source |
+
+`/search` has additional sort/enrich knobs (below). `/answer` and `/research` add `stream`.
+
+---
+
+## `GET /healthz`
+
+Liveness probe. Always returns `{"status":"ok"}` with 200.
+
+```bash
+curl http://127.0.0.1:7777/healthz
+```
+
+## `GET /stats`
+
+One canonical "shape of the index" call. O(1) — reads the iter-207 running counters.
+
+```bash
+curl http://127.0.0.1:7777/stats
+```
+
+```json
+{
+  "documents": 10353,
+  "terms": 0,
+  "indexed_docs": 10353,
+  "sum_doc_len": 18204517,
+  "avg_doc_len": 1758.32,
+  "uptime": "27m12s",
+  "backend": "pebble"
+}
+```
+
+## `GET /metrics`
+
+Prometheus exposition format. Hand-rolled, no client_golang dep. Covers index counters, HyDE cache, rerank attempts/failures, chat attempts/failures/duration, per-endpoint request count + duration sum.
+
+```bash
+curl http://127.0.0.1:7777/metrics
+```
+
+## `GET /verify`
+
+Counter-drift check: compares the iter-207 counters to an authoritative scan of the `'l'` family. Returns 503 with drift fields when they disagree, so it composes into k8s liveness probes.
+
+```bash
+curl http://127.0.0.1:7777/verify
+```
+
+---
+
+## `GET /search`
+
+BM25 retrieval over the Pebble store. Supports the common params above plus:
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `enrich` | true | per-hit Excerpt + PublishedAt + Author; opt out with `enrich=false` |
+| `sort` | `relevance` | `date_desc` / `date_asc` reorder the top-k pool; raise `k` to widen before re-sorting |
+
+```bash
+curl 'http://127.0.0.1:7777/search?q=raft+consensus&k=5&include_domains=docs.example.com'
+```
+
+```json
+{
+  "query": "raft consensus",
+  "retriever": "bm25",
+  "hits": [
+    {"url":"https://docs.example.com/raft","title":"Raft Consensus","score":12.4,"excerpt":"…","published_at":"2024-05-12T00:00:00Z"}
+  ],
+  "took": "12ms"
+}
+```
+
+With `rerank=true` + `expand=true`:
+
+```bash
+curl 'http://127.0.0.1:7777/search?q=raft&rerank=true&expand=true'
+```
+
+`retriever` becomes `bm25+hyde+rerank:<reranker name>`. `effective_query` appears when HyDE actually contributed terms.
+
+## `GET /find_similar`
+
+"More like this URL" via BM25 MLT (top-tf·idf terms from the source doc → BM25 → exclude source). Same common params as `/search`. Add `?q=...` to constrain neighbors with extra terms.
+
+```bash
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&k=5'
+```
+
+```json
+{
+  "query": "raft consensus paxos replicated log leader election",
+  "retriever": "bm25-mlt",
+  "hits": [...],
+  "took": "8ms"
+}
+```
+
+## `GET /contents` / `POST /contents`
+
+Cached document retrieval.
+
+```bash
+# Single
+curl 'http://127.0.0.1:7777/contents?url=https%3A%2F%2Fdocs.example.com%2Fraft'
+
+# Batch (up to 100 URLs per request)
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"urls":["https://a.example.com","https://b.example.com"]}' \
+  http://127.0.0.1:7777/contents
+```
+
+Batch response: `{"results":[{url, found, title, text, lang, cached, fetched_at, error?}, ...], "took": "..."}` — URLs not in the index get `found:false` in place.
+
+## `GET /answer`
+
+Single-question grounded answer with cited sources. Requires `cfg.Chat.Model` set; returns 501 otherwise.
+
+```bash
+curl 'http://127.0.0.1:7777/answer?q=what+is+raft+consensus&k=5'
+```
+
+```json
+{
+  "query": "what is raft consensus",
+  "answer": "Raft is a consensus algorithm [1] designed for understandability [2]...",
+  "sources": [
+    {"url":"…","title":"Raft Paper","excerpt":"…","published_at":"…"},
+    {"url":"…","title":"Raft Tutorial","excerpt":"…","published_at":"…"}
+  ],
+  "model": "gpt-4o-mini",
+  "took": "2.4s"
+}
+```
+
+SSE streaming:
+
+```bash
+curl -N -H 'Accept: text/event-stream' \
+  'http://127.0.0.1:7777/answer?q=what+is+raft&stream=true'
+```
+
+Event sequence: `sources` (once, after retrieval) → `chunk` (per delta) → `done`. Falls back to sync when the chat client doesn't implement streaming.
+
+## `GET /research`
+
+Multi-step research: LLM plans 2-3 sub-queries → BM25 each → dedupe by URL keeping best score → optional rerank → cited synth. Requires `cfg.Chat.Model`.
+
+```bash
+curl 'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&k=8'
+```
+
+```json
+{
+  "query": "compare raft and paxos",
+  "plan": ["raft consensus algorithm", "paxos consensus algorithm", "raft vs paxos tradeoffs"],
+  "answer": "Raft [1] differs from Paxos [3] primarily in understandability...",
+  "sources": [...],
+  "model": "gpt-4o-mini",
+  "took": "5.8s"
+}
+```
+
+SSE streaming: `plan` → `sources` (after rerank if any) → `chunk` (per delta) → `done` (or `error` with `phase:plan|synth`).
+
+---
+
+## Tuning knobs
+
+Set in `cosift.json` (or wherever `-config` points):
+
+```jsonc
+{
+  "chat": { "url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o-mini" },
+  "rerank": { "enabled": true, "candidate_k": 20 },
+  // cfg.Rerank.URL set → HTTPReranker (Cohere/Voyage/Jina/TEI wire shape)
+  // else cfg.Rerank.Enabled + cfg.Chat.Model → LLMReranker (listwise via chat)
+}
+```
+
+Environment:
+
+| Var | Effect |
+|-----|--------|
+| `OPENAI_API_KEY` | falls through to chat + LLM reranker auth |
+| `COHERE_API_KEY` / `VOYAGE_API_KEY` | fallback for `cfg.Rerank.URL` when `cfg.Rerank.APIKey` is empty |
+| `COSIFT_PEBBLE_*` | see [docs/PEBBLE.md](PEBBLE.md) for cache / memtable / sync overrides |
