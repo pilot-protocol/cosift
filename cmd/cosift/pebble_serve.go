@@ -1533,7 +1533,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			streamAnswer(w, r, sc, msgs, sources, q, start)
+			s.streamAnswer(w, r, sc, msgs, sources, q, start)
 			return
 		}
 		// Not a streaming client — degrade silently to sync rather than 501.
@@ -1555,7 +1555,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, start time.Time) {
+func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
@@ -1570,6 +1570,9 @@ func streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChat
 		buf, _ := json.Marshal(payload)
 		fmt.Fprintf(w, "data: %s\n\n", buf)
 		flusher.Flush()
+	}
+	if warns := s.warningsFor(r); len(warns) > 0 {
+		sse(map[string]any{"type": "warnings", "warnings": warns})
 	}
 	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model()})
 
@@ -1810,6 +1813,13 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		buf, _ := json.Marshal(payload)
 		fmt.Fprintf(w, "data: %s\n\n", buf)
 		flusher.Flush()
+	}
+
+	// Iter 293: surface silent no-ops upfront so SSE clients can render them
+	// while the plan call is still in flight. Fires before plan to give the
+	// fastest visual feedback when a misconfigured request arrives.
+	if warns := s.warningsFor(r); len(warns) > 0 {
+		sse(map[string]any{"type": "warnings", "warnings": warns})
 	}
 
 	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
