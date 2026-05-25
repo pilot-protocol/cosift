@@ -106,11 +106,22 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Iter 238: surface the iter-207 running counters here too so /stats is
+	// the one canonical "shape of the index" call instead of "ask /stats for
+	// doc count, then ask /metrics for average length". Both reads are O(1).
+	sumLen, indexedDocs, _ := s.store.CorpusStats(r.Context())
+	var avg float64
+	if indexedDocs > 0 {
+		avg = float64(sumLen) / float64(indexedDocs)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"documents": st.Documents,
-		"terms":     st.Terms,
-		"uptime":    time.Since(s.started).String(),
-		"backend":   "pebble",
+		"documents":    st.Documents,
+		"terms":        st.Terms,
+		"indexed_docs": indexedDocs,
+		"sum_doc_len":  sumLen,
+		"avg_doc_len":  avg,
+		"uptime":       time.Since(s.started).String(),
+		"backend":      "pebble",
 	})
 }
 

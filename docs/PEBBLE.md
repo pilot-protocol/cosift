@@ -189,4 +189,5 @@ iter 234 — pebble-serve `/search` since / until date filters
 iter 235 — pebble-serve `/search` sort=date_desc / date_asc
 iter 236 — pebble-serve `/find_similar` (BM25 more-like-this, no embeddings)
 iter 237 — pebble-serve `/search?include_text=true` (inline full text, no N+1)
+iter 238 — pebble-serve `/stats` includes indexed_docs / sum_doc_len / avg_doc_len
 ```
