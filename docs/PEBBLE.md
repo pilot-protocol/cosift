@@ -200,4 +200,5 @@ iter 245 — pebble-serve `/find_similar` honors include_domains / exclude_domai
 iter 246 — pebble-serve `/research` honors retrieval filters (sync + SSE); shared `retrievalFilters` helper
 iter 247 — pebble-serve include_text=true now uniform across /search /find_similar /answer /research
 iter 248 — pebble-serve `/search?rerank=true` (HTTP Cohere/Voyage/Jina/TEI, or LLM listwise)
+iter 249 — pebble-serve `/answer?rerank=true` (rerank pool feeds synth; citation numbers track final order)
 ```

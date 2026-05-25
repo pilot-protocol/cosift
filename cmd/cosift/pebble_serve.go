@@ -688,16 +688,30 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	fetchK := k
+	// Iter 249: ?rerank=true reorders the BM25 top-pool before synth.
+	// Rerank quality > BM25 quality for "which 5 sources answer this question",
+	// so this is the highest-impact iter for /answer beyond getting LLMs hooked
+	// up. Widens the candidate pool to rerankCandK before truncation.
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	keepCap := k
+	if wantRerank {
+		keepCap = s.rerankCandK
+		if keepCap < k {
+			keepCap = k
+		}
+	}
+	fetchK := keepCap
 	if len(include) > 0 || len(exclude) > 0 || dateFilter {
 		mult := 5
 		if dateFilter {
 			mult = 10
 		}
-		fetchK = k * mult
+		fetchK = keepCap * mult
 		if fetchK > 200 {
 			fetchK = 200 // /answer caps tighter than /search — full doc text per source is expensive
 		}
+	} else if wantRerank {
+		fetchK = keepCap * 2
 	}
 
 	hits, err := s.idx.Search(r.Context(), q, fetchK)
@@ -705,9 +719,12 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sources := make([]answerSource, 0, k)
-	var promptSources strings.Builder
-	idx := 0
+	type cand struct {
+		src        answerSource
+		excerpt    string
+		rerankText string
+	}
+	cands := make([]cand, 0, keepCap)
 	for _, h := range hits {
 		if len(include) > 0 || len(exclude) > 0 {
 			host := hostOf(h.URL)
@@ -733,7 +750,6 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -743,11 +759,47 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			src.Text = doc.Text
 		}
-		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
-		if len(sources) >= k {
+		c := cand{src: src, excerpt: excerpt}
+		if wantRerank {
+			c.rerankText = doc.Title + "\n" + doc.Text
+		}
+		cands = append(cands, c)
+		if len(cands) >= keepCap {
 			break
 		}
+	}
+	// Optional rerank, then truncate to k. Done in this order so citation
+	// numbers in the prompt match the final rank-ordered sources list.
+	if wantRerank && len(cands) > 1 {
+		rc := make([]rerank.Candidate, len(cands))
+		for i := range cands {
+			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
+		}
+		if order, rerr := s.reranker.Rerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+			reordered := make([]cand, 0, len(cands))
+			seen := make(map[int]bool, len(cands))
+			for _, id := range order {
+				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(cands) && !seen[n] {
+					reordered = append(reordered, cands[n])
+					seen[n] = true
+				}
+			}
+			for i, c := range cands {
+				if !seen[i] {
+					reordered = append(reordered, c)
+				}
+			}
+			cands = reordered
+		}
+	}
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	sources := make([]answerSource, 0, len(cands))
+	var promptSources strings.Builder
+	for i, c := range cands {
+		sources = append(sources, c.src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, answerResponse{
