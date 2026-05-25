@@ -310,7 +310,26 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-	hits, err := s.idx.Search(r.Context(), q, fetchK)
+	// Iter 252: ?expand=true asks the chat client for a HyDE-style hypothetical
+	// passage and appends it to q for the BM25 call. Even with a keyword-only
+	// retriever, the passage usually contains relevant synonyms/terms the bare
+	// query lacks, lifting recall. The reranker still scores against the
+	// original q so it judges relevance to what the user actually asked. No-op
+	// when no chat client is configured.
+	effectiveQuery := q
+	wantExpand := r.URL.Query().Get("expand") == "true" && s.chat != nil
+	if wantExpand {
+		if passage, perr := s.chat.Chat(r.Context(), []embed.ChatMsg{
+			{Role: "system", Content: hydeSystemPrompt},
+			{Role: "user", Content: q},
+		}); perr == nil {
+			passage = strings.TrimSpace(passage)
+			if passage != "" {
+				effectiveQuery = q + " " + passage
+			}
+		}
+	}
+	hits, err := s.idx.Search(r.Context(), effectiveQuery, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -417,8 +436,11 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		sortHitsByDate(out, true)
 	}
 	retrieverLabel := "bm25"
+	if wantExpand && effectiveQuery != q {
+		retrieverLabel = "bm25+hyde"
+	}
 	if wantRerank {
-		retrieverLabel = "bm25+rerank:" + s.reranker.Name()
+		retrieverLabel += "+rerank:" + s.reranker.Name()
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:     q,
@@ -691,6 +713,11 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 - Cite sources by their numeric id in square brackets, e.g. [1] or [2,3]. Every factual claim needs a citation.
 - If the sources do not contain the answer, say so plainly. Do not invent facts.
 - Keep the answer focused on what the sources actually say; do not pad.`
+
+// Iter 252: HyDE-style query expansion prompt. Borrowed verbatim from
+// internal/server/hyde.go so the SQLite and Pebble paths produce comparable
+// expansions and operators don't have to learn two prompt shapes.
+const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
 type answerSource struct {
 	URL         string     `json:"url"`
