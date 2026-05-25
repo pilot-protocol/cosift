@@ -31,8 +31,10 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -62,6 +64,11 @@ const (
 	//                       iter 208: reverse index from docID to its term IDs, so
 	//                       re-indexing the same doc can delete orphaned postings
 	//                       for terms that vanished from the new content.
+	famFrontier byte = 'f' // 'f' + 'u' + url → packed frontier entry
+	//                       iter 209: per-URL frontier row. Status byte +
+	//                       depth + priority + enqueued_at + attempts + host
+	//                       + last_error all in one value. Secondary indexes
+	//                       (host-fair claim) land in iter 210.
 )
 
 // OpenPebble opens (or creates) a Pebble store at path. On open it
@@ -183,6 +190,108 @@ func docTermsKey(docID int64) []byte {
 	k[0] = famDocTerms
 	binary.BigEndian.PutUint64(k[1:], uint64(docID))
 	return k
+}
+
+// frontierKey is 'f' + 'u' + url. 'u' subprefix reserves room for iter-210's
+// 'q' (queued) and 'i' (in-flight) secondary-index subprefixes.
+func frontierKey(url string) []byte {
+	k := make([]byte, 2+len(url))
+	k[0] = famFrontier
+	k[1] = 'u'
+	copy(k[2:], url)
+	return k
+}
+
+// FrontierStatus is the lifecycle position of a frontier URL.
+type FrontierStatus byte
+
+const (
+	FrontierStatusQueued   FrontierStatus = 'q'
+	FrontierStatusInFlight FrontierStatus = 'i'
+	FrontierStatusDone     FrontierStatus = 'd'
+	FrontierStatusError    FrontierStatus = 'e'
+)
+
+// frontierEntry is the value side of the 'f' + 'u' + url key. Packed
+// little-endian: status (1) + depth (varint) + priority (float64-le) +
+// enqueued_at (varint) + attempts (varint) + host (varint-len + bytes) +
+// last_error (varint-len + bytes).
+type frontierEntry struct {
+	Status      FrontierStatus
+	Depth       int64
+	Priority    float64
+	EnqueuedAt  int64
+	Attempts    int64
+	Host        string
+	LastError   string
+}
+
+func packFrontierEntry(e frontierEntry) []byte {
+	tmp := make([]byte, binary.MaxVarintLen64)
+	out := make([]byte, 0, 1+8+len(e.Host)+len(e.LastError)+30)
+	out = append(out, byte(e.Status))
+	n := binary.PutVarint(tmp, e.Depth)
+	out = append(out, tmp[:n]...)
+	priBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(priBuf, math.Float64bits(e.Priority))
+	out = append(out, priBuf...)
+	n = binary.PutVarint(tmp, e.EnqueuedAt)
+	out = append(out, tmp[:n]...)
+	n = binary.PutVarint(tmp, e.Attempts)
+	out = append(out, tmp[:n]...)
+	n = binary.PutUvarint(tmp, uint64(len(e.Host)))
+	out = append(out, tmp[:n]...)
+	out = append(out, e.Host...)
+	n = binary.PutUvarint(tmp, uint64(len(e.LastError)))
+	out = append(out, tmp[:n]...)
+	out = append(out, e.LastError...)
+	return out
+}
+
+func unpackFrontierEntry(buf []byte) (frontierEntry, error) {
+	var e frontierEntry
+	if len(buf) < 1 {
+		return e, fmt.Errorf("frontierEntry: empty buf")
+	}
+	e.Status = FrontierStatus(buf[0])
+	buf = buf[1:]
+	depth, n := binary.Varint(buf)
+	if n <= 0 {
+		return e, fmt.Errorf("frontierEntry: bad depth")
+	}
+	e.Depth = depth
+	buf = buf[n:]
+	if len(buf) < 8 {
+		return e, fmt.Errorf("frontierEntry: short priority")
+	}
+	e.Priority = math.Float64frombits(binary.LittleEndian.Uint64(buf[:8]))
+	buf = buf[8:]
+	enq, n := binary.Varint(buf)
+	if n <= 0 {
+		return e, fmt.Errorf("frontierEntry: bad enqueued_at")
+	}
+	e.EnqueuedAt = enq
+	buf = buf[n:]
+	at, n := binary.Varint(buf)
+	if n <= 0 {
+		return e, fmt.Errorf("frontierEntry: bad attempts")
+	}
+	e.Attempts = at
+	buf = buf[n:]
+	hostLen, n := binary.Uvarint(buf)
+	if n <= 0 || int(hostLen) > len(buf)-n {
+		return e, fmt.Errorf("frontierEntry: bad host length")
+	}
+	buf = buf[n:]
+	e.Host = string(buf[:hostLen])
+	buf = buf[hostLen:]
+	errLen, n := binary.Uvarint(buf)
+	if n <= 0 || int(errLen) > len(buf)-n {
+		return e, fmt.Errorf("frontierEntry: bad last_error length")
+	}
+	buf = buf[n:]
+	e.LastError = string(buf[:errLen])
+	return e, nil
 }
 
 func packDocTerms(termIDs []int64) []byte {
@@ -610,6 +719,207 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	}
 	if err := batch.Set(docTermsKey(docID), packDocTerms(newIDs), nil); err != nil {
 		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+// PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
+// if the URL already exists in any state, this is a no-op. Iter 209.
+func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, closer, err := p.db.Get(frontierKey(url)); err == nil {
+		_ = closer.Close()
+		return nil // already exists; dedup
+	} else if !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	entry := frontierEntry{
+		Status:     FrontierStatusQueued,
+		Depth:      int64(depth),
+		Priority:   priority,
+		EnqueuedAt: time.Now().Unix(),
+		Host:       extractHost(url),
+	}
+	return p.db.Set(frontierKey(url), packFrontierEntry(entry), pebble.Sync)
+}
+
+// ClaimFrontier picks one queued URL, atomically marks it in_flight, and
+// returns the FrontierItem. ok=false when the queue is empty. Iter 209:
+// simple FIFO order by enqueued_at; host-fair ordering lands in iter 210.
+func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return FrontierItem{}, false, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	lo := []byte{famFrontier, 'u'}
+	hi := []byte{famFrontier, 'u' + 1}
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return FrontierItem{}, false, err
+	}
+
+	// Iter 209: O(N) scan to find the highest-priority queued entry.
+	// Iter 210 replaces with a secondary-index prefix scan over 'f' + 'q'.
+	var best frontierEntry
+	var bestURL string
+	bestFound := false
+	for valid := it.First(); valid; valid = it.Next() {
+		val, err := it.ValueAndErr()
+		if err != nil {
+			it.Close()
+			return FrontierItem{}, false, err
+		}
+		entry, err := unpackFrontierEntry(val)
+		if err != nil {
+			continue
+		}
+		if entry.Status != FrontierStatusQueued {
+			continue
+		}
+		urlBytes := it.Key()[2:]
+		urlStr := string(urlBytes)
+		// Higher priority wins; within equal priority, earlier enqueued wins.
+		if !bestFound ||
+			entry.Priority > best.Priority ||
+			(entry.Priority == best.Priority && entry.EnqueuedAt < best.EnqueuedAt) {
+			best = entry
+			bestURL = urlStr
+			bestFound = true
+		}
+	}
+	it.Close()
+	if !bestFound {
+		return FrontierItem{}, false, nil
+	}
+
+	// Atomically flip status to in_flight + persist.
+	best.Status = FrontierStatusInFlight
+	if err := p.db.Set(frontierKey(bestURL), packFrontierEntry(best), pebble.Sync); err != nil {
+		return FrontierItem{}, false, err
+	}
+	return FrontierItem{URL: bestURL, Depth: int(best.Depth), Priority: best.Priority}, true, nil
+}
+
+// CompleteFrontier marks a URL as successfully processed.
+func (p *PebbleStore) CompleteFrontier(ctx context.Context, url string) error {
+	return p.transitionFrontier(ctx, url, FrontierStatusDone, "")
+}
+
+// FailFrontier marks a URL as errored. The error string is stored on the
+// row (capped to keep frontier rows small).
+func (p *PebbleStore) FailFrontier(ctx context.Context, url, errMsg string) error {
+	const maxErrLen = 500
+	if len(errMsg) > maxErrLen {
+		errMsg = errMsg[:maxErrLen-3] + "..."
+	}
+	return p.transitionFrontier(ctx, url, FrontierStatusError, errMsg)
+}
+
+func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newStatus FrontierStatus, errMsg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	val, closer, err := p.db.Get(frontierKey(url))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	entry, err := unpackFrontierEntry(val)
+	_ = closer.Close()
+	if err != nil {
+		return err
+	}
+	entry.Status = newStatus
+	if newStatus == FrontierStatusError {
+		entry.Attempts++
+		entry.LastError = errMsg
+	}
+	return p.db.Set(frontierKey(url), packFrontierEntry(entry), pebble.Sync)
+}
+
+// GetFrontierStats walks the frontier and tallies by status. O(N); iter
+// 210 maintains per-status counters in 'm' for O(1) access at scale.
+// Returns the canonical store.FrontierStats shape (Errored, not Error)
+// for parity with the SQLite Store's same-named method.
+func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, error) {
+	if err := ctx.Err(); err != nil {
+		return FrontierStats{}, err
+	}
+	lo := []byte{famFrontier, 'u'}
+	hi := []byte{famFrontier, 'u' + 1}
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return FrontierStats{}, err
+	}
+	defer it.Close()
+	var s FrontierStats
+	for valid := it.First(); valid; valid = it.Next() {
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return s, err
+		}
+		if len(val) == 0 {
+			continue
+		}
+		switch FrontierStatus(val[0]) {
+		case FrontierStatusQueued:
+			s.Queued++
+		case FrontierStatusInFlight:
+			s.InFlight++
+		case FrontierStatusDone:
+			s.Done++
+		case FrontierStatusError:
+			s.Errored++
+		}
+	}
+	return s, nil
+}
+
+// RecoverInFlight moves all in_flight rows back to queued. Called at
+// crawler startup to recover work that was claimed but not completed
+// before a previous crash.
+func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	lo := []byte{famFrontier, 'u'}
+	hi := []byte{famFrontier, 'u' + 1}
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return err
+		}
+		entry, err := unpackFrontierEntry(val)
+		if err != nil {
+			continue
+		}
+		if entry.Status != FrontierStatusInFlight {
+			continue
+		}
+		entry.Status = FrontierStatusQueued
+		key := append([]byte{}, it.Key()...)
+		if err := batch.Set(key, packFrontierEntry(entry), nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }

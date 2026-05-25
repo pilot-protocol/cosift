@@ -429,3 +429,108 @@ func TestPebbleReindexDoesNotAffectOtherDocs(t *testing.T) {
 		t.Errorf("doc 2's posting under 'gamma' should survive doc-1 reindex, got %d", gammaCount)
 	}
 }
+
+// TestPebbleFrontierPushClaimComplete — basic Push → Claim → Complete flow.
+// Iter 209.
+func TestPebbleFrontierPushClaimComplete(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	if err := p.PushFrontier(ctx, "https://example.com/a", 0, 1.0); err != nil {
+		t.Fatalf("push a: %v", err)
+	}
+	if err := p.PushFrontier(ctx, "https://example.com/b", 1, 0.5); err != nil {
+		t.Fatalf("push b: %v", err)
+	}
+	// Idempotent push — duplicate URL must not re-enqueue.
+	if err := p.PushFrontier(ctx, "https://example.com/a", 0, 1.0); err != nil {
+		t.Fatalf("re-push a: %v", err)
+	}
+	stats, err := p.GetFrontierStats(ctx)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.Queued != 2 {
+		t.Errorf("queued: want 2, got %d", stats.Queued)
+	}
+
+	// Higher priority wins.
+	it, ok, err := p.ClaimFrontier(ctx)
+	if err != nil || !ok {
+		t.Fatalf("claim 1: ok=%v err=%v", ok, err)
+	}
+	if it.URL != "https://example.com/a" {
+		t.Errorf("first claim: got %q want example.com/a", it.URL)
+	}
+
+	stats, _ = p.GetFrontierStats(ctx)
+	if stats.InFlight != 1 || stats.Queued != 1 {
+		t.Errorf("post-claim 1: queued=%d in_flight=%d", stats.Queued, stats.InFlight)
+	}
+
+	if err := p.CompleteFrontier(ctx, it.URL); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	stats, _ = p.GetFrontierStats(ctx)
+	if stats.Done != 1 || stats.InFlight != 0 {
+		t.Errorf("post-complete: done=%d in_flight=%d", stats.Done, stats.InFlight)
+	}
+
+	it2, ok, err := p.ClaimFrontier(ctx)
+	if err != nil || !ok || it2.URL != "https://example.com/b" {
+		t.Fatalf("claim 2: got %+v ok=%v err=%v", it2, ok, err)
+	}
+
+	// Recovery: in_flight → queued.
+	if err := p.RecoverInFlight(ctx); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	stats, _ = p.GetFrontierStats(ctx)
+	if stats.InFlight != 0 || stats.Queued != 1 {
+		t.Errorf("post-recover: queued=%d in_flight=%d done=%d", stats.Queued, stats.InFlight, stats.Done)
+	}
+}
+
+// TestPebbleFrontierFailStoresError — FailFrontier persists the error
+// message + increments the attempts counter.
+func TestPebbleFrontierFailStoresError(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	_ = p.PushFrontier(ctx, "https://x/fails", 0, 1.0)
+	it, _, _ := p.ClaimFrontier(ctx)
+	if err := p.FailFrontier(ctx, it.URL, "http 503: upstream gone"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	stats, _ := p.GetFrontierStats(ctx)
+	if stats.Errored != 1 {
+		t.Errorf("errored: want 1, got %d", stats.Errored)
+	}
+}
+
+// TestPebbleFrontierFailTruncatesLongErrors — error messages cap at 500
+// chars so the row stays small even on long upstream-error payloads.
+func TestPebbleFrontierFailTruncatesLongErrors(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	_ = p.PushFrontier(ctx, "https://x/long-err", 0, 1.0)
+	it, _, _ := p.ClaimFrontier(ctx)
+	huge := make([]byte, 5000)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+	if err := p.FailFrontier(ctx, it.URL, string(huge)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	// Read back via primary key and inspect last_error.
+	val, closer, err := p.db.Get(frontierKey("https://x/long-err"))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer closer.Close()
+	entry, err := unpackFrontierEntry(val)
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	if len(entry.LastError) > 500 {
+		t.Errorf("LastError should be ≤ 500 chars, got %d", len(entry.LastError))
+	}
+}
