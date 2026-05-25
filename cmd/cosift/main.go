@@ -723,6 +723,17 @@ func consumeResearchSSE(body io.Reader, format string) error {
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
+		case "warnings":
+			// Iter 333: pebble-serve (iter 293) emits this event when the
+			// request had silent no-ops. Surface to stderr like the sync CLI.
+			var w struct {
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(data), &w); err == nil {
+				for _, msg := range w.Warnings {
+					fmt.Fprintln(os.Stderr, "cosift: warning:", msg)
+				}
+			}
 		case "plan":
 			var p struct {
 				Strategy string   `json:"strategy"`
@@ -854,6 +865,17 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
+		case "warnings":
+			// Iter 333: pebble-serve (iter 293) emits this event when the
+			// request had silent no-ops. Surface to stderr.
+			var w struct {
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(data), &w); err == nil {
+				for _, msg := range w.Warnings {
+					fmt.Fprintln(os.Stderr, "cosift: warning:", msg)
+				}
+			}
 		case "retrieved":
 			// /answer emits a single retrieved event with the k URLs (vs
 			// /research's one-per-variant).

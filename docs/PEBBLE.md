@@ -291,4 +291,5 @@ iter 329 — README mentions `make check` alongside `make smoke` so contributors
 iter 330 — `cosift search/research/find-similar/answer` CLIs print server-side warnings to stderr
 iter 331 — `cosift verify -server URL` routes through the HTTP /verify endpoint (works while writer lock is held)
 iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` mode
+iter 333 — CLI SSE consumers handle pebble-serve's `warnings` event (surfaces silent no-ops on streamed answer/research)
 ```
