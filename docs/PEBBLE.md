@@ -304,4 +304,5 @@ iter 342 — TestPebbleServeEndToEnd asserts /find_similar text mode + /verify (
 iter 343 — TestPebbleServeEndToEnd also asserts POST /search + /metrics shape (regression coverage)
 iter 344 — TestPebbleServeEndToEnd asserts warnings array emits on `?sort=newest` (covers iter-292/310 machinery)
 iter 345 — /stats surfaces hyde_cache_size + paraphrase_cache_size (verify iter-282 env overrides landed)
+iter 346 — TestPebbleServeEndToEnd asserts /stats carries bm25_k1 + bm25_b (regression guard on iter 279/280)
 ```

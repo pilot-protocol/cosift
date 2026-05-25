@@ -94,6 +94,14 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if stats["backend"] != "pebble" {
 		t.Errorf("stats backend: want pebble, got %v", stats["backend"])
 	}
+	// Iter 346: assert iter-280's BM25 config fields land in the response.
+	// Catches regressions in /stats payload assembly + the iter-279 K1/B getters.
+	if _, ok := stats["bm25_k1"].(float64); !ok {
+		t.Errorf("stats: missing bm25_k1, got %v", stats["bm25_k1"])
+	}
+	if _, ok := stats["bm25_b"].(float64); !ok {
+		t.Errorf("stats: missing bm25_b, got %v", stats["bm25_b"])
+	}
 
 	// /search — raft query
 	got := mustGet(t, base+"/search?q=raft+consensus&k=3")
