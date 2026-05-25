@@ -140,6 +140,19 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("find_similar text-mode: expected at least one hit on consensus terms, got 0")
 	}
 
+	// /find_similar — URL mode (iter 236). The source URL must NOT appear
+	// in the result set. Catches the source-URL-exclusion check (iter 245's
+	// 'if h.URL == src.URL { continue }').
+	fu := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&k=5")
+	fuHits, _ := fu["hits"].([]any)
+	for _, h := range fuHits {
+		hm, _ := h.(map[string]any)
+		if u, _ := hm["url"].(string); u == "https://x/raft" {
+			t.Errorf("find_similar url-mode: source URL leaked into results: %v", fuHits)
+			break
+		}
+	}
+
 	// /verify — counter drift check (iter 230). 503 on drift; we expect OK.
 	vresp, err := http.Get(base + "/verify")
 	if err != nil {

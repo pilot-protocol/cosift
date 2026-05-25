@@ -309,4 +309,5 @@ iter 347 — TestPebbleServeEndToEnd asserts /search?include_text=true inlines d
 iter 348 — TestPebbleServeEndToEnd exercises POST /contents batch (iter 254/255 wire shape now under test)
 iter 349 — TestPebbleServeEndToEnd exercises `?include_domains=` filter (iter 232 dot-boundary matcher under test)
 iter 350 — TestPebbleServeEndToEnd asserts /search emits total_candidates > 0 (iter 283 regression guard)
+iter 351 — TestPebbleServeEndToEnd asserts /find_similar URL mode excludes the source URL (iter 236/245 guard)
 ```
