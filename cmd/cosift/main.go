@@ -5426,6 +5426,7 @@ func runStats(ctx context.Context, cfg *config.Config, args []string) error {
 func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("status-file", flag.ExitOnError)
 	path := fs.String("file", "", "path to crawl-status.json (defaults to <data_dir>/crawl-status.json)")
+	asJSON := fs.Bool("json", false, "emit raw status JSON plus a derived 'age_seconds' field; suitable for jq / Prometheus")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -5450,6 +5451,23 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 		return fmt.Errorf("decode %s: %w", p, err)
 	}
 	age := time.Since(d.WrittenAt).Round(time.Second)
+	if *asJSON {
+		out := map[string]any{
+			"path":               p,
+			"frontier_queued":    d.Queued,
+			"frontier_in_flight": d.InFlight,
+			"frontier_done":      d.Done,
+			"frontier_errored":   d.Errored,
+			"indexed_docs":       d.IndexedDocs,
+			"avg_doc_len":        d.AvgDocLen,
+			"written_at":         d.WrittenAt,
+			"age_seconds":        int64(age.Seconds()),
+			"stale":              age > 30*time.Second,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
 	fmt.Printf("status file: %s  (written %s ago)\n\n", p, age)
 	fmt.Printf("  queued:     %d\n", d.Queued)
 	fmt.Printf("  in_flight:  %d\n", d.InFlight)

@@ -92,6 +92,9 @@ Pebble locks the data dir for single-writer access — `cosift stats --backend=p
 # Set cfg.Crawler.StatusFile in cosift.json
 # Then read without taking the lock:
 watch -n 5 cosift -config cosift.json status-file
+
+# Machine-readable form (iter 229) — feeds jq / Prometheus exporters:
+cosift status-file -json | jq '.indexed_docs, .age_seconds'
 ```
 
 **Option B — pebble-info** (iter 217, only after crawler exits):
@@ -177,4 +180,5 @@ iter 224 — status.json crawler dump
 iter 225 — `cosift status-file` reader
 iter 226 — status.json carries indexed_docs + avg_doc_len
 iter 228 — `cosift verify` (counter-drift detection)
+iter 229 — `cosift status-file -json` (Prometheus / jq output)
 ```
