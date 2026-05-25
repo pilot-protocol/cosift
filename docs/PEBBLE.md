@@ -144,7 +144,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Gap | Workaround |
 |---|---|
 | Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer (sync+SSE), /research (sync+SSE), /contents, /verify, /metrics) | /search + /answer both have HyDE + paraphrase; /research currently HyDE-only (RRF over sub-queries needs more design) |
+| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer (sync+SSE), /research (sync+SSE), /contents, /verify, /metrics) | All retrieval-driven endpoints support HyDE + paraphrase; cost on /research?expand=paraphrase scales as 3 paraphrases × N sub-queries |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
 
@@ -226,4 +226,5 @@ iter 271 — `cosift status-file -target N` adds ETA (status.json carries starte
 iter 272 — pebble-serve `/search?expand=paraphrase` (paraphrase + RRF fusion)
 iter 273 — pebble-serve `/answer?expand=paraphrase` (same shape; fused top-fetchK feeds synth)
 iter 274 — pebble-serve extract `retrieveWithExpansion` helper (DRY across /search and /answer)
+iter 275 — pebble-serve /research uses retrieveWithExpansion per sub-query (?expand=paraphrase now applies)
 ```

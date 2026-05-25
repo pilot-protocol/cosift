@@ -1357,13 +1357,14 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if perSub > 40 {
 		perSub = 40
 	}
-	wantExpand := r.URL.Query().Get("expand") == "true"
+	// Iter 257/275: each sub-query goes through retrieveWithExpansion, so
+	// ?expand=hyde gives per-sub-query HyDE (was iter 257's behavior) and
+	// ?expand=paraphrase fans out 3 paraphrases × N sub-queries → RRF per
+	// sub-query → merge into best{}. The cross-sub-query merge stays
+	// score-keep-best (not a second RRF) — that's what iter-243 specified.
+	expandMode := r.URL.Query().Get("expand")
 	for _, sq := range subs {
-		effective := sq
-		if wantExpand {
-			effective = s.expandQuery(r.Context(), sq)
-		}
-		hits, err := s.idx.Search(r.Context(), effective, perSub)
+		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
 		if err != nil {
 			continue // one sub-query failure shouldn't fail the whole research
 		}
@@ -1522,13 +1523,10 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if perSub > 40 {
 		perSub = 40
 	}
-	wantExpand := r.URL.Query().Get("expand") == "true"
+	// Iter 257/275: per-sub-query expansion via retrieveWithExpansion.
+	expandMode := r.URL.Query().Get("expand")
 	for _, sq := range subs {
-		effective := sq
-		if wantExpand {
-			effective = s.expandQuery(r.Context(), sq)
-		}
-		hits, err := s.idx.Search(r.Context(), effective, perSub)
+		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
 		if err != nil {
 			continue
 		}
