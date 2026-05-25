@@ -425,43 +425,10 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-	// Iter 252/258: ?expand=true (or =hyde) → HyDE passage appended to q.
-	// Iter 272: ?expand=paraphrase → generate N paraphrases via chat, BM25
-	// each, RRF-fuse the ranked lists into one ordered candidate set.
+	// Iter 252/272/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
 	// Reranker still scores against the original q regardless of strategy.
 	expandMode := r.URL.Query().Get("expand")
-	effectiveQuery := q
-	var hits []index.Hit
-	var err error
-	switch expandMode {
-	case "paraphrase":
-		paras := s.paraphraseQuery(r.Context(), q, 3)
-		if len(paras) == 0 {
-			// Fallback to bare-query BM25 if paraphraser unavailable / failed.
-			hits, err = s.idx.Search(r.Context(), q, fetchK)
-		} else {
-			queries := append([]string{q}, paras...)
-			lists := make([][]index.Hit, 0, len(queries))
-			for _, qq := range queries {
-				h, lerr := s.idx.Search(r.Context(), qq, fetchK)
-				if lerr != nil {
-					continue
-				}
-				lists = append(lists, h)
-			}
-			hits = rrfFuse(lists, 60)
-			if len(hits) > fetchK {
-				hits = hits[:fetchK]
-			}
-			// Surface the joined paraphrase set as the effective query for visibility.
-			effectiveQuery = q + " | " + strings.Join(paras, " | ")
-		}
-	case "true", "hyde":
-		effectiveQuery = s.expandQuery(r.Context(), q)
-		hits, err = s.idx.Search(r.Context(), effectiveQuery, fetchK)
-	default:
-		hits, err = s.idx.Search(r.Context(), q, fetchK)
-	}
+	hits, effectiveQuery, err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -985,6 +952,42 @@ func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
 	return out
 }
 
+// Iter 274: retrieveWithExpansion dispatches the BM25 call across the three
+// expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
+// Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
+// fired (bare path, or expansion no-op'd because chat is down).
+func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK int, expandMode string) ([]index.Hit, string, error) {
+	switch expandMode {
+	case "paraphrase":
+		paras := s.paraphraseQuery(ctx, q, 3)
+		if len(paras) == 0 {
+			hits, err := s.idx.Search(ctx, q, fetchK)
+			return hits, q, err
+		}
+		queries := append([]string{q}, paras...)
+		lists := make([][]index.Hit, 0, len(queries))
+		for _, qq := range queries {
+			h, lerr := s.idx.Search(ctx, qq, fetchK)
+			if lerr != nil {
+				continue
+			}
+			lists = append(lists, h)
+		}
+		hits := rrfFuse(lists, 60)
+		if len(hits) > fetchK {
+			hits = hits[:fetchK]
+		}
+		return hits, q + " | " + strings.Join(paras, " | "), nil
+	case "true", "hyde":
+		eq := s.expandQuery(ctx, q)
+		hits, err := s.idx.Search(ctx, eq, fetchK)
+		return hits, eq, err
+	default:
+		hits, err := s.idx.Search(ctx, q, fetchK)
+		return hits, q, err
+	}
+}
+
 // expandQuery returns q + " " + a HyDE-generated passage when a chat client is
 // configured. On any error (no chat client, chat call fails, empty passage),
 // returns q unchanged so callers can compose safely without explicit guards.
@@ -1104,40 +1107,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-		// Iter 256/258: ?expand=true|hyde HyDE on retrieval; rerank still scores
-	// original q. Iter 273: ?expand=paraphrase mirrors /search — N chat
-	// paraphrases → BM25 each → RRF fuse. Synth then sees the fused top-fetchK.
+		// Iter 256/273/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
 	expandMode := r.URL.Query().Get("expand")
-	effectiveQuery := q
-	var hits []index.Hit
-	var err error
-	switch expandMode {
-	case "paraphrase":
-		paras := s.paraphraseQuery(r.Context(), q, 3)
-		if len(paras) == 0 {
-			hits, err = s.idx.Search(r.Context(), q, fetchK)
-		} else {
-			queries := append([]string{q}, paras...)
-			lists := make([][]index.Hit, 0, len(queries))
-			for _, qq := range queries {
-				h, lerr := s.idx.Search(r.Context(), qq, fetchK)
-				if lerr != nil {
-					continue
-				}
-				lists = append(lists, h)
-			}
-			hits = rrfFuse(lists, 60)
-			if len(hits) > fetchK {
-				hits = hits[:fetchK]
-			}
-			effectiveQuery = q + " | " + strings.Join(paras, " | ")
-		}
-	case "true", "hyde":
-		effectiveQuery = s.expandQuery(r.Context(), q)
-		hits, err = s.idx.Search(r.Context(), effectiveQuery, fetchK)
-	default:
-		hits, err = s.idx.Search(r.Context(), q, fetchK)
-	}
+	hits, effectiveQuery, err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return

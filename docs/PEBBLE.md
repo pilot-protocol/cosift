@@ -225,4 +225,5 @@ iter 270 — `cosift status-file -target N` shows progress toward a doc-count go
 iter 271 — `cosift status-file -target N` adds ETA (status.json carries started_at + indexed_docs_at_start)
 iter 272 — pebble-serve `/search?expand=paraphrase` (paraphrase + RRF fusion)
 iter 273 — pebble-serve `/answer?expand=paraphrase` (same shape; fused top-fetchK feeds synth)
+iter 274 — pebble-serve extract `retrieveWithExpansion` helper (DRY across /search and /answer)
 ```
