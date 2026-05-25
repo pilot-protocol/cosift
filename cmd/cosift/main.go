@@ -4158,6 +4158,19 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		add("sqlite open + schema", "PASS", fmt.Sprintf("%d docs, %d terms", st.Documents, st.Terms))
 	}
 
+	// 2b. Pebble open + counters (iter 287). Pebble is optional; "absent" is
+	// not a failure, just a SKIP. When present, verify open + read counters.
+	pebbleDir := filepath.Join(cfg.DataDir, "pebble")
+	if _, statErr := os.Stat(pebbleDir); statErr != nil {
+		add("pebble store", "SKIP", "no pebble dir (sqlite-only deployment)")
+	} else if ps, err := store.OpenPebble(pebbleDir); err != nil {
+		add("pebble store", "FAIL", err.Error())
+	} else {
+		_, n, _ := ps.CorpusStats(ctx)
+		_ = ps.Close()
+		add("pebble store", "PASS", fmt.Sprintf("%d indexed docs", n))
+	}
+
 	// 3. Config recognized.
 	add("config", "PASS", fmt.Sprintf("addr=%s, data_dir=%s", cfg.Server.Addr, cfg.DataDir))
 

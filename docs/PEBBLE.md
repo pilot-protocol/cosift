@@ -242,4 +242,5 @@ iter 283 — /search + /find_similar surface `total_candidates` (BM25 pool size 
 iter 284 — /research SSE plan event includes `expand` field (so UI knows strategy upfront)
 iter 285 — `cosift pebble-info` surfaces indexed_docs / sum_doc_len / avg_doc_len
 iter 286 — pebble-serve startup logs indexed_docs + cache-size overrides when set
+iter 287 — `cosift doctor` adds a 'pebble store' check (PASS/SKIP/FAIL on open + counters)
 ```
