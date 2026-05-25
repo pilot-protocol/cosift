@@ -276,4 +276,5 @@ iter 316 — /answer + /research responses carry `total_candidates` (parity with
 iter 317 — /answer + /research SSE `sources` events also carry `total_candidates` (sync↔stream parity)
 iter 318 — `cosift verify -json` for CI integration (matches GET /verify body shape)
 iter 319 — docs/API.md SSE event-sequence docs reflect iter-284/292/317 fields (warnings, expand, total_candidates)
+iter 320 — `cosift` usage string lists doctor + pebble-serve/info, verify, status-file, migrate-to-pebble
 ```

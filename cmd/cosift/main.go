@@ -55,6 +55,15 @@ usage:
   cosift answer <text>      hit a running cosift server's /answer (single-question LLM answer with cited sources)
   cosift admin <stats|config|recrawl|recrawl-domain|reembed>   admin-token-protected operator endpoints (token via -token or COSIFT_ADMIN_TOKEN env)
   cosift stats              print index stats
+  cosift doctor             pre-flight check (data dir, sqlite, pebble, env)
+
+  Path-2 (Pebble) commands — see docs/PEBBLE.md and docs/API.md:
+  cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
+  cosift pebble-info -dir D             dump corpus counters + pebble.Metrics for an offline store
+  cosift migrate-to-pebble -output D    copy a SQLite cosift data dir into a fresh Pebble store
+  cosift verify [-json]                 compare iter-207 counters vs 'l' family scan (non-zero exit on drift)
+  cosift status-file [-target N] [-json]  read crawl-status.json (lock-free; works during a live crawl)
+  cosift crawl-status                   richer stats (SQLite-backed; runs against the open store)
   cosift eval [flags]       run the eval set against a chosen retriever
   cosift answer-eval [flags]  LLM-judged /research answer quality, planner vs paraphrase
   cosift answer-eval-compare A.json B.json   diff two saved answer-eval reports
