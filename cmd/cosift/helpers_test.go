@@ -8,6 +8,7 @@ package main
 import (
 	"testing"
 
+	"github.com/calinteodor/cosift/internal/index"
 	"github.com/calinteodor/cosift/internal/server"
 )
 
@@ -49,6 +50,49 @@ func TestSourceIDOf(t *testing.T) {
 		if got != c.want {
 			t.Errorf("sourceIDOf(%d, %+v): want %d, got %d", c.i, c.src, c.want, got)
 		}
+	}
+}
+
+func TestRrfFuse(t *testing.T) {
+	// Iter 354: lock down rrfFuse contract (iter 272). RRF score per URL =
+	// sum over lists of 1/(k+rank+1). A URL appearing first in list A and
+	// last in list B should outscore a URL appearing only in the middle
+	// of list A.
+	listA := []index.Hit{
+		{URL: "https://a", Title: "A"},
+		{URL: "https://b", Title: "B"},
+		{URL: "https://c", Title: "C"},
+	}
+	listB := []index.Hit{
+		{URL: "https://b", Title: "B"},
+		{URL: "https://a", Title: "A"},
+	}
+	got := rrfFuse([][]index.Hit{listA, listB}, 60)
+
+	// a should rank first (first in A, second in B).
+	if len(got) == 0 || got[0].URL != "https://a" {
+		t.Fatalf("rrfFuse: expected https://a as top hit, got %+v", got)
+	}
+	// b should be second (second in A, first in B).
+	if len(got) < 2 || got[1].URL != "https://b" {
+		t.Errorf("rrfFuse: expected https://b as second, got %+v", got)
+	}
+	// c should be third (only appears in A at rank 2).
+	if len(got) < 3 || got[2].URL != "https://c" {
+		t.Errorf("rrfFuse: expected https://c as third, got %+v", got)
+	}
+	// Score is set to the fused RRF score, not the original Hit.Score.
+	if got[0].Score <= 0 {
+		t.Errorf("rrfFuse: top hit should have positive fused score, got %v", got[0].Score)
+	}
+	// Empty input → empty output.
+	if out := rrfFuse(nil, 60); len(out) != 0 {
+		t.Errorf("rrfFuse(nil): want empty, got %+v", out)
+	}
+	// fuseK<=0 falls back to default (60). Doesn't crash; same ranking.
+	got0 := rrfFuse([][]index.Hit{listA, listB}, 0)
+	if len(got0) == 0 || got0[0].URL != "https://a" {
+		t.Errorf("rrfFuse(fuseK=0): expected https://a top, got %+v", got0)
 	}
 }
 
