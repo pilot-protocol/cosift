@@ -438,6 +438,7 @@ type searchHit struct {
 type searchResponse struct {
 	Query           string      `json:"query"`
 	EffectiveQuery  string      `json:"effective_query,omitempty"`
+	Expand          string      `json:"expand,omitempty"`
 	Retriever       string      `json:"retriever"`
 	Hits            []searchHit `json:"hits"`
 	TotalCandidates int         `json:"total_candidates,omitempty"`
@@ -811,6 +812,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := searchResponse{
 		Query:           q,
+		Expand:          expandMode,
 		Retriever:       retrieverLabel,
 		Hits:            out,
 		// Iter 283: total_candidates = BM25 candidates considered before
