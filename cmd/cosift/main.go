@@ -61,7 +61,7 @@ usage:
   cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
   cosift pebble-info -dir D             dump corpus counters + pebble.Metrics for an offline store
   cosift migrate-to-pebble -output D    copy a SQLite cosift data dir into a fresh Pebble store
-  cosift verify [-json]                 compare iter-207 counters vs 'l' family scan (non-zero exit on drift)
+  cosift verify [-json] [-server URL]   compare iter-207 counters vs 'l' family scan (non-zero exit on drift; -server routes through HTTP /verify when the writer lock is held)
   cosift status-file [-target N] [-json]  read crawl-status.json (lock-free; works during a live crawl)
   cosift crawl-status                   richer stats (SQLite-backed; runs against the open store)
   cosift eval [flags]       run the eval set against a chosen retriever

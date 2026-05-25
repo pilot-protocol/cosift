@@ -169,7 +169,8 @@ curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/contents 
 
 ```bash
 cosift doctor                # local probes (data dir, sqlite, pebble, env)
-cosift verify                # counter drift on Pebble (CLI)
+cosift verify                # counter drift on Pebble (local — needs writer lock)
+cosift verify -server http://127.0.0.1:7777  # routes through running pebble-serve's /verify (no lock needed)
 curl http://127.0.0.1:7777/verify   # same drift check via HTTP
 ```
 

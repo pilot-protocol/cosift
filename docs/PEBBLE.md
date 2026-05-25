@@ -290,4 +290,5 @@ iter 328 — PEBBLE.md lead with a status paragraph + cross-doc links so first-t
 iter 329 — README mentions `make check` alongside `make smoke` so contributors know about the offline sweep
 iter 330 — `cosift search/research/find-similar/answer` CLIs print server-side warnings to stderr
 iter 331 — `cosift verify -server URL` routes through the HTTP /verify endpoint (works while writer lock is held)
+iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` mode
 ```
