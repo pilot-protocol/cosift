@@ -339,7 +339,7 @@ The binary listens on `PORT` when set (falls back to `server.addr`). A persisten
 
 For deployments past the low-million document range, cosift ships a Pebble (pure-Go LSM-tree) backend in addition to the default SQLite store. The Pebble path supports the same crawler + BM25 + dense (HNSW) features as SQLite, with substantially higher write throughput at scale.
 
-See [docs/PEBBLE.md](docs/PEBBLE.md) for the Pebble storage design, tuning knobs, and iter map; [docs/API.md](docs/API.md) for the `pebble-serve` HTTP surface reference (curl examples + response shapes); [docs/TUNING.md](docs/TUNING.md) for a knob-by-knob operator guide to retrieval / synth quality.
+See [docs/PEBBLE.md](docs/PEBBLE.md) for the Pebble storage design, tuning knobs, and iter map; [docs/API.md](docs/API.md) for the `pebble-serve` HTTP surface reference; [docs/EXAMPLES.md](docs/EXAMPLES.md) for ready-to-paste curl recipes (search, find_similar, answer, research, ops); [docs/TUNING.md](docs/TUNING.md) for a knob-by-knob operator guide to retrieval / synth quality.
 
 ```bash
 # Crawl into a Pebble-backed store (lives in cfg.DataDir/pebble alongside SQLite)
