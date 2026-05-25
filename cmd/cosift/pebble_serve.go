@@ -104,6 +104,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /healthz", srv.count(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", srv.count(srv.handleStats))
 	mux.HandleFunc("GET /search", srv.count(srv.handleSearch))
+	mux.HandleFunc("POST /search", srv.count(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", srv.count(srv.handleContents))
 	mux.HandleFunc("POST /contents", srv.count(srv.handleContentsBatch))
 	mux.HandleFunc("GET /verify", srv.count(srv.handleVerify))
@@ -383,6 +384,70 @@ type searchResponse struct {
 	Retriever      string      `json:"retriever"`
 	Hits           []searchHit `json:"hits"`
 	Took           string      `json:"took"`
+}
+
+// Iter 277: POST /search with JSON body — for callers whose query lists,
+// quoted phrases, or filter CSVs are awkward to URL-encode. Decodes into a
+// searchRequest, re-encodes as r.URL.RawQuery, then calls handleSearch so
+// every param the GET form supports works identically here. The hand-off
+// shape (URL.Values) is the cosift contract — easier to keep one parser
+// than to fork it across method handlers.
+type searchRequest struct {
+	Q              string `json:"q"`
+	K              int    `json:"k,omitempty"`
+	IncludeDomains string `json:"include_domains,omitempty"`
+	ExcludeDomains string `json:"exclude_domains,omitempty"`
+	Since          string `json:"since,omitempty"`
+	Until          string `json:"until,omitempty"`
+	Sort           string `json:"sort,omitempty"`
+	Enrich         *bool  `json:"enrich,omitempty"`
+	IncludeText    bool   `json:"include_text,omitempty"`
+	Rerank         bool   `json:"rerank,omitempty"`
+	Expand         string `json:"expand,omitempty"`
+}
+
+func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
+	var req searchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	v := url.Values{}
+	if req.Q != "" {
+		v.Set("q", req.Q)
+	}
+	if req.K > 0 {
+		v.Set("k", strconv.Itoa(req.K))
+	}
+	if req.IncludeDomains != "" {
+		v.Set("include_domains", req.IncludeDomains)
+	}
+	if req.ExcludeDomains != "" {
+		v.Set("exclude_domains", req.ExcludeDomains)
+	}
+	if req.Since != "" {
+		v.Set("since", req.Since)
+	}
+	if req.Until != "" {
+		v.Set("until", req.Until)
+	}
+	if req.Sort != "" {
+		v.Set("sort", req.Sort)
+	}
+	if req.Enrich != nil && !*req.Enrich {
+		v.Set("enrich", "false")
+	}
+	if req.IncludeText {
+		v.Set("include_text", "true")
+	}
+	if req.Rerank {
+		v.Set("rerank", "true")
+	}
+	if req.Expand != "" {
+		v.Set("expand", req.Expand)
+	}
+	r.URL.RawQuery = v.Encode()
+	s.handleSearch(w, r)
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {

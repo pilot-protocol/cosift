@@ -68,7 +68,7 @@ curl http://127.0.0.1:7777/verify
 
 ---
 
-## `GET /search`
+## `GET /search` / `POST /search`
 
 BM25 retrieval over the Pebble store. Supports the common params above plus:
 
@@ -79,6 +79,11 @@ BM25 retrieval over the Pebble store. Supports the common params above plus:
 
 ```bash
 curl 'http://127.0.0.1:7777/search?q=raft+consensus&k=5&include_domains=docs.example.com'
+
+# JSON body — same params, easier for long CSVs / quoted phrases:
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"q":"raft consensus","k":5,"include_domains":"docs.example.com","rerank":true}' \
+  http://127.0.0.1:7777/search
 ```
 
 ```json
