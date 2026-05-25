@@ -296,4 +296,5 @@ iter 334 — wire: rename pebble SSE `chunk{delta}` → `answer_chunk{text}` so 
 iter 335 — CLI SSE consumers handle pebble's `sources` event + tolerate pebble's minimal `done` payload + pebble's `error{error:...}` field shape
 iter 336 — CLI SSE `plan` handler accepts pebble's `{plan, expand}` shape alongside SQLite's `{strategy, variants}`
 iter 337 — CLI SSE `error` event surfaces pebble's `phase` tag in the error message
+iter 338 — CLI SSE consumers capture pebble's `sources` event for the final Sources block (pebble's `done` is minimal)
 ```

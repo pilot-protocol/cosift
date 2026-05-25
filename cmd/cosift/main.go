@@ -720,6 +720,9 @@ func forEachSSEEvent(body io.Reader, handle func(event, data string) error) erro
 func consumeResearchSSE(body io.Reader, format string) error {
 	useMarkdown := format == "md" || format == "markdown"
 	var answerStarted, sawDone bool
+	// Iter 338: capture pebble-serve's sources event payload so we can render
+	// the final Sources section when pebble's minimal done event arrives.
+	var pebbleSources []server.AnswerSource
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
@@ -793,12 +796,15 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			// Iter 335: pebble-serve emits one 'sources' event after retrieval
 			// that combines what the SQLite server splits across
 			// retrieved+synthesizing. Render the same progress line.
+			// Iter 338: also capture the sources slice so the final 'done'
+			// event (pebble's is minimal) can still render the Sources block.
 			var s struct {
-				Sources []json.RawMessage `json:"sources"`
+				Sources []server.AnswerSource `json:"sources"`
 			}
 			if err := json.Unmarshal([]byte(data), &s); err != nil {
 				return nil
 			}
+			pebbleSources = s.Sources
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", len(s.Sources))
 		case "answer_chunk":
 			var c struct {
@@ -815,10 +821,10 @@ func consumeResearchSSE(body io.Reader, format string) error {
 				fmt.Println()
 			}
 			var rr server.ResearchResponse
-			if err := json.Unmarshal([]byte(data), &rr); err != nil {
-				// Iter 335: pebble's done event has a minimal payload (just
-				// took/empty); tolerate the missing fields and let the
-				// answer text be the visible output.
+			if err := json.Unmarshal([]byte(data), &rr); err != nil || len(rr.Sources) == 0 {
+				// Iter 335/338: pebble's done event has a minimal payload —
+				// fall back to the sources captured from the iter-338 event.
+				renderStreamingSources(pebbleSources, useMarkdown)
 				return errSSEDone
 			}
 			renderStreamingSources(rr.Sources, useMarkdown)
@@ -903,6 +909,7 @@ func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 func consumeAnswerSSE(body io.Reader, format string) error {
 	useMarkdown := format == "md" || format == "markdown"
 	var answerStarted, sawDone bool
+	var pebbleSources []server.AnswerSource // iter 338
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
@@ -938,12 +945,14 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 		case "sources":
 			// Iter 335: pebble-serve emits 'sources' as the combined
 			// retrieved+synthesizing signal. Render the synthesizing line.
+			// Iter 338: capture for the final Sources block.
 			var s struct {
-				Sources []json.RawMessage `json:"sources"`
+				Sources []server.AnswerSource `json:"sources"`
 			}
 			if err := json.Unmarshal([]byte(data), &s); err != nil {
 				return nil
 			}
+			pebbleSources = s.Sources
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", len(s.Sources))
 		case "answer_chunk":
 			var c struct {
@@ -960,8 +969,10 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 				fmt.Println()
 			}
 			var ar server.AnswerResponse
-			if err := json.Unmarshal([]byte(data), &ar); err != nil {
-				// Iter 335: tolerate pebble-serve's minimal done payload (took only).
+			if err := json.Unmarshal([]byte(data), &ar); err != nil || len(ar.Sources) == 0 {
+				// Iter 335/338: tolerate pebble's minimal done payload; fall
+				// back to the sources captured from the iter-338 sources event.
+				renderStreamingSources(pebbleSources, useMarkdown)
 				return errSSEDone
 			}
 			renderStreamingSources(ar.Sources, useMarkdown)
