@@ -100,16 +100,16 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", srv.handleHealthz)
-	mux.HandleFunc("GET /stats", srv.handleStats)
-	mux.HandleFunc("GET /search", srv.handleSearch)
-	mux.HandleFunc("GET /contents", srv.handleContents)
-	mux.HandleFunc("POST /contents", srv.handleContentsBatch)
-	mux.HandleFunc("GET /verify", srv.handleVerify)
-	mux.HandleFunc("GET /metrics", srv.handleMetrics)
-	mux.HandleFunc("GET /find_similar", srv.handleFindSimilar)
-	mux.HandleFunc("GET /answer", srv.handleAnswer)
-	mux.HandleFunc("GET /research", srv.handleResearch)
+	mux.HandleFunc("GET /healthz", srv.count(srv.handleHealthz))
+	mux.HandleFunc("GET /stats", srv.count(srv.handleStats))
+	mux.HandleFunc("GET /search", srv.count(srv.handleSearch))
+	mux.HandleFunc("GET /contents", srv.count(srv.handleContents))
+	mux.HandleFunc("POST /contents", srv.count(srv.handleContentsBatch))
+	mux.HandleFunc("GET /verify", srv.count(srv.handleVerify))
+	mux.HandleFunc("GET /metrics", srv.count(srv.handleMetrics))
+	mux.HandleFunc("GET /find_similar", srv.count(srv.handleFindSimilar))
+	mux.HandleFunc("GET /answer", srv.count(srv.handleAnswer))
+	mux.HandleFunc("GET /research", srv.count(srv.handleResearch))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -158,7 +158,28 @@ type pebbleHTTP struct {
 	hydeHits   atomic.Int64
 	hydeMisses atomic.Int64
 
+	// Iter 261: per-endpoint request counters via a counting middleware
+	// wrapping every mux entry. sync.Map keeps the hot path lock-free; /metrics
+	// reads via Range. Path is the label so a misrouted call (404) doesn't get
+	// counted under an existing endpoint.
+	requestCounts sync.Map
+
 	started    time.Time
+}
+
+// count is the iter-261 request-counting middleware. Bumps a per-path atomic
+// counter, lazily creating the counter on first request to a path. Hot path
+// is sync.Map.Load + Add — no contention even under high RPS.
+func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Path
+		v, ok := s.requestCounts.Load(key)
+		if !ok {
+			v, _ = s.requestCounts.LoadOrStore(key, new(atomic.Int64))
+		}
+		v.(*atomic.Int64).Add(1)
+		h(w, r)
+	}
 }
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +250,14 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_misses_total HyDE cache misses (expandQuery called the LLM).\n")
 	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_misses_total counter\n")
 	fmt.Fprintf(w, "cosift_hyde_cache_misses_total %d\n", s.hydeMisses.Load())
+	// Iter 261: per-endpoint request counters. Labels = path; misrouted calls
+	// (404) don't share a label with any handled path.
+	fmt.Fprintf(w, "# HELP cosift_requests_total HTTP requests served, by endpoint.\n")
+	fmt.Fprintf(w, "# TYPE cosift_requests_total counter\n")
+	s.requestCounts.Range(func(k, v any) bool {
+		fmt.Fprintf(w, "cosift_requests_total{endpoint=%q} %d\n", k.(string), v.(*atomic.Int64).Load())
+		return true
+	})
 }
 
 // Iter 230: HTTP form of `cosift verify`. Same comparison (iter-207 running

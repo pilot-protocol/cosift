@@ -212,4 +212,5 @@ iter 257 — pebble-serve `/research?expand=true` (per-sub-query HyDE) + shared 
 iter 258 — pebble-serve /search + /answer migrated to the shared expandQuery helper
 iter 259 — pebble-serve bounded in-memory HyDE cache (256 entries, drop-arbitrary on overflow)
 iter 260 — pebble-serve `/metrics` exposes cosift_hyde_cache_hits_total / misses_total
+iter 261 — pebble-serve `/metrics` exposes cosift_requests_total{endpoint="…"} via counting middleware
 ```
