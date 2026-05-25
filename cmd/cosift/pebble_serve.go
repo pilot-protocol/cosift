@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -2360,6 +2361,58 @@ func openPebbleOrFriendlyErr(d string) (*store.PebbleStore, error) {
 	return ps, nil
 }
 
+// Iter 331: runVerifyViaServer GETs pebble-serve's /verify endpoint and
+// renders the JSON body in the same shape runVerifyPebble's local path emits.
+// Lets `cosift verify -server URL` work against a running pebble-serve while
+// the writer lock is held by the crawl / serve process.
+func runVerifyViaServer(ctx context.Context, serverURL string, asJSON bool) error {
+	endpoint := strings.TrimRight(serverURL, "/") + "/verify"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		fmt.Println(string(body))
+	} else {
+		var d struct {
+			OK                 bool  `json:"ok"`
+			IndexedDocsCounter int64 `json:"indexed_docs_counter"`
+			IndexedDocsScan    int64 `json:"indexed_docs_scan"`
+			IndexedDocsDrift   int64 `json:"indexed_docs_drift"`
+			SumDocLenCounter   int64 `json:"sum_doc_len_counter"`
+			SumDocLenScan      int64 `json:"sum_doc_len_scan"`
+			SumDocLenDrift     int64 `json:"sum_doc_len_drift"`
+		}
+		if err := json.Unmarshal(body, &d); err != nil {
+			return fmt.Errorf("decode %s: %w", endpoint, err)
+		}
+		fmt.Printf("pebble-serve: %s\n\n", serverURL)
+		fmt.Printf("  indexed_docs (counter): %d\n", d.IndexedDocsCounter)
+		fmt.Printf("  indexed_docs (scan):    %d\n", d.IndexedDocsScan)
+		fmt.Printf("  sum_doc_len  (counter): %d\n", d.SumDocLenCounter)
+		fmt.Printf("  sum_doc_len  (scan):    %d\n", d.SumDocLenScan)
+		if d.OK {
+			fmt.Println("\nOK: counters match the 'l' family scan.")
+		} else {
+			fmt.Printf("\nDRIFT: indexed_docs Δ=%+d, sum_doc_len Δ=%+d\n", d.IndexedDocsDrift, d.SumDocLenDrift)
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("counter drift detected (server returned %d)", resp.StatusCode)
+	}
+	return nil
+}
+
 // Iter 217 — operator visibility into LSM levels, WAL state, on-disk
 // size, and compaction queue, surfaced via pebble.Metrics().String().
 func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
@@ -2408,8 +2461,15 @@ func runVerifyPebble(ctx context.Context, cfg *config.Config, args []string) err
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
 	// Iter 318: machine-readable output for CI integration.
 	asJSON := fs.Bool("json", false, "emit JSON report instead of human text (suitable for jq / CI)")
+	// Iter 331: -server URL routes the check through a running pebble-serve's
+	// /verify endpoint instead of opening the store directly. Useful when a
+	// crawl or pebble-serve is holding the writer lock.
+	serverURL := fs.String("server", "", "pebble-serve URL — when set, GETs /verify instead of opening the store")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *serverURL != "" {
+		return runVerifyViaServer(ctx, *serverURL, *asJSON)
 	}
 	d := *dir
 	if d == "" {
