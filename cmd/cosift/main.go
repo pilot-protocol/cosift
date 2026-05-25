@@ -600,10 +600,10 @@ func renderAnswerMarkdown(query, strategy string, plan []string, answer string, 
 	}
 	if len(sources) > 0 {
 		b.WriteString("\n## Sources\n\n")
-		for _, s := range sources {
+		for i, s := range sources {
 			// `N. [Title](URL)` — the leading N matches the citation IDs the
 			// LLM emits inline (e.g. `[1]` in the answer references source 1).
-			fmt.Fprintf(&b, "%d. [%s](%s)", s.ID, s.Title, s.URL)
+			fmt.Fprintf(&b, "%d. [%s](%s)", sourceIDOf(i, s), s.Title, s.URL)
 			var trailing []string
 			if s.Domain != "" {
 				trailing = append(trailing, s.Domain)
@@ -864,19 +864,21 @@ func consumeResearchSSE(body io.Reader, format string) error {
 // research and answer SSE consumers. Format matches the non-stream paths from
 // iter-91 (research) and iter-94 (answer) so operators get consistent output
 // regardless of whether they used -stream. Iter 109.
+// Iter 339/340: position-based ID fallback for source rendering when the
+// server didn't emit an id field (pebble-serve's source payload). SQLite-side
+// servers always emit non-zero IDs, so their output is unchanged.
+func sourceIDOf(i int, s server.AnswerSource) int {
+	if s.ID > 0 {
+		return s.ID
+	}
+	return i + 1
+}
+
 func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 	if len(sources) == 0 {
 		return
 	}
-	// Iter 339: fall back to position-based numbering when ID is unset
-	// (pebble-serve's source payload doesn't emit a citation id field, so
-	// without this fallback every source rendered as '0.').
-	idOf := func(i int, s server.AnswerSource) int {
-		if s.ID > 0 {
-			return s.ID
-		}
-		return i + 1
-	}
+	idOf := sourceIDOf
 	if useMarkdown {
 		fmt.Println()
 		fmt.Println("## Sources")
@@ -1154,7 +1156,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	if len(rr.Sources) > 0 {
 		fmt.Println()
 		fmt.Println("Sources:")
-		for _, s := range rr.Sources {
+		for i, s := range rr.Sources {
 			date := ""
 			if s.PublishedAt != nil {
 				date = " " + s.PublishedAt.Format("2006-01-02")
@@ -1163,7 +1165,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 			if s.Domain != "" {
 				domain = " [" + s.Domain + "]"
 			}
-			fmt.Printf("  [%d]%s%s %s\n      %s\n", s.ID, domain, date, s.Title, s.URL)
+			fmt.Printf("  [%d]%s%s %s\n      %s\n", sourceIDOf(i, s), domain, date, s.Title, s.URL)
 		}
 	}
 	return nil
@@ -1610,7 +1612,7 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	if len(ar.Sources) > 0 {
 		fmt.Println()
 		fmt.Println("Sources:")
-		for _, s := range ar.Sources {
+		for i, s := range ar.Sources {
 			date := ""
 			if s.PublishedAt != nil {
 				date = " " + s.PublishedAt.Format("2006-01-02")
@@ -1619,7 +1621,7 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 			if s.Domain != "" {
 				domain = " [" + s.Domain + "]"
 			}
-			fmt.Printf("  [%d]%s%s %s\n      %s\n", s.ID, domain, date, s.Title, s.URL)
+			fmt.Printf("  [%d]%s%s %s\n      %s\n", sourceIDOf(i, s), domain, date, s.Title, s.URL)
 		}
 	}
 	return nil

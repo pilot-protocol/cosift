@@ -298,4 +298,5 @@ iter 336 — CLI SSE `plan` handler accepts pebble's `{plan, expand}` shape alon
 iter 337 — CLI SSE `error` event surfaces pebble's `phase` tag in the error message
 iter 338 — CLI SSE consumers capture pebble's `sources` event for the final Sources block (pebble's `done` is minimal)
 iter 339 — renderStreamingSources uses i+1 fallback when ID==0 (pebble sources lack a citation id field)
+iter 340 — sync research/answer CLI renderers + markdown renderer also use the iter-339 sourceIDOf helper
 ```
