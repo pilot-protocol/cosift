@@ -184,7 +184,7 @@ func main() {
 			log.Fatalf("admin: %v", err)
 		}
 	case "stats":
-		if err := runStats(ctx, cfg); err != nil {
+		if err := runStats(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("stats: %v", err)
 		}
 	case "crawl-status":
@@ -275,6 +275,7 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 	refresh := fs.Bool("refresh", false, "force re-crawl of URLs already in the frontier")
 	sitemap := fs.String("sitemap", "", "URL of a sitemap.xml (or sitemap index) to seed from")
+	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -283,17 +284,34 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		return errors.New("crawl: at least one URL or -sitemap is required")
 	}
 
-	s, err := store.Open(cfg.DataDir)
-	if err != nil {
-		return err
+	var c *crawler.Crawler
+	switch *backend {
+	case "sqlite", "":
+		s, err := store.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		c = crawler.New(cfg.Crawler, s)
+	case "pebble":
+		// Iter 213: route through the iter-200..212 Pebble path. The
+		// data dir layout under cfg.DataDir for Pebble: a sibling "pebble"
+		// subdir so SQLite and Pebble stores can coexist during migration.
+		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
+		ps, err := store.OpenPebble(pebbleDir)
+		if err != nil {
+			return fmt.Errorf("open pebble at %s: %w", pebbleDir, err)
+		}
+		defer ps.Close()
+		c = crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
+		log.Printf("crawler: pebble backend at %s", pebbleDir)
+	default:
+		return fmt.Errorf("crawl: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}
-	defer s.Close()
 
-	c := crawler.New(cfg.Crawler, s)
-	// Iter 186: auto-wire embedder when configured. Mirrors runIngest's pattern.
-	// Without this, `cosift crawl` produced a BM25-only index even when
-	// cosift.json declared embeddings.model — dense retrieval was silently
-	// disabled because the server's WithEmbedder hook was never called.
+	// Iter 186 / 213: auto-wire embedder when configured. Works for both
+	// backends; PebbleStore's vector-write path is currently no-op until a
+	// PassageWriter bridge to HNSW is provided.
 	if cfg.Embeddings.Model != "" {
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
@@ -5312,18 +5330,42 @@ func truncate(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-func runStats(ctx context.Context, cfg *config.Config) error {
-	s, err := store.Open(cfg.DataDir)
-	if err != nil {
+func runStats(ctx context.Context, cfg *config.Config, args []string) error {
+	// Iter 213: -backend flag (-backend=pebble reads the Pebble subdir).
+	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	defer s.Close()
-
-	stats, err := s.Stats(ctx)
-	if err != nil {
-		return err
+	switch *backend {
+	case "sqlite", "":
+		s, err := store.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		stats, err := s.Stats(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("documents: %d\nterms: %d\ndata_dir: %s\nbackend: sqlite\n",
+			stats.Documents, stats.Terms, cfg.DataDir)
+	case "pebble":
+		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
+		ps, err := store.OpenPebble(pebbleDir)
+		if err != nil {
+			return fmt.Errorf("open pebble: %w", err)
+		}
+		defer ps.Close()
+		stats, err := ps.Stats(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("documents: %d\ndata_dir: %s\nbackend: pebble\n",
+			stats.Documents, pebbleDir)
+	default:
+		return fmt.Errorf("stats: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}
-	fmt.Printf("documents: %d\nterms: %d\ndata_dir: %s\n", stats.Documents, stats.Terms, cfg.DataDir)
 	return nil
 }
 
