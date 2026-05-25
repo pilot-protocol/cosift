@@ -198,6 +198,20 @@ Counters of interest:
 - `cosift_paraphrase_cache_hits_total` / `_misses_total`
 - `cosift_warnings_emitted_total` (alert on misconfigured-request rate)
 
+### Debug a misconfigured request
+
+Every retrieval/synth response carries a `warnings[]` field when the request named a capability that didn't fire (chat unset, reranker unset, unknown `expand` / `sort` value, non-integer `k`).
+
+```bash
+# Was rerank actually applied?
+curl -s 'http://127.0.0.1:7777/search?q=raft&rerank=true' | jq '.warnings, .retriever'
+
+# Probe whether expand=paraphrase landed (false → returns null warning + bm25 retriever)
+curl -s 'http://127.0.0.1:7777/search?q=raft&expand=paraphrase' | jq '.warnings, .expand, .effective_query'
+```
+
+`rate(cosift_warnings_emitted_total)` on `/metrics` is the alert metric — a sudden spike usually means a deploy started sending malformed requests.
+
 ### Verify a config override took effect
 
 ```bash
