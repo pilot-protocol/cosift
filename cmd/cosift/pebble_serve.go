@@ -770,6 +770,13 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
+	// Iter 246: same retrieval filters /search/answer/find_similar accept.
+	// Parsed once here so the streaming and sync paths share semantics.
+	filt, err := parseRetrievalFilters(r)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Iter 244: SSE streaming for /research. Same trigger as /answer.
 	// Emits phase-aware events so the UI can render the plan and source list
 	// before the synth call completes — /research often runs 10–30s
@@ -778,7 +785,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			s.streamResearch(w, r, sc, q, k, start)
+			s.streamResearch(w, r, sc, q, k, filt, start)
 			return
 		}
 	}
@@ -830,11 +837,16 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// Materialize sources + prompt
 	sources := make([]answerSource, 0, len(pooled))
 	var promptSources strings.Builder
-	for i, p := range pooled {
+	idx := 0
+	for _, p := range pooled {
 		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 		if derr != nil || doc == nil {
 			continue
 		}
+		if !filt.allow(doc.URL, doc.PublishedAt) {
+			continue
+		}
+		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -842,7 +854,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			src.PublishedAt = &t
 		}
 		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
@@ -872,7 +884,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 //   chunk   — per chat delta during synth
 //   done    — final {"took": "..."}
 //   error   — terminal; either plan, retrieval, or synth failed
-func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, q string, k int, start time.Time) {
+func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, q string, k int, filt retrievalFilters, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
@@ -933,11 +945,16 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 
 	sources := make([]answerSource, 0, len(pooled))
 	var promptSources strings.Builder
-	for i, p := range pooled {
+	idx := 0
+	for _, p := range pooled {
 		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 		if derr != nil || doc == nil {
 			continue
 		}
+		if !filt.allow(doc.URL, doc.PublishedAt) {
+			continue
+		}
+		idx++
 		excerpt := textExcerpt(doc.Text, 1200)
 		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
 		if !doc.PublishedAt.IsZero() {
@@ -945,7 +962,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			src.PublishedAt = &t
 		}
 		sources = append(sources, src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, doc.Title, doc.URL, excerpt)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
 	}
 	sse(map[string]any{"type": "sources", "sources": sources})
 	if len(sources) == 0 {
@@ -964,6 +981,63 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		return
 	}
 	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
+}
+
+// retrievalFilters bundles the four post-retrieval predicates /search,
+// /answer, /find_similar, and /research all share. Centralized in iter 246
+// so /research's sync + stream paths stay in lockstep.
+type retrievalFilters struct {
+	include    []string
+	exclude    []string
+	since      time.Time
+	until      time.Time
+	dateActive bool
+}
+
+func parseRetrievalFilters(r *http.Request) (retrievalFilters, error) {
+	f := retrievalFilters{
+		include: splitDomainsCSV(r.URL.Query().Get("include_domains")),
+		exclude: splitDomainsCSV(r.URL.Query().Get("exclude_domains")),
+	}
+	since, err := parseDateBound(r.URL.Query().Get("since"))
+	if err != nil {
+		return f, fmt.Errorf("since: %w", err)
+	}
+	until, err := parseDateBound(r.URL.Query().Get("until"))
+	if err != nil {
+		return f, fmt.Errorf("until: %w", err)
+	}
+	f.since = since
+	f.until = until
+	f.dateActive = !since.IsZero() || !until.IsZero()
+	return f, nil
+}
+
+// allow reports whether (url, publishedAt) clears the filter. publishedAt
+// can be the zero Time when the caller doesn't have it loaded; zero is
+// treated as "unknown" and dropped under any date filter.
+func (f retrievalFilters) allow(rawURL string, publishedAt time.Time) bool {
+	if len(f.include) > 0 || len(f.exclude) > 0 {
+		host := hostOf(rawURL)
+		if len(f.include) > 0 && !matchesAnyDomain(host, f.include) {
+			return false
+		}
+		if len(f.exclude) > 0 && matchesAnyDomain(host, f.exclude) {
+			return false
+		}
+	}
+	if f.dateActive {
+		if publishedAt.IsZero() {
+			return false
+		}
+		if !f.since.IsZero() && publishedAt.Before(f.since) {
+			return false
+		}
+		if !f.until.IsZero() && publishedAt.After(f.until) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseSubQueries(raw, fallback string) []string {

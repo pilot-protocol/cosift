@@ -197,4 +197,5 @@ iter 242 — pebble-serve `/answer?stream=true` (SSE: sources → chunk → done
 iter 243 — pebble-serve `/research` (planner: decompose → retrieve → dedupe → synth)
 iter 244 — pebble-serve `/research?stream=true` (SSE: plan → sources → chunk → done)
 iter 245 — pebble-serve `/find_similar` honors include_domains / exclude_domains / since / until
+iter 246 — pebble-serve `/research` honors retrieval filters (sync + SSE); shared `retrievalFilters` helper
 ```
