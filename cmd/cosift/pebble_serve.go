@@ -158,27 +158,38 @@ type pebbleHTTP struct {
 	hydeHits   atomic.Int64
 	hydeMisses atomic.Int64
 
-	// Iter 261: per-endpoint request counters via a counting middleware
-	// wrapping every mux entry. sync.Map keeps the hot path lock-free; /metrics
-	// reads via Range. Path is the label so a misrouted call (404) doesn't get
-	// counted under an existing endpoint.
-	requestCounts sync.Map
+	// Iter 261/262: per-endpoint request counters + duration sums via a
+	// counting middleware wrapping every mux entry. sync.Map keeps the hot
+	// path lock-free; /metrics reads via Range. Path is the label so a
+	// misrouted call (404) doesn't get counted under an existing endpoint.
+	// rate(sum)/rate(count) over the duration sum gives mean latency in PromQL.
+	requestCounts sync.Map // map[string]*endpointMetrics
 
 	started    time.Time
 }
 
-// count is the iter-261 request-counting middleware. Bumps a per-path atomic
-// counter, lazily creating the counter on first request to a path. Hot path
-// is sync.Map.Load + Add — no contention even under high RPS.
+type endpointMetrics struct {
+	count    atomic.Int64
+	sumNanos atomic.Int64
+}
+
+// count is the iter-261/262 request-counting middleware. Bumps a per-path
+// {count, sumNanos} struct, lazily created on first request to a path. Hot
+// path is sync.Map.Load + two atomic Adds — no contention even under high
+// RPS. Duration is sampled after the handler returns so streaming endpoints
+// account for their full open connection time.
 func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Path
 		v, ok := s.requestCounts.Load(key)
 		if !ok {
-			v, _ = s.requestCounts.LoadOrStore(key, new(atomic.Int64))
+			v, _ = s.requestCounts.LoadOrStore(key, &endpointMetrics{})
 		}
-		v.(*atomic.Int64).Add(1)
+		m := v.(*endpointMetrics)
+		m.count.Add(1)
+		start := time.Now()
 		h(w, r)
+		m.sumNanos.Add(time.Since(start).Nanoseconds())
 	}
 }
 
@@ -250,12 +261,19 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_misses_total HyDE cache misses (expandQuery called the LLM).\n")
 	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_misses_total counter\n")
 	fmt.Fprintf(w, "cosift_hyde_cache_misses_total %d\n", s.hydeMisses.Load())
-	// Iter 261: per-endpoint request counters. Labels = path; misrouted calls
-	// (404) don't share a label with any handled path.
+	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
+	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
+	// gives mean latency in any window. Labels = path; misrouted calls (404)
+	// don't share a label with any handled path.
 	fmt.Fprintf(w, "# HELP cosift_requests_total HTTP requests served, by endpoint.\n")
 	fmt.Fprintf(w, "# TYPE cosift_requests_total counter\n")
+	fmt.Fprintf(w, "# HELP cosift_request_duration_seconds_sum Cumulative request duration, by endpoint.\n")
+	fmt.Fprintf(w, "# TYPE cosift_request_duration_seconds_sum counter\n")
 	s.requestCounts.Range(func(k, v any) bool {
-		fmt.Fprintf(w, "cosift_requests_total{endpoint=%q} %d\n", k.(string), v.(*atomic.Int64).Load())
+		path := k.(string)
+		m := v.(*endpointMetrics)
+		fmt.Fprintf(w, "cosift_requests_total{endpoint=%q} %d\n", path, m.count.Load())
+		fmt.Fprintf(w, "cosift_request_duration_seconds_sum{endpoint=%q} %.6f\n", path, float64(m.sumNanos.Load())/1e9)
 		return true
 	})
 }
