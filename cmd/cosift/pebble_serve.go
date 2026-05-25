@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -62,6 +63,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /contents", srv.handleContents)
 	mux.HandleFunc("GET /verify", srv.handleVerify)
 	mux.HandleFunc("GET /metrics", srv.handleMetrics)
+	mux.HandleFunc("GET /find_similar", srv.handleFindSimilar)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -330,6 +332,123 @@ func sortHitsByDate(hits []searchHit, asc bool) {
 			return hits[i].PublishedAt.Before(*hits[j].PublishedAt)
 		}
 		return hits[i].PublishedAt.After(*hits[j].PublishedAt)
+	})
+}
+
+// Iter 236: BM25-only "more like this". Mirrors EXA's /findSimilar shape but
+// stays dependency-free: no embeddings required. Algorithm is Lucene's MLT —
+// pick the source doc's top-N terms by tf·idf, build a query from them, run
+// the existing BM25 search, drop the source URL itself. With dense vectors
+// off the table on the Pebble path (HNSW indexing during crawl is the iter
+// follow-up), this is the cheapest credible /find_similar we can ship.
+func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		writeProblem(w, http.StatusBadRequest, "missing url parameter")
+		return
+	}
+	decoded, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "url parameter is not URL-encoded")
+		return
+	}
+	src, err := s.store.GetDocByURL(r.Context(), decoded)
+	if errors.Is(err, store.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "url not in index")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	k := 10
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			k = n
+		}
+	}
+
+	// Tokenize title (×3) and body; mirror IndexDocument's title boost so
+	// title terms dominate the similarity query.
+	tf := make(map[string]int, 256)
+	for _, t := range index.Tokenize(src.Title) {
+		tf[t] += 3
+	}
+	for _, t := range index.Tokenize(src.Text) {
+		tf[t]++
+	}
+
+	_, n, _ := s.store.CorpusStats(r.Context())
+	if n <= 0 {
+		n = 1
+	}
+	logN := math.Log(float64(n))
+
+	type termScore struct {
+		term  string
+		score float64
+	}
+	scored := make([]termScore, 0, len(tf))
+	for term, freq := range tf {
+		info, ok, err := s.store.GetTermInfo(r.Context(), term)
+		if err != nil || !ok || info.DocFreq <= 0 {
+			continue
+		}
+		idf := logN - math.Log(float64(info.DocFreq))
+		if idf <= 0 {
+			continue // term appears in every doc; useless signal
+		}
+		scored = append(scored, termScore{term: term, score: float64(freq) * idf})
+	}
+	sort.Slice(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
+
+	topN := 10
+	if len(scored) < topN {
+		topN = len(scored)
+	}
+	if topN == 0 {
+		writeJSON(w, http.StatusOK, searchResponse{
+			Query: decoded, Retriever: "bm25-mlt",
+			Hits: []searchHit{}, Took: time.Since(start).String(),
+		})
+		return
+	}
+	terms := make([]string, topN)
+	for i := 0; i < topN; i++ {
+		terms[i] = scored[i].term
+	}
+	queryStr := strings.Join(terms, " ")
+
+	hits, err := s.idx.Search(r.Context(), queryStr, k+1)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]searchHit, 0, k)
+	for _, h := range hits {
+		if h.URL == src.URL {
+			continue
+		}
+		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
+		if doc, derr := s.store.GetDocByURL(r.Context(), h.URL); derr == nil && doc != nil {
+			hit.Excerpt = textExcerpt(doc.Text, 320)
+			if !doc.PublishedAt.IsZero() {
+				t := doc.PublishedAt
+				hit.PublishedAt = &t
+			}
+			hit.Author = doc.Author
+		}
+		out = append(out, hit)
+		if len(out) >= k {
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, searchResponse{
+		Query:     queryStr,
+		Retriever: "bm25-mlt",
+		Hits:      out,
+		Took:      time.Since(start).String(),
 	})
 }
 

@@ -144,7 +144,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Gap | Workaround |
 |---|---|
 | Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /contents, /verify, /metrics) | Server unification deferred — synthesis endpoints (`/answer`, `/research`, `/find_similar`) on Pebble require porting ~1000 LOC of internal/server |
+| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /find_similar, /contents, /verify, /metrics) | Server unification deferred — synthesis endpoints (`/answer`, `/research`) on Pebble require porting ~1000 LOC of internal/server |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
 
@@ -187,4 +187,5 @@ iter 232 — pebble-serve `/search` include_domains / exclude_domains
 iter 233 — pebble-serve `/search` hit enrichment (excerpt, published_at, author)
 iter 234 — pebble-serve `/search` since / until date filters
 iter 235 — pebble-serve `/search` sort=date_desc / date_asc
+iter 236 — pebble-serve `/find_similar` (BM25 more-like-this, no embeddings)
 ```
