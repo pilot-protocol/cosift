@@ -26,16 +26,45 @@ import (
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
 type Crawler struct {
-	cfg      config.Crawler
-	store    *store.Store
-	idx      *index.BM25
-	http     *http.Client
-	robots   *Robots
-	embedder embed.Embedder // optional; nil = lexical-only ingest
+	cfg           config.Crawler
+	store         CrawlerStore
+	idx           LexicalIndexer
+	passageWriter PassageWriter // optional; nil = no vector write (Pebble path uses HNSW directly)
+	http          *http.Client
+	robots        *Robots
+	embedder      embed.Embedder // optional; nil = lexical-only ingest
 }
 
-// New constructs a crawler against a store. Caller owns store lifecycle.
+// New constructs a SQLite-backed crawler. Caller owns store lifecycle.
+// Backward-compatible with iter-211 and prior callers; *store.Store
+// satisfies both CrawlerStore and PassageWriter so the SQLite vector-
+// write path is auto-attached. Iter 212.
 func New(cfg config.Crawler, s *store.Store) *Crawler {
+	c := newBare(cfg)
+	c.store = s
+	c.idx = index.NewBM25(s)
+	c.passageWriter = s
+	return c
+}
+
+// NewWithBackend constructs a crawler against arbitrary CrawlerStore +
+// LexicalIndexer implementations — the Pebble entry point. Caller passes
+// a *store.PebbleStore plus an *index.PebbleBM25 (or any other implementor).
+// Vector indexing during crawl is opt-in via WithPassageWriter; the
+// default Pebble-side flow writes BM25 only. Iter 212.
+func NewWithBackend(cfg config.Crawler, s CrawlerStore, idx LexicalIndexer) *Crawler {
+	c := newBare(cfg)
+	c.store = s
+	c.idx = idx
+	// If the concrete store happens to satisfy PassageWriter (the SQLite
+	// case), auto-attach so callers don't have to wire it explicitly.
+	if pw, ok := s.(PassageWriter); ok {
+		c.passageWriter = pw
+	}
+	return c
+}
+
+func newBare(cfg config.Crawler) *Crawler {
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -56,13 +85,7 @@ func New(cfg config.Crawler, s *store.Store) *Crawler {
 	if cfg.RespectRobots {
 		robots = NewRobots(httpClient, cfg.UserAgent)
 	}
-	return &Crawler{
-		cfg:    cfg,
-		store:  s,
-		idx:    index.NewBM25(s),
-		http:   httpClient,
-		robots: robots,
-	}
+	return &Crawler{cfg: cfg, http: httpClient, robots: robots}
 }
 
 // WithEmbedder enables dense indexing during crawl: every successfully indexed
@@ -70,6 +93,13 @@ func New(cfg config.Crawler, s *store.Store) *Crawler {
 // failure is non-fatal — the BM25 index still gets the document.
 func (c *Crawler) WithEmbedder(e embed.Embedder) *Crawler {
 	c.embedder = e
+	return c
+}
+
+// WithPassageWriter overrides the auto-attached PassageWriter. Use this on
+// the Pebble path to bridge passage vectors into an HNSW index. Iter 212.
+func (c *Crawler) WithPassageWriter(pw PassageWriter) *Crawler {
+	c.passageWriter = pw
 	return c
 }
 
@@ -352,16 +382,21 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			if embErr != nil {
 				log.Printf("embed %s: %v", item.URL, embErr)
 			} else if len(vecs) == len(chunks) {
-				for i, ch := range chunks {
-					p := &store.Passage{
-						DocID:     id,
-						Offset:    ch.Offset,
-						Length:    ch.Length,
-						Model:     c.embedder.Model(),
-						Embedding: vecs[i],
-					}
-					if upErr := c.store.UpsertPassage(ctx, p); upErr != nil {
-						log.Printf("save passage %s offset=%d: %v", item.URL, ch.Offset, upErr)
+				// Iter 212: vector writes go through the optional PassageWriter
+				// so Pebble-backed crawlers (no SQL passages table) can opt out
+				// or supply their own HNSW bridge.
+				if c.passageWriter != nil {
+					for i, ch := range chunks {
+						p := &store.Passage{
+							DocID:     id,
+							Offset:    ch.Offset,
+							Length:    ch.Length,
+							Model:     c.embedder.Model(),
+							Embedding: vecs[i],
+						}
+						if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
+							log.Printf("save passage %s offset=%d: %v", item.URL, ch.Offset, upErr)
+						}
 					}
 				}
 			}
