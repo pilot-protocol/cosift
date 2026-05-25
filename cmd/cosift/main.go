@@ -410,7 +410,12 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 			return fmt.Errorf("open pebble: %w", err)
 		}
 		defer ps.Close()
-		idx = index.NewPebbleBM25(ps)
+		// Iter 301: honor COSIFT_BM25_K1 / _B here too. runQuery previously
+		// always used defaults; with env overrides set, score values diverged
+		// silently from pebble-serve's. Now they line up.
+		pidx := index.NewPebbleBM25(ps)
+		applyBM25EnvOverrides(pidx)
+		idx = pidx
 	default:
 		return fmt.Errorf("query: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}

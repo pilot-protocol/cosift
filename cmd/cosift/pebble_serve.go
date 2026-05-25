@@ -81,21 +81,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 	idx := index.NewPebbleBM25(ps)
-	// Iter 279: COSIFT_BM25_K1 / COSIFT_BM25_B override the BM25 scoring
-	// parameters per instance. Operators tuning for a specific corpus
-	// (long-form vs short-form, narrow vocabulary, etc.) can flip these
-	// without code changes. Invalid values silently keep the defaults.
-	if v := os.Getenv("COSIFT_BM25_K1"); v != "" {
-		if k1, err := strconv.ParseFloat(v, 64); err == nil && k1 > 0 {
-			idx.WithBM25Params(k1, 0)
-			log.Printf("pebble-serve: BM25 k1 override = %.2f", k1)
-		}
+	// Iter 279/301: COSIFT_BM25_K1 / COSIFT_BM25_B override per instance.
+	// Shared with runQuery via applyBM25EnvOverrides so any PebbleBM25 built
+	// from CLI or server honors the same env.
+	o := applyBM25EnvOverrides(idx)
+	if o.k1Set {
+		log.Printf("pebble-serve: BM25 k1 override = %.2f", o.k1Val)
 	}
-	if v := os.Getenv("COSIFT_BM25_B"); v != "" {
-		if b, err := strconv.ParseFloat(v, 64); err == nil && b > 0 {
-			idx.WithBM25Params(0, b)
-			log.Printf("pebble-serve: BM25 b override = %.2f", b)
-		}
+	if o.bSet {
+		log.Printf("pebble-serve: BM25 b override = %.2f", o.bVal)
 	}
 	srv := &pebbleHTTP{
 		store:        ps,
@@ -1168,6 +1162,31 @@ func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Cand
 		s.rerankFailures.Add(1)
 	}
 	return order, err
+}
+
+// Iter 301: applyBM25EnvOverrides reads COSIFT_BM25_K1 / _B and applies them
+// to idx. Shared by runPebbleServe and runQuery so both honor the same env.
+// Returns which knobs landed so callers can log selectively.
+type bm25EnvResult struct {
+	k1Set, bSet bool
+	k1Val, bVal float64
+}
+
+func applyBM25EnvOverrides(idx *index.PebbleBM25) bm25EnvResult {
+	var out bm25EnvResult
+	if v := os.Getenv("COSIFT_BM25_K1"); v != "" {
+		if k1, err := strconv.ParseFloat(v, 64); err == nil && k1 > 0 {
+			idx.WithBM25Params(k1, 0)
+			out.k1Set, out.k1Val = true, k1
+		}
+	}
+	if v := os.Getenv("COSIFT_BM25_B"); v != "" {
+		if b, err := strconv.ParseFloat(v, 64); err == nil && b > 0 {
+			idx.WithBM25Params(0, b)
+			out.bSet, out.bVal = true, b
+		}
+	}
+	return out
 }
 
 // Iter 272: paraphraseQuery returns up to n paraphrases of q via the chat

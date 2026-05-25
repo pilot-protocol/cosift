@@ -257,4 +257,5 @@ iter 297 — PEBBLE.md known-limitations table updated to reflect post-iter-292 
 iter 298 — `/find_similar` accepts `text` (+ optional `title`) for content-based MLT — no source URL required
 iter 299 — docs/API.md + docs/EXAMPLES.md cover the iter-298 content-based MLT flow
 iter 300 — `cosift find-similar` CLI accepts -text / -text-file / -text-title (POST when text > 4 KB)
+iter 301 — `cosift query --backend=pebble` honors COSIFT_BM25_K1 / _B (shared helper with pebble-serve)
 ```
