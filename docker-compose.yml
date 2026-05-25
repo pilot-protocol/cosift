@@ -1,0 +1,41 @@
+# Cosift two-container deploy.
+#
+#   docker compose up -d
+#
+# The two services share /var/lib/cosift via a named volume. SQLite WAL mode
+# (set in the schema since iter 1) handles concurrent serve-read + refresh-write.
+
+services:
+  cosift:
+    build: .
+    image: cosift:latest
+    container_name: cosift-api
+    restart: unless-stopped
+    ports:
+      - "7777:7777"
+    volumes:
+      - cosift-data:/var/lib/cosift
+      - ./cosift.json:/var/lib/cosift/cosift.json:ro
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  cosift-refresh:
+    image: cosift:latest
+    container_name: cosift-refresh
+    restart: unless-stopped
+    command: ["refresh-due", "-interval", "1h"]
+    volumes:
+      - cosift-data:/var/lib/cosift
+      - ./cosift.json:/var/lib/cosift/cosift.json:ro
+    env_file:
+      - .env
+    depends_on:
+      - cosift
+
+volumes:
+  cosift-data:

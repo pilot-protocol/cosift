@@ -1,0 +1,104 @@
+{
+  "docs": [
+    {
+      "url": "https://test.local/go-lang",
+      "title": "The Go Programming Language",
+      "text": "Go is a statically typed, compiled programming language designed at Google. Go has concurrency primitives in the form of goroutines and channels, garbage collection, and a simple syntax. The language was created to address scalability and developer productivity in large codebases. Go compiles to native machine code with no runtime VM, producing single-binary executables. The standard library is extensive and emphasizes networking, cryptography, and HTTP servers."
+    },
+    {
+      "url": "https://test.local/rust-lang",
+      "title": "The Rust Programming Language",
+      "text": "Rust is a systems programming language focused on memory safety without a garbage collector. Rust enforces ownership and borrowing rules at compile time, preventing data races and use-after-free bugs. The language is widely used for performance-critical software including operating system kernels, browsers, embedded firmware, and cryptographic libraries. Cargo is the official package manager and build tool."
+    },
+    {
+      "url": "https://test.local/python-pandas",
+      "title": "Python Pandas Data Analysis",
+      "text": "Pandas is a Python library for tabular data manipulation. The DataFrame is the core abstraction, providing labeled rows and columns with vectorized operations. Pandas integrates with NumPy for numerical computation and Matplotlib for visualization. Common operations include filtering, groupby aggregations, joins, pivot tables, and time series resampling. Pandas is the dominant tool for exploratory data analysis in Python."
+    },
+    {
+      "url": "https://test.local/pasta-recipe",
+      "title": "Homemade Pasta Recipe",
+      "text": "Fresh pasta dough is made from flour, eggs, salt, and a little olive oil. Knead the dough for ten minutes until smooth, then rest covered for thirty minutes before rolling. Roll thin sheets and cut into fettuccine or tagliatelle. Cook in heavily salted boiling water for two to three minutes. Toss with butter, sage, or a simple tomato sauce. Fresh pasta absorbs sauce better than dried."
+    },
+    {
+      "url": "https://test.local/sourdough-bread",
+      "title": "Sourdough Bread Baking Guide",
+      "text": "Sourdough bread relies on a live starter of wild yeast and lactic acid bacteria. Maintain the starter with regular flour and water feedings. A typical loaf requires bulk fermentation for four to six hours, followed by shaping and a cold overnight proof in the fridge. Bake in a preheated Dutch oven for crust development. Hydration levels of 75 to 80 percent give an open crumb."
+    },
+    {
+      "url": "https://test.local/jazz-improvisation",
+      "title": "Jazz Improvisation Fundamentals",
+      "text": "Jazz improvisation is built on the chord changes of a tune. Players study scales, arpeggios, and common ii-V-I progressions across all twelve keys. Bebop introduced fast chromatic lines and substitutions; modal jazz emphasized scales over chord motion. Listening to recordings of Charlie Parker, John Coltrane, and Bill Evans is part of every jazz musician's training. Trading fours is a common live performance device."
+    },
+    {
+      "url": "https://test.local/classical-symphony",
+      "title": "The Classical Symphony Form",
+      "text": "The classical symphony is a four-movement orchestral work that emerged in the late eighteenth century. The first movement is typically in sonata form. The second is slow and lyrical. The third is a minuet or scherzo. The fourth is a fast rondo or sonata-rondo finale. Haydn established the form; Mozart refined it; Beethoven expanded it to monumental scale, eventually adding a chorus in the Ninth."
+    },
+    {
+      "url": "https://test.local/quantum-entanglement",
+      "title": "Quantum Entanglement Explained",
+      "text": "Quantum entanglement is a phenomenon in which two or more particles share a single quantum state. Measuring one immediately determines the state of the other regardless of distance. Bell's theorem and subsequent experiments showed that no local hidden variable theory can reproduce quantum predictions. Entanglement is the resource behind quantum teleportation, superdense coding, and quantum key distribution."
+    },
+    {
+      "url": "https://test.local/cell-mitochondria",
+      "title": "Mitochondria in the Cell",
+      "text": "Mitochondria are membrane-bound organelles that produce most of the cell's adenosine triphosphate through oxidative phosphorylation. They have their own circular DNA, separate from the nuclear genome, inherited maternally. The endosymbiotic theory proposes mitochondria descended from free-living alpha-proteobacteria engulfed by an ancestral eukaryote. Mitochondrial dysfunction is implicated in many diseases."
+    },
+    {
+      "url": "https://test.local/roman-empire",
+      "title": "Fall of the Western Roman Empire",
+      "text": "The Western Roman Empire collapsed in 476 CE when the Germanic chieftain Odoacer deposed the last emperor, Romulus Augustulus. Long-term causes included economic decline, military overextension, civil wars, and pressure from migrating peoples on the frontiers. The Eastern Roman Empire continued as the Byzantine Empire until 1453. Modern historiography debates the relative weight of internal decay versus external pressure."
+    },
+    {
+      "url": "https://test.local/wwii-pacific",
+      "title": "World War Two in the Pacific",
+      "text": "The Pacific theater of World War Two began with the Japanese attack on Pearl Harbor in December 1941. Naval engagements at Midway and Coral Sea halted Japanese expansion. The island-hopping campaign retook strategic positions across the central Pacific. The war ended in September 1945 after atomic bombs were dropped on Hiroshima and Nagasaki. The conflict reshaped the postwar order in East Asia."
+    },
+    {
+      "url": "https://test.local/tennis-grand-slam",
+      "title": "Tennis Grand Slam Tournaments",
+      "text": "The Grand Slam refers to the four most prestigious annual tennis tournaments: the Australian Open, the French Open at Roland-Garros, Wimbledon, and the US Open. Winning all four in a single calendar year is the calendar slam, achieved by very few players. Each tournament uses a different surface: hard court, clay, grass, and hard court respectively. Players are seeded by ATP or WTA ranking."
+    },
+    {
+      "url": "https://test.local/soccer-world-cup",
+      "title": "The FIFA World Cup",
+      "text": "The FIFA World Cup is an international men's soccer tournament held every four years. Thirty-two national teams qualify through regional competition and play a group stage followed by knockout rounds. Brazil has won five titles, more than any other nation. The tournament is the most-watched sporting event in the world. The women's World Cup follows a similar format and grows in viewership each cycle."
+    },
+    {
+      "url": "https://test.local/bitcoin-blockchain",
+      "title": "How Bitcoin and Blockchain Work",
+      "text": "Bitcoin is a peer-to-peer electronic cash system based on a public distributed ledger called the blockchain. Transactions are grouped into blocks and chained cryptographically. Proof of work secures the chain by requiring miners to solve computational puzzles. The supply is capped at twenty-one million coins, released on a halving schedule. Nodes validate every transaction independently."
+    },
+    {
+      "url": "https://test.local/llm-transformers",
+      "title": "Large Language Models and Transformers",
+      "text": "Large language models are neural networks trained on enormous text corpora to predict the next token. The transformer architecture, introduced in 2017, uses self-attention to relate tokens at arbitrary distance. Modern LLMs scale to hundreds of billions of parameters. Pretraining on raw text is followed by instruction tuning and reinforcement learning from human feedback. Inference relies on autoregressive sampling."
+    },
+    {
+      "url": "https://test.local/distributed-systems",
+      "title": "Fundamentals of Distributed Systems",
+      "text": "Distributed systems are collections of independent computers that appear to users as a single coherent system. They emerged from the need to scale computation and storage beyond what a single machine could provide. Modern web services, databases, and cloud platforms all rely on distributed-systems techniques.\n\nConsensus protocols. A central problem is getting a group of nodes to agree on a single value despite failures and unreliable networks. The Paxos algorithm, introduced by Leslie Lamport, was the original solution but is notoriously hard to implement correctly. Raft was designed in 2013 to be easier to understand: it uses a strong leader, term numbers, and an append-only log. Both protocols guarantee safety as long as a majority of nodes is alive.\n\nReplication and partitioning. Data is replicated across machines for durability and read scalability. Primary-backup, multi-primary, and quorum replication are the common patterns. Partitioning, also known as sharding, splits the dataset across nodes by some key. Consistent hashing is a popular partitioning scheme because it minimizes data movement when nodes are added or removed. Replication and partitioning are usually combined: each partition has multiple replicas, each on a different machine.\n\nThe CAP theorem and consistency. Eric Brewer's CAP theorem states that during a network partition, a system must choose between consistency and availability. In practice modern systems offer tunable consistency: strong reads from the primary, eventual reads from replicas, with read-your-writes guarantees layered on top. Eventual consistency lets the system stay available during partitions at the cost of temporarily returning stale data. CRDTs are a class of data structures that converge automatically under eventual consistency.\n\nFailure and observability. Network failures are not anomalies but routine occurrences. Systems must detect failed nodes with heartbeats and timeouts, route around them, and reconcile when they come back. Distributed tracing, structured logging, and metrics dashboards are essential for operating distributed systems in production."
+    },
+    {
+      "url": "https://test.local/cryptography-overview",
+      "title": "An Overview of Modern Cryptography",
+      "text": "Cryptography is the study of techniques for secure communication in the presence of adversaries. Modern cryptography rests on a few well-studied primitives and their combinations.\n\nSymmetric encryption. Symmetric ciphers use the same secret key to encrypt and decrypt. The Advanced Encryption Standard, AES, is the dominant block cipher; it operates on 128-bit blocks with key sizes of 128, 192, or 256 bits. AES is typically used in a mode such as GCM that provides both confidentiality and authentication. Stream ciphers like ChaCha20 are popular when block ciphers are inconvenient, especially on hardware without AES instructions.\n\nPublic key cryptography. Public key systems use a pair of keys: a public key for encryption or verification, and a private key for decryption or signing. RSA, based on the difficulty of factoring large composite integers, was the first widely used public key system. Elliptic curve cryptography, ECC, offers equivalent security with much smaller keys; curves like P-256 and X25519 dominate modern deployments. Diffie-Hellman key exchange lets two parties derive a shared secret over an insecure channel.\n\nHashing and digital signatures. Cryptographic hash functions compress arbitrary input to a fixed-size digest. SHA-256 and SHA-3 are the standard choices for general-purpose hashing. Digital signatures combine hashing with public key cryptography: the signer hashes the message and encrypts the hash with the private key; verifiers decrypt with the public key and compare. Ed25519 is the most common modern signature scheme.\n\nPost-quantum cryptography. Quantum computers running Shor's algorithm would break RSA and elliptic curve cryptography. Post-quantum schemes based on lattice problems, hash signatures, or code-based cryptography are being standardized. The NIST process selected CRYSTALS-Kyber for key encapsulation and CRYSTALS-Dilithium for signatures in 2024. Migration to post-quantum is a multi-year effort across the entire internet."
+    },
+    {
+      "url": "https://test.local/programming-history",
+      "title": "A Brief History of Programming Languages",
+      "text": "The history of programming languages is a history of rising abstraction. Each generation removed more of the machine's details and let humans express programs more directly.\n\nAssembly and the first compiled languages. Early programming was done in assembly: one source line per machine instruction. In 1957 IBM's FORTRAN became the first widely used compiled high-level language; it brought algebraic notation to scientific computing and made portable numerical code possible. COBOL, designed in 1959 for business data processing, introduced English-like syntax and is still running in banks today. ALGOL 60 introduced block structure and lexical scoping; nearly every modern imperative language inherits from it.\n\nStructured and object-oriented languages. The 1970s saw C from Bell Labs replace assembly for systems programming, with portable performance and a thin abstraction over hardware. Pascal pushed structured programming into education. Smalltalk, designed at Xerox PARC in the late 1970s, introduced pure object-oriented programming where everything is an object and computation happens by sending messages. C++ added objects to C in the 1980s; Java in the 1990s combined object orientation with a portable virtual machine and garbage collection.\n\nFunctional languages. Lisp, designed by John McCarthy in 1958, introduced functional programming with recursion, garbage collection, and code as data. Its descendants include Scheme and Common Lisp. ML in the 1970s added strong static types with inference; OCaml and F# carry the tradition. Haskell, designed in 1990, took purity and lazy evaluation as defining features. These languages influenced modern mainstream languages, which have adopted lambdas, immutability, and pattern matching.\n\nModern languages. Recent decades produced Python for general scripting, Ruby for web frameworks, JavaScript for the browser, Go for backend infrastructure, and Rust for safe systems programming. Each addresses specific pain points: Python and Ruby for developer ergonomics, Go for concurrency and deployment, Rust for safety without garbage collection. The field is now dense with options; choosing a language is often about ecosystem and tooling more than syntax."
+    },
+    {
+      "url": "https://test.local/solar-system",
+      "title": "Bodies of the Solar System",
+      "text": "The Solar System consists of the Sun, the eight planets, dwarf planets, moons, asteroids, comets, and the interplanetary medium.\n\nInner rocky planets. Mercury is the smallest and innermost planet, with a heavily cratered surface and no atmosphere. Venus is similar to Earth in size but has a runaway greenhouse atmosphere of carbon dioxide reaching 460 Celsius at the surface. Earth is the only known planet with liquid water on its surface and an active biosphere. Mars is half the size of Earth, with polar ice caps, the largest volcano in the Solar System (Olympus Mons), and seasonal dust storms.\n\nThe asteroid belt and giant planets. Between Mars and Jupiter lies the main asteroid belt, dominated by Ceres, Vesta, Pallas, and Hygiea. Jupiter is the largest planet, a gas giant with a hydrogen and helium atmosphere, the Great Red Spot storm system, and 95 known moons including the four Galilean satellites. Saturn is famous for its ring system of ice particles. Uranus and Neptune are ice giants with atmospheres rich in methane that give them their blue color; Triton, Neptune's largest moon, orbits in retrograde.\n\nDwarf planets and the Kuiper Belt. Beyond Neptune lies the Kuiper Belt, populated by icy bodies including Pluto, Eris, Makemake, and Haumea. The New Horizons spacecraft flew past Pluto in 2015 and revealed nitrogen-ice plains and water-ice mountains. Farther out is the hypothetical Oort Cloud, a spherical reservoir of comets thought to extend halfway to the nearest star.\n\nComets and meteors. Comets are icy bodies that develop tails of gas and dust when their orbits bring them near the Sun. Short-period comets come from the Kuiper Belt; long-period comets are thought to originate in the Oort Cloud. When small particles enter Earth's atmosphere they vaporize and become meteors. Periodic meteor showers like the Perseids occur when Earth crosses a debris trail left by a comet."
+    },
+    {
+      "url": "https://test.local/coffee-brewing",
+      "title": "Coffee Brewing Methods",
+      "text": "Coffee brewing is the controlled extraction of soluble compounds from roasted ground beans using hot water. The five main variables are grind size, water temperature, brew time, water-to-coffee ratio, and agitation. Different methods balance these variables differently.\n\nEspresso. Espresso forces hot water at roughly nine bars of pressure through finely ground coffee, producing a concentrated 25-to-30 ml shot in about 25 seconds. The pressure dissolves more oils and fines than other methods, producing a layer of foam called crema. Espresso is the base of milk drinks like cappuccino, latte, and flat white.\n\nDrip and pour-over. Drip machines and manual pour-overs both pass water through a paper or metal filter onto medium-ground coffee. The Hario V60 and Chemex are popular manual pour-over devices. Brew time is typically three to four minutes; the result is a clean cup with bright acidity. Bloom by pouring a small amount of water first to release carbon dioxide from the grounds.\n\nFrench press and AeroPress. The French press steeps coarse grounds in water for four minutes, then a metal mesh plunger separates the grounds. Because there's no paper filter, oils and fine particles stay in the cup, producing a heavy mouthfeel. The AeroPress uses pressure and a paper filter for a faster, cleaner cup; it's a favorite for travel and for making variations like inverted brewing.\n\nCold brew and Turkish. Cold brew steeps coarse coffee in cold or room-temperature water for 12 to 24 hours, producing a low-acid concentrate that's typically diluted before serving. Turkish coffee uses extremely fine grounds simmered in a small pot called a cezve; the grounds settle in the cup, and the brew is traditionally served with the foam on top. Each method extracts a different flavor profile from the same beans."
+    }
+  ]
+}

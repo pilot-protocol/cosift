@@ -1,0 +1,47 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local data + runtime state
+cosift-data/
+cosift.db
+*.db
+*.db-wal
+*.db-shm
+
+# Eval artifacts (per-run reports + embedding caches stay local)
+eval-baseline.json
+eval-baseline-*.json
+eval-current.json
+eval-current-*.json
+eval-dense-*.json
+eval-embed-cache/
+eval-embed-cache-*/
+
+# Build artifacts
+/cosift
+/dist/
+*.exe
+*.test
+coverage.out
+*.prof
+
+# Local logs + runtime artifacts
+*.log
+*.pid
+*.bak
+*.tmp
+
+# Long-running local crawl scratch (NOT committed)
+cosift-1m-run/
+cosift-*-run/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Internal development journal — not user-facing docs
+NOTES.md

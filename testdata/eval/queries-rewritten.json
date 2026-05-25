@@ -1,0 +1,55 @@
+{
+  "name": "cosift-v0-baseline-rewritten",
+  "queries": [
+    {"text": "go programming language",                  "relevant": ["https://test.local/go-lang"]},
+    {"text": "concurrency goroutines",                   "relevant": ["https://test.local/go-lang"]},
+    {"text": "rust memory safety ownership",             "relevant": ["https://test.local/rust-lang"]},
+    {"text": "systems programming compile-time checks",  "relevant": ["https://test.local/rust-lang"],
+       "paraphrases": ["Rust ownership and borrowing", "memory-safe systems language without garbage collector"]},
+    {"text": "pandas dataframe groupby",                 "relevant": ["https://test.local/python-pandas"]},
+    {"text": "tabular data analysis python",             "relevant": ["https://test.local/python-pandas"]},
+    {"text": "homemade pasta dough",                     "relevant": ["https://test.local/pasta-recipe"]},
+    {"text": "sourdough starter bread",                  "relevant": ["https://test.local/sourdough-bread"]},
+    {"text": "jazz chord changes",                       "relevant": ["https://test.local/jazz-improvisation"]},
+    {"text": "improvisation scales bebop",               "relevant": ["https://test.local/jazz-improvisation"]},
+    {"text": "symphony sonata form",                     "relevant": ["https://test.local/classical-symphony"]},
+    {"text": "beethoven movements orchestra",            "relevant": ["https://test.local/classical-symphony"]},
+    {"text": "quantum entanglement bell",                "relevant": ["https://test.local/quantum-entanglement"]},
+    {"text": "mitochondria atp endosymbiotic",           "relevant": ["https://test.local/cell-mitochondria"]},
+    {"text": "fall of rome odoacer",                     "relevant": ["https://test.local/roman-empire"]},
+    {"text": "pacific theater pearl harbor midway",      "relevant": ["https://test.local/wwii-pacific"]},
+    {"text": "grand slam wimbledon tennis",              "relevant": ["https://test.local/tennis-grand-slam"]},
+    {"text": "fifa world cup soccer",                    "relevant": ["https://test.local/soccer-world-cup"]},
+    {"text": "bitcoin blockchain mining",                "relevant": ["https://test.local/bitcoin-blockchain"]},
+    {"text": "transformer self attention",               "relevant": ["https://test.local/llm-transformers"]},
+
+    {"text": "programming languages",                    "relevant": ["https://test.local/go-lang", "https://test.local/rust-lang", "https://test.local/python-pandas"],
+       "paraphrases": ["Go Rust and Python comparison", "compiled vs interpreted programming languages"]},
+
+    {"text": "european history empire war",              "relevant": ["https://test.local/roman-empire", "https://test.local/wwii-pacific"]},
+    {"text": "music form performance",                   "relevant": ["https://test.local/jazz-improvisation", "https://test.local/classical-symphony"]},
+    {"text": "cooking recipes flour",                    "relevant": ["https://test.local/pasta-recipe", "https://test.local/sourdough-bread"]},
+    {"text": "physics biology science",                  "relevant": ["https://test.local/quantum-entanglement", "https://test.local/cell-mitochondria"],
+       "paraphrases": ["quantum mechanics and cellular biology", "physics of particles and biology of cells"]},
+
+    {"text": "raft consensus algorithm leader log",      "relevant": ["https://test.local/distributed-systems"]},
+    {"text": "CAP theorem availability partition",       "relevant": ["https://test.local/distributed-systems"]},
+    {"text": "consistent hashing sharding partitioning", "relevant": ["https://test.local/distributed-systems"]},
+
+    {"text": "RSA factoring public key",                 "relevant": ["https://test.local/cryptography-overview"]},
+    {"text": "post-quantum lattice signatures",          "relevant": ["https://test.local/cryptography-overview"],
+       "paraphrases": ["CRYSTALS-Kyber Dilithium NIST quantum-resistant", "lattice-based cryptography after quantum computers"]},
+    {"text": "AES GCM symmetric encryption",             "relevant": ["https://test.local/cryptography-overview"]},
+
+    {"text": "FORTRAN scientific computing history",     "relevant": ["https://test.local/programming-history"]},
+    {"text": "Smalltalk object oriented messages",       "relevant": ["https://test.local/programming-history"],
+       "paraphrases": ["Xerox PARC pure object-oriented language", "early object-oriented programming history"]},
+    {"text": "Lisp recursion code as data",              "relevant": ["https://test.local/programming-history"]},
+
+    {"text": "Kuiper Belt Pluto dwarf planets",          "relevant": ["https://test.local/solar-system"]},
+    {"text": "Venus greenhouse atmosphere carbon",       "relevant": ["https://test.local/solar-system"]},
+
+    {"text": "espresso crema pressure shot",             "relevant": ["https://test.local/coffee-brewing"]},
+    {"text": "cold brew steep concentrate",              "relevant": ["https://test.local/coffee-brewing"]}
+  ]
+}

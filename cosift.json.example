@@ -1,0 +1,50 @@
+{
+  "data_dir": "./cosift-data",
+
+  "server": {
+    "addr": "127.0.0.1:7777"
+  },
+
+  "crawler": {
+    "user_agent": "CosiftBot/0.1 (+https://github.com/yourname/cosift)",
+    "max_concurrent": 8,
+    "per_host_delay_ms": 1000,
+    "max_body_bytes": 5242880,
+    "max_depth": 2,
+    "respect_robots": true,
+    "include_domains": [],
+    "exclude_domains": []
+  },
+
+  "embeddings": {
+    "url": "",
+    "model": "text-embedding-3-small",
+    "dim": 1536
+  },
+
+  "chat": {
+    "url": "",
+    "model": "gpt-4o-mini"
+  },
+
+  "rerank": {
+    "enabled": true,
+    "url": "",
+    "api_key": "",
+    "model": "",
+    "candidate_k": 20
+  },
+
+  "federation": {
+    "duckduckgo_html": false,
+    "searxng_url": "",
+    "pilot": false
+  },
+
+  "defaults": {
+    "retriever": "",
+    "expand": false,
+    "research_strategy": "",
+    "research_synth_k": 0
+  }
+}

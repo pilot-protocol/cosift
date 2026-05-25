@@ -1,0 +1,10 @@
+.git
+.env
+cosift-data/
+*.db
+*.db-wal
+*.db-shm
+eval-baseline*.json
+eval-dense-rerank-v2.json
+eval-embed-cache/
+NOTES.md

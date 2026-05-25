@@ -1,0 +1,78 @@
+{
+  "name": "cosift-multifaceted-v0",
+  "queries": [
+    {
+      "text": "contrast classical symphony structure with jazz improvisation",
+      "relevant": [
+        "https://test.local/classical-symphony",
+        "https://test.local/jazz-improvisation"
+      ]
+    },
+    {
+      "text": "how do cryptography and distributed consensus combine to make bitcoin work",
+      "relevant": [
+        "https://test.local/cryptography-overview",
+        "https://test.local/distributed-systems",
+        "https://test.local/bitcoin-blockchain"
+      ]
+    },
+    {
+      "text": "modern systems programming covering memory safety and concurrency",
+      "relevant": [
+        "https://test.local/rust-lang",
+        "https://test.local/go-lang"
+      ]
+    },
+    {
+      "text": "evolution of programming language design from early languages to modern ones",
+      "relevant": [
+        "https://test.local/programming-history",
+        "https://test.local/go-lang",
+        "https://test.local/rust-lang"
+      ]
+    },
+    {
+      "text": "data analysis from tabular pandas pipelines to deep learning transformers",
+      "relevant": [
+        "https://test.local/python-pandas",
+        "https://test.local/llm-transformers"
+      ]
+    },
+    {
+      "text": "physics across scales: quantum entanglement and the solar system",
+      "relevant": [
+        "https://test.local/quantum-entanglement",
+        "https://test.local/solar-system"
+      ]
+    },
+    {
+      "text": "global tournaments how tennis and soccer crown world champions",
+      "relevant": [
+        "https://test.local/tennis-grand-slam",
+        "https://test.local/soccer-world-cup"
+      ]
+    },
+    {
+      "text": "empires and warfare from the fall of Rome to the Pacific theater",
+      "relevant": [
+        "https://test.local/roman-empire",
+        "https://test.local/wwii-pacific"
+      ]
+    },
+    {
+      "text": "techniques for fermented foods and brewed beverages",
+      "relevant": [
+        "https://test.local/sourdough-bread",
+        "https://test.local/coffee-brewing"
+      ]
+    },
+    {
+      "text": "survey of computer science from early languages through distributed systems to large language models",
+      "relevant": [
+        "https://test.local/programming-history",
+        "https://test.local/distributed-systems",
+        "https://test.local/llm-transformers"
+      ]
+    }
+  ]
+}
