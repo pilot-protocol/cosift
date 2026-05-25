@@ -205,3 +205,26 @@ COSIFT_BM25_B=0.5 cosift pebble-serve -dir /var/lib/cosift/data/pebble
 # In another terminal:
 curl http://127.0.0.1:7777/stats | jq '{bm25_k1, bm25_b, reranker, chat_model}'
 ```
+
+## CLI shortcuts
+
+The `cosift` binary wraps the same HTTP API for headless use. All four retrieval / synth commands accept the same flags their HTTP counterparts accept (`-rerank`, `-expand`, `-since`, `-until`, `-include-domains`, `-exclude-domains`, …).
+
+```bash
+# Search
+cosift search "raft consensus" -include-domains docs.example.com -rerank
+
+# Find similar (by URL)
+cosift find-similar https://docs.example.com/raft -k 5
+
+# Find similar (by arbitrary text — e.g., a draft article)
+cosift find-similar -text-file draft.md -text-title "draft on raft" -rerank
+
+# Answer (streamed)
+cosift answer "what is raft consensus" -stream -rerank
+
+# Research with paraphrase fan-out
+cosift research "compare raft and paxos" -expand paraphrase -rerank -stream
+```
+
+`-server URL` overrides the default endpoint when pebble-serve is on a non-default port.

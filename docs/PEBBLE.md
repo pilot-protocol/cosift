@@ -263,4 +263,5 @@ iter 303 — `status-file -target N` displays `100%, reached` when goal is met i
 iter 304 — `cosift answer` CLI gains -rerank, -since, -until, -include-domains, -exclude-domains
 iter 305 — `cosift research` CLI gains -k, -expand, -rerank, -since, -until, -include-domains, -exclude-domains
 iter 306 — `cosift find-similar` CLI gains -rerank, -q, -since, -until, -include-domains, -exclude-domains
+iter 307 — docs/EXAMPLES.md adds a 'CLI shortcuts' section so headless users see the cosift-* equivalents
 ```
