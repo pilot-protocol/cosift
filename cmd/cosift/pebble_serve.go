@@ -58,6 +58,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /stats", srv.handleStats)
 	mux.HandleFunc("GET /search", srv.handleSearch)
 	mux.HandleFunc("GET /contents", srv.handleContents)
+	mux.HandleFunc("GET /verify", srv.handleVerify)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -106,6 +107,41 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":    time.Since(s.started).String(),
 		"backend":   "pebble",
 	})
+}
+
+// Iter 230: HTTP form of `cosift verify`. Same comparison (iter-207 running
+// counters vs authoritative 'l' family scan) on the already-open store, so
+// monitoring can poll without contending for the single-writer lock or
+// shelling into the container. 503 on drift makes this composable with
+// Kubernetes liveness / load-balancer health checks.
+func (s *pebbleHTTP) handleVerify(w http.ResponseWriter, r *http.Request) {
+	counterSum, counterCount, err := s.store.CorpusStats(r.Context())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	scanSum, scanCount, err := s.store.SumDocLengths(r.Context())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	driftCount := counterCount - scanCount
+	driftSum := counterSum - scanSum
+	ok := driftCount == 0 && driftSum == 0
+	body := map[string]any{
+		"ok":                     ok,
+		"indexed_docs_counter":   counterCount,
+		"indexed_docs_scan":      scanCount,
+		"indexed_docs_drift":     driftCount,
+		"sum_doc_len_counter":    counterSum,
+		"sum_doc_len_scan":       scanSum,
+		"sum_doc_len_drift":      driftSum,
+	}
+	status := http.StatusOK
+	if !ok {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, body)
 }
 
 // searchHit is the minimal hit shape returned by pebble-serve's /search.

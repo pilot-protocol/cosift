@@ -144,7 +144,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Gap | Workaround |
 |---|---|
 | Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /contents) | Server unification deferred — synthesis endpoints (`/answer`, `/research`, `/find_similar`) on Pebble require porting ~1000 LOC of internal/server |
+| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (minimal: /healthz, /stats, /search, /contents, /verify) | Server unification deferred — synthesis endpoints (`/answer`, `/research`, `/find_similar`) on Pebble require porting ~1000 LOC of internal/server |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
 
@@ -181,4 +181,5 @@ iter 225 — `cosift status-file` reader
 iter 226 — status.json carries indexed_docs + avg_doc_len
 iter 228 — `cosift verify` (counter-drift detection)
 iter 229 — `cosift status-file -json` (Prometheus / jq output)
+iter 230 — pebble-serve `/verify` endpoint (HTTP counter-drift check)
 ```
