@@ -354,6 +354,16 @@ For programmatic use, wire dense indexing through `index.NewHNSWWriter(hnsw, peb
 
 Bench `cosift bench -mode storage -n N -queries K` runs both backends head-to-head on synthetic data, emitting per-backend p50/p95/p99 latency and QPS.
 
+**Resource sizing for crawls.** Pebble's write path is memory-hungry under sustained crawl load: each indexed document stages thousands of postings + term-info updates in a single Pebble batch, and at high concurrency batches stack faster than the LSM can flush. On a 16 GB VM with `max_concurrent: 16`, the crawler hits OOM in a few minutes against typical Wikipedia-sized pages. Mitigations:
+
+- `COSIFT_PEBBLE_CACHE_MB=64 COSIFT_PEBBLE_MEMTABLES=2 ...` to tighten Pebble's memory ceiling (defaults are 128 MB / 2 memtables → ~192 MB Pebble; tighten further on small VMs).
+- `COSIFT_PEBBLE_SYNC=false ...` to skip fsync per commit. Trades VM-crash WAL durability for an order-of-magnitude commit-latency drop. Acceptable for crawl workloads because the frontier resumes cleanly on restart.
+- Reduce `crawler.max_concurrent` (8 or less on a 16 GB VM under Pebble).
+- Reduce `crawler.max_body_bytes` (2 MB default is generous; 512 KB cuts per-page batch volume by 4x).
+- Or scale up: 32 GB VM gives substantial headroom at the same concurrency.
+
+The crawler also has per-worker `defer recover()` so an isolated panic in one worker logs the stack and lets siblings continue rather than silently exiting the whole process.
+
 ### Behind a reverse proxy
 
 Set `server.trusted_proxies` to the CIDR(s) your proxy presents from. The per-IP rate limiter (LLM-cost endpoints) and `/feedback` audit then use `X-Forwarded-For`'s left-most untrusted hop. Malformed CIDR config fails loud at startup — there's no silent fallback to "trust all."
