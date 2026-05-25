@@ -71,6 +71,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			hydeCap = n
 			log.Printf("pebble-serve: HyDE cache size override = %d", n)
+		} else {
+			// Iter 314: surface unparseable env vars as warnings at startup
+			// instead of silently keeping defaults. Catches typos like
+			// COSIFT_HYDE_CACHE_SIZE="512m" or negative values.
+			log.Printf("pebble-serve: WARN COSIFT_HYDE_CACHE_SIZE=%q is not a positive integer — using default %d", v, hydeCap)
 		}
 	}
 	paraCap := 256
@@ -78,6 +83,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			paraCap = n
 			log.Printf("pebble-serve: paraphrase cache size override = %d", n)
+		} else {
+			log.Printf("pebble-serve: WARN COSIFT_PARA_CACHE_SIZE=%q is not a positive integer — using default %d", v, paraCap)
 		}
 	}
 	idx := index.NewPebbleBM25(ps)
@@ -90,6 +97,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 	if o.bSet {
 		log.Printf("pebble-serve: BM25 b override = %.2f", o.bVal)
+	}
+	if o.k1Bad != "" {
+		log.Printf("pebble-serve: WARN COSIFT_BM25_K1=%q is not a positive float — using default %.2f", o.k1Bad, idx.K1())
+	}
+	if o.bBad != "" {
+		log.Printf("pebble-serve: WARN COSIFT_BM25_B=%q is not a positive float — using default %.2f", o.bBad, idx.B())
 	}
 	srv := &pebbleHTTP{
 		store:        ps,
@@ -1168,8 +1181,9 @@ func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Cand
 // to idx. Shared by runPebbleServe and runQuery so both honor the same env.
 // Returns which knobs landed so callers can log selectively.
 type bm25EnvResult struct {
-	k1Set, bSet bool
-	k1Val, bVal float64
+	k1Set, bSet     bool
+	k1Val, bVal     float64
+	k1Bad, bBad     string // iter 314: non-empty when env was set but unparseable
 }
 
 func applyBM25EnvOverrides(idx *index.PebbleBM25) bm25EnvResult {
@@ -1178,12 +1192,16 @@ func applyBM25EnvOverrides(idx *index.PebbleBM25) bm25EnvResult {
 		if k1, err := strconv.ParseFloat(v, 64); err == nil && k1 > 0 {
 			idx.WithBM25Params(k1, 0)
 			out.k1Set, out.k1Val = true, k1
+		} else {
+			out.k1Bad = v
 		}
 	}
 	if v := os.Getenv("COSIFT_BM25_B"); v != "" {
 		if b, err := strconv.ParseFloat(v, 64); err == nil && b > 0 {
 			idx.WithBM25Params(0, b)
 			out.bSet, out.bVal = true, b
+		} else {
+			out.bBad = v
 		}
 	}
 	return out
