@@ -274,6 +274,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// worker pool spreads across hosts instead of stacking on a single
 		// fanout-heavy host (cppreference, Wikipedia, ...).
 		{"frontier", "host", "TEXT NOT NULL DEFAULT ''"},
+		// Iter 194: distinguishes the FIRST index time from the LAST fetch
+		// time. fetched_at is bumped on every re-fetch (including
+		// content-hash-deduped idempotent re-fetches); without a separate
+		// "first indexed" column, crawl-status rolling rates double-count
+		// re-fetched docs as new ones. UpsertDocument only writes this on
+		// initial INSERT (the ON CONFLICT UPDATE clause leaves it unchanged).
+		{"documents", "first_indexed_at", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		has, err := s.columnExists(ctx, m.table, m.column)
 		if err != nil {
@@ -299,6 +306,14 @@ SET host = CASE
 END
 WHERE host = '' AND url LIKE '%://%';`); err != nil {
 		return fmt.Errorf("backfill frontier.host: %w", err)
+	}
+	// Iter 194: backfill first_indexed_at from fetched_at for docs that
+	// predate the column. Best approximation — we lost the first-fetch
+	// timestamp for those rows. New rows get the right value via the
+	// INSERT clause in UpsertDocument.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE documents SET first_indexed_at = fetched_at WHERE first_indexed_at = 0;`); err != nil {
+		return fmt.Errorf("backfill documents.first_indexed_at: %w", err)
 	}
 	// Iter 190: index for host-fair claim. EXISTS subquery on in_flight rows
 	// per host needs this to stay fast as the queue grows to 100k+.
@@ -346,9 +361,13 @@ func (s *Store) DB() *sql.DB { return s.db }
 // UpsertDocument inserts a document or updates an existing row by URL.
 // Returns the document ID (existing or newly assigned).
 func (s *Store) UpsertDocument(ctx context.Context, d *Document) (int64, error) {
+	// Iter 194: first_indexed_at is set ONLY on initial INSERT. The ON CONFLICT
+	// UPDATE clause deliberately omits it so re-fetches don't bump it. This is
+	// what crawl-status' rolling-rate windows rely on to distinguish new
+	// indexed docs from idempotent re-fetches.
 	const q = `
-INSERT INTO documents (url, domain, title, text, lang, source, quality, fetched_at, content_sha, doc_len, etag, last_modified, change_count, last_changed_at, published_at, author, image, favicon)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO documents (url, domain, title, text, lang, source, quality, fetched_at, content_sha, doc_len, etag, last_modified, change_count, last_changed_at, published_at, author, image, favicon, first_indexed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(url) DO UPDATE SET
   domain          = excluded.domain,
   title           = excluded.title,
@@ -378,6 +397,7 @@ RETURNING id;`
 		d.Source, d.Quality, d.FetchedAt.Unix(), d.ContentSHA, len(d.Text),
 		d.ETag, d.LastModified, d.ChangeCount, d.LastChangedAt,
 		publishedUnix, d.Author, d.Image, d.Favicon,
+		d.FetchedAt.Unix(), // first_indexed_at — set on INSERT only; ON CONFLICT UPDATE leaves it
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -638,12 +658,15 @@ func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (Cra
 	}
 	rows.Close()
 
-	// Rolling-window rates: 5, 15, 30 minute windows on documents.fetched_at.
-	// fetched_at is Unix seconds; strftime('%s','now') returns the same.
+	// Rolling-window rates: 5, 15, 30 minute windows on documents.first_indexed_at.
+	// Iter 194: switched from fetched_at to first_indexed_at because fetched_at
+	// is bumped on every re-fetch (including content-hash-deduped idempotent
+	// re-fetches), which made the "rate" the FETCH rate, not the NEW-DOC rate
+	// that operators want. first_indexed_at is set once on initial INSERT.
 	for _, sec := range []int{300, 900, 1800} {
 		var c int64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM documents WHERE fetched_at >= strftime('%s','now')-?;`, sec,
+			`SELECT COUNT(*) FROM documents WHERE first_indexed_at >= strftime('%s','now')-?;`, sec,
 		).Scan(&c); err != nil {
 			return r, err
 		}

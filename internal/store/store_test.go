@@ -577,3 +577,60 @@ func TestCrawlStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestFirstIndexedAtStableAcrossReFetches — iter 194. UpsertDocument must set
+// first_indexed_at exactly once (on initial INSERT). Subsequent upserts of
+// the same URL — what re-crawling produces — must leave first_indexed_at
+// unchanged even though fetched_at moves forward.
+//
+// Without this invariant, crawl-status' rolling-rate windows would count
+// every re-fetch as a "new" doc and inflate the rate enormously (observed in
+// v3: 5,768 total docs, but the iter-193 fetched_at-based window reported
+// 5,769 docs in 30 min — basically the entire index, because the crawler
+// re-touched almost every row).
+func TestFirstIndexedAtStableAcrossReFetches(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenMemory()
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer s.Close()
+
+	t1 := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC) // 5 months later
+
+	// First insert.
+	if _, err := s.UpsertDocument(ctx, &Document{
+		URL: "https://example.com/page", Title: "v1", Text: "body", FetchedAt: t1,
+	}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	var firstIndexed1, fetchedAt1 int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT first_indexed_at, fetched_at FROM documents WHERE url=?",
+		"https://example.com/page").Scan(&firstIndexed1, &fetchedAt1); err != nil {
+		t.Fatalf("read 1: %v", err)
+	}
+	if firstIndexed1 != t1.Unix() {
+		t.Errorf("first_indexed_at on INSERT: want %d, got %d", t1.Unix(), firstIndexed1)
+	}
+
+	// Re-fetch (same URL, later timestamp) — UpsertDocument's ON CONFLICT path.
+	if _, err := s.UpsertDocument(ctx, &Document{
+		URL: "https://example.com/page", Title: "v2", Text: "body v2", FetchedAt: t2,
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	var firstIndexed2, fetchedAt2 int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT first_indexed_at, fetched_at FROM documents WHERE url=?",
+		"https://example.com/page").Scan(&firstIndexed2, &fetchedAt2); err != nil {
+		t.Fatalf("read 2: %v", err)
+	}
+	if firstIndexed2 != t1.Unix() {
+		t.Errorf("first_indexed_at must NOT bump on re-fetch: want %d (t1), got %d", t1.Unix(), firstIndexed2)
+	}
+	if fetchedAt2 != t2.Unix() {
+		t.Errorf("fetched_at SHOULD bump on re-fetch: want %d (t2), got %d", t2.Unix(), fetchedAt2)
+	}
+}
