@@ -1295,8 +1295,13 @@ func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
 // human-readable sentence; consumers programmatically inspect the slice.
 func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	var w []string
-	if mode := r.URL.Query().Get("expand"); mode != "" && s.chat == nil {
-		w = append(w, "expand="+mode+" requested but no chat client configured (set cfg.Chat.Model)")
+	if mode := r.URL.Query().Get("expand"); mode != "" {
+		if s.chat == nil {
+			w = append(w, "expand="+mode+" requested but no chat client configured (set cfg.Chat.Model)")
+		} else if normalizeExpandMode(mode) == "" {
+			// Iter 309: unknown expand value used to be silently ignored.
+			w = append(w, "expand="+mode+" is not a known strategy (try: hyde, paraphrase) — treated as no expansion")
+		}
 	}
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")

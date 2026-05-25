@@ -265,4 +265,5 @@ iter 305 — `cosift research` CLI gains -k, -expand, -rerank, -since, -until, -
 iter 306 — `cosift find-similar` CLI gains -rerank, -q, -since, -until, -include-domains, -exclude-domains
 iter 307 — docs/EXAMPLES.md adds a 'CLI shortcuts' section so headless users see the cosift-* equivalents
 iter 308 — `expand` response field normalizes to canonical name ('true'→'hyde', unknown→'')
+iter 309 — `warnings` now flags unknown `expand` values (was silently ignored)
 ```
