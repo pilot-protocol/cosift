@@ -113,6 +113,11 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if topURL != "https://x/raft" {
 		t.Errorf("top hit for raft query: want https://x/raft, got %s", topURL)
 	}
+	// Iter 350: total_candidates (iter 283) reports the BM25 pool size before
+	// filter. Must be > 0 when hits > 0 (the candidate pool fed the hits).
+	if tc, _ := got["total_candidates"].(float64); tc <= 0 {
+		t.Errorf("/search: total_candidates should be > 0, got %v", got["total_candidates"])
+	}
 
 	// /contents
 	contents := mustGet(t, base+"/contents?url="+url.QueryEscape("https://x/raft"))

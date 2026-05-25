@@ -308,4 +308,5 @@ iter 346 — TestPebbleServeEndToEnd asserts /stats carries bm25_k1 + bm25_b (re
 iter 347 — TestPebbleServeEndToEnd asserts /search?include_text=true inlines doc text on hits (iter 237/247 regression guard)
 iter 348 — TestPebbleServeEndToEnd exercises POST /contents batch (iter 254/255 wire shape now under test)
 iter 349 — TestPebbleServeEndToEnd exercises `?include_domains=` filter (iter 232 dot-boundary matcher under test)
+iter 350 — TestPebbleServeEndToEnd asserts /search emits total_candidates > 0 (iter 283 regression guard)
 ```
