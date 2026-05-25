@@ -241,4 +241,5 @@ iter 282 — COSIFT_HYDE_CACHE_SIZE / COSIFT_PARA_CACHE_SIZE env overrides for c
 iter 283 — /search + /find_similar surface `total_candidates` (BM25 pool size before filter)
 iter 284 — /research SSE plan event includes `expand` field (so UI knows strategy upfront)
 iter 285 — `cosift pebble-info` surfaces indexed_docs / sum_doc_len / avg_doc_len
+iter 286 — pebble-serve startup logs indexed_docs + cache-size overrides when set
 ```

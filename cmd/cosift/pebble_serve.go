@@ -58,17 +58,26 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 	defer ps.Close()
 
+	// Iter 286: log corpus size at startup so operators see whether the
+	// store opened with the expected doc count (silent open would force them
+	// to curl /stats just to confirm a restart loaded the right data dir).
+	if _, indexedDocs, err := ps.CorpusStats(ctx); err == nil && indexedDocs > 0 {
+		log.Printf("pebble-serve: opened store with %d indexed docs", indexedDocs)
+	}
+
 	// Iter 282: configurable HyDE + paraphrase cache caps (defaults 256).
 	hydeCap := 256
 	if v := os.Getenv("COSIFT_HYDE_CACHE_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			hydeCap = n
+			log.Printf("pebble-serve: HyDE cache size override = %d", n)
 		}
 	}
 	paraCap := 256
 	if v := os.Getenv("COSIFT_PARA_CACHE_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			paraCap = n
+			log.Printf("pebble-serve: paraphrase cache size override = %d", n)
 		}
 	}
 	idx := index.NewPebbleBM25(ps)
