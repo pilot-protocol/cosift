@@ -32,6 +32,7 @@ import (
 	"github.com/calinteodor/cosift/internal/config"
 	"github.com/calinteodor/cosift/internal/embed"
 	"github.com/calinteodor/cosift/internal/index"
+	"github.com/calinteodor/cosift/internal/rerank"
 	"github.com/calinteodor/cosift/internal/store"
 )
 
@@ -67,6 +68,28 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 		srv.chat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
 		log.Printf("pebble-serve: /answer enabled (chat model=%s)", cfg.Chat.Model)
+	}
+	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
+	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
+	// Jina/TEI wire shape); otherwise cfg.Chat.Model present → LLMReranker
+	// (RankGPT-style listwise via chat). /search?rerank=true gates the wrapper.
+	if cfg.Rerank.URL != "" {
+		apiKey := cfg.Rerank.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("COHERE_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("VOYAGE_API_KEY")
+			}
+		}
+		srv.reranker = rerank.NewHTTPReranker(cfg.Rerank.URL, apiKey, cfg.Rerank.Model)
+		log.Printf("pebble-serve: rerank enabled (http: %s, model=%s)", cfg.Rerank.URL, cfg.Rerank.Model)
+	} else if cfg.Rerank.Enabled && srv.chat != nil {
+		srv.reranker = rerank.NewLLMReranker(srv.chat)
+		log.Printf("pebble-serve: rerank enabled (llm: %s)", cfg.Chat.Model)
+	}
+	srv.rerankCandK = cfg.Rerank.CandidateK
+	if srv.rerankCandK <= 0 {
+		srv.rerankCandK = 20
 	}
 
 	mux := http.NewServeMux()
@@ -106,10 +129,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 // SQLite-side Server struct accumulated a lot of config knobs over many iters;
 // the Pebble surface starts minimal and grows feature-by-feature.
 type pebbleHTTP struct {
-	store   *store.PebbleStore
-	idx     *index.PebbleBM25
-	chat    embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
-	started time.Time
+	store      *store.PebbleStore
+	idx        *index.PebbleBM25
+	chat       embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
+	reranker   rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
+	rerankCandK int            // candidates pulled for rerank; default 20
+	started    time.Time
 }
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -262,16 +287,28 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
-	fetchK := k
+	// Iter 248: rerank widens both the fetch and the keep-cap before filtering,
+	// so the reranker sees a healthy candidate pool even with restrictive filters.
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	keepCap := k
+	if wantRerank {
+		keepCap = s.rerankCandK
+		if keepCap < k {
+			keepCap = k
+		}
+	}
+	fetchK := keepCap
 	if len(include) > 0 || len(exclude) > 0 || dateFilter {
 		mult := 5
 		if dateFilter {
 			mult = 10
 		}
-		fetchK = k * mult
+		fetchK = keepCap * mult
 		if fetchK > 500 {
 			fetchK = 500
 		}
+	} else if wantRerank {
+		fetchK = keepCap * 2
 	}
 	hits, err := s.idx.Search(r.Context(), q, fetchK)
 	if err != nil {
@@ -287,8 +324,15 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// pipelines avoid the N+1 round trip to /contents. Off by default —
 	// payload size grows linearly with k and average doc length.
 	enrich := r.URL.Query().Get("enrich") != "false"
+	if wantRerank {
+		enrich = true // rerank needs per-doc text — overrides enrich opt-out
+	}
 	includeText := r.URL.Query().Get("include_text") == "true"
-	out := make([]searchHit, 0, k)
+	out := make([]searchHit, 0, keepCap)
+	var rerankTexts []string
+	if wantRerank {
+		rerankTexts = make([]string, 0, keepCap)
+	}
 	for _, h := range hits {
 		if len(include) > 0 || len(exclude) > 0 {
 			host := hostOf(h.URL)
@@ -327,11 +371,41 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if includeText {
 				hit.Text = doc.Text
 			}
+			if wantRerank {
+				rerankTexts = append(rerankTexts, doc.Title+"\n"+doc.Text)
+			}
 		}
 		out = append(out, hit)
-		if len(out) >= k {
+		if len(out) >= keepCap {
 			break
 		}
+	}
+	// Iter 248: rerank now that we have keepCap candidates with text.
+	if wantRerank && len(out) > 1 && len(rerankTexts) == len(out) {
+		cands := make([]rerank.Candidate, len(out))
+		for i := range out {
+			cands[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: rerankTexts[i]}
+		}
+		if order, rerr := s.reranker.Rerank(r.Context(), q, cands); rerr == nil && len(order) > 0 {
+			reordered := make([]searchHit, 0, len(out))
+			seen := make(map[int]bool, len(out))
+			for _, id := range order {
+				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(out) && !seen[n] {
+					reordered = append(reordered, out[n])
+					seen[n] = true
+				}
+			}
+			// Drop nothing: if the reranker omitted any IDs, append in original order.
+			for i, h := range out {
+				if !seen[i] {
+					reordered = append(reordered, h)
+				}
+			}
+			out = reordered
+		}
+	}
+	if len(out) > k {
+		out = out[:k]
 	}
 	// Iter 235: sort=date_desc | date_asc | relevance (default). Applies to
 	// the already-collected top-k pool; raise k to widen the pool before
@@ -342,9 +416,13 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	case "date_asc":
 		sortHitsByDate(out, true)
 	}
+	retrieverLabel := "bm25"
+	if wantRerank {
+		retrieverLabel = "bm25+rerank:" + s.reranker.Name()
+	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:     q,
-		Retriever: "bm25",
+		Retriever: retrieverLabel,
 		Hits:      out,
 		Took:      time.Since(start).String(),
 	})

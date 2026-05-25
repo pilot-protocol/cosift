@@ -144,7 +144,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Gap | Workaround |
 |---|---|
 | Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) |
-| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer (sync+SSE), /research (sync+SSE), /contents, /verify, /metrics) | Rerank + query-expansion wrappers not ported yet |
+| `cosift serve` is SQLite-only; Pebble path uses `cosift pebble-serve` (/healthz, /stats, /search, /find_similar, /answer (sync+SSE), /research (sync+SSE), /contents, /verify, /metrics) | Query-expansion wrappers (paraphrase, HyDE) not ported yet |
 | HNSW vector indexing during crawl needs explicit wiring | `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` |
 | Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise |
 
@@ -199,4 +199,5 @@ iter 244 — pebble-serve `/research?stream=true` (SSE: plan → sources → chu
 iter 245 — pebble-serve `/find_similar` honors include_domains / exclude_domains / since / until
 iter 246 — pebble-serve `/research` honors retrieval filters (sync + SSE); shared `retrievalFilters` helper
 iter 247 — pebble-serve include_text=true now uniform across /search /find_similar /answer /research
+iter 248 — pebble-serve `/search?rerank=true` (HTTP Cohere/Voyage/Jina/TEI, or LLM listwise)
 ```
