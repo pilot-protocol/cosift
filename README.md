@@ -175,7 +175,10 @@ The same override map applies to `crawler.max_depth`, `crawler.max_body_bytes`, 
 ```text
 cosift init [-site URL] [-force]              write a default cosift.json
 cosift serve                                  run the HTTP API
-cosift crawl <urls...>                        seed the persistent frontier and crawl
+cosift crawl <urls...> [-backend sqlite|pebble]
+                                              seed the persistent frontier and crawl. -backend
+                                              selects storage: sqlite (default) or pebble (LSM-tree;
+                                              scales past SQLite's million-row ceiling)
 cosift crawl -sitemap https://x/sitemap.xml   seed from a sitemap (urlset or index)
 cosift crawl -refresh <urls...>               force re-crawl of URLs already in the frontier
 cosift check-robots [-user-agent UA] <urls>   report robots.txt allow/deny for each URL
@@ -216,7 +219,7 @@ cosift contents <url...> [-server URL] [-file PATH] [-text] [-json]
                                               hit /contents — single GET or batch POST
 cosift admin <stats|config|recrawl|recrawl-domain|reembed> [-server URL] [-token TOKEN] [-json]
                                               admin-protected operator endpoints
-cosift stats                                  doc / term counts + data dir
+cosift stats [-backend sqlite|pebble]         doc / term counts + data dir (per-backend)
 cosift crawl-status [-hosts N] [-errors N] [-target N]
                                               live operator snapshot of an ongoing crawl: counts, frontier
                                               breakdown, top hosts, top error classes, 5/15/30-min doc
@@ -327,6 +330,29 @@ A `docker-compose.yml` is included with the API server + a refresh-due sidecar t
 ### Cloud Run / Fly / Heroku-class platforms
 
 The binary listens on `PORT` when set (falls back to `server.addr`). A persistent volume (or a sidecar that mounts one) keeps the SQLite WAL between deploys. No external state — pointing a fresh instance at the same data dir resumes the crawl frontier and the index.
+
+### Pebble storage backend (scale option)
+
+For deployments past the low-million document range, cosift ships a Pebble (pure-Go LSM-tree) backend in addition to the default SQLite store. The Pebble path supports the same crawler + BM25 + dense (HNSW) features as SQLite, with substantially higher write throughput at scale.
+
+```bash
+# Crawl into a Pebble-backed store (lives in cfg.DataDir/pebble alongside SQLite)
+cosift crawl --backend=pebble https://docs.example.com
+
+# Stats for either backend
+cosift stats --backend=sqlite
+cosift stats --backend=pebble
+
+# Migrate an existing SQLite store to Pebble
+cosift migrate-to-pebble -output /var/lib/cosift/data/pebble
+
+# Serve search HTTP against a Pebble store (read-only minimal API)
+cosift pebble-serve -dir /var/lib/cosift/data/pebble
+```
+
+For programmatic use, wire dense indexing through `index.NewHNSWWriter(hnsw, pebbleStore, persistEvery)` and pass it via `crawler.WithPassageWriter(...)`.
+
+Bench `cosift bench -mode storage -n N -queries K` runs both backends head-to-head on synthetic data, emitting per-backend p50/p95/p99 latency and QPS.
 
 ### Behind a reverse proxy
 
