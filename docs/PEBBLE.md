@@ -218,4 +218,5 @@ iter 263 — pebble-serve `/metrics` adds cosift_rerank_attempts_total / _failur
 iter 264 — pebble-serve `/metrics` adds cosift_chat_attempts_total / _failures_total (all 7 sites)
 iter 265 — pebble-serve `/search` response includes `effective_query` when HyDE expand actually fired
 iter 266 — pebble-serve `/answer` response includes `effective_query` (omitempty) on both paths
+iter 267 — pebble-serve `/metrics` adds cosift_chat_duration_seconds_sum (mean chat latency via PromQL)
 ```

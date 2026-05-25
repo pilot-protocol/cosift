@@ -172,6 +172,12 @@ type pebbleHTTP struct {
 	chatAttempts atomic.Int64
 	chatFailures atomic.Int64
 
+	// Iter 267: per-call chat duration sum. /metrics divides this by
+	// chatAttempts to give mean chat latency, separated from the iter-262
+	// per-endpoint duration. Diagnoses 'where did the seconds go' on a
+	// slow /research stream: chat-side or retrieval-side?
+	chatDurationNanos atomic.Int64
+
 	// Iter 261/262: per-endpoint request counters + duration sums via a
 	// counting middleware wrapping every mux entry. sync.Map keeps the hot
 	// path lock-free; /metrics reads via Range. Path is the label so a
@@ -287,6 +293,9 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_chat_failures_total Chat-client calls that returned an error.\n")
 	fmt.Fprintf(w, "# TYPE cosift_chat_failures_total counter\n")
 	fmt.Fprintf(w, "cosift_chat_failures_total %d\n", s.chatFailures.Load())
+	fmt.Fprintf(w, "# HELP cosift_chat_duration_seconds_sum Cumulative wall-clock spent inside chat-client calls.\n")
+	fmt.Fprintf(w, "# TYPE cosift_chat_duration_seconds_sum counter\n")
+	fmt.Fprintf(w, "cosift_chat_duration_seconds_sum %.6f\n", float64(s.chatDurationNanos.Load())/1e9)
 	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)
@@ -826,7 +835,9 @@ const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that wo
 // StreamingChatClient passed into streamResearch/streamAnswer.
 func (s *pebbleHTTP) doChat(ctx context.Context, c embed.ChatClient, msgs []embed.ChatMsg) (string, error) {
 	s.chatAttempts.Add(1)
+	start := time.Now()
 	out, err := c.Chat(ctx, msgs)
+	s.chatDurationNanos.Add(time.Since(start).Nanoseconds())
 	if err != nil {
 		s.chatFailures.Add(1)
 	}
@@ -836,7 +847,9 @@ func (s *pebbleHTTP) doChat(ctx context.Context, c embed.ChatClient, msgs []embe
 // doChatStream wraps StreamingChatClient.ChatStream with the same counters.
 func (s *pebbleHTTP) doChatStream(ctx context.Context, c embed.StreamingChatClient, msgs []embed.ChatMsg, onChunk func(string)) (string, error) {
 	s.chatAttempts.Add(1)
+	start := time.Now()
 	out, err := c.ChatStream(ctx, msgs, onChunk)
+	s.chatDurationNanos.Add(time.Since(start).Nanoseconds())
 	if err != nil {
 		s.chatFailures.Add(1)
 	}
