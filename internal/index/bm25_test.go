@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,4 +183,145 @@ func TestBM25TitleBoostLiftsTitleMatches(t *testing.T) {
 		t.Errorf("title-match doc should rank above body-only repeat; got order: %s, %s (scores %.3f vs %.3f)",
 			hits[0].URL, hits[1].URL, hits[0].Score, hits[1].Score)
 	}
+}
+
+// TestBM25PhraseQuery — iter 198. Quoted phrases must require verbatim
+// adjacency. A doc with "hello world" should match `"hello world"`; a doc
+// with "hello there world" must NOT (the words exist but aren't adjacent).
+func TestBM25PhraseQuery(t *testing.T) {
+	s := newTestStore(t)
+	idx := NewBM25(s)
+	ctx := context.Background()
+
+	docs := []struct{ url, title, text string }{
+		{"https://x/exact", "Greetings", "I say hello world to everyone."},
+		{"https://x/split", "Greetings 2", "I say hello there world to everyone."},
+		{"https://x/reverse", "Greetings 3", "I say world hello to everyone."},
+		{"https://x/nophrase", "Unrelated", "Database design for distributed systems."},
+	}
+	for _, d := range docs {
+		id, err := s.UpsertDocument(ctx, &store.Document{
+			URL: d.url, Title: d.title, Text: d.text, Source: "test", FetchedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("upsert %s: %v", d.url, err)
+		}
+		if err := idx.IndexDocument(ctx, id, d.title, d.text); err != nil {
+			t.Fatalf("index %s: %v", d.url, err)
+		}
+	}
+
+	// Phrase query: only the exact-match doc should survive.
+	hits, err := idx.Search(ctx, `"hello world"`, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Errorf("want exactly 1 hit for verbatim phrase; got %d: %+v", len(hits), urls(hits))
+	} else if hits[0].URL != "https://x/exact" {
+		t.Errorf("want exact-match doc, got %s", hits[0].URL)
+	}
+
+	// Without quotes, bag-of-words BM25 returns all three doc-A/B/C
+	// (all contain both "hello" and "world").
+	hits, err = idx.Search(ctx, `hello world`, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) < 3 {
+		t.Errorf("bag-of-words should match all 3 docs with both tokens; got %d: %v", len(hits), urls(hits))
+	}
+}
+
+// TestBM25PhraseAndTermMixed — phrase clause AND extra terms. The result
+// must satisfy BOTH: contain the phrase verbatim AND have a high BM25
+// score for the additional tokens.
+func TestBM25PhraseAndTermMixed(t *testing.T) {
+	s := newTestStore(t)
+	idx := NewBM25(s)
+	ctx := context.Background()
+
+	docs := []struct{ url, title, text string }{
+		{"https://x/phrase-and-term", "Distributed systems",
+			"In distributed systems, leader election is critical for consensus protocols like raft."},
+		{"https://x/phrase-only", "Voting",
+			"leader election in a club voting context."},
+		{"https://x/term-only", "Raft details",
+			"The raft protocol describes how nodes pick a leader."},
+	}
+	for _, d := range docs {
+		id, _ := s.UpsertDocument(ctx, &store.Document{
+			URL: d.url, Title: d.title, Text: d.text, Source: "test", FetchedAt: time.Now(),
+		})
+		if err := idx.IndexDocument(ctx, id, d.title, d.text); err != nil {
+			t.Fatalf("index %s: %v", d.url, err)
+		}
+	}
+
+	// Both phrase-bearing docs survive the phrase filter (term-only doesn't
+	// contain "leader election" verbatim — correctly excluded). Among the
+	// two survivors, phrase-and-term has "raft" too, so it scores higher.
+	hits, err := idx.Search(ctx, `raft "leader election"`, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("want 2 hits (both phrase-bearing docs; term-only filtered out), got %d: %v", len(hits), urls(hits))
+	}
+	if hits[0].URL != "https://x/phrase-and-term" {
+		t.Errorf("phrase-and-term should rank above phrase-only (extra term 'raft'); got order: %v", urls(hits))
+	}
+	for _, h := range hits {
+		if h.URL == "https://x/term-only" {
+			t.Errorf("term-only doc should NOT survive phrase filter (no verbatim 'leader election'); got: %v", urls(hits))
+		}
+	}
+}
+
+// TestParsePhrases — locks in the quote parser. Iter 198.
+func TestParsePhrases(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantQ    string
+		wantPhrs []string
+	}{
+		{`hello world`, "hello world", nil},
+		{`"hello world"`, ` hello world`, []string{"hello world"}},
+		{`raft "leader election"`, `raft  leader election`, []string{"leader election"}},
+		{`"primary key" "foreign key"`, ` primary key  foreign key`, []string{"primary key", "foreign key"}},
+		{`unterminated "phrase`, "unterminated phrase", nil},
+		{`"" hello`, ` hello`, nil}, // empty phrase ignored
+	}
+	normalize := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	for _, c := range cases {
+		gotQ, gotPhrs := parsePhrases(c.in)
+		// Normalize whitespace — the exact internal separator count is an
+		// implementation detail; we care that the tokens are present.
+		if normalize(gotQ) != normalize(c.wantQ) {
+			t.Errorf("parsePhrases(%q) query (normalized): want %q, got %q", c.in, normalize(c.wantQ), normalize(gotQ))
+		}
+		if !equalStringSlices(gotPhrs, c.wantPhrs) {
+			t.Errorf("parsePhrases(%q) phrases: want %v, got %v", c.in, c.wantPhrs, gotPhrs)
+		}
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func urls(hits []Hit) []string {
+	out := make([]string, len(hits))
+	for i, h := range hits {
+		out[i] = h.URL
+	}
+	return out
 }

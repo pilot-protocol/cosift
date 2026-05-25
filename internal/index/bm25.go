@@ -127,9 +127,51 @@ INSERT INTO postings (term_id, doc_id, tf) VALUES (?, ?, ?);`,
 	return tx.Commit()
 }
 
-// Search returns the top-k hits for the query string.
+// parsePhrases extracts double-quoted substrings from q. Returns the search
+// query (with quote marks stripped — phrase tokens still participate in BM25)
+// and a slice of verbatim phrases to filter the result set by. Iter 198.
+//
+//	parsePhrases(`raft "leader election"`)
+//	  → searchQuery="raft  leader election", phrases=["leader election"]
+//
+// An unterminated trailing quote is treated as unquoted text (the user
+// probably typed the leading quote by accident, not a syntax error).
+func parsePhrases(q string) (string, []string) {
+	var unquoted []string
+	var phrases []string
+	rest := q
+	for {
+		i := strings.IndexByte(rest, '"')
+		if i < 0 {
+			unquoted = append(unquoted, rest)
+			break
+		}
+		unquoted = append(unquoted, rest[:i])
+		rest = rest[i+1:]
+		j := strings.IndexByte(rest, '"')
+		if j < 0 {
+			unquoted = append(unquoted, rest)
+			break
+		}
+		phrase := strings.TrimSpace(rest[:j])
+		if phrase != "" {
+			phrases = append(phrases, strings.ToLower(phrase))
+			// Include the phrase content in BM25 search too — it's still
+			// term-level evidence, just additionally constrained.
+			unquoted = append(unquoted, phrase)
+		}
+		rest = rest[j+1:]
+	}
+	return strings.Join(unquoted, " "), phrases
+}
+
+// Search returns the top-k hits for the query string. Supports phrase queries
+// via double quotes: `"machine learning"` requires the phrase to appear
+// verbatim (case-insensitive) in the document text. Multiple phrases are
+// AND-combined. Iter 198.
 func (b *BM25) Search(ctx context.Context, q string, k int) ([]Hit, error) {
-	tokens := Tokenize(q)
+	searchQ, phrases := parsePhrases(q)
+	tokens := Tokenize(searchQ)
 	if len(tokens) == 0 {
 		return nil, nil
 	}
@@ -207,10 +249,101 @@ WHERE p.term_id = ?;`
 		hits = append(hits, Hit{DocID: docID, URL: urls[docID], Title: titles[docID], Score: sc})
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
-	if k > 0 && len(hits) > k {
+
+	if len(phrases) > 0 {
+		hits = b.filterByPhrases(ctx, hits, phrases, k)
+	} else if k > 0 && len(hits) > k {
 		hits = hits[:k]
 	}
 	return hits, nil
+}
+
+// filterByPhrases walks hits in score order and keeps docs whose text
+// contains every phrase verbatim (case-insensitive). Fetches text in
+// chunks to amortize the per-doc SQL round-trip — phrase filters typically
+// keep a high fraction of top-k candidates so chunk size 64 is plenty.
+//
+// Iter 198: enables `?q="exact phrase"` queries without a positional-index
+// schema change. Cost is one batched text fetch on top of BM25 scoring.
+// Tradeoff: docs that match phrases but DIDN'T make the BM25 top set
+// will be missed; in practice this is rare because phrase-bearing terms
+// also score well term-wise. Acceptable for the v0 IR surface.
+func (b *BM25) filterByPhrases(ctx context.Context, hits []Hit, phrases []string, k int) []Hit {
+	if k <= 0 {
+		k = 10
+	}
+	out := make([]Hit, 0, k)
+	const chunkSize = 64
+	for chunkStart := 0; chunkStart < len(hits) && len(out) < k; chunkStart += chunkSize {
+		end := chunkStart + chunkSize
+		if end > len(hits) {
+			end = len(hits)
+		}
+		batch := hits[chunkStart:end]
+		ids := make([]int64, len(batch))
+		for i, h := range batch {
+			ids[i] = h.DocID
+		}
+		texts, err := b.fetchTextsByID(ctx, ids)
+		if err != nil {
+			// SQL error: fall back to unfiltered top-k from what we have so
+			// far. Better than failing the whole query.
+			out = append(out, batch...)
+			if len(out) > k {
+				out = out[:k]
+			}
+			return out
+		}
+		for _, h := range batch {
+			body := strings.ToLower(texts[h.DocID])
+			titleLC := strings.ToLower(h.Title)
+			ok := true
+			for _, p := range phrases {
+				// A phrase can match in title OR body (each is its own text
+				// span; the user doesn't care which one carried it).
+				if !strings.Contains(body, p) && !strings.Contains(titleLC, p) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				out = append(out, h)
+				if len(out) >= k {
+					return out
+				}
+			}
+		}
+	}
+	return out
+}
+
+// fetchTextsByID returns id → text for the given ids in a single SELECT.
+func (b *BM25) fetchTextsByID(ctx context.Context, ids []int64) (map[int64]string, error) {
+	if len(ids) == 0 {
+		return map[int64]string{}, nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	query := fmt.Sprintf("SELECT id, COALESCE(text,'') FROM documents WHERE id IN (%s);", placeholders)
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := b.store.DB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]string, len(ids))
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, err
+		}
+		out[id] = text
+	}
+	return out, nil
 }
 
 func dedupeStrings(in []string) []string {

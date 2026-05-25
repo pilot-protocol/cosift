@@ -233,7 +233,7 @@ The retrieval pipeline has eight composable stages. Each is independent — pick
 
 | Stage | Knob | Effect |
 |-------|------|--------|
-| 1. Lexical retrieval | `?retriever=bm25` | Custom BM25 (k1=1.2, b=0.75); SQLite postings |
+| 1. Lexical retrieval | `?retriever=bm25` | Custom BM25 (k1=1.2, b=0.75); SQLite postings; title-boost ×3; phrase queries via `"…"` |
 | 2. Dense retrieval | `?retriever=dense` | Brute-force cosine over OpenAI-compatible embeddings |
 | 3. Hybrid fusion | `?retriever=hybrid&hybrid_dense_weight=N` | RRF over BM25 + dense, with per-retriever weight |
 | 4. HyDE | `?hyde=true` | LLM generates a hypothetical-answer passage; embed THAT instead of the raw query (dense / hybrid only). 2-level cached |
