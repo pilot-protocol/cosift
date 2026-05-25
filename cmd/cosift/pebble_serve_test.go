@@ -118,6 +118,11 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if tc, _ := got["total_candidates"].(float64); tc <= 0 {
 		t.Errorf("/search: total_candidates should be > 0, got %v", got["total_candidates"])
 	}
+	// Iter 352: retriever label (iter 234/248/252) identifies the pipeline.
+	// Bare BM25 should be exactly "bm25"; rerank/expand decorate this.
+	if rt, _ := got["retriever"].(string); rt != "bm25" {
+		t.Errorf("/search retriever: want 'bm25', got %q", rt)
+	}
 
 	// /contents
 	contents := mustGet(t, base+"/contents?url="+url.QueryEscape("https://x/raft"))
