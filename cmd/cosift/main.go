@@ -187,6 +187,10 @@ func main() {
 		if err := runStats(ctx, cfg); err != nil {
 			log.Fatalf("stats: %v", err)
 		}
+	case "crawl-status":
+		if err := runCrawlStatus(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("crawl-status: %v", err)
+		}
 	case "eval":
 		if err := runEval(ctx, flag.Args()[1:]); err != nil {
 			log.Fatalf("eval: %v", err)
@@ -5134,4 +5138,79 @@ func runStats(ctx context.Context, cfg *config.Config) error {
 	}
 	fmt.Printf("documents: %d\nterms: %d\ndata_dir: %s\n", stats.Documents, stats.Terms, cfg.DataDir)
 	return nil
+}
+
+// runCrawlStatus prints an operator-friendly snapshot of an ongoing crawl:
+// counts, frontier breakdown, top hosts by indexed-doc count, recent error
+// classes, and rolling-window doc rates with a 1M-doc ETA. Safe to run
+// concurrently with a live `cosift crawl` — SQLite WAL mode allows readers
+// alongside the writer. Iter 193.
+func runCrawlStatus(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("crawl-status", flag.ExitOnError)
+	hostsN := fs.Int("hosts", 10, "show top N hosts by indexed-doc count")
+	errsN := fs.Int("errors", 8, "show top N distinct error classes")
+	target := fs.Int64("target", 1_000_000, "doc count target for ETA projection")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	s, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	r, err := s.CrawlStatus(ctx, *hostsN, *errsN)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("crawl status — %s\n\n", cfg.DataDir)
+	fmt.Printf("  documents:        %d\n", r.Documents)
+	fmt.Printf("  terms:            %d\n", r.Terms)
+	fmt.Printf("  unique hosts:     %d\n", r.UniqueHosts)
+	fmt.Println()
+	fmt.Println("  frontier:")
+	for _, fs := range r.FrontierByStatus {
+		fmt.Printf("    %-12s %d\n", fs.Status, fs.Count)
+	}
+	fmt.Println()
+	fmt.Println("  doc rate (rolling, by fetched_at):")
+	for _, win := range r.RateWindows {
+		ratePerMin := float64(win.Count) / float64(win.WindowSec) * 60.0
+		fmt.Printf("    last %2dmin: %5d docs (%7.0f /min)\n", win.WindowSec/60, win.Count, ratePerMin)
+	}
+	if len(r.RateWindows) > 0 {
+		// Use the longest available rolling window for ETA — most stable signal.
+		win := r.RateWindows[len(r.RateWindows)-1]
+		ratePerMin := float64(win.Count) / float64(win.WindowSec) * 60.0
+		if ratePerMin > 0 {
+			remaining := *target - r.Documents
+			if remaining < 0 {
+				remaining = 0
+			}
+			etaHours := float64(remaining) / ratePerMin / 60.0
+			fmt.Printf("    → ETA to %d docs: %.1f hours = %.2f days (at the %dmin rate)\n",
+				*target, etaHours, etaHours/24.0, win.WindowSec/60)
+		}
+	}
+	if len(r.TopHosts) > 0 {
+		fmt.Printf("\n  top %d hosts (by indexed doc count):\n", len(r.TopHosts))
+		for _, h := range r.TopHosts {
+			fmt.Printf("    %-50s %d\n", truncStr(h.Host, 50), h.Count)
+		}
+	}
+	if len(r.ErrorClasses) > 0 {
+		fmt.Printf("\n  top %d error classes:\n", len(r.ErrorClasses))
+		for _, e := range r.ErrorClasses {
+			fmt.Printf("    %-60s %d\n", truncStr(e.LastError, 60), e.Count)
+		}
+	}
+	return nil
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }

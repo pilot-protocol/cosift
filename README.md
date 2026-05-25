@@ -207,6 +207,12 @@ cosift contents <url...> [-server URL] [-file PATH] [-text] [-json]
 cosift admin <stats|config|recrawl|recrawl-domain|reembed> [-server URL] [-token TOKEN] [-json]
                                               admin-protected operator endpoints
 cosift stats                                  doc / term counts + data dir
+cosift crawl-status [-hosts N] [-errors N] [-target N]
+                                              live operator snapshot of an ongoing crawl: counts, frontier
+                                              breakdown, top hosts, top error classes, 5/15/30-min doc
+                                              rates, ETA to -target docs (default 1M). Safe to run
+                                              alongside an active `cosift crawl` (SQLite WAL allows
+                                              readers + writer concurrently)
 cosift eval [-retriever ...] [-rerank] [-api URL]
                                               run the eval set against the local or remote index
 cosift answer-eval [-corpus PATH] [-queries PATH] [-save PATH]

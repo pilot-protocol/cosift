@@ -538,6 +538,120 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
+// CrawlStatusReport bundles the operator-facing crawl snapshot returned by
+// CrawlStatus. Single read per field, safe to run against a SQLite WAL DB
+// being actively written by a `cosift crawl` process. Iter 193.
+type CrawlStatusReport struct {
+	Documents        int64
+	Terms            int64
+	UniqueHosts      int64
+	FrontierByStatus []FrontierStatusCount
+	TopHosts         []HostDocCount
+	ErrorClasses     []ErrorClassCount
+	RateWindows      []RateWindow
+}
+
+type FrontierStatusCount struct {
+	Status string
+	Count  int64
+}
+
+type HostDocCount struct {
+	Host  string
+	Count int64
+}
+
+type ErrorClassCount struct {
+	LastError string
+	Count     int64
+}
+
+type RateWindow struct {
+	WindowSec int   // 300, 900, 1800 — match cosift crawl-status default windows
+	Count     int64 // docs with fetched_at >= now - WindowSec
+}
+
+// CrawlStatus assembles the cosift-crawl-status snapshot. WAL mode lets us
+// read this while a crawler writes — no locking required for queries.
+func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (CrawlStatusReport, error) {
+	var r CrawlStatusReport
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM documents;`).Scan(&r.Documents); err != nil {
+		return r, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM terms;`).Scan(&r.Terms); err != nil {
+		return r, err
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT host) FROM frontier WHERE status='done';`).Scan(&r.UniqueHosts); err != nil {
+		return r, err
+	}
+
+	// Frontier breakdown by status — ordered for stable display.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM frontier GROUP BY status ORDER BY 2 DESC;`)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var fs FrontierStatusCount
+		if err := rows.Scan(&fs.Status, &fs.Count); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.FrontierByStatus = append(r.FrontierByStatus, fs)
+	}
+	rows.Close()
+
+	// Top hosts by indexed doc count (frontier.status='done' implies a doc row
+	// was successfully written; using frontier.host avoids a join).
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT host, COUNT(*) FROM frontier WHERE status='done' AND host!='' GROUP BY host ORDER BY 2 DESC LIMIT ?;`,
+		topHostsN)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var h HostDocCount
+		if err := rows.Scan(&h.Host, &h.Count); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.TopHosts = append(r.TopHosts, h)
+	}
+	rows.Close()
+
+	// Top error classes — operators triaging a failing crawl care about which
+	// failure mode is dominant. last_error already lives on frontier (iter 85).
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT last_error, COUNT(*) FROM frontier WHERE status='error' AND last_error!='' GROUP BY last_error ORDER BY 2 DESC LIMIT ?;`,
+		topErrorsN)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var e ErrorClassCount
+		if err := rows.Scan(&e.LastError, &e.Count); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.ErrorClasses = append(r.ErrorClasses, e)
+	}
+	rows.Close()
+
+	// Rolling-window rates: 5, 15, 30 minute windows on documents.fetched_at.
+	// fetched_at is Unix seconds; strftime('%s','now') returns the same.
+	for _, sec := range []int{300, 900, 1800} {
+		var c int64
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM documents WHERE fetched_at >= strftime('%s','now')-?;`, sec,
+		).Scan(&c); err != nil {
+			return r, err
+		}
+		r.RateWindows = append(r.RateWindows, RateWindow{WindowSec: sec, Count: c})
+	}
+	return r, nil
+}
+
 // ErrNotFound is a convenience alias.
 var ErrNotFound = errors.New("not found")
 

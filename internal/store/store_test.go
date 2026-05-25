@@ -490,3 +490,90 @@ func TestExtractHost(t *testing.T) {
 		}
 	}
 }
+
+// TestCrawlStatus — iter 193. Verifies the operator-facing crawl snapshot
+// returned by Store.CrawlStatus aggregates correctly across frontier statuses,
+// host counts, error classes, and rolling-window doc rates.
+func TestCrawlStatus(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenMemory()
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer s.Close()
+
+	// Seed the frontier with a mix of statuses + hosts. PushFrontier defaults
+	// to 'queued'; we'll bump some to 'done' / 'error' manually.
+	urls := []struct{ url, status, errMsg string }{
+		{"https://a.example.com/1", "done", ""},
+		{"https://a.example.com/2", "done", ""},
+		{"https://a.example.com/3", "done", ""},
+		{"https://b.example.com/x", "done", ""},
+		{"https://b.example.com/y", "queued", ""},
+		{"https://c.example.com/p", "error", "http 403"},
+		{"https://c.example.com/q", "error", "http 403"},
+		{"https://d.example.com/r", "error", "blocked by robots.txt"},
+		{"https://e.example.com/s", "in_flight", ""},
+	}
+	for _, u := range urls {
+		if err := s.PushFrontier(ctx, u.url, 0, 0); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		// Force the row's status / last_error to match the test scenario.
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE frontier SET status=?, last_error=? WHERE url=?`, u.status, u.errMsg, u.url); err != nil {
+			t.Fatalf("set status: %v", err)
+		}
+	}
+	// Insert one document so r.Documents / r.Terms come back non-zero.
+	if _, err := s.UpsertDocument(ctx, &Document{URL: "https://a.example.com/1", Title: "doc1", Text: "hello", FetchedAt: time.Now()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	r, err := s.CrawlStatus(ctx, 10, 5)
+	if err != nil {
+		t.Fatalf("CrawlStatus: %v", err)
+	}
+
+	if r.Documents != 1 {
+		t.Errorf("documents: want 1, got %d", r.Documents)
+	}
+	if r.UniqueHosts != 2 {
+		t.Errorf("unique hosts (a + b have 'done' rows): want 2, got %d", r.UniqueHosts)
+	}
+
+	// Frontier breakdown — expect 4 done, 1 queued, 3 error, 1 in_flight.
+	got := map[string]int64{}
+	for _, fs := range r.FrontierByStatus {
+		got[fs.Status] = fs.Count
+	}
+	want := map[string]int64{"done": 4, "queued": 1, "error": 3, "in_flight": 1}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("frontier[%s]: want %d, got %d", k, v, got[k])
+		}
+	}
+
+	// Top hosts: a.example.com has 3 done, b has 1.
+	if len(r.TopHosts) < 1 || r.TopHosts[0].Host != "a.example.com" || r.TopHosts[0].Count != 3 {
+		t.Errorf("top hosts[0]: want {a.example.com 3}, got %+v", r.TopHosts)
+	}
+
+	// Error classes: "http 403" (2) tops "blocked by robots.txt" (1).
+	if len(r.ErrorClasses) < 2 {
+		t.Fatalf("error classes: want ≥2, got %d", len(r.ErrorClasses))
+	}
+	if r.ErrorClasses[0].LastError != "http 403" || r.ErrorClasses[0].Count != 2 {
+		t.Errorf("error[0]: want {http 403, 2}, got %+v", r.ErrorClasses[0])
+	}
+
+	// Three rate windows: 5/15/30 min. All should contain our one fresh doc.
+	if len(r.RateWindows) != 3 {
+		t.Fatalf("rate windows: want 3, got %d", len(r.RateWindows))
+	}
+	for _, w := range r.RateWindows {
+		if w.Count < 1 {
+			t.Errorf("rate window %ds: expected ≥1 doc in window, got %d", w.WindowSec, w.Count)
+		}
+	}
+}
