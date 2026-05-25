@@ -193,6 +193,20 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 			t.Errorf("/search?sort=newest: warning didn't mention the value: %s", first)
 		}
 	}
+
+	// /search?include_text=true (iter 237) must inline doc.Text on each hit.
+	// Iter 247 made the flag work uniformly across endpoints; this guards
+	// /search specifically since it has the most params in flight.
+	itresp := mustGet(t, base+"/search?q=raft&include_text=true&k=3")
+	ithits, _ := itresp["hits"].([]any)
+	if len(ithits) == 0 {
+		t.Errorf("/search?include_text=true: no hits, can't verify text inlining")
+	} else {
+		first, _ := ithits[0].(map[string]any)
+		if txt, _ := first["text"].(string); txt == "" {
+			t.Errorf("/search?include_text=true: top hit missing text field: %+v", first)
+		}
+	}
 }
 
 // mustGet GETs the URL and JSON-decodes the response. Fails the test on
