@@ -220,4 +220,5 @@ iter 265 — pebble-serve `/search` response includes `effective_query` when HyD
 iter 266 — pebble-serve `/answer` response includes `effective_query` (omitempty) on both paths
 iter 267 — pebble-serve `/metrics` adds cosift_chat_duration_seconds_sum (mean chat latency via PromQL)
 iter 268 — docs/API.md: operator reference for the full pebble-serve endpoint surface
+iter 269 — README links to docs/PEBBLE.md + docs/API.md from the Pebble section
 ```
