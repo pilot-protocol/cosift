@@ -179,7 +179,7 @@ curl -N -H 'Accept: text/event-stream' \
   'http://127.0.0.1:7777/answer?q=what+is+raft&stream=true'
 ```
 
-Event sequence: optional `warnings` (when the request had silent no-ops) → `sources` (after retrieval; payload includes `query`, `sources`, `model`, `total_candidates`) → `chunk` (per delta, payload `{"delta": "..."}`) → `done` with `took`. On error: `error` event with the message and stream ends. Falls back to sync when the chat client doesn't implement streaming.
+Event sequence: optional `warnings` (when the request had silent no-ops) → `sources` (after retrieval; payload includes `query`, `sources`, `model`, `total_candidates`) → `answer_chunk` (per delta, payload `{"text": "..."}`) → `done` with `took`. On error: `error` event with the message and stream ends. Falls back to sync when the chat client doesn't implement streaming.
 
 ## `GET /research` / `POST /research`
 
@@ -200,7 +200,7 @@ curl 'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&k=8'
 }
 ```
 
-SSE streaming event sequence: optional `warnings` → `plan` (payload `{query, plan, model, expand?}`) → `sources` (after rerank if any; payload includes `total_candidates`) → `chunk` (per delta) → `done` with `took`. On failure: `error` event tagged with `phase: "plan" | "synth"` and stream ends.
+SSE streaming event sequence: optional `warnings` → `plan` (payload `{query, plan, model, expand?}`) → `sources` (after rerank if any; payload includes `total_candidates`) → `answer_chunk` (per delta, payload `{"text": "..."}`) → `done` with `took`. On failure: `error` event tagged with `phase: "plan" | "synth"` and stream ends.
 
 ---
 

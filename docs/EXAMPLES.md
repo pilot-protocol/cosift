@@ -101,7 +101,7 @@ curl -N -H 'Accept: text/event-stream' \
   'http://127.0.0.1:7777/answer?q=what+is+raft&stream=true&rerank=true'
 ```
 
-Event sequence: `warnings?` → `sources` → `chunk` × N → `done`.
+Event sequence: `warnings?` → `sources` → `answer_chunk` × N → `done`.
 
 ### Scoped + streaming POST
 
@@ -132,7 +132,7 @@ curl -N -H 'Accept: text/event-stream' \
   'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&stream=true'
 ```
 
-Event sequence: `warnings?` → `plan` → `sources` → `chunk` × N → `done`.
+Event sequence: `warnings?` → `plan` → `sources` → `answer_chunk` × N → `done`.
 
 ### Multi-step with paraphrase across sub-queries
 

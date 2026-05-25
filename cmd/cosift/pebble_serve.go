@@ -1709,7 +1709,7 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model(), "total_candidates": totalCandidates})
 
 	_, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
-		sse(map[string]any{"type": "chunk", "delta": delta})
+		sse(map[string]any{"type": "answer_chunk", "text": delta})
 	})
 	if err != nil {
 		sse(map[string]any{"type": "error", "error": err.Error()})
@@ -2094,7 +2094,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		{Role: "system", Content: researchSynthPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
 	}, func(delta string) {
-		sse(map[string]any{"type": "chunk", "delta": delta})
+		sse(map[string]any{"type": "answer_chunk", "text": delta})
 	})
 	if err != nil {
 		sse(map[string]any{"type": "error", "phase": "synth", "error": err.Error()})

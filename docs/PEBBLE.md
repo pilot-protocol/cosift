@@ -292,4 +292,5 @@ iter 330 — `cosift search/research/find-similar/answer` CLIs print server-side
 iter 331 — `cosift verify -server URL` routes through the HTTP /verify endpoint (works while writer lock is held)
 iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` mode
 iter 333 — CLI SSE consumers handle pebble-serve's `warnings` event (surfaces silent no-ops on streamed answer/research)
+iter 334 — wire: rename pebble SSE `chunk{delta}` → `answer_chunk{text}` so `cosift answer/research -stream` against pebble-serve renders text
 ```
