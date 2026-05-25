@@ -204,6 +204,20 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/metrics: missing cosift_indexed_docs in body: %s", mbody)
 	}
 
+	// /search?expand=true (iter 252) without a chat client should:
+	//   - normalize the expand field to "hyde" (iter 308)
+	//   - emit a warning about no chat client configured (iter 292)
+	// Since no chat is configured in this test scaffold, effective_query
+	// stays empty (omitted) and the warning fires.
+	eresp := mustGet(t, base+"/search?q=raft&expand=true")
+	if exp, _ := eresp["expand"].(string); exp != "hyde" {
+		t.Errorf("/search?expand=true: want expand normalized to 'hyde', got %q", exp)
+	}
+	ewarn, _ := eresp["warnings"].([]any)
+	if len(ewarn) == 0 {
+		t.Errorf("/search?expand=true without chat: want a warning, got none")
+	}
+
 	// /search with a malformed sort value (iter 310) must surface a warning
 	// in the response. Covers the iter-292/309/310/311/313 warnings machinery.
 	wresp := mustGet(t, base+"/search?q=raft&sort=newest")
