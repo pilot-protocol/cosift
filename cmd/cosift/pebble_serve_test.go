@@ -114,6 +114,28 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if !strings.Contains(contents["text"].(string), "Raft") {
 		t.Errorf("contents text: %v", contents["text"])
 	}
+
+	// /find_similar — text mode (iter 298). Exercises the text-mode branch
+	// the iter-322 compile bug lived in. Catches regression class:
+	// out-of-scope variables inside the topN==0 / empty-result short-circuit.
+	fs := mustGet(t, base+"/find_similar?text="+url.QueryEscape("distributed consensus replicated log"))
+	fsHits, ok := fs["hits"].([]any)
+	if !ok {
+		t.Fatalf("find_similar text-mode: want hits array, got %T (%v)", fs["hits"], fs)
+	}
+	if len(fsHits) == 0 {
+		t.Errorf("find_similar text-mode: expected at least one hit on consensus terms, got 0")
+	}
+
+	// /verify — counter drift check (iter 230). 503 on drift; we expect OK.
+	vresp, err := http.Get(base + "/verify")
+	if err != nil {
+		t.Fatalf("/verify: %v", err)
+	}
+	vresp.Body.Close()
+	if vresp.StatusCode != 200 {
+		t.Errorf("/verify: want 200, got %d", vresp.StatusCode)
+	}
 }
 
 // mustGet GETs the URL and JSON-decodes the response. Fails the test on

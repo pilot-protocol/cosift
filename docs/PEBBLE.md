@@ -300,4 +300,5 @@ iter 338 — CLI SSE consumers capture pebble's `sources` event for the final So
 iter 339 — renderStreamingSources uses i+1 fallback when ID==0 (pebble sources lack a citation id field)
 iter 340 — sync research/answer CLI renderers + markdown renderer also use the iter-339 sourceIDOf helper
 iter 341 — pebble-serve answerSource emits `id` (1-based citation N) so the CLI fallback is now defense-in-depth
+iter 342 — TestPebbleServeEndToEnd asserts /find_similar text mode + /verify (closes the iter-322 regression class)
 ```
