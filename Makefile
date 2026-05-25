@@ -24,14 +24,16 @@ smoke:
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X github.com/calinteodor/cosift/internal/server.Version=$(VERSION)" -o $(BINARY) $(PKG)
 
-# Iter 323: light-touch verification — compile + vet + unit tests on packages
-# that don't need OPENAI/COHERE keys or live network. Catches latent compile
-# bugs (iter 322 was a build-broken-since-iter-298 case that hid for 24 iters)
-# without the full ./... test suite's network/LLM dependencies.
+# Iter 323/327: light-touch verification — compile + vet + unit tests on
+# packages that don't need OPENAI/COHERE keys or live network. Catches
+# latent compile bugs (iter 322 was a build-broken-since-iter-298 case that
+# hid for 24 iters) without the full ./... test suite's external deps.
+# Includes cmd/cosift tests since iter 327 — those are httptest-based and
+# fast (~20s) and cover the CLI surface most iters touch.
 check:
 	go build ./...
 	go vet ./cmd/... ./internal/index/... ./internal/store/... ./internal/crawler/...
-	go test -count=1 -timeout=60s ./internal/index/... ./internal/store/...
+	go test -count=1 -timeout=90s ./internal/index/... ./internal/store/... ./cmd/cosift/...
 
 test:
 	go test ./...

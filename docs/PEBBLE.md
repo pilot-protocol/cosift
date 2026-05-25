@@ -283,4 +283,5 @@ iter 323 — `make check` target: compile + vet + offline unit tests (~10s, catc
 iter 324 — `cosift doctor` distinguishes Pebble writer-lock contention (INFO) from real corruption (FAIL)
 iter 325 — `cosift pebble-info` + `cosift verify` print a friendly hint on lock contention (point at HTTP endpoints)
 iter 326 — `cosift crawl --backend=pebble`, `cosift query`, `cosift stats`, `cosift migrate-to-pebble` use the iter-325 helper
+iter 327 — `make check` includes `cmd/cosift/...` tests (~24s; httptest-based, no live network)
 ```
