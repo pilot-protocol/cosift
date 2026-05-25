@@ -227,4 +227,5 @@ iter 272 — pebble-serve `/search?expand=paraphrase` (paraphrase + RRF fusion)
 iter 273 — pebble-serve `/answer?expand=paraphrase` (same shape; fused top-fetchK feeds synth)
 iter 274 — pebble-serve extract `retrieveWithExpansion` helper (DRY across /search and /answer)
 iter 275 — pebble-serve /research uses retrieveWithExpansion per sub-query (?expand=paraphrase now applies)
+iter 276 — pebble-serve bounded paraphrase cache + hit/miss counters on /metrics
 ```

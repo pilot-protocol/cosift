@@ -63,6 +63,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		store:     ps,
 		idx:       idx,
 		hydeCache: make(map[string]string, 256),
+		paraCache: make(map[string][]string, 256),
 		started:   time.Now(),
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
@@ -150,6 +151,14 @@ type pebbleHTTP struct {
 	// arbitrary entry (Go map iteration order is randomized, good enough).
 	hydeMu    sync.RWMutex
 	hydeCache map[string]string
+
+	// Iter 276: bounded paraphrase cache. /research?expand=paraphrase fans
+	// out 3 paraphrases × N sub-queries — same hot path as HyDE but each
+	// miss is 3x larger by output volume. Keyed on q only (fixed n=3 today).
+	paraMu       sync.RWMutex
+	paraCache    map[string][]string
+	paraHits     atomic.Int64
+	paraMisses   atomic.Int64
 
 	// Iter 260: atomic counters surfaced on /metrics so operators can size the
 	// HyDE cache against a real workload — if misses dominate, raise the cap
@@ -281,6 +290,12 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_misses_total HyDE cache misses (expandQuery called the LLM).\n")
 	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_misses_total counter\n")
 	fmt.Fprintf(w, "cosift_hyde_cache_misses_total %d\n", s.hydeMisses.Load())
+	fmt.Fprintf(w, "# HELP cosift_paraphrase_cache_hits_total Paraphrase cache hits (paraphraseQuery served from memory).\n")
+	fmt.Fprintf(w, "# TYPE cosift_paraphrase_cache_hits_total counter\n")
+	fmt.Fprintf(w, "cosift_paraphrase_cache_hits_total %d\n", s.paraHits.Load())
+	fmt.Fprintf(w, "# HELP cosift_paraphrase_cache_misses_total Paraphrase cache misses (paraphraseQuery called the LLM).\n")
+	fmt.Fprintf(w, "# TYPE cosift_paraphrase_cache_misses_total counter\n")
+	fmt.Fprintf(w, "cosift_paraphrase_cache_misses_total %d\n", s.paraMisses.Load())
 	fmt.Fprintf(w, "# HELP cosift_rerank_attempts_total Rerank calls invoked (any endpoint with ?rerank=true).\n")
 	fmt.Fprintf(w, "# TYPE cosift_rerank_attempts_total counter\n")
 	fmt.Fprintf(w, "cosift_rerank_attempts_total %d\n", s.rerankAttempts.Load())
@@ -881,6 +896,14 @@ func (s *pebbleHTTP) paraphraseQuery(ctx context.Context, q string, n int) []str
 	if s.chat == nil || n <= 0 {
 		return nil
 	}
+	s.paraMu.RLock()
+	if cached, ok := s.paraCache[q]; ok {
+		s.paraMu.RUnlock()
+		s.paraHits.Add(1)
+		return cached
+	}
+	s.paraMu.RUnlock()
+	s.paraMisses.Add(1)
 	const sys = `Generate paraphrases of a search query. Each paraphrase preserves the semantic intent but uses different vocabulary — different keywords that a target document might also use. Output ONLY a JSON array of strings.
 Example output for "go programming language": ["golang concurrent compiled language", "Google's systems programming language with goroutines"]`
 	resp, err := s.doChat(ctx, s.chat, []embed.ChatMsg{
@@ -911,6 +934,17 @@ Example output for "go programming language": ["golang concurrent compiled langu
 		if t != "" {
 			out = append(out, t)
 		}
+	}
+	if len(out) > 0 {
+		s.paraMu.Lock()
+		if len(s.paraCache) >= 256 {
+			for k := range s.paraCache {
+				delete(s.paraCache, k)
+				break
+			}
+		}
+		s.paraCache[q] = out
+		s.paraMu.Unlock()
 	}
 	return out
 }
