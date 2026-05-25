@@ -246,4 +246,5 @@ iter 287 — `cosift doctor` adds a 'pebble store' check (PASS/SKIP/FAIL on open
 iter 288 — /research sync response carries `expand` (parity with iter-284 SSE plan event)
 iter 289 — /answer response carries `expand` (parity with /research, both paths)
 iter 290 — /search response carries `expand` (uniform across all retrieval-driven endpoints)
+iter 291 — docs/TUNING.md adds 'Pitfalls / non-obvious behavior' section (9 gotchas documented)
 ```

@@ -84,3 +84,15 @@ Crawling docs.example.com specifically? A short recipe:
 5. If many docs are long (whitepapers, full pages), set `COSIFT_BM25_B=0.5` and re-eval the same 10 queries.
 
 The eval delta is what tells you. Single-anecdote tuning leads in circles.
+
+## Pitfalls / non-obvious behavior
+
+- **`?expand=true` is silent without `cfg.Chat.Model`.** The response's `expand` field will still echo `"true"`, but `effective_query` won't change — meaning no chat call fired. Set `cfg.Chat.Model` (and `OPENAI_API_KEY` or equivalent), or accept that the flag is a no-op for your deployment.
+- **`?rerank=true` is silent without a reranker.** Same shape — flag accepted, no rerank applied. `/stats` shows `reranker` when one is configured; absent means rerank is a no-op.
+- **`include_text=true` payload size is k × avg_doc_len.** A 500 KB doc at k=20 is 10 MB returned per call. Fine for backend pipelines, dangerous for browsers.
+- **Pebble's single-writer lock blocks reads during crawl.** `cosift stats --backend=pebble` from a sidecar will fail. Use `cosift status-file` (lock-free) or curl `/stats` against a running `pebble-serve` instead.
+- **`expand=paraphrase` is N+1 LLM calls per /search, more for /research.** Defaults are 3 paraphrases — so /search?expand=paraphrase is 1 chat (generate) + 4 BM25, /research is 1 chat (plan) + N×(1 chat + 4 BM25). The paraphrase cache (iter 259/276) absorbs repeats; watch `cosift_paraphrase_cache_hits_total`.
+- **`/research` is slow without `stream=true`.** Total latency is 2-3 chat rounds + N×BM25 + 1 synth chat = 10-30s typical. Streaming makes the UX usable; sync is for backend pipelines that can wait.
+- **Reranker failures fall back silently to BM25 order.** `cosift_rerank_failures_total / cosift_rerank_attempts_total` is the alert signal — if it crosses ~5% sustained, your reranker provider is degraded.
+- **`?sort=date_desc` re-orders the top-k pool, not the candidate pool.** Raise `k` (or `cfg.Rerank.CandidateK` if reranking) to widen before sort if you're seeing too few dated results.
+- **Chat calls go through a sync `time.Now()` boundary on `doChatStream` only after the stream completes.** Mean chat latency from `/metrics` includes full SSE duration for the streamed paths — useful for capacity planning but expect numbers higher than a raw single-shot completion.
