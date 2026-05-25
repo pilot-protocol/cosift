@@ -542,6 +542,7 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 		fmt.Println(string(body))
 		return nil
 	}
+	emitWarnings(body)
 	var sr server.SearchResponse
 	if err := json.Unmarshal(body, &sr); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -1026,6 +1027,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 		fmt.Println(string(body))
 		return nil
 	}
+	emitWarnings(body)
 	var rr server.ResearchResponse
 	if err := json.Unmarshal(body, &rr); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -1206,6 +1208,7 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		fmt.Println(string(body))
 		return nil
 	}
+	emitWarnings(body)
 	var fr server.FindSimilarResponse
 	if err := json.Unmarshal(body, &fr); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -1486,6 +1489,7 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 		fmt.Println(string(body))
 		return nil
 	}
+	emitWarnings(body)
 	var ar server.AnswerResponse
 	if err := json.Unmarshal(body, &ar); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -5573,6 +5577,28 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// Iter 330: peekWarnings extracts the iter-292+ warnings field from a server
+// response body without committing to a full typed decode. When the CLI hits
+// pebble-serve, the response carries a warnings[] slice naming silent no-ops
+// (unknown expand, rerank without reranker, malformed include_domains, etc).
+// Without surfacing these on stderr the human CLI mode swallows them.
+func peekWarnings(body []byte) []string {
+	var probe struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil
+	}
+	return probe.Warnings
+}
+
+// emitWarnings prints each warning to stderr with a 'cosift:' prefix.
+func emitWarnings(body []byte) {
+	for _, w := range peekWarnings(body) {
+		fmt.Fprintln(os.Stderr, "cosift: warning:", w)
+	}
 }
 
 func runStats(ctx context.Context, cfg *config.Config, args []string) error {
