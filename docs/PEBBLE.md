@@ -279,4 +279,5 @@ iter 319 — docs/API.md SSE event-sequence docs reflect iter-284/292/317 fields
 iter 320 — `cosift` usage string lists doctor + pebble-serve/info, verify, status-file, migrate-to-pebble
 iter 321 — README Quick start mentions the Pebble path (crawl --backend + pebble-serve) so new self-hosters don't miss it
 iter 322 — fix: /find_similar topN==0 branch referenced out-of-scope `decoded` (broken since iter 298)
+iter 323 — `make check` target: compile + vet + offline unit tests (~10s, catches iter-322-class breakage)
 ```

@@ -5,10 +5,11 @@ BINARY := cosift
 PKG    := ./cmd/cosift
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build test smoke eval bench docker clean help
+.PHONY: build check test smoke eval bench docker clean help
 
 help:
 	@echo "make build          — build ./$(BINARY) (host platform)"
+	@echo "make check          — go build + vet + index/store unit tests (~10s, no network, no LLM)"
 	@echo "make test           — go test ./..."
 	@echo "make smoke          — real-runner smoke test (build + crawl + serve roundtrip; ~30s; needs network)"
 	@echo "make eval           — run the BM25 baseline eval"
@@ -22,6 +23,15 @@ smoke:
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X github.com/calinteodor/cosift/internal/server.Version=$(VERSION)" -o $(BINARY) $(PKG)
+
+# Iter 323: light-touch verification — compile + vet + unit tests on packages
+# that don't need OPENAI/COHERE keys or live network. Catches latent compile
+# bugs (iter 322 was a build-broken-since-iter-298 case that hid for 24 iters)
+# without the full ./... test suite's network/LLM dependencies.
+check:
+	go build ./...
+	go vet ./cmd/... ./internal/index/... ./internal/store/... ./internal/crawler/...
+	go test -count=1 -timeout=60s ./internal/index/... ./internal/store/...
 
 test:
 	go test ./...
