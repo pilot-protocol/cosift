@@ -15,7 +15,7 @@ These compose across `/search`, `/find_similar`, `/answer`, `/research`:
 | `exclude_domains` | CSV | — | same matcher; applied after include |
 | `since` / `until` | YYYY-MM-DD or RFC3339 | — | filters on `doc.PublishedAt`; zero-date docs dropped under any date filter |
 | `rerank` | bool | false | no-op when no reranker is configured |
-| `expand` | bool | false | HyDE-style query expansion via the chat client; no-op when no chat client is configured |
+| `expand` | string | false | `true` / `hyde` → HyDE passage appended to q. `paraphrase` (/search only) → N chat-generated paraphrases, BM25 each, RRF-fuse. No-op when no chat client is configured. |
 | `include_text` | bool | false | inline full `doc.Text` on each hit/source |
 
 `/search` has additional sort/enrich knobs (below). `/answer` and `/research` add `stream`.

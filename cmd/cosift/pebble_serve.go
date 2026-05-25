@@ -425,15 +425,43 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-	// Iter 252/258: ?expand=true asks the chat client for a HyDE-style
-	// hypothetical passage and appends it to q for the BM25 call. The
-	// reranker still scores against the original q.
-	wantExpand := r.URL.Query().Get("expand") == "true"
+	// Iter 252/258: ?expand=true (or =hyde) → HyDE passage appended to q.
+	// Iter 272: ?expand=paraphrase → generate N paraphrases via chat, BM25
+	// each, RRF-fuse the ranked lists into one ordered candidate set.
+	// Reranker still scores against the original q regardless of strategy.
+	expandMode := r.URL.Query().Get("expand")
 	effectiveQuery := q
-	if wantExpand {
+	var hits []index.Hit
+	var err error
+	switch expandMode {
+	case "paraphrase":
+		paras := s.paraphraseQuery(r.Context(), q, 3)
+		if len(paras) == 0 {
+			// Fallback to bare-query BM25 if paraphraser unavailable / failed.
+			hits, err = s.idx.Search(r.Context(), q, fetchK)
+		} else {
+			queries := append([]string{q}, paras...)
+			lists := make([][]index.Hit, 0, len(queries))
+			for _, qq := range queries {
+				h, lerr := s.idx.Search(r.Context(), qq, fetchK)
+				if lerr != nil {
+					continue
+				}
+				lists = append(lists, h)
+			}
+			hits = rrfFuse(lists, 60)
+			if len(hits) > fetchK {
+				hits = hits[:fetchK]
+			}
+			// Surface the joined paraphrase set as the effective query for visibility.
+			effectiveQuery = q + " | " + strings.Join(paras, " | ")
+		}
+	case "true", "hyde":
 		effectiveQuery = s.expandQuery(r.Context(), q)
+		hits, err = s.idx.Search(r.Context(), effectiveQuery, fetchK)
+	default:
+		hits, err = s.idx.Search(r.Context(), q, fetchK)
 	}
-	hits, err := s.idx.Search(r.Context(), effectiveQuery, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -540,8 +568,15 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		sortHitsByDate(out, true)
 	}
 	retrieverLabel := "bm25"
-	if wantExpand && effectiveQuery != q {
-		retrieverLabel = "bm25+hyde"
+	switch expandMode {
+	case "paraphrase":
+		if effectiveQuery != q {
+			retrieverLabel = "bm25+paraphrase"
+		}
+	case "true", "hyde":
+		if effectiveQuery != q {
+			retrieverLabel = "bm25+hyde"
+		}
 	}
 	if wantRerank {
 		retrieverLabel += "+rerank:" + s.reranker.Name()
@@ -866,6 +901,88 @@ func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Cand
 		s.rerankFailures.Add(1)
 	}
 	return order, err
+}
+
+// Iter 272: paraphraseQuery returns up to n paraphrases of q via the chat
+// client, parses the JSON array shape the SQLite-side paraphraser already
+// uses, and falls back to nil on any failure (no chat client, empty / malformed
+// reply, parse error). Caller decides what to do with an empty list — the
+// downstream RRF strategy treats it as 'no expansion, fall back to single
+// query'. No cache yet — keyed on (q, n) would need a different shape than
+// the iter-259 HyDE cache; revisit when workload justifies.
+func (s *pebbleHTTP) paraphraseQuery(ctx context.Context, q string, n int) []string {
+	if s.chat == nil || n <= 0 {
+		return nil
+	}
+	const sys = `Generate paraphrases of a search query. Each paraphrase preserves the semantic intent but uses different vocabulary — different keywords that a target document might also use. Output ONLY a JSON array of strings.
+Example output for "go programming language": ["golang concurrent compiled language", "Google's systems programming language with goroutines"]`
+	resp, err := s.doChat(ctx, s.chat, []embed.ChatMsg{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: fmt.Sprintf("Generate %d paraphrases of: %s", n, q)},
+	})
+	if err != nil {
+		return nil
+	}
+	raw := strings.TrimSpace(resp)
+	for _, fence := range []string{"```json", "```"} {
+		raw = strings.TrimPrefix(raw, fence)
+		raw = strings.TrimSuffix(raw, "```")
+	}
+	raw = strings.TrimSpace(raw)
+	startIdx := strings.Index(raw, "[")
+	endIdx := strings.LastIndex(raw, "]")
+	if startIdx < 0 || endIdx <= startIdx {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(raw[startIdx:endIdx+1]), &arr); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, p := range arr {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// Iter 272: rrfFuse implements Reciprocal Rank Fusion across N ranked lists.
+// k=60 is the standard Cormack et al. constant; tweaking rarely changes top-k
+// ordering meaningfully. Each list contributes 1/(k + rank+1) to a URL's
+// fused score; URLs appearing in more lists at higher ranks rise. Returns
+// synthesized Hits ordered by fused score (URL/Title from first encounter,
+// Score = fused RRF score).
+func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
+	if fuseK <= 0 {
+		fuseK = 60
+	}
+	type fused struct {
+		hit   index.Hit
+		score float64
+	}
+	scored := make(map[string]*fused, 64)
+	for _, list := range lists {
+		for rank, h := range list {
+			if existing, ok := scored[h.URL]; ok {
+				existing.score += 1.0 / float64(fuseK+rank+1)
+			} else {
+				scored[h.URL] = &fused{hit: h, score: 1.0 / float64(fuseK+rank+1)}
+			}
+		}
+	}
+	flat := make([]*fused, 0, len(scored))
+	for _, f := range scored {
+		flat = append(flat, f)
+	}
+	sort.Slice(flat, func(i, j int) bool { return flat[i].score > flat[j].score })
+	out := make([]index.Hit, len(flat))
+	for i, f := range flat {
+		out[i] = f.hit
+		out[i].Score = f.score
+	}
+	return out
 }
 
 // expandQuery returns q + " " + a HyDE-generated passage when a chat client is
