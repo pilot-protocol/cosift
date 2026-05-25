@@ -193,6 +193,7 @@ type searchHit struct {
 	Excerpt      string     `json:"excerpt,omitempty"`
 	PublishedAt  *time.Time `json:"published_at,omitempty"`
 	Author       string     `json:"author,omitempty"`
+	Text         string     `json:"text,omitempty"`
 }
 
 type searchResponse struct {
@@ -255,7 +256,11 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// ~ms-scale at the k≤100 we accept. Opt out with ?enrich=false for callers
 	// that only need scoring. The date filter (iter 234) forces a doc fetch
 	// even when enrich=false, since PublishedAt lives on the gob.
+	// Iter 237: ?include_text=true inlines doc.Text on each hit so research
+	// pipelines avoid the N+1 round trip to /contents. Off by default —
+	// payload size grows linearly with k and average doc length.
 	enrich := r.URL.Query().Get("enrich") != "false"
+	includeText := r.URL.Query().Get("include_text") == "true"
 	out := make([]searchHit, 0, k)
 	for _, h := range hits {
 		if len(include) > 0 || len(exclude) > 0 {
@@ -268,7 +273,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
-		if enrich || dateFilter {
+		if enrich || dateFilter || includeText {
 			doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 			if derr != nil || doc == nil {
 				continue
@@ -291,6 +296,9 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 					hit.PublishedAt = &t
 				}
 				hit.Author = doc.Author
+			}
+			if includeText {
+				hit.Text = doc.Text
 			}
 		}
 		out = append(out, hit)
