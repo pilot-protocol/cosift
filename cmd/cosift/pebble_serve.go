@@ -558,16 +558,30 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	fetchK := k + 1
+	// Iter 251: ?rerank=true closes /find_similar's parity gap with the other
+	// retrieval endpoints. The MLT query is auto-derived from the source doc,
+	// so reranking the candidate neighbors against THAT query is exactly what
+	// EXA's findSimilar quality boost is doing under the hood.
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	keepCap := k
+	if wantRerank {
+		keepCap = s.rerankCandK
+		if keepCap < k {
+			keepCap = k
+		}
+	}
+	fetchK := keepCap + 1 // +1 to absorb the source-URL exclusion
 	if len(include) > 0 || len(exclude) > 0 || dateFilter {
 		mult := 5
 		if dateFilter {
 			mult = 10
 		}
-		fetchK = k * mult
+		fetchK = keepCap * mult
 		if fetchK > 500 {
 			fetchK = 500
 		}
+	} else if wantRerank {
+		fetchK = keepCap * 2
 	}
 
 	hits, err := s.idx.Search(r.Context(), queryStr, fetchK)
@@ -575,7 +589,11 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := make([]searchHit, 0, k)
+	type fsCand struct {
+		hit        searchHit
+		rerankText string
+	}
+	cands := make([]fsCand, 0, keepCap)
 	for _, h := range hits {
 		if h.URL == src.URL {
 			continue
@@ -614,14 +632,51 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			hit.Text = doc.Text
 		}
-		out = append(out, hit)
-		if len(out) >= k {
+		c := fsCand{hit: hit}
+		if wantRerank {
+			c.rerankText = doc.Title + "\n" + doc.Text
+		}
+		cands = append(cands, c)
+		if len(cands) >= keepCap {
 			break
 		}
 	}
+	if wantRerank && len(cands) > 1 {
+		rc := make([]rerank.Candidate, len(cands))
+		for i := range cands {
+			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
+		}
+		if order, rerr := s.reranker.Rerank(r.Context(), queryStr, rc); rerr == nil && len(order) > 0 {
+			reordered := make([]fsCand, 0, len(cands))
+			seen := make(map[int]bool, len(cands))
+			for _, id := range order {
+				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(cands) && !seen[n] {
+					reordered = append(reordered, cands[n])
+					seen[n] = true
+				}
+			}
+			for i, c := range cands {
+				if !seen[i] {
+					reordered = append(reordered, c)
+				}
+			}
+			cands = reordered
+		}
+	}
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	out := make([]searchHit, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.hit)
+	}
+	retrieverLabel := "bm25-mlt"
+	if wantRerank {
+		retrieverLabel = "bm25-mlt+rerank:" + s.reranker.Name()
+	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:     queryStr,
-		Retriever: "bm25-mlt",
+		Retriever: retrieverLabel,
 		Hits:      out,
 		Took:      time.Since(start).String(),
 	})
