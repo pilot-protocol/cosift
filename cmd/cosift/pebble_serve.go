@@ -1329,6 +1329,7 @@ type answerSource struct {
 type answerResponse struct {
 	Query          string         `json:"query"`
 	EffectiveQuery string         `json:"effective_query,omitempty"`
+	Expand         string         `json:"expand,omitempty"`
 	Answer         string         `json:"answer"`
 	Sources        []answerSource `json:"sources"`
 	Model          string         `json:"model"`
@@ -1485,8 +1486,8 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(sources) == 0 {
 		empty := answerResponse{
-			Query: q, Answer: "No matching sources in the index.", Sources: sources,
-			Model: s.chat.Model(), Took: time.Since(start).String(),
+			Query: q, Expand: expandMode, Answer: "No matching sources in the index.",
+			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
 		}
 		if effectiveQuery != q {
 			empty.EffectiveQuery = effectiveQuery
@@ -1523,7 +1524,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := answerResponse{
-		Query: q, Answer: answer, Sources: sources,
+		Query: q, Expand: expandMode, Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
 	}
 	if effectiveQuery != q {
