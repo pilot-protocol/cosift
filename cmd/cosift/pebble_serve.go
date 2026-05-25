@@ -59,6 +59,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /search", srv.handleSearch)
 	mux.HandleFunc("GET /contents", srv.handleContents)
 	mux.HandleFunc("GET /verify", srv.handleVerify)
+	mux.HandleFunc("GET /metrics", srv.handleMetrics)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -107,6 +108,39 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":    time.Since(s.started).String(),
 		"backend":   "pebble",
 	})
+}
+
+// Iter 231: Prometheus-format scrape endpoint. Hand-written plain text
+// (no client_golang dep) — exposition format is simple enough that
+// pulling in a dep just to print four gauges isn't justified.
+// Quantities chosen to be O(1) reads (CorpusStats counters + uptime);
+// frontier scans deliberately excluded so scrape latency stays flat
+// regardless of corpus size.
+func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	sumLen, count, err := s.store.CorpusStats(r.Context())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var avg float64
+	if count > 0 {
+		avg = float64(sumLen) / float64(count)
+	}
+	uptime := time.Since(s.started).Seconds()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "# HELP cosift_indexed_docs Number of documents passed through IndexDocument (iter-207 counter).\n")
+	fmt.Fprintf(w, "# TYPE cosift_indexed_docs gauge\n")
+	fmt.Fprintf(w, "cosift_indexed_docs %d\n", count)
+	fmt.Fprintf(w, "# HELP cosift_sum_doc_len_total Sum of indexed document lengths in tokens.\n")
+	fmt.Fprintf(w, "# TYPE cosift_sum_doc_len_total counter\n")
+	fmt.Fprintf(w, "cosift_sum_doc_len_total %d\n", sumLen)
+	fmt.Fprintf(w, "# HELP cosift_avg_doc_len Average document length in tokens (derived).\n")
+	fmt.Fprintf(w, "# TYPE cosift_avg_doc_len gauge\n")
+	fmt.Fprintf(w, "cosift_avg_doc_len %.2f\n", avg)
+	fmt.Fprintf(w, "# HELP cosift_uptime_seconds Seconds since pebble-serve started.\n")
+	fmt.Fprintf(w, "# TYPE cosift_uptime_seconds counter\n")
+	fmt.Fprintf(w, "cosift_uptime_seconds %.0f\n", uptime)
 }
 
 // Iter 230: HTTP form of `cosift verify`. Same comparison (iter-207 running
