@@ -204,18 +204,39 @@ func (c *Crawler) statusDumper(ctx context.Context, path string) {
 			if err != nil {
 				continue
 			}
+			// Iter 226: include indexed-doc count + avg doc length when the
+			// store has cheap O(1) accessors for them (PebbleStore via iter
+			// 207's running counters). SQLite Store doesn't expose
+			// CorpusStats today; the type-assert short-circuits and the
+			// fields stay 0 — operators reading the JSON treat 0 as "not
+			// available for this backend" via the omitempty tag.
+			var indexedDocs int64
+			var avgDocLen float64
+			if pebbleLike, ok := c.store.(interface {
+				CorpusStats(ctx context.Context) (int64, int64, error)
+			}); ok {
+				sumLen, count, err := pebbleLike.CorpusStats(ctx)
+				if err == nil && count > 0 {
+					indexedDocs = count
+					avgDocLen = float64(sumLen) / float64(count)
+				}
+			}
 			doc := struct {
-				Queued    int64     `json:"frontier_queued"`
-				InFlight  int64     `json:"frontier_in_flight"`
-				Done      int64     `json:"frontier_done"`
-				Errored   int64     `json:"frontier_errored"`
-				WrittenAt time.Time `json:"written_at"`
+				Queued       int64     `json:"frontier_queued"`
+				InFlight     int64     `json:"frontier_in_flight"`
+				Done         int64     `json:"frontier_done"`
+				Errored      int64     `json:"frontier_errored"`
+				IndexedDocs  int64     `json:"indexed_docs,omitempty"`
+				AvgDocLen    float64   `json:"avg_doc_len,omitempty"`
+				WrittenAt    time.Time `json:"written_at"`
 			}{
-				Queued:    fStats.Queued,
-				InFlight:  fStats.InFlight,
-				Done:      fStats.Done,
-				Errored:   fStats.Errored,
-				WrittenAt: time.Now(),
+				Queued:      fStats.Queued,
+				InFlight:    fStats.InFlight,
+				Done:        fStats.Done,
+				Errored:     fStats.Errored,
+				IndexedDocs: indexedDocs,
+				AvgDocLen:   avgDocLen,
+				WrittenAt:   time.Now(),
 			}
 			buf, err := json.Marshal(doc)
 			if err != nil {

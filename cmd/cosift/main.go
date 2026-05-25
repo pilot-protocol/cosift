@@ -5434,11 +5434,13 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 		return fmt.Errorf("read %s: %w", p, err)
 	}
 	var d struct {
-		Queued    int64     `json:"frontier_queued"`
-		InFlight  int64     `json:"frontier_in_flight"`
-		Done      int64     `json:"frontier_done"`
-		Errored   int64     `json:"frontier_errored"`
-		WrittenAt time.Time `json:"written_at"`
+		Queued      int64     `json:"frontier_queued"`
+		InFlight    int64     `json:"frontier_in_flight"`
+		Done        int64     `json:"frontier_done"`
+		Errored     int64     `json:"frontier_errored"`
+		IndexedDocs int64     `json:"indexed_docs,omitempty"`
+		AvgDocLen   float64   `json:"avg_doc_len,omitempty"`
+		WrittenAt   time.Time `json:"written_at"`
 	}
 	if err := json.Unmarshal(buf, &d); err != nil {
 		return fmt.Errorf("decode %s: %w", p, err)
@@ -5449,6 +5451,9 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 	fmt.Printf("  in_flight:  %d\n", d.InFlight)
 	fmt.Printf("  done:       %d\n", d.Done)
 	fmt.Printf("  errored:    %d\n", d.Errored)
+	if d.IndexedDocs > 0 {
+		fmt.Printf("  indexed:    %d (avg doc length: %.0f tokens)\n", d.IndexedDocs, d.AvgDocLen)
+	}
 	total := d.Queued + d.InFlight + d.Done + d.Errored
 	if total > 0 {
 		processed := d.Done + d.Errored
