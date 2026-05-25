@@ -195,6 +195,12 @@ func (c *Crawler) statusDumper(ctx context.Context, path string) {
 	}()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	// Iter 271: capture started_at + indexed_docs_at_start on the first poll so
+	// `cosift status-file -target N` can compute an ETA from rate-since-start
+	// without needing a second observation point.
+	startedAt := time.Now()
+	var indexedAtStart int64
+	var indexedAtStartSet bool
 	for {
 		select {
 		case <-ctx.Done():
@@ -221,22 +227,30 @@ func (c *Crawler) statusDumper(ctx context.Context, path string) {
 					avgDocLen = float64(sumLen) / float64(count)
 				}
 			}
+			if !indexedAtStartSet {
+				indexedAtStart = indexedDocs
+				indexedAtStartSet = true
+			}
 			doc := struct {
-				Queued       int64     `json:"frontier_queued"`
-				InFlight     int64     `json:"frontier_in_flight"`
-				Done         int64     `json:"frontier_done"`
-				Errored      int64     `json:"frontier_errored"`
-				IndexedDocs  int64     `json:"indexed_docs,omitempty"`
-				AvgDocLen    float64   `json:"avg_doc_len,omitempty"`
-				WrittenAt    time.Time `json:"written_at"`
+				Queued              int64     `json:"frontier_queued"`
+				InFlight            int64     `json:"frontier_in_flight"`
+				Done                int64     `json:"frontier_done"`
+				Errored             int64     `json:"frontier_errored"`
+				IndexedDocs         int64     `json:"indexed_docs,omitempty"`
+				IndexedDocsAtStart  int64     `json:"indexed_docs_at_start,omitempty"`
+				AvgDocLen           float64   `json:"avg_doc_len,omitempty"`
+				StartedAt           time.Time `json:"started_at,omitempty"`
+				WrittenAt           time.Time `json:"written_at"`
 			}{
-				Queued:      fStats.Queued,
-				InFlight:    fStats.InFlight,
-				Done:        fStats.Done,
-				Errored:     fStats.Errored,
-				IndexedDocs: indexedDocs,
-				AvgDocLen:   avgDocLen,
-				WrittenAt:   time.Now(),
+				Queued:             fStats.Queued,
+				InFlight:           fStats.InFlight,
+				Done:               fStats.Done,
+				Errored:            fStats.Errored,
+				IndexedDocs:        indexedDocs,
+				IndexedDocsAtStart: indexedAtStart,
+				AvgDocLen:          avgDocLen,
+				StartedAt:          startedAt,
+				WrittenAt:          time.Now(),
 			}
 			buf, err := json.Marshal(doc)
 			if err != nil {

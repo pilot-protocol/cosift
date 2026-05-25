@@ -5440,13 +5440,15 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 		return fmt.Errorf("read %s: %w", p, err)
 	}
 	var d struct {
-		Queued      int64     `json:"frontier_queued"`
-		InFlight    int64     `json:"frontier_in_flight"`
-		Done        int64     `json:"frontier_done"`
-		Errored     int64     `json:"frontier_errored"`
-		IndexedDocs int64     `json:"indexed_docs,omitempty"`
-		AvgDocLen   float64   `json:"avg_doc_len,omitempty"`
-		WrittenAt   time.Time `json:"written_at"`
+		Queued             int64     `json:"frontier_queued"`
+		InFlight           int64     `json:"frontier_in_flight"`
+		Done               int64     `json:"frontier_done"`
+		Errored            int64     `json:"frontier_errored"`
+		IndexedDocs        int64     `json:"indexed_docs,omitempty"`
+		IndexedDocsAtStart int64     `json:"indexed_docs_at_start,omitempty"`
+		AvgDocLen          float64   `json:"avg_doc_len,omitempty"`
+		StartedAt          time.Time `json:"started_at,omitempty"`
+		WrittenAt          time.Time `json:"written_at"`
 	}
 	if err := json.Unmarshal(buf, &d); err != nil {
 		return fmt.Errorf("decode %s: %w", p, err)
@@ -5454,16 +5456,18 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 	age := time.Since(d.WrittenAt).Round(time.Second)
 	if *asJSON {
 		out := map[string]any{
-			"path":               p,
-			"frontier_queued":    d.Queued,
-			"frontier_in_flight": d.InFlight,
-			"frontier_done":      d.Done,
-			"frontier_errored":   d.Errored,
-			"indexed_docs":       d.IndexedDocs,
-			"avg_doc_len":        d.AvgDocLen,
-			"written_at":         d.WrittenAt,
-			"age_seconds":        int64(age.Seconds()),
-			"stale":              age > 30*time.Second,
+			"path":                  p,
+			"frontier_queued":       d.Queued,
+			"frontier_in_flight":    d.InFlight,
+			"frontier_done":         d.Done,
+			"frontier_errored":      d.Errored,
+			"indexed_docs":          d.IndexedDocs,
+			"indexed_docs_at_start": d.IndexedDocsAtStart,
+			"avg_doc_len":           d.AvgDocLen,
+			"started_at":            d.StartedAt,
+			"written_at":            d.WrittenAt,
+			"age_seconds":           int64(age.Seconds()),
+			"stale":                 age > 30*time.Second,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -5485,9 +5489,19 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 	}
 	// Iter 270: ?-target N → 'indexed/target (pct)' line for long crawls toward
 	// a known doc-count goal. No-op when target is unset or already met.
+	// Iter 271: ETA from iter-271 started_at + indexed_docs_at_start fields.
+	// Rate is averaged since the dumper's first poll, not instantaneous.
 	if *target > 0 && d.IndexedDocs > 0 {
 		pct := float64(d.IndexedDocs) / float64(*target) * 100
 		fmt.Printf("  target:     %d / %d (%.1f%%)\n", d.IndexedDocs, *target, pct)
+		gained := d.IndexedDocs - d.IndexedDocsAtStart
+		elapsed := d.WrittenAt.Sub(d.StartedAt)
+		if gained > 0 && elapsed > time.Second && d.IndexedDocs < *target {
+			rate := float64(gained) / elapsed.Seconds()
+			remaining := float64(*target - d.IndexedDocs)
+			eta := time.Duration(remaining/rate) * time.Second
+			fmt.Printf("  rate:       %.1f docs/sec  eta: %s\n", rate, eta.Round(time.Second))
+		}
 	}
 	if age > 30*time.Second {
 		fmt.Printf("\n  WARNING: status is %s old; crawler may have stopped\n", age)

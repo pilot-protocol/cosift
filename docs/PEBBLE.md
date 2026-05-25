@@ -222,4 +222,5 @@ iter 267 — pebble-serve `/metrics` adds cosift_chat_duration_seconds_sum (mean
 iter 268 — docs/API.md: operator reference for the full pebble-serve endpoint surface
 iter 269 — README links to docs/PEBBLE.md + docs/API.md from the Pebble section
 iter 270 — `cosift status-file -target N` shows progress toward a doc-count goal
+iter 271 — `cosift status-file -target N` adds ETA (status.json carries started_at + indexed_docs_at_start)
 ```
