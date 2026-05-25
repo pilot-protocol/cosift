@@ -50,6 +50,14 @@ func (b *PebbleBM25) WithBM25Params(k1, blen float64) *PebbleBM25 {
 	return b
 }
 
+// K1 returns the currently configured BM25 k1 parameter. Iter 280 — lets
+// operator-visible endpoints surface 'what scoring params is this instance
+// actually using' without grepping env or constants.
+func (b *PebbleBM25) K1() float64 { return b.k1 }
+
+// B returns the currently configured BM25 b parameter.
+func (b *PebbleBM25) B() float64 { return b.b }
+
 // IndexDocument is a convenience wrapper that calls PebbleStore.IndexDocument
 // with this package's tokenizer + title-boost constant. Keeps callers from
 // having to import internal/store just to plumb those two values.

@@ -260,7 +260,9 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	if indexedDocs > 0 {
 		avg = float64(sumLen) / float64(indexedDocs)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// Iter 280: surface config knobs that affect retrieval/synth quality so
+	// operators can verify env overrides took effect from one endpoint.
+	out := map[string]any{
 		"documents":    st.Documents,
 		"terms":        st.Terms,
 		"indexed_docs": indexedDocs,
@@ -268,7 +270,17 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		"avg_doc_len":  avg,
 		"uptime":       time.Since(s.started).String(),
 		"backend":      "pebble",
-	})
+		"bm25_k1":      s.idx.K1(),
+		"bm25_b":       s.idx.B(),
+	}
+	if s.reranker != nil {
+		out["reranker"] = s.reranker.Name()
+		out["rerank_candidate_k"] = s.rerankCandK
+	}
+	if s.chat != nil {
+		out["chat_model"] = s.chat.Model()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // Iter 231: Prometheus-format scrape endpoint. Hand-written plain text

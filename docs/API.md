@@ -46,9 +46,16 @@ curl http://127.0.0.1:7777/stats
   "sum_doc_len": 18204517,
   "avg_doc_len": 1758.32,
   "uptime": "27m12s",
-  "backend": "pebble"
+  "backend": "pebble",
+  "bm25_k1": 1.2,
+  "bm25_b": 0.75,
+  "reranker": "llm:gpt-4o-mini",
+  "rerank_candidate_k": 20,
+  "chat_model": "gpt-4o-mini"
 }
 ```
+
+`reranker`, `rerank_candidate_k`, and `chat_model` only appear when the matching capability is configured.
 
 ## `GET /metrics`
 
