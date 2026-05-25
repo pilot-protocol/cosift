@@ -264,4 +264,5 @@ iter 304 — `cosift answer` CLI gains -rerank, -since, -until, -include-domains
 iter 305 — `cosift research` CLI gains -k, -expand, -rerank, -since, -until, -include-domains, -exclude-domains
 iter 306 — `cosift find-similar` CLI gains -rerank, -q, -since, -until, -include-domains, -exclude-domains
 iter 307 — docs/EXAMPLES.md adds a 'CLI shortcuts' section so headless users see the cosift-* equivalents
+iter 308 — `expand` response field normalizes to canonical name ('true'→'hyde', unknown→'')
 ```

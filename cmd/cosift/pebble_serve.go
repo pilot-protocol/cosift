@@ -823,7 +823,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := searchResponse{
 		Query:           q,
-		Expand:          expandMode,
+		Expand:          normalizeExpandMode(expandMode),
 		Retriever:       retrieverLabel,
 		Hits:            out,
 		// Iter 283: total_candidates = BM25 candidates considered before
@@ -1307,6 +1307,21 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	return w
 }
 
+// normalizeExpandMode returns the canonical strategy name for an `expand`
+// param value: "true" → "hyde" (alias), "hyde"/"paraphrase" pass through,
+// anything else → "" (so the response field doesn't echo a value that had
+// no effect). Iter 308.
+func normalizeExpandMode(raw string) string {
+	switch raw {
+	case "true", "hyde":
+		return "hyde"
+	case "paraphrase":
+		return "paraphrase"
+	default:
+		return ""
+	}
+}
+
 // Iter 274: retrieveWithExpansion dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
@@ -1555,7 +1570,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(sources) == 0 {
 		empty := answerResponse{
-			Query: q, Expand: expandMode, Answer: "No matching sources in the index.",
+			Query: q, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources in the index.",
 			Sources: sources, Model: s.chat.Model(), Took: time.Since(start).String(),
 		}
 		if effectiveQuery != q {
@@ -1594,7 +1609,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := answerResponse{
-		Query: q, Expand: expandMode, Answer: answer, Sources: sources,
+		Query: q, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Took: time.Since(start).String(),
 	}
 	if effectiveQuery != q {
@@ -1824,7 +1839,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
-			Query: q, Plan: subs, Expand: expandMode, Answer: "No matching sources for any sub-query.",
+			Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources for any sub-query.",
 			Sources: sources, Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
 		})
 		return
@@ -1839,7 +1854,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
-		Query: q, Plan: subs, Expand: expandMode, Answer: answer, Sources: sources,
+		Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
 		Model: s.chat.Model(), Warnings: s.warningsFor(r), Took: time.Since(start).String(),
 	})
 }
@@ -1890,8 +1905,8 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	// UIs can render 'using paraphrase' or 'using HyDE' as soon as the plan
 	// arrives, before per-sub-query expansion fires.
 	planEvent := map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()}
-	if expandMode := r.URL.Query().Get("expand"); expandMode != "" {
-		planEvent["expand"] = expandMode
+	if mode := normalizeExpandMode(r.URL.Query().Get("expand")); mode != "" {
+		planEvent["expand"] = mode
 	}
 	sse(planEvent)
 
