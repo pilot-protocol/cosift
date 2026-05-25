@@ -2343,6 +2343,23 @@ func (s *pebbleHTTP) handleContentsBatch(w http.ResponseWriter, r *http.Request)
 }
 
 // runPebbleInfo prints Pebble's built-in metrics for the store at -dir.
+// Iter 325: openPebbleOrFriendlyErr wraps store.OpenPebble with a more
+// helpful error message when the underlying failure is lock contention (a
+// pebble-serve / live crawl is holding the single-writer lock). Callers
+// using offline CLI subcommands (pebble-info, verify) hit this when run
+// during an active deployment.
+func openPebbleOrFriendlyErr(d string) (*store.PebbleStore, error) {
+	ps, err := store.OpenPebble(d)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "lock") || strings.Contains(msg, "resource temporarily unavailable") {
+			return nil, fmt.Errorf("open pebble at %s: writer lock is held by another process (pebble-serve / crawl in flight); stop the running service or use HTTP endpoints instead", d)
+		}
+		return nil, fmt.Errorf("open pebble at %s: %w", d, err)
+	}
+	return ps, nil
+}
+
 // Iter 217 — operator visibility into LSM levels, WAL state, on-disk
 // size, and compaction queue, surfaced via pebble.Metrics().String().
 func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
@@ -2355,9 +2372,9 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	if d == "" {
 		d = filepath.Join(cfg.DataDir, "pebble")
 	}
-	ps, err := store.OpenPebble(d)
+	ps, err := openPebbleOrFriendlyErr(d)
 	if err != nil {
-		return fmt.Errorf("open pebble at %s: %w", d, err)
+		return err
 	}
 	defer ps.Close()
 
@@ -2398,9 +2415,9 @@ func runVerifyPebble(ctx context.Context, cfg *config.Config, args []string) err
 	if d == "" {
 		d = filepath.Join(cfg.DataDir, "pebble")
 	}
-	ps, err := store.OpenPebble(d)
+	ps, err := openPebbleOrFriendlyErr(d)
 	if err != nil {
-		return fmt.Errorf("open pebble at %s: %w", d, err)
+		return err
 	}
 	defer ps.Close()
 
