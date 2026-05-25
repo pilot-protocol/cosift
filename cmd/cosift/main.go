@@ -187,6 +187,10 @@ func main() {
 		if err := runStats(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("stats: %v", err)
 		}
+	case "status-file":
+		if err := runStatusFile(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("status-file: %v", err)
+		}
 	case "crawl-status":
 		if err := runCrawlStatus(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("crawl-status: %v", err)
@@ -5409,6 +5413,54 @@ func runStats(ctx context.Context, cfg *config.Config, args []string) error {
 // classes, and rolling-window doc rates with a 1M-doc ETA. Safe to run
 // concurrently with a live `cosift crawl` — SQLite WAL mode allows readers
 // alongside the writer. Iter 193.
+// runStatusFile reads the iter-224 crawl-status.json (the file the live
+// crawler writes every 10s) and pretty-prints it. Useful when an operator
+// can't run `cosift stats -backend=pebble` because Pebble's single-writer
+// lock is held by the crawl process. Iter 225.
+//
+// Default path: <cfg.DataDir>/crawl-status.json. -file flag overrides.
+func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("status-file", flag.ExitOnError)
+	path := fs.String("file", "", "path to crawl-status.json (defaults to <data_dir>/crawl-status.json)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	p := *path
+	if p == "" {
+		p = filepath.Join(cfg.DataDir, "crawl-status.json")
+	}
+	buf, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", p, err)
+	}
+	var d struct {
+		Queued    int64     `json:"frontier_queued"`
+		InFlight  int64     `json:"frontier_in_flight"`
+		Done      int64     `json:"frontier_done"`
+		Errored   int64     `json:"frontier_errored"`
+		WrittenAt time.Time `json:"written_at"`
+	}
+	if err := json.Unmarshal(buf, &d); err != nil {
+		return fmt.Errorf("decode %s: %w", p, err)
+	}
+	age := time.Since(d.WrittenAt).Round(time.Second)
+	fmt.Printf("status file: %s  (written %s ago)\n\n", p, age)
+	fmt.Printf("  queued:     %d\n", d.Queued)
+	fmt.Printf("  in_flight:  %d\n", d.InFlight)
+	fmt.Printf("  done:       %d\n", d.Done)
+	fmt.Printf("  errored:    %d\n", d.Errored)
+	total := d.Queued + d.InFlight + d.Done + d.Errored
+	if total > 0 {
+		processed := d.Done + d.Errored
+		fmt.Printf("  processed:  %d / %d (%.1f%%)\n",
+			processed, total, float64(processed)/float64(total)*100)
+	}
+	if age > 30*time.Second {
+		fmt.Printf("\n  WARNING: status is %s old; crawler may have stopped\n", age)
+	}
+	return nil
+}
+
 func runCrawlStatus(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("crawl-status", flag.ExitOnError)
 	hostsN := fs.Int("hosts", 10, "show top N hosts by indexed-doc count")
