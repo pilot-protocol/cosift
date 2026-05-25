@@ -866,22 +866,29 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Step 1: build the set of hosts currently in-flight.
+	// Step 1: build the set of hosts currently in-flight. Iter 221: wrap in
+	// closure so iIt.Close() runs even if iteration panics (was explicit
+	// Close after the loop; a panic inside leaked the iterator).
 	inflightHosts := make(map[string]struct{}, 32)
-	iIt, err := p.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{famFrontier, 'i'},
-		UpperBound: []byte{famFrontier, 'i' + 1},
-	})
-	if err != nil {
+	if err := func() error {
+		iIt, err := p.db.NewIter(&pebble.IterOptions{
+			LowerBound: []byte{famFrontier, 'i'},
+			UpperBound: []byte{famFrontier, 'i' + 1},
+		})
+		if err != nil {
+			return err
+		}
+		defer iIt.Close()
+		for valid := iIt.First(); valid; valid = iIt.Next() {
+			h := frontierStatusIndexHost(iIt.Key())
+			if h != "" {
+				inflightHosts[h] = struct{}{}
+			}
+		}
+		return nil
+	}(); err != nil {
 		return FrontierItem{}, false, err
 	}
-	for valid := iIt.First(); valid; valid = iIt.Next() {
-		h := frontierStatusIndexHost(iIt.Key())
-		if h != "" {
-			inflightHosts[h] = struct{}{}
-		}
-	}
-	iIt.Close()
 
 	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
 	// whose host is NOT in inflightHosts. Fall back to first overall if all
@@ -1091,15 +1098,25 @@ func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (m
 		lo[2+len(host)] = 0x00
 		hi := append([]byte{}, lo...)
 		hi[2+len(host)] = 0x01
-		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		// Iter 221: per-iteration closure so defer it.Close() runs at each
+		// host's end, not at the enclosing function's return. Without the
+		// closure a `defer` here would stack iterators until function exit
+		// (Go defers fire on FUNCTION return, not on loop iteration).
+		n, err := func() (int, error) {
+			it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+			if err != nil {
+				return 0, err
+			}
+			defer it.Close()
+			var count int
+			for valid := it.First(); valid; valid = it.Next() {
+				count++
+			}
+			return count, nil
+		}()
 		if err != nil {
 			return nil, err
 		}
-		var n int
-		for valid := it.First(); valid; valid = it.Next() {
-			n++
-		}
-		it.Close()
 		if n > 0 {
 			out[host] = n
 		}
