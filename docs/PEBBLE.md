@@ -313,4 +313,5 @@ iter 351 — TestPebbleServeEndToEnd asserts /find_similar URL mode excludes the
 iter 352 — TestPebbleServeEndToEnd asserts /search retriever label == 'bm25' on bare query (iter 234/248/252 guard)
 iter 353 — helpers_test.go: unit tests for normalizeExpandMode (iter 308), sourceIDOf (iter 339/340), peekWarnings (iter 330)
 iter 354 — helpers_test.go: rrfFuse contract test (iter 272 — paraphrase strategy's fusion math)
+iter 355 — helpers_test.go: parseSubQueries (iter 243) + iter-354 tie-flakiness fix on the rrfFuse fixture
 ```

@@ -55,25 +55,25 @@ func TestSourceIDOf(t *testing.T) {
 
 func TestRrfFuse(t *testing.T) {
 	// Iter 354: lock down rrfFuse contract (iter 272). RRF score per URL =
-	// sum over lists of 1/(k+rank+1). A URL appearing first in list A and
-	// last in list B should outscore a URL appearing only in the middle
-	// of list A.
+	// sum over lists of 1/(k+rank+1). Construct a fixture with no ties so
+	// the ranking is deterministic — sort.Slice doesn't guarantee a stable
+	// order for equal-keyed elements.
 	listA := []index.Hit{
 		{URL: "https://a", Title: "A"},
 		{URL: "https://b", Title: "B"},
 		{URL: "https://c", Title: "C"},
 	}
 	listB := []index.Hit{
-		{URL: "https://b", Title: "B"},
 		{URL: "https://a", Title: "A"},
+		{URL: "https://b", Title: "B"},
 	}
 	got := rrfFuse([][]index.Hit{listA, listB}, 60)
 
-	// a should rank first (first in A, second in B).
+	// a should rank first (rank 0 in both lists).
 	if len(got) == 0 || got[0].URL != "https://a" {
 		t.Fatalf("rrfFuse: expected https://a as top hit, got %+v", got)
 	}
-	// b should be second (second in A, first in B).
+	// b should be second (rank 1 in both lists).
 	if len(got) < 2 || got[1].URL != "https://b" {
 		t.Errorf("rrfFuse: expected https://b as second, got %+v", got)
 	}
@@ -93,6 +93,38 @@ func TestRrfFuse(t *testing.T) {
 	got0 := rrfFuse([][]index.Hit{listA, listB}, 0)
 	if len(got0) == 0 || got0[0].URL != "https://a" {
 		t.Errorf("rrfFuse(fuseK=0): expected https://a top, got %+v", got0)
+	}
+}
+
+func TestParseSubQueries(t *testing.T) {
+	// Iter 355: lock down the planner-output parser (iter 243). The chat
+	// client returns a JSON array, sometimes wrapped in markdown fences,
+	// sometimes prefixed by chatty prose. Falls back to [fallback] when
+	// the array can't be located.
+	cases := []struct {
+		name, raw, fallback string
+		want                []string
+	}{
+		{"bare array", `["a","b"]`, "fb", []string{"a", "b"}},
+		{"fenced json", "```json\n[\"a\",\"b\"]\n```", "fb", []string{"a", "b"}},
+		{"fenced plain", "```\n[\"a\"]\n```", "fb", []string{"a"}},
+		{"chatty prefix", `Sure! Here is the plan: ["a","b","c"]`, "fb", []string{"a", "b", "c"}},
+		{"trailing whitespace", `["a"]   `, "fb", []string{"a"}},
+		{"empty raw → fallback", ``, "fb-empty", []string{"fb-empty"}},
+		{"no array → fallback", `not a json array`, "fb-missing", []string{"fb-missing"}},
+		{"malformed array → fallback", `[unclosed`, "fb-bad", []string{"fb-bad"}},
+	}
+	for _, c := range cases {
+		got := parseSubQueries(c.raw, c.fallback)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: want %d items, got %d (%v)", c.name, len(c.want), len(got), got)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: item %d: want %q, got %q", c.name, i, c.want[i], got[i])
+			}
+		}
 	}
 }
 
