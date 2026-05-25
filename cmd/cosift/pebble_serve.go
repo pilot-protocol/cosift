@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -295,11 +296,40 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// Iter 235: sort=date_desc | date_asc | relevance (default). Applies to
+	// the already-collected top-k pool; raise k to widen the pool before
+	// re-sorting if you need more candidates for date ordering.
+	switch r.URL.Query().Get("sort") {
+	case "date_desc":
+		sortHitsByDate(out, false)
+	case "date_asc":
+		sortHitsByDate(out, true)
+	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:     q,
 		Retriever: "bm25",
 		Hits:      out,
 		Took:      time.Since(start).String(),
+	})
+}
+
+// sortHitsByDate orders hits by PublishedAt. Hits with no PublishedAt sink to
+// the end regardless of direction — they have no comparable value. asc=true
+// gives oldest-first; asc=false gives newest-first. Iter 235.
+func sortHitsByDate(hits []searchHit, asc bool) {
+	sort.SliceStable(hits, func(i, j int) bool {
+		ai := hits[i].PublishedAt != nil
+		aj := hits[j].PublishedAt != nil
+		if ai != aj {
+			return ai // hits with dates come before hits without
+		}
+		if !ai {
+			return false
+		}
+		if asc {
+			return hits[i].PublishedAt.Before(*hits[j].PublishedAt)
+		}
+		return hits[i].PublishedAt.After(*hits[j].PublishedAt)
 	})
 }
 
