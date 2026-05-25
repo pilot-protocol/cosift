@@ -207,6 +207,35 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 			t.Errorf("/search?include_text=true: top hit missing text field: %+v", first)
 		}
 	}
+
+	// POST /contents batch (iter 254/255). Up to 100 URLs; each result has
+	// found+title+text or found:false+error.
+	batchBody := strings.NewReader(`{"urls":["https://x/raft","https://x/missing"]}`)
+	cres, err := http.Post(base+"/contents", "application/json", batchBody)
+	if err != nil {
+		t.Fatalf("POST /contents: %v", err)
+	}
+	cbody, _ := io.ReadAll(cres.Body)
+	cres.Body.Close()
+	if cres.StatusCode != 200 {
+		t.Fatalf("POST /contents: HTTP %d: %s", cres.StatusCode, cbody)
+	}
+	var cj map[string]any
+	if err := json.Unmarshal(cbody, &cj); err != nil {
+		t.Fatalf("POST /contents decode: %v", err)
+	}
+	results, _ := cj["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("POST /contents: want 2 results, got %d: %s", len(results), cbody)
+	}
+	r0, _ := results[0].(map[string]any)
+	r1, _ := results[1].(map[string]any)
+	if found0, _ := r0["found"].(bool); !found0 {
+		t.Errorf("POST /contents: first url should be found, got %+v", r0)
+	}
+	if found1, _ := r1["found"].(bool); found1 {
+		t.Errorf("POST /contents: missing URL should report found:false, got %+v", r1)
+	}
 }
 
 // mustGet GETs the URL and JSON-decodes the response. Fails the test on

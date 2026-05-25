@@ -306,4 +306,5 @@ iter 344 — TestPebbleServeEndToEnd asserts warnings array emits on `?sort=newe
 iter 345 — /stats surfaces hyde_cache_size + paraphrase_cache_size (verify iter-282 env overrides landed)
 iter 346 — TestPebbleServeEndToEnd asserts /stats carries bm25_k1 + bm25_b (regression guard on iter 279/280)
 iter 347 — TestPebbleServeEndToEnd asserts /search?include_text=true inlines doc text on hits (iter 237/247 regression guard)
+iter 348 — TestPebbleServeEndToEnd exercises POST /contents batch (iter 254/255 wire shape now under test)
 ```
