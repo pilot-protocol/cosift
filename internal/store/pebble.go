@@ -441,6 +441,37 @@ func (p *PebbleStore) IteratePostings(ctx context.Context, termID int64, fn func
 	return nil
 }
 
+// SumDocLengths scans the 'l' family and returns (total doc_len, count).
+// Used by BM25 to compute avg_doc_len for length normalization. O(N) over
+// indexed docs — fine at the v0 scale; a running-counter optimization in
+// the 'm' family lands when this becomes a hot spot.
+func (p *PebbleStore) SumDocLengths(ctx context.Context) (int64, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famDocLen},
+		UpperBound: []byte{famDocLen + 1},
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	defer it.Close()
+	var total, count int64
+	for valid := it.First(); valid; valid = it.Next() {
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return 0, 0, err
+		}
+		if len(val) != 8 {
+			continue
+		}
+		total += int64(binary.BigEndian.Uint64(val))
+		count++
+	}
+	return total, count, nil
+}
+
 // GetDocLen returns the indexed doc_len (raw token count) for docID, or
 // (0, false) if no postings have been written for this doc.
 func (p *PebbleStore) GetDocLen(ctx context.Context, docID int64) (int64, bool, error) {
