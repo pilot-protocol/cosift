@@ -249,4 +249,5 @@ iter 290 — /search response carries `expand` (uniform across all retrieval-dri
 iter 291 — docs/TUNING.md adds 'Pitfalls / non-obvious behavior' section (9 gotchas documented)
 iter 292 — `warnings[]` field on /search /find_similar /answer /research responses (silent-no-op surface)
 iter 293 — `warnings` event on /answer + /research SSE paths (parity with sync responses)
+iter 294 — `cosift_warnings_emitted_total` on /metrics (alert on rate of misconfigured requests)
 ```

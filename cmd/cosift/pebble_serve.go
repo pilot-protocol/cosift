@@ -227,6 +227,11 @@ type pebbleHTTP struct {
 	chatAttempts atomic.Int64
 	chatFailures atomic.Int64
 
+	// Iter 294: count responses that carried at least one warning (iter 292/293).
+	// Operators alerting on this catch 'a deploy started sending malformed
+	// requests' without having to parse response bodies.
+	warningsEmitted atomic.Int64
+
 	// Iter 267: per-call chat duration sum. /metrics divides this by
 	// chatAttempts to give mean chat latency, separated from the iter-262
 	// per-endpoint duration. Diagnoses 'where did the seconds go' on a
@@ -369,6 +374,9 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_chat_duration_seconds_sum Cumulative wall-clock spent inside chat-client calls.\n")
 	fmt.Fprintf(w, "# TYPE cosift_chat_duration_seconds_sum counter\n")
 	fmt.Fprintf(w, "cosift_chat_duration_seconds_sum %.6f\n", float64(s.chatDurationNanos.Load())/1e9)
+	fmt.Fprintf(w, "# HELP cosift_warnings_emitted_total Responses that carried at least one warning (misconfigured request).\n")
+	fmt.Fprintf(w, "# TYPE cosift_warnings_emitted_total counter\n")
+	fmt.Fprintf(w, "cosift_warnings_emitted_total %d\n", s.warningsEmitted.Load())
 	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)
@@ -1254,6 +1262,9 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	}
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
+	}
+	if len(w) > 0 {
+		s.warningsEmitted.Add(1)
 	}
 	return w
 }
