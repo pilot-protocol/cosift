@@ -479,6 +479,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
+	includeText := r.URL.Query().Get("include_text") == "true"
 	fetchK := k + 1
 	if len(include) > 0 || len(exclude) > 0 || dateFilter {
 		mult := 5
@@ -532,6 +533,9 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			hit.PublishedAt = &t
 		}
 		hit.Author = doc.Author
+		if includeText {
+			hit.Text = doc.Text
+		}
 		out = append(out, hit)
 		if len(out) >= k {
 			break
@@ -561,6 +565,7 @@ type answerSource struct {
 	Excerpt     string     `json:"excerpt,omitempty"`
 	PublishedAt *time.Time `json:"published_at,omitempty"`
 	Author      string     `json:"author,omitempty"`
+	Text        string     `json:"text,omitempty"`
 }
 
 type answerResponse struct {
@@ -604,6 +609,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
+	includeText := r.URL.Query().Get("include_text") == "true"
 	fetchK := k
 	if len(include) > 0 || len(exclude) > 0 || dateFilter {
 		mult := 5
@@ -655,6 +661,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if !doc.PublishedAt.IsZero() {
 			t := doc.PublishedAt
 			src.PublishedAt = &t
+		}
+		if includeText {
+			src.Text = doc.Text
 		}
 		sources = append(sources, src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
@@ -777,6 +786,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	includeText := r.URL.Query().Get("include_text") == "true"
 	// Iter 244: SSE streaming for /research. Same trigger as /answer.
 	// Emits phase-aware events so the UI can render the plan and source list
 	// before the synth call completes — /research often runs 10–30s
@@ -853,6 +863,9 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			t := doc.PublishedAt
 			src.PublishedAt = &t
 		}
+		if includeText {
+			src.Text = doc.Text
+		}
 		sources = append(sources, src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
 	}
@@ -890,6 +903,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
 		return
 	}
+	includeText := r.URL.Query().Get("include_text") == "true"
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -960,6 +974,9 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		if !doc.PublishedAt.IsZero() {
 			t := doc.PublishedAt
 			src.PublishedAt = &t
+		}
+		if includeText {
+			src.Text = doc.Text
 		}
 		sources = append(sources, src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", idx, doc.Title, doc.URL, excerpt)
