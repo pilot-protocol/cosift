@@ -2736,6 +2736,21 @@ func runBench(ctx context.Context, args []string) error {
 		}
 		emit(r)
 	}
+	if *mode == "storage" || *mode == "all" {
+		// Iter 206: SQLite vs Pebble head-to-head. Same N synthetic docs, same
+		// K queries, two backends. Emit one result per backend; consumers diff
+		// the two lines (or use cosift bench-compare on the saved JSON).
+		sq, err := benchBM25SQLite(ctx, *n, *queries)
+		if err != nil {
+			return err
+		}
+		emit(sq)
+		pb, err := benchBM25Pebble(ctx, *n, *queries)
+		if err != nil {
+			return err
+		}
+		emit(pb)
+	}
 	return nil
 }
 
@@ -3002,6 +3017,89 @@ func benchBM25(ctx context.Context, n, queries int) (*benchResult, error) {
 	p50, p95, p99 := percentiles(lats)
 	return &benchResult{
 		Mode: "bm25", N: n, Queries: queries,
+		P50Micros: p50.Microseconds(), P95Micros: p95.Microseconds(), P99Micros: p99.Microseconds(),
+		QPS: float64(queries) / sumDur(lats).Seconds(),
+	}, nil
+}
+
+// benchBM25SQLite is an alias of benchBM25 with an explicit "bm25-sqlite" Mode
+// label so storage-mode output is unambiguous when both backends are emitted.
+// Iter 206.
+func benchBM25SQLite(ctx context.Context, n, queries int) (*benchResult, error) {
+	r, err := benchBM25(ctx, n, queries)
+	if err != nil {
+		return nil, err
+	}
+	r.Mode = "bm25-sqlite"
+	return r, nil
+}
+
+// benchBM25Pebble mirrors benchBM25 but runs against PebbleStore + PebbleBM25.
+// Deterministic vocab + RNG seed so SQLite and Pebble runs produce comparable
+// numbers (same N docs, same K queries, same query distribution).
+// Iter 206 — empirical validation of the path-2 storage rework.
+func benchBM25Pebble(ctx context.Context, n, queries int) (*benchResult, error) {
+	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("cosift-pebble-bench-%d", time.Now().UnixNano()))
+	ps, err := store.OpenPebble(tmpDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ps.Close()
+		_ = os.RemoveAll(tmpDir)
+	}()
+	bm := index.NewPebbleBM25(ps)
+
+	rng := newSeededRand()
+	vocab := []string{"alpha", "beta", "gamma", "delta", "epsilon", "go", "rust", "python",
+		"distributed", "consensus", "raft", "paxos", "quantum", "entanglement", "cell",
+		"mitochondria", "roman", "empire", "pacific", "midway", "tennis", "soccer",
+		"bitcoin", "blockchain", "transformer", "attention", "model", "vector", "index"}
+	for i := 0; i < n; i++ {
+		var sb strings.Builder
+		for j := 0; j < 50; j++ {
+			if j > 0 {
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(vocab[rng.Intn(len(vocab))])
+		}
+		id, err := ps.UpsertDocument(ctx, &store.Document{
+			URL: fmt.Sprintf("https://test/d%d", i), Title: vocab[rng.Intn(len(vocab))],
+			Text: sb.String(), Source: "bench", FetchedAt: time.Now(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := bm.IndexDocument(ctx, id, "", sb.String()); err != nil {
+			return nil, err
+		}
+	}
+
+	qstrs := make([]string, queries)
+	for i := range qstrs {
+		k := 2 + rng.Intn(3)
+		var sb strings.Builder
+		for j := 0; j < k; j++ {
+			if j > 0 {
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(vocab[rng.Intn(len(vocab))])
+		}
+		qstrs[i] = sb.String()
+	}
+
+	lats := make([]time.Duration, queries)
+	for i, q := range qstrs {
+		start := time.Now()
+		_, err := bm.Search(ctx, q, 10)
+		if err != nil {
+			return nil, err
+		}
+		lats[i] = time.Since(start)
+	}
+	p50, p95, p99 := percentiles(lats)
+	return &benchResult{
+		Mode: "bm25-pebble", N: n, Queries: queries,
 		P50Micros: p50.Microseconds(), P95Micros: p95.Microseconds(), P99Micros: p99.Microseconds(),
 		QPS: float64(queries) / sumDur(lats).Seconds(),
 	}, nil
