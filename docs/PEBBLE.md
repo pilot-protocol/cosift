@@ -269,4 +269,5 @@ iter 309 — `warnings` now flags unknown `expand` values (was silently ignored)
 iter 310 — `warnings` flags unknown `sort` values too (silent-treat-as-relevance closed)
 iter 311 — `warnings` flags obviously-bad `k` values (non-integer / ≤0) — silent default-fallback closed
 iter 312 — docs/EXAMPLES.md gains a 'Debug a misconfigured request' recipe using the warnings field
+iter 313 — `warnings` flags URL-shaped entries in include/exclude_domains (silent zero-match closed)
 ```

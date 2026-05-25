@@ -1323,6 +1323,20 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "k="+kVal+" is not a positive integer — using server default")
 		}
 	}
+	// Iter 313: catch URL-shaped values in domain filters. Users sometimes
+	// pass 'https://example.com/foo' when 'example.com' was wanted; the
+	// dot-boundary matcher silently drops every result.
+	for _, key := range []string{"include_domains", "exclude_domains"} {
+		if v := r.URL.Query().Get(key); v != "" {
+			for _, d := range strings.Split(v, ",") {
+				d = strings.TrimSpace(d)
+				if strings.Contains(d, "://") || strings.Contains(d, "/") {
+					w = append(w, key+" entry "+d+" looks like a URL — pass a hostname (e.g., example.com), not a URL")
+					break // one warning per filter list is enough
+				}
+			}
+		}
+	}
 	if len(w) > 0 {
 		s.warningsEmitted.Add(1)
 	}
