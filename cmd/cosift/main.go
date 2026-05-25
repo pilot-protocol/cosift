@@ -354,6 +354,7 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
 	k := fs.Int("k", 10, "max results")
 	jsonOut := fs.Bool("json", false, "emit JSON array instead of human-readable list — for shell pipelines")
+	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -361,13 +362,32 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 		return errors.New("k must be in [1, 100]")
 	}
 
-	s, err := store.Open(cfg.DataDir)
-	if err != nil {
-		return err
+	// Iter 216: -backend flag mirrors iter-213 on crawl + stats. Both
+	// BM25 implementations expose the same Search(ctx, q, k) signature so
+	// the rest of runQuery is backend-agnostic.
+	type searcher interface {
+		Search(ctx context.Context, q string, k int) ([]index.Hit, error)
 	}
-	defer s.Close()
-
-	idx := index.NewBM25(s)
+	var idx searcher
+	switch *backend {
+	case "sqlite", "":
+		s, err := store.Open(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		idx = index.NewBM25(s)
+	case "pebble":
+		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
+		ps, err := store.OpenPebble(pebbleDir)
+		if err != nil {
+			return fmt.Errorf("open pebble: %w", err)
+		}
+		defer ps.Close()
+		idx = index.NewPebbleBM25(ps)
+	default:
+		return fmt.Errorf("query: unknown -backend %q (want: sqlite | pebble)", *backend)
+	}
 	hits, err := idx.Search(ctx, q, *k)
 	if err != nil {
 		return err
