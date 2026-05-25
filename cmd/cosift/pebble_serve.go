@@ -1104,13 +1104,40 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-	// Iter 256/258: ?expand=true HyDE on retrieval; rerank scores original q.
+		// Iter 256/258: ?expand=true|hyde HyDE on retrieval; rerank still scores
+	// original q. Iter 273: ?expand=paraphrase mirrors /search — N chat
+	// paraphrases → BM25 each → RRF fuse. Synth then sees the fused top-fetchK.
+	expandMode := r.URL.Query().Get("expand")
 	effectiveQuery := q
-	if r.URL.Query().Get("expand") == "true" {
+	var hits []index.Hit
+	var err error
+	switch expandMode {
+	case "paraphrase":
+		paras := s.paraphraseQuery(r.Context(), q, 3)
+		if len(paras) == 0 {
+			hits, err = s.idx.Search(r.Context(), q, fetchK)
+		} else {
+			queries := append([]string{q}, paras...)
+			lists := make([][]index.Hit, 0, len(queries))
+			for _, qq := range queries {
+				h, lerr := s.idx.Search(r.Context(), qq, fetchK)
+				if lerr != nil {
+					continue
+				}
+				lists = append(lists, h)
+			}
+			hits = rrfFuse(lists, 60)
+			if len(hits) > fetchK {
+				hits = hits[:fetchK]
+			}
+			effectiveQuery = q + " | " + strings.Join(paras, " | ")
+		}
+	case "true", "hyde":
 		effectiveQuery = s.expandQuery(r.Context(), q)
+		hits, err = s.idx.Search(r.Context(), effectiveQuery, fetchK)
+	default:
+		hits, err = s.idx.Search(r.Context(), q, fetchK)
 	}
-
-	hits, err := s.idx.Search(r.Context(), effectiveQuery, fetchK)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
