@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cosift — self-hostable search + research</title>
+<meta name="description" content="Crawler, BM25 + HNSW dense index, hybrid retrieval, MMR diversification, time-decay, LLM synth with cited sources. Run it on your own box.">
+<meta name="theme-color" content="#0b0b0a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+
+<script>
+  (function () {
+    try {
+      var stored = localStorage.getItem('cosift-theme');
+      var prefers = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      var theme = stored || prefers;
+      if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    } catch (e) {}
+  })();
+</script>
+
+<style>
+:root {
+  --bg:        #0b0b0a;
+  --bg-2:      #111110;
+  --bg-deep:   #070706;
+  --ink:       #eceae3;
+  --ink-dim:   #8a8a83;
+  --ink-faint: #3a3a37;
+  --line:      #1d1d1b;
+  --line-2:    #26261f;
+  --accent:        oklch(0.88 0.22 125);
+  --accent-ink:    #0b0b0a;
+  --accent-dim:    oklch(0.88 0.22 125 / .18);
+  --accent-glow:   rgba(200, 255, 0, 0.12);
+  --term-bg:       #060605;
+
+  --serif: 'Instrument Serif', 'Times New Roman', serif;
+  --sans:  'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --mono:  'JetBrains Mono', ui-monospace, Menlo, monospace;
+
+  --wrap-max: 1280px;
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  --bg:        #fafaf7;
+  --bg-2:      #f0efea;
+  --bg-deep:   #e9e8e2;
+  --ink:       #0b0b0a;
+  --ink-dim:   #5a5a54;
+  --ink-faint: #c7c6be;
+  --line:      #e6e5df;
+  --line-2:    #d8d7d0;
+  --accent:        oklch(0.72 0.19 125);
+  --accent-ink:    #0b0b0a;
+  --accent-dim:    oklch(0.72 0.19 125 / .14);
+  --accent-glow:   rgba(130, 170, 20, 0.12);
+  --term-bg:       #0b0b0a;
+  color-scheme: light;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { overflow-x: hidden; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+}
+@media (max-width: 640px) { body { font-size: 15px; } }
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--accent); }
+::selection { background: var(--accent); color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code, pre { font-family: var(--mono); font-size: 0.88em; }
+
+.wrap { max-width: var(--wrap-max); margin: 0 auto; padding: 0 48px; position: relative; }
+@media (max-width: 900px) { .wrap { padding: 0 28px; } }
+@media (max-width: 520px) { .wrap { padding: 0 20px; } }
+
+/* Nav */
+.nav-top {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.nav-row { display: flex; align-items: center; justify-content: space-between; height: 62px; gap: 24px; }
+.brand { display: flex; align-items: baseline; gap: 14px; font-family: var(--serif); font-size: 22px; font-style: italic; }
+.brand small { font-family: var(--sans); font-style: normal; font-size: 11px; color: var(--ink-dim); letter-spacing: 0.06em; text-transform: uppercase; margin-left: 6px; }
+.nav-links { display: flex; gap: 28px; }
+.nav-link { font-size: 14px; color: var(--ink-dim); }
+.nav-link:hover { color: var(--ink); }
+@media (max-width: 640px) { .nav-links { display: none; } }
+.theme-toggle { background: transparent; border: 1px solid var(--line); width: 36px; height: 36px; border-radius: 8px; color: var(--ink-dim); display: grid; place-items: center; cursor: pointer; }
+.theme-toggle:hover { color: var(--ink); border-color: var(--line-2); }
+.theme-toggle svg { width: 16px; height: 16px; }
+.icon-sun { display: none; }
+[data-theme="light"] .icon-sun { display: block; }
+[data-theme="light"] .icon-moon { display: none; }
+
+/* Hero */
+.hero { padding: 96px 0 64px; position: relative; }
+.hero::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 60% 50% at 50% 0%, var(--accent-glow), transparent 70%);
+  pointer-events: none;
+}
+.hero-grid { position: relative; }
+.eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 18px; }
+.display { font-family: var(--serif); font-weight: 400; font-size: clamp(48px, 7vw, 96px); line-height: 0.97; letter-spacing: -0.025em; margin-bottom: 28px; }
+.display em { font-style: italic; }
+.display .accent { color: var(--accent); }
+.hero-sub { font-size: clamp(17px, 1.4vw, 21px); color: var(--ink-dim); max-width: 720px; margin-bottom: 36px; }
+.hero-sub b { color: var(--ink); font-weight: 500; }
+.hero-sub code { background: var(--bg-2); border: 1px solid var(--line); padding: 1px 7px; border-radius: 5px; font-size: 0.85em; }
+
+.stats-row { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; max-width: 720px; }
+.stats-row .stat { flex: 1; padding: 24px 28px; border-right: 1px solid var(--line); }
+.stats-row .stat:last-child { border-right: 0; }
+.stats-row .stat-num { font-family: var(--serif); font-size: 38px; line-height: 1; margin-bottom: 6px; }
+.stats-row .stat-num .accent { color: var(--accent); }
+.stats-row .stat-label { font-size: 12px; color: var(--ink-dim); letter-spacing: 0.04em; text-transform: uppercase; }
+
+.cta-row { display: flex; gap: 12px; margin-top: 40px; flex-wrap: wrap; }
+.btn { font-family: var(--sans); font-size: 15px; padding: 12px 22px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink); cursor: pointer; transition: 0.12s; }
+.btn:hover { border-color: var(--line-2); color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.primary:hover { color: var(--accent-ink); filter: brightness(1.05); }
+.btn .arr { display: inline-block; transition: transform 0.18s; }
+.btn:hover .arr { transform: translateX(3px); }
+
+/* Sections */
+.section { padding: 84px 0; border-top: 1px solid var(--line); }
+.section-head { margin-bottom: 48px; }
+.section h2 { font-family: var(--serif); font-weight: 400; font-size: clamp(34px, 4vw, 58px); line-height: 1.02; letter-spacing: -0.02em; }
+.section h2 em { font-style: italic; }
+.section h2 .accent { color: var(--accent); }
+
+.knob-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.knob { border: 1px solid var(--line); border-radius: 12px; padding: 22px 22px 24px; background: var(--bg-2); }
+.knob h3 { font-family: var(--mono); font-size: 13px; color: var(--accent); margin-bottom: 10px; letter-spacing: 0.04em; }
+.knob p { font-size: 14px; color: var(--ink-dim); line-height: 1.55; }
+.knob code { background: var(--bg-deep); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+.term { background: var(--term-bg); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; font-family: var(--mono); font-size: 13px; line-height: 1.7; overflow-x: auto; color: var(--ink); }
+.term .prompt { color: var(--ink-dim); user-select: none; }
+.term .out { color: var(--ink-dim); }
+.term .acc { color: var(--accent); }
+
+.health-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.health-card { border: 1px solid var(--line); border-radius: 12px; padding: 20px; background: var(--bg-2); }
+.health-card .label { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.health-card .value { font-family: var(--serif); font-size: 28px; line-height: 1; }
+.health-card .value.acc { color: var(--accent); }
+.health-card .sub { font-size: 12px; color: var(--ink-dim); margin-top: 6px; }
+.pill { display: inline-block; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-right: 6px; margin-top: 6px; }
+.pill.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+
+footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--ink-dim); font-size: 14px; }
+.footer-row { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.footer-brand { font-family: var(--serif); font-style: italic; color: var(--ink); font-size: 17px; }
+.footer-links a { color: var(--ink-dim); margin-left: 18px; }
+.footer-links a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="nav-top">
+  <div class="wrap">
+    <div class="nav-row">
+      <a href="/" class="brand">cosift<small>self-hostable search</small></a>
+      <div class="nav-links">
+        <a class="nav-link" href="/openapi.json">OpenAPI</a>
+        <a class="nav-link" href="/stats">Stats</a>
+        <a class="nav-link" href="/metrics">Metrics</a>
+        <a class="nav-link" href="https://github.com/pilot-protocol/cosift">GitHub</a>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" type="button">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="eyebrow">Self-hostable · frontier-grade IR · zero hosted-API deps</div>
+    <h1 class="display">
+      Search,<br/>
+      <em>research</em>,<br/>
+      <span class="accent">on your own box.</span>
+    </h1>
+    <p class="hero-sub">
+      <b>Crawl</b> the web. <b>Index</b> it (BM25 + HNSW dense). <b>Search</b> with hybrid
+      retrieval, MMR diversification, time-decay. <b>Answer</b> and <b>research</b> with
+      cited sources via any OpenAI-compatible LLM. Everything in one Go binary —
+      <code>cosift</code>.
+    </p>
+
+    <div class="stats-row">
+      <div class="stat"><div class="stat-num"><span class="accent" id="stat-docs">—</span></div><div class="stat-label">Indexed docs</div></div>
+      <div class="stat"><div class="stat-num" id="stat-vectors">—</div><div class="stat-label">Vector passages</div></div>
+      <div class="stat"><div class="stat-num" id="stat-retrievers">—</div><div class="stat-label">Retrievers live</div></div>
+    </div>
+
+    <div class="cta-row">
+      <a class="btn primary" href="#try">Try it <span class="arr">→</span></a>
+      <a class="btn" href="/openapi.json">OpenAPI spec</a>
+      <a class="btn" href="https://github.com/pilot-protocol/cosift">Source</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="pipeline">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">The pipeline</div>
+      <h2>Five orthogonal <em>knobs</em>. <span class="accent">One label.</span></h2>
+    </div>
+    <div class="knob-grid">
+      <div class="knob"><h3>retriever</h3><p><code>bm25</code> (lexical) · <code>dense</code> (HNSW cosine over per-passage embeddings) · <code>hybrid</code> (RRF-fuse the two)</p></div>
+      <div class="knob"><h3>expand</h3><p><code>hyde</code> appends an LLM-hypothesized passage to the query · <code>paraphrase</code> fans out N rewrites and RRF-fuses</p></div>
+      <div class="knob"><h3>rerank</h3><p>Cross-encoder reorder of the candidate pool. HTTP (Cohere / Voyage / Jina / TEI) or LLM listwise.</p></div>
+      <div class="knob"><h3>mmr</h3><p>Maximal Marginal Relevance — λ ∈ [0,1] trades relevance against diversity from already-selected sources.</p></div>
+      <div class="knob"><h3>decay</h3><p>Exponential time-decay half-life in days — <code>exp(-ln 2 · age / H)</code>. Hits without a publish date are unchanged.</p></div>
+    </div>
+    <p style="margin-top: 36px; color: var(--ink-dim); font-size: 14px;">
+      The retrieval label is the composed pipeline, e.g.
+      <code>bm25+dense:rrf+rerank:cohere+mmr:0.70+decay:30d</code>. Each knob composes
+      on every retrieval/synth endpoint (<code>/search</code>, <code>/answer</code>,
+      <code>/research</code>, <code>/find_similar</code>).
+    </p>
+  </div>
+</section>
+
+<section class="section" id="health">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">This server, right now</div>
+      <h2>Live <em>state.</em></h2>
+    </div>
+    <div class="health-row">
+      <div class="health-card"><div class="label">Backend</div><div class="value" id="hc-backend">—</div></div>
+      <div class="health-card"><div class="label">Uptime</div><div class="value" id="hc-uptime">—</div></div>
+      <div class="health-card"><div class="label">BM25 k1 / b</div><div class="value" id="hc-bm25">—</div></div>
+      <div class="health-card"><div class="label">Avg doc length</div><div class="value" id="hc-avglen">—</div></div>
+      <div class="health-card"><div class="label">HNSW</div><div class="value acc" id="hc-hnsw">—</div><div class="sub" id="hc-hnsw-detail"></div></div>
+      <div class="health-card"><div class="label">Embedder · Chat</div><div class="value" style="font-size:18px" id="hc-llm">—</div></div>
+      <div class="health-card" style="grid-column: 1 / -1;">
+        <div class="label">Retrievers available</div>
+        <div id="hc-retrievers" style="margin-top:4px;"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="try">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Curl recipes</div>
+      <h2>Try the <em>frontier</em> pipeline.</h2>
+    </div>
+    <div class="term">
+<span class="out"># Hybrid + diversification + time-decay</span>
+<span class="prompt">$</span> curl '<span id="cmd-host">/</span>search?q=raft+consensus&amp;retriever=<span class="acc">hybrid</span>&amp;mmr=<span class="acc">0.7</span>&amp;decay=<span class="acc">30</span>'
+
+<span class="out"># Cited synth with R1-style reasoning, stripped before delivery</span>
+<span class="prompt">$</span> curl '<span id="cmd-host2">/</span>answer?q=what+is+raft+consensus&amp;retriever=<span class="acc">hybrid</span>&amp;mmr=<span class="acc">0.6</span>'
+
+<span class="out"># Multi-step research, SSE streamed</span>
+<span class="prompt">$</span> curl -N -H 'Accept: text/event-stream' \
+       '<span id="cmd-host3">/</span>research?q=compare+raft+and+paxos&amp;retriever=<span class="acc">hybrid</span>&amp;rerank=<span class="acc">true</span>&amp;stream=<span class="acc">true</span>'
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap footer-row">
+    <div>
+      <div class="footer-brand">cosift</div>
+      <div>Self-hostable EXA-shape search. Pure Go. Zero hosted-API deps.</div>
+    </div>
+    <div class="footer-links">
+      <a href="/openapi.json">OpenAPI</a>
+      <a href="/stats">/stats</a>
+      <a href="/metrics">/metrics</a>
+      <a href="https://github.com/pilot-protocol/cosift">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // Theme toggle
+  document.getElementById('theme-toggle').addEventListener('click', function () {
+    var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    if (cur === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('cosift-theme', cur); } catch (e) {}
+  });
+
+  // Live stats
+  function nf(n) { return Number(n).toLocaleString(); }
+  function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
+  function setHTML(id, v) { var el = document.getElementById(id); if (el) el.innerHTML = v; }
+
+  function load() {
+    fetch('/stats').then(function (r) { return r.json(); }).then(function (d) {
+      setText('stat-docs', nf(d.documents || d.indexed_docs || 0));
+      setText('stat-vectors', d.vector_nodes ? nf(d.vector_nodes) : '0');
+      var retr = d.retrievers || [];
+      setText('stat-retrievers', retr.length);
+      setText('hc-backend', d.backend || '—');
+      setText('hc-uptime', d.uptime || '—');
+      setText('hc-bm25', (d.bm25_k1 ?? '—') + ' / ' + (d.bm25_b ?? '—'));
+      setText('hc-avglen', d.avg_doc_len ? Math.round(d.avg_doc_len) + ' chars' : '—');
+      setText('hc-hnsw', d.hnsw_loaded ? 'loaded' : 'absent');
+      setText('hc-hnsw-detail', d.vector_nodes ? nf(d.vector_nodes) + ' nodes · dim=' + d.vector_dim : '');
+      var llm = [];
+      if (d.chat_model) llm.push('chat: ' + d.chat_model);
+      llm.push('rerank: ' + (d.reranker || 'none'));
+      setText('hc-llm', llm.join(' · '));
+      var pills = retr.map(function (r) { return '<span class="pill on">' + r + '</span>'; }).join('');
+      setHTML('hc-retrievers', pills || '<span class="pill">none</span>');
+    }).catch(function () {});
+  }
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>

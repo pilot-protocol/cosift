@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -224,6 +225,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: rate limit active (rpm=%.0f burst=%.0f whitelist=%v)", srv.rl.rpm, srv.rl.burst, srv.rl.whitelistList())
 	}
 	wrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(h)) }
+	// Iter 396: landing page at / and OpenAPI 3.1 spec at /openapi.json.
+	// Both embedded into the binary at build time — operators get a single
+	// self-contained executable, no separate static-asset deployment.
+	mux.HandleFunc("GET /", wrap(srv.handleLanding))
+	mux.HandleFunc("GET /openapi.json", wrap(srv.handleOpenAPI))
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
@@ -489,6 +495,31 @@ func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 		h(w, r)
 		m.sumNanos.Add(time.Since(start).Nanoseconds())
 	}
+}
+
+//go:embed assets/landing.html
+var landingHTML []byte
+
+//go:embed assets/openapi.json
+var openapiJSON []byte
+
+// handleLanding serves the iter-396 self-host dashboard. Only matches exact
+// "/" — Go 1.22's ServeMux routes sub-paths to the longest match, so this
+// won't accidentally swallow /search etc.
+func (s *pebbleHTTP) handleLanding(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	w.Write(landingHTML)
+}
+
+func (s *pebbleHTTP) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Write(openapiJSON)
 }
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {

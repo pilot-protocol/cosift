@@ -1,0 +1,316 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "cosift pebble-serve",
+    "description": "Self-hostable search + research API. Composable retrieval matrix: retriever (bm25/dense/hybrid) × expand (hyde/paraphrase) × rerank × mmr × decay. See docs/API.md for the human reference, docs/TUNING.md for when to flip each knob, docs/EXAMPLES.md for curl recipes.",
+    "version": "0.1.0",
+    "license": {"name": "MIT"}
+  },
+  "servers": [
+    {"url": "http://127.0.0.1:7777", "description": "Default local bind"}
+  ],
+  "tags": [
+    {"name": "search", "description": "BM25 / dense / hybrid retrieval"},
+    {"name": "synth", "description": "LLM-synthesized answer + cited sources"},
+    {"name": "ops", "description": "Operational endpoints (health, stats, metrics, verify)"}
+  ],
+  "components": {
+    "parameters": {
+      "q": {"name": "q", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Query text"},
+      "k": {"name": "k", "in": "query", "schema": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100}, "description": "Top-k results"},
+      "retriever": {"name": "retriever", "in": "query", "schema": {"type": "string", "enum": ["bm25", "dense", "hybrid"]}, "description": "Retrieval mode. dense/hybrid require HNSW + embedder; falls through to bm25 with a warning otherwise."},
+      "expand": {"name": "expand", "in": "query", "schema": {"type": "string", "enum": ["hyde", "paraphrase", "true"]}, "description": "Query expansion strategy. Requires a chat client; no-op otherwise."},
+      "rerank": {"name": "rerank", "in": "query", "schema": {"type": "boolean"}, "description": "Reorder candidate pool with the configured reranker."},
+      "mmr": {"name": "mmr", "in": "query", "schema": {"type": "number", "minimum": 0, "maximum": 1}, "description": "MMR diversification lambda. λ=1 → pure relevance; λ=0 → pure diversity. Requires HNSW + embedder."},
+      "decay": {"name": "decay", "in": "query", "schema": {"type": "number", "minimum": 0.01, "maximum": 36500}, "description": "Time-decay half-life in days. Hit scores multiplied by exp(-ln(2)·age/decay)."},
+      "include_domains": {"name": "include_domains", "in": "query", "schema": {"type": "string"}, "description": "CSV allowlist (dot-boundary suffix match)"},
+      "exclude_domains": {"name": "exclude_domains", "in": "query", "schema": {"type": "string"}, "description": "CSV denylist (dot-boundary suffix match)"},
+      "since": {"name": "since", "in": "query", "schema": {"type": "string", "format": "date"}, "description": "Only docs with PublishedAt >= since"},
+      "until": {"name": "until", "in": "query", "schema": {"type": "string", "format": "date"}, "description": "Only docs with PublishedAt <= until"},
+      "include_text": {"name": "include_text", "in": "query", "schema": {"type": "boolean"}, "description": "Inline full doc.Text on each hit/source"},
+      "stream": {"name": "stream", "in": "query", "schema": {"type": "boolean"}, "description": "SSE streaming on /answer and /research"}
+    },
+    "schemas": {
+      "Hit": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "format": "uri"},
+          "title": {"type": "string"},
+          "score": {"type": "number"},
+          "excerpt": {"type": "string"},
+          "published_at": {"type": "string", "format": "date-time"},
+          "author": {"type": "string"},
+          "text": {"type": "string", "description": "Only present when include_text=true"}
+        },
+        "required": ["url", "title", "score"]
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "effective_query": {"type": "string", "description": "Post-expansion query when expand fired"},
+          "expand": {"type": "string"},
+          "retriever": {"type": "string", "description": "Pipeline label, e.g. 'bm25+dense:rrf+rerank:cohere+mmr:0.70+decay:30d'"},
+          "hits": {"type": "array", "items": {"$ref": "#/components/schemas/Hit"}},
+          "total_candidates": {"type": "integer"},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "took": {"type": "string", "description": "Wall-clock duration, Go duration format"}
+        },
+        "required": ["query", "retriever", "hits", "took"]
+      },
+      "AnswerSource": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer", "description": "1-based citation ID matching [N] tokens in the answer"},
+          "url": {"type": "string", "format": "uri"},
+          "title": {"type": "string"},
+          "excerpt": {"type": "string"},
+          "published_at": {"type": "string", "format": "date-time"},
+          "author": {"type": "string"},
+          "text": {"type": "string"}
+        },
+        "required": ["id", "url", "title"]
+      },
+      "AnswerResponse": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "effective_query": {"type": "string"},
+          "expand": {"type": "string"},
+          "retriever": {"type": "string"},
+          "answer": {"type": "string"},
+          "sources": {"type": "array", "items": {"$ref": "#/components/schemas/AnswerSource"}},
+          "model": {"type": "string"},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "total_candidates": {"type": "integer"},
+          "took": {"type": "string"}
+        },
+        "required": ["query", "answer", "sources", "model", "took"]
+      },
+      "ResearchResponse": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "plan": {"type": "array", "items": {"type": "string"}, "description": "Sub-queries the planner emitted"},
+          "expand": {"type": "string"},
+          "retriever": {"type": "string"},
+          "answer": {"type": "string"},
+          "sources": {"type": "array", "items": {"$ref": "#/components/schemas/AnswerSource"}},
+          "model": {"type": "string"},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "total_candidates": {"type": "integer"},
+          "took": {"type": "string"}
+        },
+        "required": ["query", "plan", "answer", "sources", "model", "took"]
+      },
+      "StatsResponse": {
+        "type": "object",
+        "properties": {
+          "documents": {"type": "integer"},
+          "indexed_docs": {"type": "integer"},
+          "sum_doc_len": {"type": "integer"},
+          "avg_doc_len": {"type": "number"},
+          "uptime": {"type": "string"},
+          "backend": {"type": "string"},
+          "bm25_k1": {"type": "number"},
+          "bm25_b": {"type": "number"},
+          "reranker": {"type": "string"},
+          "chat_model": {"type": "string"},
+          "hnsw_loaded": {"type": "boolean"},
+          "vector_nodes": {"type": "integer"},
+          "vector_dim": {"type": "integer"},
+          "retrievers": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "RFC 7807 problem detail",
+        "properties": {
+          "type": {"type": "string"},
+          "title": {"type": "string"},
+          "status": {"type": "integer"},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "responses": {
+      "TooManyRequests": {
+        "description": "Rate limit exceeded (per-IP token bucket; whitelist via COSIFT_RATELIMIT_WHITELIST)",
+        "headers": {"Retry-After": {"schema": {"type": "integer"}}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Liveness probe",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"type": "string"}}}}}}}
+      }
+    },
+    "/stats": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Shape of the index (O(1) counters + retriever availability)",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StatsResponse"}}}}}
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Prometheus exposition (cosift_indexed_docs, cosift_vector_nodes, request counts/durations, hyde/paraphrase cache, rerank/chat attempts/failures)",
+        "responses": {"200": {"description": "OK", "content": {"text/plain": {}}}}
+      }
+    },
+    "/verify": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Counter-drift check vs authoritative 'l' family scan",
+        "responses": {
+          "200": {"description": "Counters agree"},
+          "503": {"description": "Drift detected"}
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "This document",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {}}}}
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": ["search"],
+        "summary": "BM25 / dense / hybrid search",
+        "parameters": [
+          {"$ref": "#/components/parameters/q"},
+          {"$ref": "#/components/parameters/k"},
+          {"$ref": "#/components/parameters/retriever"},
+          {"$ref": "#/components/parameters/expand"},
+          {"$ref": "#/components/parameters/rerank"},
+          {"$ref": "#/components/parameters/mmr"},
+          {"$ref": "#/components/parameters/decay"},
+          {"$ref": "#/components/parameters/include_domains"},
+          {"$ref": "#/components/parameters/exclude_domains"},
+          {"$ref": "#/components/parameters/since"},
+          {"$ref": "#/components/parameters/until"},
+          {"$ref": "#/components/parameters/include_text"},
+          {"name": "enrich", "in": "query", "schema": {"type": "boolean", "default": true}, "description": "Per-hit Excerpt + PublishedAt + Author (extra Pebble Get per hit)"},
+          {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["relevance", "date_desc", "date_asc"]}}
+        ],
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}},
+          "429": {"$ref": "#/components/responses/TooManyRequests"}
+        }
+      },
+      "post": {
+        "tags": ["search"],
+        "summary": "Same as GET but with JSON body (for long domain lists / quoted phrases)",
+        "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}}}
+      }
+    },
+    "/find_similar": {
+      "get": {
+        "tags": ["search"],
+        "summary": "EXA-shape neighbors: bm25-mlt / dense / hybrid (RRF-fused)",
+        "parameters": [
+          {"name": "url", "in": "query", "schema": {"type": "string"}, "description": "Source URL — either url or text required"},
+          {"name": "text", "in": "query", "schema": {"type": "string"}, "description": "Arbitrary source text — either url or text required"},
+          {"name": "title", "in": "query", "schema": {"type": "string"}, "description": "Optional ×3 title boost when using text mode"},
+          {"$ref": "#/components/parameters/k"},
+          {"$ref": "#/components/parameters/retriever"},
+          {"$ref": "#/components/parameters/rerank"},
+          {"$ref": "#/components/parameters/mmr"},
+          {"$ref": "#/components/parameters/include_domains"},
+          {"$ref": "#/components/parameters/exclude_domains"},
+          {"$ref": "#/components/parameters/since"},
+          {"$ref": "#/components/parameters/until"},
+          {"$ref": "#/components/parameters/include_text"},
+          {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Extra terms appended to the auto-derived MLT query"}
+        ],
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}}}
+      },
+      "post": {"tags": ["search"], "summary": "JSON body form", "responses": {"200": {"description": "OK"}}}
+    },
+    "/contents": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Fetch indexed doc by URL",
+        "parameters": [{"name": "url", "in": "query", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "OK"}, "404": {"description": "Not indexed"}}
+      },
+      "post": {
+        "tags": ["search"],
+        "summary": "Batch fetch (up to 100 URLs)",
+        "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"urls": {"type": "array", "items": {"type": "string"}}}}}}},
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/answer": {
+      "get": {
+        "tags": ["synth"],
+        "summary": "Single-question synth with cited sources",
+        "parameters": [
+          {"$ref": "#/components/parameters/q"},
+          {"$ref": "#/components/parameters/k"},
+          {"$ref": "#/components/parameters/retriever"},
+          {"$ref": "#/components/parameters/expand"},
+          {"$ref": "#/components/parameters/rerank"},
+          {"$ref": "#/components/parameters/mmr"},
+          {"$ref": "#/components/parameters/decay"},
+          {"$ref": "#/components/parameters/include_domains"},
+          {"$ref": "#/components/parameters/exclude_domains"},
+          {"$ref": "#/components/parameters/since"},
+          {"$ref": "#/components/parameters/until"},
+          {"$ref": "#/components/parameters/include_text"},
+          {"$ref": "#/components/parameters/stream"}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK (JSON when ?stream=false, text/event-stream when true)",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/AnswerResponse"}},
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: warnings, sources, answer_chunk, done, error"}}
+            }
+          },
+          "501": {"description": "Chat model not configured"}
+        }
+      },
+      "post": {"tags": ["synth"], "summary": "JSON body form", "responses": {"200": {"description": "OK"}}}
+    },
+    "/research": {
+      "get": {
+        "tags": ["synth"],
+        "summary": "Multi-step research: planner → per-sub-query retrieval → synth",
+        "parameters": [
+          {"$ref": "#/components/parameters/q"},
+          {"$ref": "#/components/parameters/k"},
+          {"$ref": "#/components/parameters/retriever"},
+          {"$ref": "#/components/parameters/expand"},
+          {"$ref": "#/components/parameters/rerank"},
+          {"$ref": "#/components/parameters/mmr"},
+          {"$ref": "#/components/parameters/decay"},
+          {"$ref": "#/components/parameters/include_domains"},
+          {"$ref": "#/components/parameters/exclude_domains"},
+          {"$ref": "#/components/parameters/since"},
+          {"$ref": "#/components/parameters/until"},
+          {"$ref": "#/components/parameters/include_text"},
+          {"$ref": "#/components/parameters/stream"}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/ResearchResponse"}},
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: warnings, plan, sources, answer_chunk, done, error"}}
+            }
+          }
+        }
+      },
+      "post": {"tags": ["synth"], "summary": "JSON body form", "responses": {"200": {"description": "OK"}}}
+    }
+  }
+}
