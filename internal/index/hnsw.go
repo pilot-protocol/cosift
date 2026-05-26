@@ -453,10 +453,22 @@ func (h *HNSW) AddPassageBatch(items []PassageInput) {
 	if len(prepared) == 0 {
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, it := range prepared {
-		h.addPassageLocked(it.URL, it.Title, it.Offset, it.Length, it.Vec)
+	// Iter 444: cap each lock acquisition at subBatch items. Without this
+	// a 50-chunk doc holds the write lock for ~250 ms (5 ms × 50 inserts
+	// at 1M-node scale) and search readers stall behind it. Splitting at
+	// 8 keeps the per-acquisition hold under ~50 ms while still saving
+	// most of the lock-overhead win.
+	const subBatch = 8
+	for i := 0; i < len(prepared); i += subBatch {
+		end := i + subBatch
+		if end > len(prepared) {
+			end = len(prepared)
+		}
+		h.mu.Lock()
+		for _, it := range prepared[i:end] {
+			h.addPassageLocked(it.URL, it.Title, it.Offset, it.Length, it.Vec)
+		}
+		h.mu.Unlock()
 	}
 }
 

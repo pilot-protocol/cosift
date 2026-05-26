@@ -574,26 +574,22 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				// or supply their own HNSW bridge.
 				// Iter 443: prefer the optional Batch interface so the underlying
 				// writer can take its lock once for all chunks of this doc.
+				// Iter 444: per-chunk writes. Batched writes (iter 443) held
+				// the HNSW write lock for ~40 ms per acquisition (vs 5 ms),
+				// blocking /search readers behind each batch. Per-chunk
+				// writes give readers more chances to slip in. Same total
+				// lock time, smaller bursts.
 				if c.passageWriter != nil {
-					ps := make([]*store.Passage, len(chunks))
 					for i, ch := range chunks {
-						ps[i] = &store.Passage{
+						p := &store.Passage{
 							DocID:     id,
 							Offset:    ch.Offset,
 							Length:    ch.Length,
 							Model:     c.embedder.Model(),
 							Embedding: vecs[i],
 						}
-					}
-					if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
-						if upErr := bw.UpsertPassageBatch(ctx, ps); upErr != nil {
-							log.Printf("save passages %s: %v", item.URL, upErr)
-						}
-					} else {
-						for i, p := range ps {
-							if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
-								log.Printf("save passage %s offset=%d: %v", item.URL, chunks[i].Offset, upErr)
-							}
+						if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
+							log.Printf("save passage %s offset=%d: %v", item.URL, ch.Offset, upErr)
 						}
 					}
 				}
