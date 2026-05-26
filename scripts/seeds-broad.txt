@@ -1,0 +1,137 @@
+# Broad-coverage seed list for cosift. Pick + choose for your own corpus.
+# Format: one URL per line. Blank lines and '#' comments ignored.
+#
+# Crawl depth from cosift.json (max_depth=3 is a good default) controls how
+# far BFS goes from each seed. A 100-seed list at depth=3 typically reaches
+# 50k-500k URLs depending on the site graph.
+
+# ===== Wikipedia category portals (broad coverage) =====
+https://en.wikipedia.org/wiki/Portal:Contents
+https://en.wikipedia.org/wiki/Portal:Computer_science
+https://en.wikipedia.org/wiki/Portal:Mathematics
+https://en.wikipedia.org/wiki/Portal:Physics
+https://en.wikipedia.org/wiki/Portal:Chemistry
+https://en.wikipedia.org/wiki/Portal:Biology
+https://en.wikipedia.org/wiki/Portal:Engineering
+https://en.wikipedia.org/wiki/Portal:Economics
+https://en.wikipedia.org/wiki/Portal:Philosophy
+https://en.wikipedia.org/wiki/Portal:Linguistics
+https://en.wikipedia.org/wiki/Portal:Geography
+https://en.wikipedia.org/wiki/Portal:History_of_science
+https://en.wikipedia.org/wiki/Portal:Statistics
+https://en.wikipedia.org/wiki/Portal:Astronomy
+https://en.wikipedia.org/wiki/Portal:Internet
+https://en.wikipedia.org/wiki/Portal:Cryptography
+https://en.wikipedia.org/wiki/Portal:Software
+
+# ===== IR / search / ML / data structures =====
+https://en.wikipedia.org/wiki/Information_retrieval
+https://en.wikipedia.org/wiki/Web_search_engine
+https://en.wikipedia.org/wiki/Web_crawler
+https://en.wikipedia.org/wiki/Okapi_BM25
+https://en.wikipedia.org/wiki/Tf%E2%80%93idf
+https://en.wikipedia.org/wiki/Inverted_index
+https://en.wikipedia.org/wiki/Approximate_nearest_neighbor_search
+https://en.wikipedia.org/wiki/Hierarchical_Navigable_Small_World
+https://en.wikipedia.org/wiki/Reciprocal_rank_fusion
+https://en.wikipedia.org/wiki/Learning_to_rank
+https://en.wikipedia.org/wiki/Language_model
+https://en.wikipedia.org/wiki/Word_embedding
+https://en.wikipedia.org/wiki/Sentence_embedding
+https://en.wikipedia.org/wiki/Retrieval-augmented_generation
+https://en.wikipedia.org/wiki/Vector_space_model
+https://en.wikipedia.org/wiki/Latent_semantic_analysis
+https://en.wikipedia.org/wiki/Probabilistic_latent_semantic_analysis
+https://en.wikipedia.org/wiki/Convolutional_neural_network
+https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)
+https://en.wikipedia.org/wiki/Large_language_model
+https://en.wikipedia.org/wiki/Attention_(machine_learning)
+
+# ===== Programming language official docs =====
+https://docs.python.org/3/tutorial/
+https://docs.python.org/3/library/
+https://docs.python.org/3/reference/
+https://go.dev/doc/
+https://go.dev/ref/spec
+https://go.dev/doc/effective_go
+https://doc.rust-lang.org/book/
+https://doc.rust-lang.org/std/
+https://doc.rust-lang.org/reference/
+https://typescript-eslint.io/getting-started
+https://www.typescriptlang.org/docs/
+https://nodejs.org/docs/latest/api/
+https://kotlinlang.org/docs/home.html
+https://docs.swift.org/swift-book/documentation/the-swift-programming-language/
+https://elixir-lang.org/getting-started/introduction.html
+https://docs.scala-lang.org/
+https://clojure.org/reference/documentation
+https://ocaml.org/docs
+
+# ===== Web platform / browsers =====
+https://developer.mozilla.org/en-US/docs/Web
+https://html.spec.whatwg.org/
+https://www.w3.org/TR/
+
+# ===== Cloud / infra docs =====
+https://kubernetes.io/docs/home/
+https://docs.docker.com/
+https://www.terraform.io/docs
+https://www.postgresql.org/docs/current/
+https://redis.io/docs/
+https://nginx.org/en/docs/
+https://docs.nginx.com/
+https://prometheus.io/docs/introduction/overview/
+https://grafana.com/docs/
+
+# ===== Math / academic resources =====
+https://ocw.mit.edu/courses/
+https://en.wikipedia.org/wiki/Mathematics
+https://en.wikipedia.org/wiki/List_of_unsolved_problems_in_mathematics
+https://arxiv.org/list/cs.IR/recent
+https://arxiv.org/list/cs.CL/recent
+https://arxiv.org/list/cs.LG/recent
+https://arxiv.org/list/cs.DS/recent
+https://arxiv.org/list/math.NT/recent
+
+# ===== Science / engineering =====
+https://www.nature.com/subjects/research-data
+https://www.nasa.gov/news-release/
+https://www.nih.gov/health-information
+https://en.wikipedia.org/wiki/Physics
+https://en.wikipedia.org/wiki/Quantum_mechanics
+https://en.wikipedia.org/wiki/General_relativity
+https://en.wikipedia.org/wiki/Genetics
+https://en.wikipedia.org/wiki/Chemistry
+
+# ===== History / humanities =====
+https://en.wikipedia.org/wiki/History_of_the_world
+https://en.wikipedia.org/wiki/Philosophy
+https://en.wikipedia.org/wiki/Art_history
+https://plato.stanford.edu/contents.html
+
+# ===== Top engineering blogs (curated) =====
+https://netflixtechblog.com/
+https://engineering.fb.com/
+https://eng.uber.com/
+https://stripe.com/blog/engineering
+https://www.figma.com/blog/engineering/
+https://shopify.engineering/
+https://blog.cloudflare.com/
+https://aws.amazon.com/blogs/architecture/
+https://www.googleblog.com/
+
+# ===== News-of-record (be polite with depth) =====
+https://news.ycombinator.com/
+https://lobste.rs/
+https://dev.to/
+https://lwn.net/Articles/
+
+# ===== Standards / RFCs =====
+https://www.rfc-editor.org/rfc/rfc9110.html
+https://www.rfc-editor.org/rfc/rfc7230.html
+https://www.rfc-editor.org/rfc/rfc8259.html
+https://datatracker.ietf.org/doc/html/rfc2616
+
+# ===== Reference =====
+https://en.wikipedia.org/wiki/Special:Random
+https://en.wikipedia.org/wiki/List_of_lists_of_lists

@@ -329,7 +329,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
   <div class="wrap footer-row">
     <div>
       <div class="footer-brand">cosift</div>
-      <div>Self-hostable EXA-shape search. Pure Go. Zero hosted-API deps.</div>
+      <div>Self-hostable search + research. Pure Go. Zero hosted-API deps.</div>
     </div>
     <div class="footer-links">
       <a href="/openapi.json">OpenAPI</a>
@@ -356,7 +356,10 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
   function setHTML(id, v) { var el = document.getElementById(id); if (el) el.innerHTML = v; }
 
   function load() {
-    fetch('/stats').then(function (r) { return r.json(); }).then(function (d) {
+    fetch('/stats').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
       setText('stat-docs', nf(d.documents || d.indexed_docs || 0));
       setText('stat-vectors', d.vector_nodes ? nf(d.vector_nodes) : '0');
       var retr = d.retrievers || [];
@@ -373,7 +376,13 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setText('hc-llm', llm.join(' · '));
       var pills = retr.map(function (r) { return '<span class="pill on">' + r + '</span>'; }).join('');
       setHTML('hc-retrievers', pills || '<span class="pill">none</span>');
-    }).catch(function () {});
+    }).catch(function (e) {
+      // Likely 502 because the server is mid-crawl (writer lock). Show a
+      // friendly indicator and keep polling — when the cycle completes,
+      // the next tick re-paints.
+      setText('hc-backend', 'reconnecting…');
+      setHTML('hc-retrievers', '<span class="pill">server temporarily busy — indexing</span>');
+    });
   }
   load();
   setInterval(load, 5000);
@@ -398,7 +407,17 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
     meta.innerHTML = '<span style="color:var(--ink-dim)">running…</span>';
     hitsDiv.innerHTML = '';
     var t0 = performance.now();
-    fetch('/search?' + p.toString()).then(function (r) { return r.json(); }).then(function (d) {
+    fetch('/search?' + p.toString()).then(function (r) {
+      if (!r.ok) {
+        // Likely Caddy 502 because cosift-serve is mid-crawl. Surface
+        // a friendlier message than a raw JSON parse error.
+        if (r.status === 502 || r.status === 503 || r.status === 504) {
+          throw new Error('server is busy (likely indexing a fresh batch) — try again in ~1 min');
+        }
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.json();
+    }).then(function (d) {
       var elapsed = Math.round(performance.now() - t0);
       var warns = (d.warnings || []).map(function (w) { return '<div style="color:#c98; margin-top:4px">⚠ ' + esc(w) + '</div>'; }).join('');
       meta.innerHTML = 'retriever <code>' + esc(d.retriever || '—') + '</code> · ' + (d.hits || []).length + ' hits · ' + elapsed + 'ms client RT · server ' + esc(d.took || '—') + warns;
@@ -412,7 +431,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       }).join('');
       hitsDiv.innerHTML = html || '<div style="color:var(--ink-dim);font-size:13px">no hits</div>';
     }).catch(function (e) {
-      meta.innerHTML = '<span style="color:#e88">error: ' + esc(e.message) + '</span>';
+      meta.innerHTML = '<span style="color:#e88">' + esc(e.message) + '</span>';
     });
   }
   document.getElementById('tryit-form').addEventListener('submit', runSearch);

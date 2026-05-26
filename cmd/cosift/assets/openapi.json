@@ -215,7 +215,7 @@
     "/find_similar": {
       "get": {
         "tags": ["search"],
-        "summary": "EXA-shape neighbors: bm25-mlt / dense / hybrid (RRF-fused)",
+        "summary": "More-like-this neighbors: bm25-mlt / dense / hybrid (RRF-fused)",
         "parameters": [
           {"name": "url", "in": "query", "schema": {"type": "string"}, "description": "Source URL — either url or text required"},
           {"name": "text", "in": "query", "schema": {"type": "string"}, "description": "Arbitrary source text — either url or text required"},
