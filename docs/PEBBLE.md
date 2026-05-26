@@ -321,4 +321,5 @@ iter 359 — TestLoadHNSWMeta locks down the iter-358 meta-only roundtrip (empty
 iter 360 — `cosift pebble-info` surfaces vector_nodes + vector_dim (offline store inspection now sees the dense shape)
 iter 361 — /metrics emits cosift_vector_nodes + cosift_vector_dim gauges when HNSW meta is present
 iter 362 — COSIFT_LOAD_HNSW=true opts into in-memory HNSW graph load at startup; /stats surfaces `hnsw_loaded`
+iter 363 — `/search?retriever=dense` wires the embedder + iter-362 graph end-to-end (warns + falls back when missing pieces)
 ```

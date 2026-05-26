@@ -175,6 +175,17 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		srv.chat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
 		log.Printf("pebble-serve: /answer enabled (chat model=%s)", cfg.Chat.Model)
 	}
+	// Iter 363: embedder for ?retriever=dense. Built when cfg.Embeddings.Model
+	// is set; same OPENAI key path as the chat client. Required alongside the
+	// iter-362 loaded HNSW graph — having either alone gives a warning.
+	if cfg.Embeddings.Model != "" {
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENAI")
+		}
+		srv.embedder = embed.NewOpenAIClient(apiKey, cfg.Embeddings.URL, cfg.Embeddings.Model, cfg.Embeddings.Dim)
+		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d)", cfg.Embeddings.Model, cfg.Embeddings.Dim)
+	}
 	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
 	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
 	// Jina/TEI wire shape); otherwise cfg.Chat.Model present → LLMReranker
@@ -284,6 +295,10 @@ type pebbleHTTP struct {
 	// only when COSIFT_LOAD_HNSW=true at startup (gigabytes RAM at scale).
 	// Nil = graph not loaded; /search?retriever=dense returns a warning.
 	hnsw *index.HNSW
+	// Iter 363: embedder client for query-time vectorization. Required by
+	// /search?retriever=dense alongside s.hnsw. Built at startup when
+	// cfg.Embeddings.Model is set. Nil → ?retriever=dense warns + falls back.
+	embedder embed.Embedder
 
 	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without
@@ -803,10 +818,34 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Iter 252/272/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
 	// Reranker still scores against the original q regardless of strategy.
 	expandMode := r.URL.Query().Get("expand")
-	hits, effectiveQuery, err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, err.Error())
-		return
+	// Iter 363: ?retriever=dense routes through HNSW cosine search instead
+	// of BM25. Requires both the loaded graph (iter 362) and an embedder
+	// (iter 363); missing either → warning attached by warningsFor + fall
+	// through to BM25.
+	retrieverParam := r.URL.Query().Get("retriever")
+	var hits []index.Hit
+	var effectiveQuery string
+	var err error
+	if retrieverParam == "dense" && s.hnsw != nil && s.embedder != nil {
+		var vecs [][]float32
+		vecs, err = s.embedder.Embed(r.Context(), []string{q})
+		if err == nil && len(vecs) == 1 {
+			vhits := s.hnsw.Search(r.Context(), vecs[0], fetchK)
+			hits = make([]index.Hit, len(vhits))
+			for i, vh := range vhits {
+				hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+			}
+			effectiveQuery = q
+		} else if err != nil {
+			writeProblem(w, http.StatusBadGateway, "embedder: "+err.Error())
+			return
+		}
+	} else {
+		hits, effectiveQuery, err = s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	// Iter 233: enrich each surviving hit with Excerpt + PublishedAt + Author
 	// via a single GetDocByURL per hit. Cost: k extra Gets — block-cache hot,
@@ -910,14 +949,20 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		sortHitsByDate(out, true)
 	}
 	retrieverLabel := "bm25"
-	switch expandMode {
-	case "paraphrase":
-		if effectiveQuery != q {
-			retrieverLabel = "bm25+paraphrase"
-		}
-	case "true", "hyde":
-		if effectiveQuery != q {
-			retrieverLabel = "bm25+hyde"
+	// Iter 363: when dense actually fired, label says so. Falls back to bm25
+	// (the case the warning called out) when graph/embedder missing.
+	if retrieverParam == "dense" && s.hnsw != nil && s.embedder != nil {
+		retrieverLabel = "dense"
+	} else {
+		switch expandMode {
+		case "paraphrase":
+			if effectiveQuery != q {
+				retrieverLabel = "bm25+paraphrase"
+			}
+		case "true", "hyde":
+			if effectiveQuery != q {
+				retrieverLabel = "bm25+hyde"
+			}
 		}
 	}
 	if wantRerank {
@@ -1424,6 +1469,15 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	}
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
+	}
+	// Iter 363: dense retrieval needs both a loaded HNSW graph and an
+	// embedder. Missing either falls through to BM25 with a warning.
+	if r.URL.Query().Get("retriever") == "dense" {
+		if s.hnsw == nil {
+			w = append(w, "retriever=dense requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25")
+		} else if s.embedder == nil {
+			w = append(w, "retriever=dense requested but no embedder configured (set cfg.Embeddings.Model) — fell back to BM25")
+		}
 	}
 	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
 	if sortVal := r.URL.Query().Get("sort"); sortVal != "" {
