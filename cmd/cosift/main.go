@@ -475,12 +475,48 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 			if pebbleStoreForCrawl != nil {
 				h := index.NewHNSW(dim)
 				c = c.WithPassageWriter(&hnswPassageWriter{ps: pebbleStoreForCrawl, hnsw: h})
-				log.Printf("crawler: HNSW vector index attached (in-memory build, persisted at crawl end)")
+				// Iter 399: periodic checkpoint every COSIFT_HNSW_CHECKPOINT_SEC
+				// (default 60s). Without this, a crash / SIGKILL / time-cap
+				// deadline mid-crawl loses all in-memory vectors because Persist
+				// only runs at deferred end-of-crawl. Goroutine exits when
+				// ctx.Done() fires (either deadline or SIGTERM).
+				checkpointEvery := 60 * time.Second
+				if v := os.Getenv("COSIFT_HNSW_CHECKPOINT_SEC"); v != "" {
+					if s, err := strconv.Atoi(v); err == nil && s >= 5 {
+						checkpointEvery = time.Duration(s) * time.Second
+					}
+				}
+				log.Printf("crawler: HNSW vector index attached (in-memory build, checkpoint every %s, final persist at crawl end)", checkpointEvery)
+				ckpDone := make(chan struct{})
+				go func() {
+					defer close(ckpDone)
+					t := time.NewTicker(checkpointEvery)
+					defer t.Stop()
+					var lastN int
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-t.C:
+							n := h.Len()
+							if n == 0 || n == lastN {
+								continue // nothing new to persist
+							}
+							log.Printf("crawler: HNSW checkpoint at %d nodes (delta=%d) ...", n, n-lastN)
+							if err := h.Persist(context.Background(), pebbleStoreForCrawl); err != nil {
+								log.Printf("crawler: HNSW checkpoint failed: %v", err)
+								continue
+							}
+							lastN = n
+						}
+					}
+				}()
 				defer func() {
+					<-ckpDone // ensure ticker goroutine exits before final persist
 					if h.Len() == 0 {
 						return
 					}
-					log.Printf("crawler: persisting HNSW graph (%d nodes, dim=%d) to Pebble...", h.Len(), dim)
+					log.Printf("crawler: final HNSW persist (%d nodes, dim=%d) to Pebble...", h.Len(), dim)
 					if err := h.Persist(context.Background(), pebbleStoreForCrawl); err != nil {
 						log.Printf("crawler: HNSW persist failed: %v", err)
 					} else {
