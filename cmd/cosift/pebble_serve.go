@@ -1337,6 +1337,32 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
+	// Iter 386: MMR diversification on /find_similar. Anchored at the
+	// source vector — URL-mode reuses the persisted vec, text-mode embeds
+	// the seed via getQueryVec (defined above for dense/hybrid dispatch).
+	// Without an explicit user query, the source IS the query — this is
+	// the right anchor for "find similar but diverse".
+	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
+	mmrFired := false
+	if mmrSet && len(cands) > 1 && s.hnsw != nil {
+		if qVec, ok := getQueryVec(); ok {
+			hitVecs := make([][]float32, len(cands))
+			for i, c := range cands {
+				if v, vok := s.hnsw.LookupVectorByURL(c.hit.URL); vok {
+					hitVecs[i] = v
+				}
+			}
+			order := mmrOrder(qVec, hitVecs, mmrLambda)
+			if order != nil {
+				reordered := make([]fsCand, len(order))
+				for i, idx := range order {
+					reordered[i] = cands[idx]
+				}
+				cands = reordered
+				mmrFired = true
+			}
+		}
+	}
 	if len(cands) > k {
 		cands = cands[:k]
 	}
@@ -1359,6 +1385,9 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	if wantRerank {
 		retrieverLabel += "+rerank:" + s.reranker.Name()
+	}
+	if mmrFired {
+		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:           queryStr,
@@ -1595,12 +1624,16 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	// Iter 384: MMR diversification needs HNSW + embedder. Bad values (non-
 	// float, out of [0,1]) fall through silently — flag them. Missing
 	// requirements also warn.
+	// Iter 386: /find_similar?url=X reuses the source vector from the graph
+	// for the MMR anchor — no embedder needed. Same carve-out as iter 372
+	// for the retriever warning.
 	if raw := r.URL.Query().Get("mmr"); raw != "" {
+		isFindSimilarURLMode := strings.HasSuffix(r.URL.Path, "/find_similar") && r.URL.Query().Get("url") != ""
 		if _, ok := parseMMRLambda(raw); !ok {
 			w = append(w, "mmr="+raw+" is not a float in [0,1] — diversification skipped")
 		} else if s.hnsw == nil {
 			w = append(w, "mmr requires HNSW graph (set COSIFT_LOAD_HNSW=true at server start) — diversification skipped")
-		} else if s.embedder == nil {
+		} else if s.embedder == nil && !isFindSimilarURLMode {
 			w = append(w, "mmr requires an embedder to vectorize the query (set cfg.Embeddings.Model) — diversification skipped")
 		}
 	}

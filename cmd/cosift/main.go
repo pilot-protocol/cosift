@@ -1225,6 +1225,8 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	// Dense reads source vector from HNSW for URL-mode; hybrid RRF-fuses
 	// BM25-MLT and dense. Both require COSIFT_LOAD_HNSW=true server-side.
 	retriever := fs.String("retriever", "", "retriever: bm25 (BM25-MLT) | dense | hybrid (server must have HNSW; text-mode dense/hybrid also needs embedder)")
+	// Iter 386: MMR diversification for /find_similar.
+	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (URL-mode reuses graph vector — no embedder needed)")
 	since := fs.String("since", "", "ISO date — only neighbors published on or after")
 	until := fs.String("until", "", "ISO date — only neighbors published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of neighbor domains")
@@ -1269,6 +1271,9 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	if *retriever != "" {
 		v.Set("retriever", *retriever)
 	}
+	if *mmr != "" {
+		v.Set("mmr", *mmr)
+	}
 	if *since != "" {
 		v.Set("since", *since)
 	}
@@ -1307,6 +1312,9 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		}
 		if *retriever != "" {
 			body["retriever"] = *retriever
+		}
+		if *mmr != "" {
+			body["mmr"] = *mmr
 		}
 		if *since != "" {
 			body["since"] = *since
