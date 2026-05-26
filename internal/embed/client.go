@@ -151,6 +151,41 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	return out, nil
 }
 
+// ThrottledEmbedder wraps an Embedder behind a semaphore that caps the
+// number of concurrent in-flight calls. The crawler ingest path runs
+// hot — without a cap, 32+ workers can each issue an embed call at the
+// same time, queueing N requests at the backend (ollama / vLLM). User
+// /search?retriever=dense embeds then wait behind that backlog. Capping
+// the crawler side keeps backend queue depth bounded so interactive
+// queries find free capacity. Iter 446.
+type ThrottledEmbedder struct {
+	inner Embedder
+	sem   chan struct{}
+}
+
+// NewThrottledEmbedder wraps inner with a semaphore of size max. Embeds
+// block on Acquire when max are already in flight. Pass max ≤ 0 to
+// disable the cap (returns inner unwrapped).
+func NewThrottledEmbedder(inner Embedder, max int) Embedder {
+	if max <= 0 {
+		return inner
+	}
+	return &ThrottledEmbedder{inner: inner, sem: make(chan struct{}, max)}
+}
+
+func (t *ThrottledEmbedder) Model() string { return t.inner.Model() }
+func (t *ThrottledEmbedder) Dim() int      { return t.inner.Dim() }
+
+func (t *ThrottledEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	select {
+	case t.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-t.sem }()
+	return t.inner.Embed(ctx, texts)
+}
+
 // CachedEmbedder wraps any Embedder with a content-addressable disk cache.
 type CachedEmbedder struct {
 	inner Embedder

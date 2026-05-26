@@ -454,7 +454,20 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 
 	c := crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
-	c = c.WithEmbedder(s.embedder)
+	// Iter 446: crawler embedder is wrapped in a semaphore-throttled
+	// wrapper so the bulk crawl can never queue enough requests at
+	// ollama to starve interactive /search?retriever=dense calls.
+	// Default cap = 8 (well under OLLAMA_NUM_PARALLEL=32); operator
+	// override via COSIFT_CRAWL_EMBED_CONCURRENCY.
+	crawlEmbedCap := 8
+	if v := os.Getenv("COSIFT_CRAWL_EMBED_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			crawlEmbedCap = n
+		}
+	}
+	crawlEmbedder := embed.NewThrottledEmbedder(s.embedder, crawlEmbedCap)
+	log.Printf("pebble-serve: crawler embed concurrency capped at %d (search uses unthrottled embedder)", crawlEmbedCap)
+	c = c.WithEmbedder(crawlEmbedder)
 	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
 	// Iter 408: wire URL routing for clustered mode. Single-node config
 	// (NumShards <= 1) makes route fn a no-op (every URL ownsLocally).
