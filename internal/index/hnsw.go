@@ -140,20 +140,21 @@ func (h *HNSW) PQStatus() PQStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	st := PQStatus{NodesTotal: len(h.nodes)}
+	if h.codebook != nil {
+		st.Enabled = true
+		st.Dim = h.codebook.Dim
+		st.M = h.codebook.M
+		st.K = h.codebook.K
+	}
+	// Walk in a single pass; count valid vecs and codes that are
+	// ATTACHED to those valid vecs (ghost codes on vec-less zombies
+	// don't help anyone search and shouldn't pad coverage). Iter 425.
 	for i := range h.nodes {
-		if len(h.nodes[i].vec) > 0 {
+		valid := len(h.nodes[i].vec) > 0
+		if valid {
 			st.NodesValid++
 		}
-	}
-	if h.codebook == nil {
-		return st
-	}
-	st.Enabled = true
-	st.Dim = h.codebook.Dim
-	st.M = h.codebook.M
-	st.K = h.codebook.K
-	for _, c := range h.codes {
-		if len(c) == h.codebook.M {
+		if h.codebook != nil && i < len(h.codes) && len(h.codes[i]) == h.codebook.M && valid {
 			st.NodesWithCode++
 		}
 	}
