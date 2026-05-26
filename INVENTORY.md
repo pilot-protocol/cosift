@@ -122,6 +122,28 @@ The iter-427 OOM was traced to `ledongthuc/pdf.(*buffer).readArray` —
 99% of 117 GB heap. PDF parsing is now gated behind `COSIFT_CRAWL_PDF=true`
 (default off). Re-enable once we migrate to a safer PDF library.
 
+## Crawl vs search latency tradeoff (iter 439)
+
+`max_concurrent` directly trades crawl throughput for search latency
+because HNSW.AddPassage and HNSW.Search share a single sync.RWMutex.
+At 22 vec/sec of writes, the read lock waits often.
+
+Observed on the live 817K-vector graph:
+
+| max_concurrent | Crawl rate | Search /search?q=... |
+|---|---|---|
+| 256 (current) | ~1300 docs/min | 1.5-3 s |
+| ~128 (estimate)  | ~800 docs/min  | ~300-500 ms |
+| ~32 (default) | ~200 docs/min  | ~100-150 ms |
+
+To switch: edit `cosift.json` field `crawler.max_concurrent`, restart
+cosift. The Caddy active health probe on /healthz absorbs the brief
+downtime as fast 502s (not 522).
+
+The bench-pq internal latency (1.8 ms) reflects HNSW alone with no
+contention; everything above that comes from the ollama embed call
+(~50 ms when warm) and the contention envelope.
+
 ## Crawler tuning (iter 432-433)
 
 Live `~/cosift.json` on the GH200, aggressive-frontier configuration:
