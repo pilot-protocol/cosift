@@ -435,6 +435,16 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_warnings_emitted_total Responses that carried at least one warning (misconfigured request).\n")
 	fmt.Fprintf(w, "# TYPE cosift_warnings_emitted_total counter\n")
 	fmt.Fprintf(w, "cosift_warnings_emitted_total %d\n", s.warningsEmitted.Load())
+	// Iter 361: HNSW vector index shape (iter 358 cheap meta read). Gauges
+	// rather than counters — these are static snapshots at startup.
+	if s.vectorNodes > 0 {
+		fmt.Fprintf(w, "# HELP cosift_vector_nodes Number of HNSW vector nodes persisted in the 'v' family.\n")
+		fmt.Fprintf(w, "# TYPE cosift_vector_nodes gauge\n")
+		fmt.Fprintf(w, "cosift_vector_nodes %d\n", s.vectorNodes)
+		fmt.Fprintf(w, "# HELP cosift_vector_dim Embedding dimension of the persisted HNSW index.\n")
+		fmt.Fprintf(w, "# TYPE cosift_vector_dim gauge\n")
+		fmt.Fprintf(w, "cosift_vector_dim %d\n", s.vectorDim)
+	}
 	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)

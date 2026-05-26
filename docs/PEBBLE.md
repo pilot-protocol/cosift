@@ -319,4 +319,5 @@ iter 357 — pebble-serve peeks 'v' family at startup; logs + surfaces `has_vect
 iter 358 — new `index.LoadHNSWMeta` (cheap 20-byte read); /stats surfaces vector_nodes + vector_dim when meta is persisted
 iter 359 — TestLoadHNSWMeta locks down the iter-358 meta-only roundtrip (empty store → ok=false; persisted → exact dim+count)
 iter 360 — `cosift pebble-info` surfaces vector_nodes + vector_dim (offline store inspection now sees the dense shape)
+iter 361 — /metrics emits cosift_vector_nodes + cosift_vector_dim gauges when HNSW meta is present
 ```
