@@ -2769,6 +2769,33 @@ func runVerifyViaServer(ctx context.Context, serverURL string, asJSON bool) erro
 	return nil
 }
 
+// pebbleInfoJSON shapes the -json output of `cosift pebble-info`. Extracted
+// in iter 381 so the shape can be unit-tested without spawning a subprocess.
+// Mirrors the /stats response (iter 375 retrievers list, iter 358 vector
+// meta) — same jq filters compose against either source.
+func pebbleInfoJSON(path string, st store.Stats, sumLen, indexedDocs int64, meta index.HNSWMeta, hnswOK bool) map[string]any {
+	retrievers := []string{"bm25", "bm25-mlt"}
+	if hnswOK {
+		retrievers = append(retrievers, "dense", "hybrid")
+	}
+	out := map[string]any{
+		"path":         path,
+		"documents":    st.Documents,
+		"indexed_docs": indexedDocs,
+		"sum_doc_len":  sumLen,
+		"hnsw_loaded":  hnswOK,
+		"retrievers":   retrievers,
+	}
+	if indexedDocs > 0 {
+		out["avg_doc_len"] = float64(sumLen) / float64(indexedDocs)
+	}
+	if hnswOK {
+		out["vector_nodes"] = meta.NodeCount
+		out["vector_dim"] = meta.Dim
+	}
+	return out
+}
+
 // Iter 217 — operator visibility into LSM levels, WAL state, on-disk
 // size, and compaction queue, surfaced via pebble.Metrics().String().
 func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
@@ -2799,25 +2826,7 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
 
 	if *asJSON {
-		retrievers := []string{"bm25", "bm25-mlt"}
-		if hnswOK {
-			retrievers = append(retrievers, "dense", "hybrid")
-		}
-		out := map[string]any{
-			"path":         d,
-			"documents":    st.Documents,
-			"indexed_docs": indexedDocs,
-			"sum_doc_len":  sumLen,
-			"hnsw_loaded":  hnswOK,
-			"retrievers":   retrievers,
-		}
-		if indexedDocs > 0 {
-			out["avg_doc_len"] = float64(sumLen) / float64(indexedDocs)
-		}
-		if hnswOK {
-			out["vector_nodes"] = meta.NodeCount
-			out["vector_dim"] = meta.Dim
-		}
+		out := pebbleInfoJSON(d, st, sumLen, indexedDocs, meta, hnswOK)
 		blob, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(blob))
 		return nil

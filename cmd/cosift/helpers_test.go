@@ -10,6 +10,7 @@ import (
 
 	"github.com/calinteodor/cosift/internal/index"
 	"github.com/calinteodor/cosift/internal/server"
+	"github.com/calinteodor/cosift/internal/store"
 )
 
 func TestNormalizeExpandMode(t *testing.T) {
@@ -175,5 +176,50 @@ func TestPeekWarnings(t *testing.T) {
 				t.Errorf("%s: warning %d: want %q, got %q", c.name, i, c.want[i], got[i])
 			}
 		}
+	}
+}
+
+// TestPebbleInfoJSON locks down the iter-380/381 jq-friendly shape so future
+// changes to the offline pebble-info path can't silently drop a field or
+// regress the retrievers list. /stats reads the same shape — broken parity
+// would silently break dashboards that consume both.
+func TestPebbleInfoJSON(t *testing.T) {
+	// Empty store: hnswOK=false, no doc length math.
+	empty := pebbleInfoJSON("/tmp/empty", store.Stats{Documents: 0}, 0, 0, index.HNSWMeta{}, false)
+	if got, _ := empty["hnsw_loaded"].(bool); got {
+		t.Errorf("empty store hnsw_loaded: want false, got true")
+	}
+	retr, _ := empty["retrievers"].([]string)
+	if len(retr) != 2 || retr[0] != "bm25" || retr[1] != "bm25-mlt" {
+		t.Errorf("empty store retrievers: want [bm25 bm25-mlt], got %v", retr)
+	}
+	if _, ok := empty["avg_doc_len"]; ok {
+		t.Errorf("empty store: avg_doc_len should be absent (zero docs), got %v", empty["avg_doc_len"])
+	}
+	if _, ok := empty["vector_nodes"]; ok {
+		t.Errorf("empty store: vector_nodes should be absent without graph")
+	}
+
+	// Loaded store + HNSW: full shape including avg, vector_nodes, dense+hybrid.
+	full := pebbleInfoJSON("/tmp/full", store.Stats{Documents: 100}, 50000, 100, index.HNSWMeta{NodeCount: 200, Dim: 768}, true)
+	if got, _ := full["hnsw_loaded"].(bool); !got {
+		t.Errorf("full store hnsw_loaded: want true")
+	}
+	if got, _ := full["vector_nodes"].(int); got != 200 {
+		t.Errorf("vector_nodes: want 200, got %v", full["vector_nodes"])
+	}
+	if got, _ := full["vector_dim"].(int); got != 768 {
+		t.Errorf("vector_dim: want 768, got %v", full["vector_dim"])
+	}
+	if got, _ := full["avg_doc_len"].(float64); got != 500.0 {
+		t.Errorf("avg_doc_len: want 500.0, got %v", full["avg_doc_len"])
+	}
+	frArr, _ := full["retrievers"].([]string)
+	wantR := map[string]bool{"bm25": true, "bm25-mlt": true, "dense": true, "hybrid": true}
+	for _, r := range frArr {
+		delete(wantR, r)
+	}
+	if len(wantR) != 0 {
+		t.Errorf("full store retrievers: missing %v, got %v", wantR, frArr)
 	}
 }
