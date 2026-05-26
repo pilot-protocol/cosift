@@ -119,6 +119,34 @@ func (h *HNSW) HasPQ() bool {
 	return h.codebook != nil
 }
 
+// PQStatus returns an observability snapshot: codebook shape + number of
+// nodes that currently have a code (== len(code) == M). Iter 423.
+type PQStatus struct {
+	Enabled       bool
+	Dim, M, K     int
+	NodesWithCode int
+	NodesTotal    int
+}
+
+func (h *HNSW) PQStatus() PQStatus {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	st := PQStatus{NodesTotal: len(h.nodes)}
+	if h.codebook == nil {
+		return st
+	}
+	st.Enabled = true
+	st.Dim = h.codebook.Dim
+	st.M = h.codebook.M
+	st.K = h.codebook.K
+	for _, c := range h.codes {
+		if len(c) == h.codebook.M {
+			st.NodesWithCode++
+		}
+	}
+	return st
+}
+
 // distanceToNode returns a comparable distance from query q to node[idx].
 // Lower = closer in BOTH branches. Iter 416.
 //

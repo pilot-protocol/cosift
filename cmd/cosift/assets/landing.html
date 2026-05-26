@@ -279,6 +279,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       <div class="health-card"><div class="label">Avg doc length</div><div class="value" id="hc-avglen">—</div></div>
       <div class="health-card"><div class="label">HNSW</div><div class="value acc" id="hc-hnsw">—</div><div class="sub" id="hc-hnsw-detail"></div></div>
       <div class="health-card"><div class="label">Embedder · Chat</div><div class="value" style="font-size:18px" id="hc-llm">—</div></div>
+      <div class="health-card"><div class="label">PQ compression</div><div class="value acc" id="hc-pq">—</div><div class="sub" id="hc-pq-detail"></div></div>
       <div class="health-card"><div class="label">Crawl rate</div><div class="value acc" id="hc-crawl">—</div><div class="sub" id="hc-crawl-detail"></div></div>
       <div class="health-card" style="grid-column: 1 / -1;">
         <div class="label">Retrievers available</div>
@@ -398,6 +399,14 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       } else {
         setText('hc-crawl', 'idle');
         setText('hc-crawl-detail', 'no in-serve crawler');
+      }
+      var pq = d.pq;
+      if (pq && pq.enabled) {
+        setText('hc-pq', pq.coverage_pct.toFixed(1) + '%');
+        setText('hc-pq-detail', 'M=' + pq.m + ' K=' + pq.k + ' · ' + nf(pq.nodes_with_code) + ' codes');
+      } else {
+        setText('hc-pq', 'off');
+        setText('hc-pq-detail', 'no codebook trained');
       }
     }).catch(function (e) {
       // Likely 502 because the server is mid-crawl (writer lock). Show a

@@ -1348,6 +1348,27 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	// Iter 362: whether the graph is loaded into memory for dense retrieval.
 	out["hnsw_loaded"] = s.hnsw != nil
+	// Iter 423: PQ status — operator-facing visibility into compression
+	// state. Only present when the graph is loaded; nil otherwise.
+	if s.hnsw != nil {
+		pq := s.hnsw.PQStatus()
+		if pq.Enabled {
+			coverage := 0.0
+			if pq.NodesTotal > 0 {
+				coverage = 100 * float64(pq.NodesWithCode) / float64(pq.NodesTotal)
+			}
+			out["pq"] = map[string]any{
+				"enabled":         true,
+				"dim":             pq.Dim,
+				"m":               pq.M,
+				"k":               pq.K,
+				"nodes_with_code": pq.NodesWithCode,
+				"coverage_pct":    coverage,
+			}
+		} else {
+			out["pq"] = map[string]any{"enabled": false}
+		}
+	}
 	// Iter 375: which retrievers actually work right now. Clients can read
 	// this once instead of probing ?retriever=dense + parsing the warning.
 	// bm25 always — index is always available. dense/hybrid require a
