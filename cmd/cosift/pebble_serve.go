@@ -816,61 +816,16 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		fetchK = keepCap * 2
 	}
 	// Iter 252/272/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
+	// Iter 363/364/365: retriever dispatch (bm25 / dense / hybrid). Shared
+	// helper used by /answer + /research so all three get the same matrix.
 	// Reranker still scores against the original q regardless of strategy.
 	expandMode := r.URL.Query().Get("expand")
-	// Iter 363: ?retriever=dense routes through HNSW cosine search instead
-	// of BM25. Requires both the loaded graph (iter 362) and an embedder
-	// (iter 363); missing either → warning attached by warningsFor + fall
-	// through to BM25.
 	retrieverParam := r.URL.Query().Get("retriever")
 	denseReady := s.hnsw != nil && s.embedder != nil
-	var hits []index.Hit
-	var effectiveQuery string
-	var err error
-	switch {
-	case retrieverParam == "dense" && denseReady:
-		var vecs [][]float32
-		vecs, err = s.embedder.Embed(r.Context(), []string{q})
-		if err != nil {
-			writeProblem(w, http.StatusBadGateway, "embedder: "+err.Error())
-			return
-		}
-		vhits := s.hnsw.Search(r.Context(), vecs[0], fetchK)
-		hits = make([]index.Hit, len(vhits))
-		for i, vh := range vhits {
-			hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-		}
-		effectiveQuery = q
-	case retrieverParam == "hybrid" && denseReady:
-		// Iter 364: hybrid = BM25 (with optional expand) + dense, fused via
-		// RRF. Each retriever returns fetchK candidates; the fused top-fetchK
-		// then feeds the existing filter+enrich+rerank pipeline.
-		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
-		if bm25Err != nil {
-			writeProblem(w, http.StatusInternalServerError, bm25Err.Error())
-			return
-		}
-		vecs, embErr := s.embedder.Embed(r.Context(), []string{q})
-		if embErr != nil {
-			writeProblem(w, http.StatusBadGateway, "embedder: "+embErr.Error())
-			return
-		}
-		denseV := s.hnsw.Search(r.Context(), vecs[0], fetchK)
-		denseHits := make([]index.Hit, len(denseV))
-		for i, vh := range denseV {
-			denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-		}
-		hits = rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
-		if len(hits) > fetchK {
-			hits = hits[:fetchK]
-		}
-		effectiveQuery = bm25Eff
-	default:
-		hits, effectiveQuery, err = s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
-		if err != nil {
-			writeProblem(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	// Iter 233: enrich each surviving hit with Excerpt + PublishedAt + Author
 	// via a single GetDocByURL per hit. Cost: k extra Gets — block-cache hot,
@@ -1561,6 +1516,50 @@ func normalizeExpandMode(raw string) string {
 	}
 }
 
+// Iter 365: retrieve dispatches retriever choice (bm25 / dense / hybrid) and
+// then expansion (bare / HyDE / paraphrase+RRF) for BM25 paths. Shared by
+// /search, /answer, /research so all three endpoints get the same retriever
+// matrix. Dense / hybrid require both the loaded HNSW graph (iter 362) and an
+// embedder (iter 363); missing either falls through to BM25 — warningsFor()
+// surfaces that to the client.
+func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
+	denseReady := s.hnsw != nil && s.embedder != nil
+	switch {
+	case retrieverParam == "dense" && denseReady:
+		vecs, err := s.embedder.Embed(ctx, []string{q})
+		if err != nil {
+			return nil, "", fmt.Errorf("embedder: %w", err)
+		}
+		vhits := s.hnsw.Search(ctx, vecs[0], fetchK)
+		hits := make([]index.Hit, len(vhits))
+		for i, vh := range vhits {
+			hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+		}
+		return hits, q, nil
+	case retrieverParam == "hybrid" && denseReady:
+		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansion(ctx, q, fetchK, expandMode)
+		if bm25Err != nil {
+			return nil, "", bm25Err
+		}
+		vecs, embErr := s.embedder.Embed(ctx, []string{q})
+		if embErr != nil {
+			return nil, "", fmt.Errorf("embedder: %w", embErr)
+		}
+		denseV := s.hnsw.Search(ctx, vecs[0], fetchK)
+		denseHits := make([]index.Hit, len(denseV))
+		for i, vh := range denseV {
+			denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+		}
+		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
+		if len(hits) > fetchK {
+			hits = hits[:fetchK]
+		}
+		return hits, bm25Eff, nil
+	default:
+		return s.retrieveWithExpansion(ctx, q, fetchK, expandMode)
+	}
+}
+
 // Iter 274: retrieveWithExpansion dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
@@ -1725,8 +1724,10 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		fetchK = keepCap * 2
 	}
 		// Iter 256/273/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
+		// Iter 365: retriever dispatch (bm25 / dense / hybrid) via shared helper.
 	expandMode := r.URL.Query().Get("expand")
-	hits, effectiveQuery, err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
+	retrieverParam := r.URL.Query().Get("retriever")
+	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1990,9 +1991,12 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// ?expand=paraphrase fans out 3 paraphrases × N sub-queries → RRF per
 	// sub-query → merge into best{}. The cross-sub-query merge stays
 	// score-keep-best (not a second RRF) — that's what iter-243 specified.
+	// Iter 365: retriever dispatch (bm25 / dense / hybrid) applies per
+	// sub-query — every sub-query runs through the same retriever.
 	expandMode := r.URL.Query().Get("expand")
+	retrieverParam := r.URL.Query().Get("retriever")
 	for _, sq := range subs {
-		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
+		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
 			// Iter 302: log the specific sub-query so operators can diagnose
 			// 'why was this research thin on sources' — previously silent.
@@ -2174,9 +2178,11 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		perSub = 40
 	}
 	// Iter 257/275: per-sub-query expansion via retrieveWithExpansion.
+	// Iter 365: per-sub-query retriever dispatch (bm25 / dense / hybrid).
 	expandMode := r.URL.Query().Get("expand")
+	retrieverParam := r.URL.Query().Get("retriever")
 	for _, sq := range subs {
-		hits, _, err := s.retrieveWithExpansion(r.Context(), sq, perSub, expandMode)
+		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
 			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err) // iter 302
 			continue
