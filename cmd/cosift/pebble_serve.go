@@ -1347,6 +1347,17 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// Iter 390: time-decay on /find_similar. Same pre-rerank placement as
+	// /search — re-sort cands by adjusted score so rerank sees a freshness-
+	// aware pool. Re-aligns rerankText too via URL→text map.
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	if decaySet && len(cands) > 0 {
+		now := time.Now()
+		for i := range cands {
+			cands[i].hit.Score *= decayMultiplier(cands[i].hit.PublishedAt, now, decayHalfLife)
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].hit.Score > cands[j].hit.Score })
+	}
 	if wantRerank && len(cands) > 1 {
 		rc := make([]rerank.Candidate, len(cands))
 		for i := range cands {
@@ -1420,6 +1431,9 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	if mmrFired {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
+	if decaySet {
+		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:           queryStr,
@@ -1746,26 +1760,28 @@ func parseDecayHalfLife(raw string) (float64, bool) {
 	return v, true
 }
 
-// applyTimeDecay multiplies each hit's Score by exp(-ln(2) * age_days /
-// halfLifeDays) using hit.PublishedAt. Hits with zero PublishedAt are left
-// unchanged — no signal means no penalty. Resorts by the adjusted score.
-// Half-life H means a doc from H days ago gets 0.5x, 2H gets 0.25x, etc.
+// decayMultiplier computes the time-decay weight for a single PublishedAt.
+// Half-life H: doc from H days ago → 0.5x, 2H → 0.25x. Missing date or
+// non-positive halfLife → 1.0 (no decay). Iter 389/390.
+func decayMultiplier(publishedAt *time.Time, now time.Time, halfLifeDays float64) float64 {
+	if halfLifeDays <= 0 || publishedAt == nil || publishedAt.IsZero() {
+		return 1
+	}
+	ageDays := now.Sub(*publishedAt).Hours() / 24.0
+	if ageDays < 0 {
+		ageDays = 0 // future-dated → treated as fresh, never boosted
+	}
+	return math.Exp(-math.Ln2 * ageDays / halfLifeDays)
+}
+
+// applyTimeDecay multiplies each hit's Score by decayMultiplier and resorts.
 // Iter 389.
 func applyTimeDecay(hits []searchHit, halfLifeDays float64, now time.Time) {
 	if halfLifeDays <= 0 || len(hits) == 0 {
 		return
 	}
-	ln2 := math.Ln2
 	for i := range hits {
-		if hits[i].PublishedAt == nil || hits[i].PublishedAt.IsZero() {
-			continue
-		}
-		ageDays := now.Sub(*hits[i].PublishedAt).Hours() / 24.0
-		if ageDays < 0 {
-			ageDays = 0 // future-dated docs treated as fresh, not boosted
-		}
-		mult := math.Exp(-ln2 * ageDays / halfLifeDays)
-		hits[i].Score *= mult
+		hits[i].Score *= decayMultiplier(hits[i].PublishedAt, now, halfLifeDays)
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 }
@@ -2153,6 +2169,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		src        answerSource
 		excerpt    string
 		rerankText string
+		score      float64 // iter 390: retrieval score, used by time-decay
 	}
 	cands := make([]cand, 0, keepCap)
 	for _, h := range hits {
@@ -2189,7 +2206,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			src.Text = doc.Text
 		}
-		c := cand{src: src, excerpt: excerpt}
+		c := cand{src: src, excerpt: excerpt, score: h.Score}
 		if wantRerank {
 			c.rerankText = doc.Title + "\n" + doc.Text
 		}
@@ -2197,6 +2214,17 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if len(cands) >= keepCap {
 			break
 		}
+	}
+	// Iter 390: time-decay re-weights then re-sorts BEFORE rerank, mirroring
+	// the /search pre-rerank placement so the reranker sees a freshness-
+	// aware pool.
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	if decaySet && len(cands) > 0 {
+		now := time.Now()
+		for i := range cands {
+			cands[i].score *= decayMultiplier(cands[i].src.PublishedAt, now, decayHalfLife)
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
 	}
 	// Optional rerank, then truncate to k. Done in this order so citation
 	// numbers in the prompt match the final rank-ordered sources list.
@@ -2258,6 +2286,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
 	if mmrFired {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
+	if decaySet {
+		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	if len(sources) == 0 {
 		empty := answerResponse{
@@ -2484,6 +2515,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		src        answerSource
 		excerpt    string
 		rerankText string
+		score      float64 // iter 390: pooled score, used by time-decay
 	}
 	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
@@ -2503,11 +2535,21 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			src.Text = doc.Text
 		}
-		c := cand{src: src, excerpt: excerpt}
+		c := cand{src: src, excerpt: excerpt, score: p.score}
 		if wantRerank {
 			c.rerankText = doc.Title + "\n" + doc.Text
 		}
 		cands = append(cands, c)
+	}
+	// Iter 390: time-decay on /research sync — re-weight pooled cands before
+	// rerank. Sub-queries that hit recent docs bubble up first.
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	if decaySet && len(cands) > 0 {
+		now := time.Now()
+		for i := range cands {
+			cands[i].score *= decayMultiplier(cands[i].src.PublishedAt, now, decayHalfLife)
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
 	}
 	if wantRerank && len(cands) > 1 {
 		rc := make([]rerank.Candidate, len(cands))
@@ -2571,6 +2613,9 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandFired, wantRerank)
 	if mmrFired {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
+	if decaySet {
+		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
@@ -2707,6 +2752,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		src        answerSource
 		excerpt    string
 		rerankText string
+		score      float64 // iter 390
 	}
 	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
@@ -2726,11 +2772,21 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		if includeText {
 			src.Text = doc.Text
 		}
-		c := cand{src: src, excerpt: excerpt}
+		c := cand{src: src, excerpt: excerpt, score: p.score}
 		if wantRerank {
 			c.rerankText = doc.Title + "\n" + doc.Text
 		}
 		cands = append(cands, c)
+	}
+	// Iter 390: time-decay on /research stream — same placement as sync.
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	if decaySet && len(cands) > 0 {
+		now := time.Now()
+		for i := range cands {
+			cands[i].score *= decayMultiplier(cands[i].src.PublishedAt, now, decayHalfLife)
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
+		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	if wantRerank && len(cands) > 1 {
 		rc := make([]rerank.Candidate, len(cands))
