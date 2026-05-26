@@ -126,3 +126,26 @@ func TestOpenAIChatErrorPropagates(t *testing.T) {
 		t.Errorf("expected 429 error, got %v", err)
 	}
 }
+
+// TestStripThinkingBlocks — iter 395. R1-distill emits <think>...</think>
+// before the actual response. Must be stripped so the planner JSON parses
+// and /answer responses stay clean.
+func TestStripThinkingBlocks(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"no thinking here", "no thinking here"},
+		{"<think>reasoning</think>actual answer", "actual answer"},
+		{"<think>line1\nline2\nline3</think>\n\nFinal: yes", "Final: yes"},
+		{"<think>a</think>before<think>b</think>after", "beforeafter"},
+		{"  <think>think</think>  trimmed  ", "trimmed"},
+		{"<think>unclosed but never closed", "<think>unclosed but never closed"}, // never strip unclosed
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := stripThinkingBlocks(c.in)
+		if got != c.want {
+			t.Errorf("stripThinkingBlocks(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

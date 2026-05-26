@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -91,6 +92,21 @@ type chatResp struct {
 	} `json:"error,omitempty"`
 }
 
+// stripThinkingBlocks removes <think>...</think> spans that R1-style reasoning
+// models emit before their final answer. cosift's planner parses chat output
+// as JSON and the /answer flow surfaces it verbatim; leaving thinking in would
+// either break the planner or leak internal reasoning into responses. Greedy,
+// dotall, non-nested (R1 doesn't nest). Iter 395.
+//
+// Operators that WANT to see the reasoning can grep ~/pebble-serve.log — the
+// raw chat call isn't logged today but the streaming SSE path emits chunks
+// before strip.
+var thinkBlockRE = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
+
+func stripThinkingBlocks(s string) string {
+	return strings.TrimSpace(thinkBlockRE.ReplaceAllString(s, ""))
+}
+
 // Chat sends messages and returns the assistant content. Temperature pinned to
 // 0 so /answer is reproducible — caller wraps if they want creative output.
 func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, error) {
@@ -130,7 +146,8 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	if len(parsed.Choices) == 0 {
 		return "", errors.New("chat: no choices in response")
 	}
-	return parsed.Choices[0].Message.Content, nil
+	// Iter 395: R1-distill compatibility — strip <think> blocks.
+	return stripThinkingBlocks(parsed.Choices[0].Message.Content), nil
 }
 
 // ChatStream sends the request with stream=true and parses the SSE response
@@ -211,7 +228,10 @@ func (c *OpenAIChatClient) ChatStream(ctx context.Context, msgs []ChatMsg, onChu
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return full.String(), err
+		return stripThinkingBlocks(full.String()), err
 	}
-	return full.String(), nil
+	// Iter 395: strip <think> on the accumulated content. SSE chunks still
+	// stream raw so callers wanting to surface the reasoning ('live thinking
+	// indicator') can; only the final return value is sanitized.
+	return stripThinkingBlocks(full.String()), nil
 }
