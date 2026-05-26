@@ -233,6 +233,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       <div class="stat"><div class="stat-num"><span class="accent" id="stat-docs">—</span></div><div class="stat-label">Indexed docs</div></div>
       <div class="stat"><div class="stat-num" id="stat-vectors">—</div><div class="stat-label">Vector passages</div></div>
       <div class="stat"><div class="stat-num" id="stat-retrievers">—</div><div class="stat-label">Retrievers live</div></div>
+      <div class="stat"><div class="stat-num"><span class="accent" id="stat-rate">—</span></div><div class="stat-label">Docs / min</div></div>
     </div>
 
     <div class="cta-row">
@@ -278,6 +279,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       <div class="health-card"><div class="label">Avg doc length</div><div class="value" id="hc-avglen">—</div></div>
       <div class="health-card"><div class="label">HNSW</div><div class="value acc" id="hc-hnsw">—</div><div class="sub" id="hc-hnsw-detail"></div></div>
       <div class="health-card"><div class="label">Embedder · Chat</div><div class="value" style="font-size:18px" id="hc-llm">—</div></div>
+      <div class="health-card"><div class="label">Crawl rate</div><div class="value acc" id="hc-crawl">—</div><div class="sub" id="hc-crawl-detail"></div></div>
       <div class="health-card" style="grid-column: 1 / -1;">
         <div class="label">Retrievers available</div>
         <div id="hc-retrievers" style="margin-top:4px;"></div>
@@ -364,6 +366,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setText('stat-vectors', d.vector_nodes ? nf(d.vector_nodes) : '0');
       var retr = d.retrievers || [];
       setText('stat-retrievers', retr.length);
+      setText('stat-rate', d.crawl_active ? (d.docs_per_minute || 0).toFixed(1) : '—');
       setText('hc-backend', d.backend || '—');
       setText('hc-uptime', d.uptime || '—');
       setText('hc-bm25', (d.bm25_k1 ?? '—') + ' / ' + (d.bm25_b ?? '—'));
@@ -376,6 +379,14 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setText('hc-llm', llm.join(' · '));
       var pills = retr.map(function (r) { return '<span class="pill on">' + r + '</span>'; }).join('');
       setHTML('hc-retrievers', pills || '<span class="pill">none</span>');
+      if (d.crawl_active) {
+        var rate = d.docs_per_minute || 0;
+        setText('hc-crawl', rate.toFixed(1) + ' /min');
+        setText('hc-crawl-detail', (d.docs_added_since_start || 0) + ' docs added since boot');
+      } else {
+        setText('hc-crawl', 'idle');
+        setText('hc-crawl-detail', 'no in-serve crawler');
+      }
     }).catch(function (e) {
       // Likely 502 because the server is mid-crawl (writer lock). Show a
       // friendly indicator and keep polling — when the cycle completes,

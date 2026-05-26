@@ -174,6 +174,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		vectorNodes:  vectorNodes,
 		hnsw:         hnswGraph,
 		started:      time.Now(),
+		// Iter 403: capture doc count at startup so /stats can compute
+		// per-minute crawl rate without long-term counters.
+		startupDocs: vectorNodes, // placeholder; overwritten below
+	}
+	// Read actual doc count at startup for crawl-rate baseline.
+	if st, _ := ps.Stats(ctx); st.Documents > 0 {
+		srv.startupDocs = int(st.Documents)
+	} else {
+		srv.startupDocs = 0
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
@@ -332,6 +341,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 	log.Printf("in-serve crawler: %d seeds queued (concurrency=%d, depth=%d, checkpoint=%s)",
 		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery)
+	s.crawlActive = true
 
 	// Checkpoint goroutine.
 	go func() {
@@ -385,6 +395,13 @@ type pebbleHTTP struct {
 
 	// Iter 394: per-IP token-bucket rate limiter. Nil = disabled.
 	rl *rateLimiter
+
+	// Iter 403: doc count at startup so /stats can report crawl rate
+	// without persistent counter tables. docs_added = current - startup,
+	// rate = docs_added / uptime.
+	startupDocs int
+	// crawlActive = true when iter-402 in-serve crawler is running.
+	crawlActive bool
 
 	// Iter 259: bounded in-memory HyDE cache. /research?expand=true issues a
 	// chat call PER sub-query, so a sticky workload (repeated queries, slow
@@ -725,6 +742,22 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		retrievers = append(retrievers, "dense:find_similar_url_only")
 	}
 	out["retrievers"] = retrievers
+	// Iter 403: crawl-rate surface for the in-serve crawler (iter 402).
+	// Computes docs added since process start and per-minute rate.
+	if s.crawlActive {
+		uptimeMin := time.Since(s.started).Minutes()
+		added := int(st.Documents) - s.startupDocs
+		if added < 0 {
+			added = 0
+		}
+		rate := 0.0
+		if uptimeMin > 0 {
+			rate = float64(added) / uptimeMin
+		}
+		out["crawl_active"] = true
+		out["docs_added_since_start"] = added
+		out["docs_per_minute"] = rate
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -759,6 +792,32 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_uptime_seconds Seconds since pebble-serve started.\n")
 	fmt.Fprintf(w, "# TYPE cosift_uptime_seconds counter\n")
 	fmt.Fprintf(w, "cosift_uptime_seconds %.0f\n", uptime)
+	// Iter 403: in-serve crawler progress. crawl_active gauges whether
+	// the iter-402 crawler goroutine is running; docs_added is monotonic
+	// since process start; docs_per_minute is the rolling rate.
+	crawlActiveGauge := 0
+	if s.crawlActive {
+		crawlActiveGauge = 1
+	}
+	fmt.Fprintf(w, "# HELP cosift_crawl_active 1 if in-serve crawler is running, 0 otherwise.\n")
+	fmt.Fprintf(w, "# TYPE cosift_crawl_active gauge\n")
+	fmt.Fprintf(w, "cosift_crawl_active %d\n", crawlActiveGauge)
+	if s.crawlActive {
+		added := count - int64(s.startupDocs)
+		if added < 0 {
+			added = 0
+		}
+		fmt.Fprintf(w, "# HELP cosift_crawl_docs_added_total Documents added by the in-serve crawler since process start.\n")
+		fmt.Fprintf(w, "# TYPE cosift_crawl_docs_added_total counter\n")
+		fmt.Fprintf(w, "cosift_crawl_docs_added_total %d\n", added)
+		rate := 0.0
+		if uptime > 0 {
+			rate = float64(added) / (uptime / 60)
+		}
+		fmt.Fprintf(w, "# HELP cosift_crawl_docs_per_minute Recent crawl rate (docs added per minute, averaged since process start).\n")
+		fmt.Fprintf(w, "# TYPE cosift_crawl_docs_per_minute gauge\n")
+		fmt.Fprintf(w, "cosift_crawl_docs_per_minute %.2f\n", rate)
+	}
 	// Iter 260: HyDE cache effectiveness. Hits/misses both monotonic so
 	// Prometheus rate() over these gives cache pressure under load.
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_hits_total HyDE cache hits (expandQuery served from memory).\n")
