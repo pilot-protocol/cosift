@@ -259,6 +259,11 @@ func (h *HNSW) greedyDescend(q []float32, start int, lvl int) int {
 	curDist := -dot(q, h.nodes[cur].vec)
 	for {
 		moved := false
+		// Iter 411: same defensive guard as searchLayer — skip zero-value
+		// nodes (corrupt-load gap) instead of panicking.
+		if len(h.nodes[cur].neighbors) == 0 {
+			return cur
+		}
 		for _, nb := range h.nodes[cur].neighbors[minInt(lvl, len(h.nodes[cur].neighbors)-1)] {
 			d := -dot(q, h.nodes[nb].vec)
 			if d < curDist {
@@ -306,6 +311,13 @@ func (h *HNSW) searchLayer(q []float32, entryPoints []int, ef int, lvl int) []ca
 			break
 		}
 		// Expand neighbors at this layer.
+		// Iter 411: defensive — a node with len(neighbors)==0 (zero-value
+		// from a failed-incremental-persist gap pre-iter-411 fix) would
+		// produce nbIdx=-1 and panic. Skip such nodes; their absence from
+		// the graph is harmless beyond reduced recall.
+		if len(h.nodes[nearest.idx].neighbors) == 0 {
+			continue
+		}
 		nbIdx := minInt(lvl, len(h.nodes[nearest.idx].neighbors)-1)
 		for _, nb := range h.nodes[nearest.idx].neighbors[nbIdx] {
 			if _, ok := visited[nb]; ok {

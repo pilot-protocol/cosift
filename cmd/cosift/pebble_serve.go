@@ -786,6 +786,108 @@ func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
 	return nil
 }
 
+// scatterSearch fans /search out to every peer with the given params,
+// collects per-peer hit lists, RRF-merges them, and returns the merged
+// top-k. Used by /search, /answer, /research gateway modes. Iter 410.
+// includeText forces text inlining on the scatter so callers that need
+// passages (synth endpoints) get them in one round trip.
+func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeerK int, params url.Values, includeText bool) (hits []searchHit, warns []string, totalCandidates int) {
+	srcQ := url.Values{}
+	for kk, vv := range params {
+		srcQ[kk] = vv
+	}
+	srcQ.Set("q", q)
+	srcQ.Set("k", strconv.Itoa(perPeerK))
+	srcQ.Set("cluster_local", "1")
+	if includeText {
+		srcQ.Set("include_text", "true")
+	}
+	queryStr := srcQ.Encode()
+
+	type peerResult struct {
+		peerIdx int
+		hits    []searchHit
+		err     error
+	}
+	resCh := make(chan peerResult, len(s.cluster.Peers))
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	for i, peer := range s.cluster.Peers {
+		if peer == "" {
+			continue
+		}
+		i, peer := i, peer
+		go func() {
+			endpoint := "http://" + peer + "/search?" + queryStr
+			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
+				endpoint = strings.TrimRight(peer, "/") + "/search?" + queryStr
+			}
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if t := s.cluster.PeerAuthToken; t != "" {
+				req.Header.Set("Authorization", "Bearer "+t)
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				resCh <- peerResult{peerIdx: i, err: err}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("peer %s returned %d", peer, resp.StatusCode)}
+				return
+			}
+			var sr struct {
+				Hits []searchHit `json:"hits"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+			if err := json.Unmarshal(body, &sr); err != nil {
+				resCh <- peerResult{peerIdx: i, err: err}
+				return
+			}
+			resCh <- peerResult{peerIdx: i, hits: sr.Hits}
+		}()
+	}
+	lists := [][]index.Hit{}
+	hitFull := map[string]searchHit{}
+	for i := 0; i < len(s.cluster.Peers); i++ {
+		if s.cluster.Peers[i] == "" {
+			continue
+		}
+		select {
+		case res := <-resCh:
+			if res.err != nil {
+				warns = append(warns, fmt.Sprintf("peer %d (%s) failed: %v", res.peerIdx, s.cluster.Peers[res.peerIdx], res.err))
+				continue
+			}
+			totalCandidates += len(res.hits)
+			peerList := make([]index.Hit, len(res.hits))
+			for j, h := range res.hits {
+				peerList[j] = index.Hit{URL: h.URL, Title: h.Title, Score: h.Score}
+				if _, ok := hitFull[h.URL]; !ok {
+					hitFull[h.URL] = h
+				}
+			}
+			lists = append(lists, peerList)
+		case <-ctx.Done():
+			warns = append(warns, "client context cancelled before all peers responded")
+			break
+		}
+	}
+	fused := rrfFuse(lists, 60)
+	if len(fused) > k {
+		fused = fused[:k]
+	}
+	hits = make([]searchHit, 0, len(fused))
+	for _, f := range fused {
+		full, ok := hitFull[f.URL]
+		if !ok {
+			full = searchHit{URL: f.URL, Title: f.Title}
+		}
+		full.Score = f.Score
+		hits = append(hits, full)
+	}
+	return hits, warns, totalCandidates
+}
+
 // handleSearchGateway is the iter-409 scatter-gather entry. It fans out the
 // search to every peer's /search (including its own shard via the peers[]
 // table), each peer over-fetches k*2 candidates locally, gateway RRF-merges
@@ -804,129 +906,181 @@ func (s *pebbleHTTP) handleSearchGateway(w http.ResponseWriter, r *http.Request)
 			k = n
 		}
 	}
-	// Each peer returns k*2 candidates to give RRF something to merge.
 	perPeerK := k * 2
 	if perPeerK < 20 {
 		perPeerK = 20
 	}
-
-	// Build the per-peer query — same URL but force cluster_local=1 and a
-	// bumped k. Strip /search prefix so we control the path explicitly.
-	srcQ := r.URL.Query()
-	srcQ.Set("k", strconv.Itoa(perPeerK))
-	srcQ.Set("cluster_local", "1")
-	queryStr := srcQ.Encode()
-
-	type peerResult struct {
-		peerIdx int
-		hits    []index.Hit
-		err     error
-		took    time.Duration
-		label   string
-	}
-	resCh := make(chan peerResult, len(s.cluster.Peers))
-
-	httpClient := &http.Client{Timeout: 8 * time.Second}
-	for i, peer := range s.cluster.Peers {
-		if peer == "" {
-			continue
-		}
-		i, peer := i, peer
-		go func() {
-			t0 := time.Now()
-			endpoint := "http://" + peer + "/search?" + queryStr
-			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
-				endpoint = strings.TrimRight(peer, "/") + "/search?" + queryStr
-			}
-			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
-			if t := s.cluster.PeerAuthToken; t != "" {
-				req.Header.Set("Authorization", "Bearer "+t)
-			}
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				resCh <- peerResult{peerIdx: i, err: err, took: time.Since(t0)}
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 300 {
-				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("peer %s returned %d", peer, resp.StatusCode), took: time.Since(t0)}
-				return
-			}
-			var sr struct {
-				Retriever string      `json:"retriever"`
-				Hits      []searchHit `json:"hits"`
-			}
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-			if err := json.Unmarshal(body, &sr); err != nil {
-				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("decode peer %s: %w", peer, err), took: time.Since(t0)}
-				return
-			}
-			hits := make([]index.Hit, len(sr.Hits))
-			for j, h := range sr.Hits {
-				hits[j] = index.Hit{URL: h.URL, Title: h.Title, Score: h.Score}
-			}
-			resCh <- peerResult{peerIdx: i, hits: hits, took: time.Since(t0), label: sr.Retriever}
-		}()
-	}
-	// Collect.
-	lists := make([][]index.Hit, 0, len(s.cluster.Peers))
-	warns := []string{}
-	hitURLToFull := map[string]searchHit{} // for excerpt/title pass-through on merged hits
-	totalCandidates := 0
-	for i := 0; i < len(s.cluster.Peers); i++ {
-		if s.cluster.Peers[i] == "" {
-			continue
-		}
-		select {
-		case res := <-resCh:
-			if res.err != nil {
-				warns = append(warns, fmt.Sprintf("peer %d (%s) failed: %v", res.peerIdx, s.cluster.Peers[res.peerIdx], res.err))
-				continue
-			}
-			lists = append(lists, res.hits)
-			totalCandidates += len(res.hits)
-		case <-r.Context().Done():
-			warns = append(warns, "client context cancelled before all peers responded")
-			break
-		}
-	}
-	// RRF-merge across shards.
-	fused := rrfFuse(lists, 60)
-	if len(fused) > k {
-		fused = fused[:k]
-	}
-	// We don't have per-hit excerpt/title from the merged form in index.Hit
-	// alone — but the per-peer response embedded those. Re-walk lists to
-	// recover full searchHit fields for the top-k URLs.
-	for _, l := range lists {
-		for _, h := range l {
-			if _, ok := hitURLToFull[h.URL]; !ok {
-				// h is index.Hit; we don't have excerpt here without a second
-				// pass. To keep iter 409 tight, leave excerpt empty and let
-				// callers refetch via /contents if they need it. This trades
-				// detail for the RTT savings.
-				hitURLToFull[h.URL] = searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
-			}
-		}
-	}
-	out := make([]searchHit, 0, len(fused))
-	for _, f := range fused {
-		full, ok := hitURLToFull[f.URL]
-		if !ok {
-			full = searchHit{URL: f.URL, Title: f.Title, Score: f.Score}
-		}
-		full.Score = f.Score // fused RRF score
-		out = append(out, full)
-	}
+	// Iter 410: delegated to shared scatterSearch helper.
+	hits, warns, total := s.scatterSearch(r.Context(), q, k, perPeerK, r.URL.Query(), r.URL.Query().Get("include_text") == "true")
 	resp := searchResponse{
 		Query:           q,
-		Retriever:       fmt.Sprintf("gateway:rrf(%d-shard)", len(lists)),
-		Hits:            out,
-		TotalCandidates: totalCandidates,
+		Retriever:       fmt.Sprintf("gateway:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
+		Hits:            hits,
+		TotalCandidates: total,
 		Warnings:        append(warns, s.warningsFor(r)...),
 		Took:            time.Since(start).String(),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// numNonEmpty counts non-empty entries in a peer list (peers[i]="" means
+// "skip", typically MyShardID). Iter 410.
+func numNonEmpty(ps []string) int {
+	n := 0
+	for _, p := range ps {
+		if p != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// handleResearchGateway runs the iter-243 planner on the gateway, scatters
+// each sub-query to peers (collecting RRF-merged hits with text), then
+// runs a single research synth. Iter 410.
+func (s *pebbleHTTP) handleResearchGateway(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented, "/research requires cfg.Chat.Model on the gateway")
+		return
+	}
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 8
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			k = n
+		}
+	}
+	// 1. Plan via chat.
+	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
+		{Role: "system", Content: researchPlanPrompt},
+		{Role: "user", Content: q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "plan: "+err.Error())
+		return
+	}
+	subs := parseSubQueries(planRaw, q)
+	if len(subs) > 5 {
+		subs = subs[:5]
+	}
+	// 2. Scatter per sub-query. Dedup by URL, keep best fused score.
+	type ranked struct {
+		score float64
+		hit   searchHit
+	}
+	best := make(map[string]ranked, k*len(subs))
+	allWarns := []string{}
+	perSub := k * 2
+	for _, sq := range subs {
+		hits, warns, _ := s.scatterSearch(r.Context(), sq, perSub, perSub, r.URL.Query(), true)
+		allWarns = append(allWarns, warns...)
+		for _, h := range hits {
+			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+				best[h.URL] = ranked{score: h.Score, hit: h}
+			}
+		}
+	}
+	pooled := make([]ranked, 0, len(best))
+	for _, v := range best {
+		pooled = append(pooled, v)
+	}
+	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
+	if len(pooled) > k {
+		pooled = pooled[:k]
+	}
+	// 3. Build prompt.
+	sources := make([]answerSource, 0, len(pooled))
+	var promptSources strings.Builder
+	for i, p := range pooled {
+		src := answerSource{ID: i + 1, URL: p.hit.URL, Title: p.hit.Title, Excerpt: p.hit.Excerpt, Author: p.hit.Author, PublishedAt: p.hit.PublishedAt}
+		text := p.hit.Text
+		if text == "" {
+			text = p.hit.Excerpt
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, p.hit.Title, p.hit.URL, text)
+	}
+	if len(sources) == 0 {
+		writeJSON(w, http.StatusOK, researchResponse{
+			Query: q, Plan: subs, Answer: "No matching sources across the cluster.",
+			Sources: sources, Model: s.chat.Model(),
+			Warnings: allWarns, Took: time.Since(start).String(),
+		})
+		return
+	}
+	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
+		{Role: "system", Content: researchSynthPrompt},
+		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, researchResponse{
+		Query: q, Plan: subs, Answer: answer, Sources: sources,
+		Model:    s.chat.Model(),
+		Retriever: fmt.Sprintf("gateway:rrf(%d-shard,%d-sub)", numNonEmpty(s.cluster.Peers), len(subs)),
+		Warnings: allWarns, Took: time.Since(start).String(),
+	})
+}
+
+// handleAnswerGateway scatters /search across peers with include_text, runs
+// a SINGLE chat synth on the gateway. Iter 410.
+func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented, "/answer requires cfg.Chat.Model on the gateway")
+		return
+	}
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 5
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			k = n
+		}
+	}
+	hits, warns, total := s.scatterSearch(r.Context(), q, k, k*2, r.URL.Query(), true)
+	if len(hits) == 0 {
+		writeJSON(w, http.StatusOK, answerResponse{
+			Query: q, Answer: "No matching sources across the cluster.",
+			Sources: []answerSource{}, Model: s.chat.Model(),
+			TotalCandidates: total, Warnings: warns, Took: time.Since(start).String(),
+		})
+		return
+	}
+	sources := make([]answerSource, 0, len(hits))
+	var promptSources strings.Builder
+	for i, h := range hits {
+		src := answerSource{ID: i + 1, URL: h.URL, Title: h.Title, Excerpt: h.Excerpt, Author: h.Author, PublishedAt: h.PublishedAt}
+		text := h.Text
+		if text == "" {
+			text = h.Excerpt
+		}
+		sources = append(sources, src)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, h.Title, h.URL, text)
+	}
+	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
+		{Role: "system", Content: answerSystemPrompt},
+		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, answerResponse{
+		Query: q, Answer: answer, Sources: sources, Model: s.chat.Model(),
+		Retriever: fmt.Sprintf("gateway:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
+		TotalCandidates: total, Warnings: warns, Took: time.Since(start).String(),
+	})
 }
 
 // handleCrawlEnqueue accepts a single URL forwarded from a peer shard and
@@ -2763,6 +2917,13 @@ type answerResponse struct {
 }
 
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
+	// Iter 410: gateway scatter-gather. When clustered + gateway mode +
+	// not already serving as a leaf for someone else, fan-out retrieval
+	// to peers (with include_text), then run a SINGLE synth here.
+	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
+		s.handleAnswerGateway(w, r)
+		return
+	}
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented,
 			"/answer requires cfg.Chat.Model to be set (point cosift.json's chat.url at any OpenAI-compatible endpoint)")
@@ -3070,6 +3231,12 @@ type researchResponse struct {
 }
 
 func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
+	// Iter 410: gateway scatter-gather. Planner runs once on gateway,
+	// each sub-query scatters to peers, single synth here.
+	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
+		s.handleResearchGateway(w, r)
+		return
+	}
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented,
 			"/research requires cfg.Chat.Model to be set")

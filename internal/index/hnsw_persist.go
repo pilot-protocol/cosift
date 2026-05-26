@@ -66,15 +66,19 @@ func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx i
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// Meta first — readers can use it to size the slice before iterating
-	// nodes (Pebble's iteration order puts 0x00 sub-prefix before 0x01).
-	meta := encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, len(h.nodes))
-	if err := ps.PutVectorMeta(ctx, meta); err != nil {
-		return fmt.Errorf("put vector meta: %w", err)
-	}
 	if fromIdx >= len(h.nodes) {
-		return nil // nothing to write
+		// Even with no node writes, refresh meta so changes to maxLevel /
+		// entryPoint land on disk.
+		meta := encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, len(h.nodes))
+		return ps.PutVectorMeta(ctx, meta)
 	}
+	// Iter 408: write nodes FIRST, then meta. The earlier order (meta then
+	// nodes) was unsafe — if the node batch failed, meta would point past
+	// actual data on disk and LoadHNSW would allocate slots for nodes that
+	// never landed, causing 'neighbors[-1]' panics during search.
+	// New order: meta ALWAYS lags or equals nodes-on-disk. Worst case after
+	// partial write: meta says N nodes, disk has N+M; the M extras are
+	// orphan but harmless (LoadHNSW caps at meta.nodeCount).
 	entries := make([]store.VectorNodeEntry, 0, len(h.nodes)-fromIdx)
 	for i := fromIdx; i < len(h.nodes); i++ {
 		entries = append(entries, store.VectorNodeEntry{
@@ -82,7 +86,14 @@ func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx i
 			Blob: encodeHNSWNode(&h.nodes[i]),
 		})
 	}
-	return ps.PutVectorNodesBatch(ctx, entries)
+	if err := ps.PutVectorNodesBatch(ctx, entries); err != nil {
+		return fmt.Errorf("put vector nodes batch: %w", err)
+	}
+	meta := encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, len(h.nodes))
+	if err := ps.PutVectorMeta(ctx, meta); err != nil {
+		return fmt.Errorf("put vector meta: %w", err)
+	}
+	return nil
 }
 
 // LoadHNSW returns an HNSW reconstructed from a PebbleStore. Returns
