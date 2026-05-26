@@ -20,6 +20,7 @@ package index
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -91,6 +92,71 @@ func (h *HNSW) Len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.nodes)
+}
+
+// SampleVectors returns up to n vectors drawn uniformly at random from the
+// graph (without replacement). Used by iter-415 PQ codebook training to
+// build a representative training set without loading the entire corpus
+// into RAM. Returns fewer than n when the graph has fewer nodes.
+// Iter 415.
+func (h *HNSW) SampleVectors(n int, rngSeed int64) [][]float32 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.nodes) == 0 {
+		return nil
+	}
+	// Iter 415: filter out zero-value / partial-persisted nodes whose vec
+	// is empty — same defensive guard searchLayer uses (iter 411).
+	idxs := make([]int, 0, len(h.nodes))
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) > 0 {
+			idxs = append(idxs, i)
+		}
+	}
+	if len(idxs) == 0 {
+		return nil
+	}
+	if n >= len(idxs) {
+		out := make([][]float32, 0, len(idxs))
+		for _, i := range idxs {
+			cp := make([]float32, len(h.nodes[i].vec))
+			copy(cp, h.nodes[i].vec)
+			out = append(out, cp)
+		}
+		return out
+	}
+	rng := rand.New(rand.NewSource(rngSeed))
+	rng.Shuffle(len(idxs), func(i, j int) { idxs[i], idxs[j] = idxs[j], idxs[i] })
+	idxs = idxs[:n]
+	out := make([][]float32, 0, n)
+	for _, i := range idxs {
+		cp := make([]float32, len(h.nodes[i].vec))
+		copy(cp, h.nodes[i].vec)
+		out = append(out, cp)
+	}
+	return out
+}
+
+// EncodeAll iterates every node in the graph and encodes its vector
+// against the supplied codebook. Returns parallel slices (nodeIDs, codes)
+// suitable for batched persist via PebbleStore.PutPQCodesBatch. Iter 415.
+func (h *HNSW) EncodeAll(cb *PQCodebook) ([]uint64, [][]uint16, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]uint64, 0, len(h.nodes))
+	codes := make([][]uint16, 0, len(h.nodes))
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) == 0 {
+			continue
+		}
+		code, err := cb.Encode(h.nodes[i].vec)
+		if err != nil {
+			return nil, nil, fmt.Errorf("encode node %d: %w", i, err)
+		}
+		ids = append(ids, uint64(i))
+		codes = append(codes, code)
+	}
+	return ids, codes, nil
 }
 
 // LookupVectorByURL returns the persisted unit-normalized vector for the

@@ -37,6 +37,71 @@ type PQCodebook struct {
 	Centroids [][][]float32 // [M][K][SubDim]
 }
 
+// TrainPQCodebookParallel is the iter-415 parallelization: subspaces run
+// concurrently across maxParallel workers. K-means per subspace is the
+// dominant cost (~70% of train time), so the speedup is near-linear up
+// to GOMAXPROCS. Same return contract as TrainPQCodebook. Iter 415.
+func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel int, rngSeed int64) (*PQCodebook, error) {
+	if len(train) == 0 {
+		return nil, errors.New("empty training set")
+	}
+	if dim <= 0 || M <= 0 || K <= 0 {
+		return nil, errors.New("dim/M/K must be positive")
+	}
+	if dim%M != 0 {
+		return nil, fmt.Errorf("dim %d not divisible by M %d", dim, M)
+	}
+	if K > 65536 {
+		return nil, errors.New("K must fit in uint16 (≤ 65536) for storage layout")
+	}
+	subDim := dim / M
+	if iters <= 0 {
+		iters = 25
+	}
+	if maxParallel <= 0 {
+		maxParallel = 4
+	}
+	cb := &PQCodebook{Dim: dim, M: M, K: K, SubDim: subDim,
+		Centroids: make([][][]float32, M)}
+	// Sanity-check input dims once on the calling goroutine.
+	for i, v := range train {
+		if len(v) != dim {
+			return nil, fmt.Errorf("train[%d]: got dim %d, want %d", i, len(v), dim)
+		}
+	}
+	type job struct{ sub int }
+	jobs := make(chan job, M)
+	errCh := make(chan error, M)
+	for w := 0; w < maxParallel; w++ {
+		go func(workerSeed int64) {
+			rng := rand.New(rand.NewSource(workerSeed))
+			for j := range jobs {
+				subTrain := make([][]float32, len(train))
+				for i, v := range train {
+					subTrain[i] = v[j.sub*subDim : (j.sub+1)*subDim]
+				}
+				centroids, err := kmeansSubspace(subTrain, K, subDim, iters, rng)
+				if err != nil {
+					errCh <- fmt.Errorf("subspace %d: %w", j.sub, err)
+					return
+				}
+				cb.Centroids[j.sub] = centroids
+				errCh <- nil
+			}
+		}(rngSeed + int64(w))
+	}
+	for sub := 0; sub < M; sub++ {
+		jobs <- job{sub: sub}
+	}
+	close(jobs)
+	for sub := 0; sub < M; sub++ {
+		if err := <-errCh; err != nil {
+			return nil, err
+		}
+	}
+	return cb, nil
+}
+
 // TrainPQCodebook runs lloyd's k-means per subspace to fit a PQ codebook
 // over the given training set. Returns an error if dims are inconsistent
 // or M doesn't divide Dim cleanly. Iter 413.

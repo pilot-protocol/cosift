@@ -276,6 +276,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
+	// Iter 415: PQ training admin endpoint. Same auth as crawl-enqueue
+	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
+	// 224K-vec corpus we have today it takes ~minutes; operator-only.
+	mux.HandleFunc("POST /admin/pq-train", wrap(srv.handlePQTrain))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -1086,6 +1090,112 @@ func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request)
 		Query: q, Answer: answer, Sources: sources, Model: s.chat.Model(),
 		Retriever: fmt.Sprintf("gateway:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
 		TotalCandidates: total, Warnings: warns, Took: time.Since(start).String(),
+	})
+}
+
+// handlePQTrain trains a PQ codebook on a sample of the current HNSW
+// graph, then encodes ALL nodes and persists codes + codebook to Pebble.
+// Synchronous; returns when training completes. Iter 415.
+type pqTrainReq struct {
+	SampleSize  int `json:"sample_size"`  // default 50000
+	M           int `json:"m"`            // default dim/8 (subspaces of size 8)
+	K           int `json:"k"`            // default 256
+	Iters       int `json:"iters"`        // default 15
+	Parallel    int `json:"parallel"`     // default GOMAXPROCS
+}
+
+func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.hnsw == nil || s.hnsw.Len() == 0 {
+		writeProblem(w, http.StatusBadRequest, "pq-train requires an in-memory HNSW with nodes")
+		return
+	}
+	var req pqTrainReq
+	if r.ContentLength > 0 {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+		_ = json.Unmarshal(body, &req)
+	}
+	if req.SampleSize <= 0 {
+		req.SampleSize = 50000
+	}
+	if req.K <= 0 {
+		req.K = 256
+	}
+	if req.Iters <= 0 {
+		req.Iters = 15
+	}
+	if req.Parallel <= 0 {
+		req.Parallel = 8
+	}
+	if s.embedder == nil {
+		writeProblem(w, http.StatusBadRequest, "pq-train needs an embedder to know the vector dim")
+		return
+	}
+	dim := s.embedder.Dim()
+	M := req.M
+	if M <= 0 {
+		// Default: 1 subspace per 8 dims. For 768d → 96 subspaces.
+		M = dim / 8
+		if M <= 0 {
+			M = 1
+		}
+	}
+	if dim%M != 0 {
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("dim %d not divisible by M %d", dim, M))
+		return
+	}
+	t0 := time.Now()
+	log.Printf("pq-train: sampling %d / %d vectors (dim=%d, M=%d, K=%d, iters=%d, parallel=%d)",
+		req.SampleSize, s.hnsw.Len(), dim, M, req.K, req.Iters, req.Parallel)
+	sample := s.hnsw.SampleVectors(req.SampleSize, time.Now().UnixNano())
+	sampledN := len(sample)
+	log.Printf("pq-train: training codebook on %d samples...", sampledN)
+	cb, err := index.TrainPQCodebookParallel(sample, dim, M, req.K, req.Iters, req.Parallel, time.Now().UnixNano())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "train: "+err.Error())
+		return
+	}
+	trainElapsed := time.Since(t0)
+	log.Printf("pq-train: codebook trained in %s; persisting...", trainElapsed)
+	if err := cb.Persist(r.Context(), s.store); err != nil {
+		writeProblem(w, http.StatusInternalServerError, "persist codebook: "+err.Error())
+		return
+	}
+	encodeT0 := time.Now()
+	log.Printf("pq-train: encoding %d nodes...", s.hnsw.Len())
+	ids, codes, err := s.hnsw.EncodeAll(cb)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "encode: "+err.Error())
+		return
+	}
+	entries := make([]store.PQCodeEntry, len(ids))
+	for i := range ids {
+		entries[i] = store.PQCodeEntry{ID: ids[i], Blob: index.EncodePQCode(codes[i])}
+	}
+	if err := s.store.PutPQCodesBatch(r.Context(), entries); err != nil {
+		writeProblem(w, http.StatusInternalServerError, "put codes: "+err.Error())
+		return
+	}
+	encodeElapsed := time.Since(encodeT0)
+	totalElapsed := time.Since(t0)
+	log.Printf("pq-train: done in %s (train=%s, encode+persist=%s, %d codes written)",
+		totalElapsed, trainElapsed, encodeElapsed, len(ids))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sample_size":    sampledN,
+		"dim":            dim,
+		"M":              M,
+		"K":              req.K,
+		"iters":          req.Iters,
+		"nodes_encoded":  len(ids),
+		"train_elapsed":  trainElapsed.String(),
+		"encode_elapsed": encodeElapsed.String(),
+		"total_elapsed":  totalElapsed.String(),
 	})
 }
 
