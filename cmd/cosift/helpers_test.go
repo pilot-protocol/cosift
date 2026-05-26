@@ -94,6 +94,30 @@ func TestRrfFuse(t *testing.T) {
 	if len(got0) == 0 || got0[0].URL != "https://a" {
 		t.Errorf("rrfFuse(fuseK=0): expected https://a top, got %+v", got0)
 	}
+
+	// Iter 378: hybrid-fallback near-miss. /search?retriever=hybrid runs
+	// BM25 and dense; if one returns an empty list (e.g. graph loaded but
+	// query embeds to a vec with no neighbors), rrfFuse must preserve the
+	// other list's ordering — not crash, not drop everything.
+	emptyDense := [][]index.Hit{listA, {}}
+	gotEmpty := rrfFuse(emptyDense, 60)
+	if len(gotEmpty) != 3 || gotEmpty[0].URL != "https://a" || gotEmpty[1].URL != "https://b" || gotEmpty[2].URL != "https://c" {
+		t.Errorf("rrfFuse with one empty list should preserve other's ranking, got %+v", gotEmpty)
+	}
+	// And the dual: empty BM25, dense intact (the URL-mode dense case).
+	emptyBM := [][]index.Hit{{}, listB}
+	gotEmpty2 := rrfFuse(emptyBM, 60)
+	if len(gotEmpty2) != 2 || gotEmpty2[0].URL != "https://a" || gotEmpty2[1].URL != "https://b" {
+		t.Errorf("rrfFuse with empty BM25 list should preserve dense ranking, got %+v", gotEmpty2)
+	}
+
+	// Single-list input: behaves as a pass-through of the input order. Same
+	// invariant the iter-373 hybrid fallback relies on when only one
+	// retriever fires.
+	single := rrfFuse([][]index.Hit{listA}, 60)
+	if len(single) != 3 || single[0].URL != "https://a" || single[2].URL != "https://c" {
+		t.Errorf("rrfFuse single list should preserve order, got %+v", single)
+	}
 }
 
 func TestParseSubQueries(t *testing.T) {
