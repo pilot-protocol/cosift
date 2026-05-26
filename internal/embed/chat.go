@@ -48,9 +48,15 @@ type OpenAIChatClient struct {
 }
 
 // NewOpenAIChat builds a client. URL empty → public OpenAI.
+//
+// Iter 393: URL is forgiving — accepts either the full endpoint
+// ("/v1/chat/completions") or the base ("/v1") and appends
+// "/chat/completions" when missing. Mirrors iter-392 on the embed client.
 func NewOpenAIChat(apiKey, url, model string) *OpenAIChatClient {
 	if url == "" {
 		url = "https://api.openai.com/v1/chat/completions"
+	} else if !strings.HasSuffix(strings.TrimRight(url, "/"), "/chat/completions") {
+		url = strings.TrimRight(url, "/") + "/chat/completions"
 	}
 	return &OpenAIChatClient{
 		APIKey: apiKey,
@@ -99,7 +105,9 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
@@ -150,7 +158,9 @@ func (c *OpenAIChatClient) ChatStream(ctx context.Context, msgs []ChatMsg, onChu
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 

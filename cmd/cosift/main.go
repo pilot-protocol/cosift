@@ -323,19 +323,38 @@ func authStatus(configured bool, key string, urlSet bool) string {
 	}
 }
 
-// resolveEmbedAPIKey returns the first non-empty embedder API key found in
-// env, in precedence order. Iter 392 adds COSIFT_EMBED_API_KEY so callers
-// using a non-OpenAI embedder don't have to set a variable named for the
-// wrong provider. Empty result is a valid "use anonymously" signal for
-// local self-hosted embedders.
-func resolveEmbedAPIKey() string {
-	for _, k := range []string{"COSIFT_EMBED_API_KEY", "OPENAI_API_KEY", "OPENAI"} {
+// resolveAPIKey returns the first non-empty API key from a slot-specific env
+// var, falling back to OPENAI_API_KEY / OPENAI. Iter 392/393: lets operators
+// using a non-OpenAI embedder or chat endpoint name keys for what they
+// actually are. Empty result is "use anonymously" — valid for local
+// self-hosted endpoints.
+//
+// slot: "embed" → checks COSIFT_EMBED_API_KEY first
+//       "chat"  → checks COSIFT_CHAT_API_KEY first
+func resolveAPIKey(slot string) string {
+	var first string
+	switch slot {
+	case "embed":
+		first = "COSIFT_EMBED_API_KEY"
+	case "chat":
+		first = "COSIFT_CHAT_API_KEY"
+	}
+	if first != "" {
+		if v := os.Getenv(first); v != "" {
+			return v
+		}
+	}
+	for _, k := range []string{"OPENAI_API_KEY", "OPENAI"} {
 		if v := os.Getenv(k); v != "" {
 			return v
 		}
 	}
 	return ""
 }
+
+// resolveEmbedAPIKey kept for back-compat with the iter-392 call site. New
+// callers should use resolveAPIKey("embed"). Iter 393.
+func resolveEmbedAPIKey() string { return resolveAPIKey("embed") }
 
 // hnswPassageWriter bridges the crawler's iter-212 PassageWriter contract to
 // an in-memory index.HNSW graph. Each embedded passage looks up the doc's URL

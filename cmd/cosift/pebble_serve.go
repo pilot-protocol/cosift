@@ -167,24 +167,27 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
+	// Iter 393: anonymous auth when cfg.Chat.URL is set (self-hosted, no key
+	// needed). Required only for hosted defaults (empty URL = api.openai.com).
 	if cfg.Chat.Model != "" {
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI")
-		}
+		apiKey := resolveAPIKey("chat")
 		srv.chat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
-		log.Printf("pebble-serve: /answer enabled (chat model=%s)", cfg.Chat.Model)
-	}
-	// Iter 363: embedder for ?retriever=dense. Built when cfg.Embeddings.Model
-	// is set; same OPENAI key path as the chat client. Required alongside the
-	// iter-362 loaded HNSW graph — having either alone gives a warning.
-	if cfg.Embeddings.Model != "" {
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI")
+		auth := "anonymous"
+		if apiKey != "" {
+			auth = "bearer-token"
 		}
+		log.Printf("pebble-serve: /answer enabled (chat model=%s, auth=%s)", cfg.Chat.Model, auth)
+	}
+	// Iter 363/393: embedder for ?retriever=dense. Same anonymous-when-URL
+	// semantics as chat above.
+	if cfg.Embeddings.Model != "" {
+		apiKey := resolveAPIKey("embed")
 		srv.embedder = embed.NewOpenAIClient(apiKey, cfg.Embeddings.URL, cfg.Embeddings.Model, cfg.Embeddings.Dim)
-		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d)", cfg.Embeddings.Model, cfg.Embeddings.Dim)
+		auth := "anonymous"
+		if apiKey != "" {
+			auth = "bearer-token"
+		}
+		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s)", cfg.Embeddings.Model, cfg.Embeddings.Dim, auth)
 	}
 	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
 	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
