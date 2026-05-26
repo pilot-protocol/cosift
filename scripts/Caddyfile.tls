@@ -1,0 +1,43 @@
+# Caddyfile for cosift.pilotprotocol.network with Let's Encrypt
+# (Apply once DNS A record cosift.pilotprotocol.network → 192.222.56.72 propagates.)
+#
+# Install:
+#   scp -i ~/Downloads/cosift.pem scripts/Caddyfile.tls ubuntu@192.222.56.72:/tmp/Caddyfile
+#   ssh ubuntu@192.222.56.72 'sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo systemctl restart caddy'
+#
+# Caddy will hit Let's Encrypt's HTTP-01 challenge on :80 within ~30s of restart.
+# Watch progress: sudo journalctl -u caddy -f
+#
+# To roll back to self-signed:
+#   restore the pre-iter-398 Caddyfile (in caddy package's example or this
+#   repo's git history before iter 398).
+
+{
+  # ACME contact — set to a real address you control so LE can email expiry
+  # warnings. Leaving the default is fine; LE will issue without it.
+  email teodor@vulturelabs.io
+}
+
+cosift.pilotprotocol.network {
+  reverse_proxy 127.0.0.1:7777
+  encode gzip zstd
+
+  # Security-relevant headers. cosift's JSON API doesn't need CSP/frame-deny
+  # but the landing page benefits from HSTS once we're sure LE issuance works.
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+
+  log {
+    output file /var/log/caddy/cosift.access.log {
+      roll_size 100mb
+      roll_keep 14
+    }
+    format console
+  }
+}
+
+# Optional: redirect bare apex / common typos to the canonical host.
+# Add more redirect blocks below if needed.
