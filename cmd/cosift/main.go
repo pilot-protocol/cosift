@@ -4458,6 +4458,7 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		"COSIFT_PEBBLE_CACHE_MB", "COSIFT_PEBBLE_MEMTABLE_MB", "COSIFT_PEBBLE_MEMTABLES", "COSIFT_PEBBLE_SYNC",
 		"COSIFT_BM25_K1", "COSIFT_BM25_B",
 		"COSIFT_HYDE_CACHE_SIZE", "COSIFT_PARA_CACHE_SIZE",
+		"COSIFT_LOAD_HNSW", // iter 362
 	}
 	var setEnvs []string
 	for _, name := range cosiftEnvs {

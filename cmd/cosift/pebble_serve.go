@@ -83,9 +83,30 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			return false
 		})
 	}
+	// Iter 362: optional graph load via COSIFT_LOAD_HNSW=true. Loading is
+	// gigabytes of RAM at production scale (10M vectors × 1536 dim ≈ 60GB),
+	// so it's opt-in. When the env var isn't set we just keep the cheap meta
+	// snapshot from iter 358 and operators see has_vectors=true.
+	var hnswGraph *index.HNSW
+	if hasVectors && os.Getenv("COSIFT_LOAD_HNSW") == "true" {
+		g, ok, err := index.LoadHNSW(ctx, ps)
+		switch {
+		case err != nil:
+			log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but LoadHNSW failed: %v", err)
+		case !ok:
+			log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but no HNSW meta on store")
+		default:
+			hnswGraph = g
+			log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d", g.Len(), vectorDim)
+		}
+	}
 	if hasVectors {
 		if vectorNodes > 0 {
-			log.Printf("pebble-serve: HNSW index present: %d nodes, dim=%d (graph not loaded into memory)", vectorNodes, vectorDim)
+			suffix := "(graph not loaded into memory; set COSIFT_LOAD_HNSW=true to load)"
+			if hnswGraph != nil {
+				suffix = "(graph loaded)"
+			}
+			log.Printf("pebble-serve: HNSW index present: %d nodes, dim=%d %s", vectorNodes, vectorDim, suffix)
 		} else {
 			log.Printf("pebble-serve: HNSW vector entries present (no meta blob — partial persist?)")
 		}
@@ -140,6 +161,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		hasVectors:   hasVectors,
 		vectorDim:    vectorDim,
 		vectorNodes:  vectorNodes,
+		hnsw:         hnswGraph,
 		started:      time.Now(),
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
@@ -258,6 +280,10 @@ type pebbleHTTP struct {
 	// surface dim + node count too. Cheap 20-byte read at startup.
 	vectorDim   int
 	vectorNodes int
+	// Iter 362: optional in-memory HNSW graph for dense retrieval. Loaded
+	// only when COSIFT_LOAD_HNSW=true at startup (gigabytes RAM at scale).
+	// Nil = graph not loaded; /search?retriever=dense returns a warning.
+	hnsw *index.HNSW
 
 	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without
@@ -369,6 +395,8 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["vector_nodes"] = s.vectorNodes
 		out["vector_dim"] = s.vectorDim
 	}
+	// Iter 362: whether the graph is loaded into memory for dense retrieval.
+	out["hnsw_loaded"] = s.hnsw != nil
 	writeJSON(w, http.StatusOK, out)
 }
 
