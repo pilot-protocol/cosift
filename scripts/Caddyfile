@@ -1,0 +1,25 @@
+# Live Caddyfile on the GH200 — iter 420.
+# Catches cosift-serve restarts (~30s including crawler drain) and feeds
+# the client a slow response instead of a 502. lb_try_duration covers
+# the worst case; fail_duration prevents quick re-fails from hammering.
+{
+  auto_https off
+  servers {
+    protocols h1 h2
+  }
+}
+:443 {
+  tls /etc/caddy/cert.pem /etc/caddy/key.pem
+  reverse_proxy 127.0.0.1:7777 {
+    lb_try_duration 90s
+    lb_try_interval 250ms
+    fail_duration   10s
+  }
+  encode gzip
+  request_body {
+    max_size 50MB
+  }
+}
+:80 {
+  redir https://192.222.56.72{uri} permanent
+}
