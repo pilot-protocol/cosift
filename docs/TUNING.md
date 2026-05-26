@@ -26,6 +26,25 @@ The default config is a reasonable starting point for a mid-sized general-web co
 
 **Composability**: `expand=hyde&rerank=true` and `expand=paraphrase&rerank=true` both work — the reranker always scores against the original `q`, not the expanded version.
 
+### Retriever: `?retriever=bm25` / `dense` / `hybrid`
+
+**BM25** (default): lexical. Best on term-heavy, exact-match queries. No ML deps, sub-ms latency on the candidate pool.
+
+**Dense** (`retriever=dense`): HNSW cosine over per-passage embeddings (pure-Go HNSW, no deps). Best on semantic / paraphrase-heavy queries where BM25 misses synonyms.
+
+**Hybrid** (`retriever=hybrid`): BM25 + dense, fused via RRF (k=60). Generally the strongest default when vectors are available — gets BM25's lexical precision + dense's semantic recall. Each retriever returns `fetchK` candidates; the fused top-`fetchK` feeds the rest of the pipeline (filter → enrich → rerank).
+
+**Requirements** for `dense` / `hybrid`:
+
+1. `COSIFT_LOAD_HNSW=true` at server start so the graph loads from the `'v'` family.
+2. An embedder configured (`cfg.Embeddings.Model`) so incoming queries can be embedded.
+
+Missing either → request silently falls through to BM25 with a warning. No 5xx — clients see the warning and `retriever: "bm25"` label and know to fix server-side config.
+
+**Composability**: `retriever=hybrid&expand=paraphrase&rerank=true` works — BM25 side picks up the paraphrase fan-out; dense side ignores it (HNSW search uses the embedded original query); rerank reorders the fused pool.
+
+**Cost**: `dense` = 1 embed call + 1 HNSW search per /search. `hybrid` = 1 embed + BM25 + HNSW + RRF merge. For /research, multiply by sub-queries (each gets its own retrieval). HNSW search is O(log N) so the dense cost is dominated by the embed RPC.
+
 ### BM25 parameters: `COSIFT_BM25_K1`, `COSIFT_BM25_B`
 
 Defaults: k1=1.2, b=0.75. Visible on `/stats` as `bm25_k1` / `bm25_b`.

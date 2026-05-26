@@ -17,6 +17,7 @@ These compose across `/search`, `/find_similar`, `/answer`, `/research`:
 | `since` / `until` | YYYY-MM-DD or RFC3339 | — | filters on `doc.PublishedAt`; zero-date docs dropped under any date filter |
 | `rerank` | bool | false | no-op when no reranker is configured |
 | `expand` | string | false | `true` / `hyde` → HyDE passage appended to q. `paraphrase` → N chat-generated paraphrases, BM25 each, RRF-fuse. Supported by /search, /answer, /research (per sub-query). No-op when no chat client is configured. |
+| `retriever` | string | `bm25` | `dense` → HNSW cosine over per-passage embeddings. `hybrid` → BM25 + dense, RRF-fused (k=60). Both require `COSIFT_LOAD_HNSW=true` at server start AND a configured embedder (`cfg.Embeddings.Model`); missing either → warning + silent fall through to BM25. Supported by /search, /answer, /research (per sub-query). |
 | `include_text` | bool | false | inline full `doc.Text` on each hit/source |
 
 `/search` has additional sort/enrich knobs (below). `/answer` and `/research` add `stream`.
@@ -112,6 +113,47 @@ curl 'http://127.0.0.1:7777/search?q=raft&rerank=true&expand=true'
 ```
 
 `retriever` becomes `bm25+hyde+rerank:<reranker name>`. `effective_query` appears when HyDE actually contributed terms.
+
+### Retriever choices (`?retriever=`)
+
+Three retrievers compose with the rest of the pipeline (filter → enrich → rerank). `?retriever=dense` and `?retriever=hybrid` apply to `/search`, `/answer`, and `/research` (per sub-query).
+
+| Value | What runs | When to use |
+|-------|-----------|-------------|
+| `bm25` (default) | Lucene-style BM25 over the inverted index. Zero ML deps. | Term-heavy corpora, exact matches, sub-ms latency. |
+| `dense` | HNSW cosine over per-passage embeddings (pure-Go HNSW, no deps). | Paraphrase-heavy / semantic queries where BM25 misses synonyms. |
+| `hybrid` | BM25 (with `expand` if requested) + dense, fused via Reciprocal Rank Fusion (k=60). | Generally the strongest default once vectors are available — gets BM25's lexical precision + dense's semantic recall. |
+
+`dense` and `hybrid` require **both**:
+
+1. The HNSW graph is loaded at startup — set `COSIFT_LOAD_HNSW=true` before starting `pebble-serve`. The graph is built during crawl/index when `cfg.Embeddings.Model` is set; persisted under the `'v'` family.
+2. A configured embedder (`cfg.Embeddings.*`). Without one, the server can't embed incoming queries.
+
+If either is missing the request **does not fail** — it falls through to BM25 and adds a warning to the response so the caller knows the request didn't run dense:
+
+```json
+{
+  "retriever": "bm25",
+  "warnings": ["retriever=dense requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25"]
+}
+```
+
+Label vocabulary (`retriever` field on /search, /answer, /research responses):
+
+| Label | Means |
+|-------|-------|
+| `bm25` | Plain BM25 |
+| `bm25+hyde` | BM25 with HyDE expansion that actually fired (chat available + non-empty passage) |
+| `bm25+paraphrase` | BM25 fanned across N paraphrases, RRF-fused |
+| `dense` | HNSW cosine only |
+| `bm25+dense:rrf` | Hybrid — BM25 ∪ dense, RRF-fused |
+| `...+rerank:<name>` | Suffix appended to any of the above when a reranker reordered the candidate pool |
+
+```bash
+# Hybrid retrieval + rerank — typical "frontier" config
+curl 'http://127.0.0.1:7777/search?q=raft+leader+election&retriever=hybrid&rerank=true'
+# → "retriever": "bm25+dense:rrf+rerank:<name>"
+```
 
 ## `GET /find_similar` / `POST /find_similar`
 
