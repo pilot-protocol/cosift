@@ -205,6 +205,25 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
+	// /find_similar?url=X&mmr=0.5 (iter 386) without HNSW: must warn that
+	// the graph is missing (no diversification possible). Must NOT warn
+	// about embedder — URL-mode MMR uses the source's graph vector.
+	mfu := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&mmr=0.5")
+	mfwarn, _ := mfu["warnings"].([]any)
+	sawGraphMissing := false
+	for _, w := range mfwarn {
+		ws, _ := w.(string)
+		if strings.Contains(ws, "mmr requires HNSW") {
+			sawGraphMissing = true
+		}
+		if strings.Contains(ws, "mmr requires an embedder") {
+			t.Errorf("/find_similar?url=X&mmr=0.5: URL-mode carve-out failed — got misleading embedder warning: %s", ws)
+		}
+	}
+	if !sawGraphMissing {
+		t.Errorf("/find_similar?url=X&mmr=0.5 without graph: want HNSW-missing warning, got %v", mfwarn)
+	}
+
 	// /find_similar?retriever=dense&url=X without graph: also falls through.
 	// Iter 372 specifically: the URL-mode carve-out suppresses the
 	// 'no embedder' warning, so the only warning we should see is the
