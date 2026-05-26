@@ -218,6 +218,29 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?expand=true without chat: want a warning, got none")
 	}
 
+	// /search?retriever=dense (iter 363) without a loaded HNSW graph should:
+	//   - silently fall through to BM25 (retriever stays "bm25", hits still
+	//     come back) — iter 365 made this transparent via the retrieve helper
+	//   - emit a warning (iter 363/364) so operators don't think dense fired
+	// The test fixture never sets COSIFT_LOAD_HNSW=true and has no embedder,
+	// so this exercises the silent-fallback path the iter-366 label preserves.
+	rresp := mustGet(t, base+"/search?q=raft&retriever=dense")
+	if rt, _ := rresp["retriever"].(string); rt != "bm25" {
+		t.Errorf("/search?retriever=dense without graph: want fallback to 'bm25', got %q", rt)
+	}
+	if rhits, _ := rresp["hits"].([]any); len(rhits) == 0 {
+		t.Errorf("/search?retriever=dense without graph: BM25 fallback should still return hits, got 0")
+	}
+	rwarn, _ := rresp["warnings"].([]any)
+	if len(rwarn) == 0 {
+		t.Errorf("/search?retriever=dense without graph: want a warning, got none")
+	} else {
+		first, _ := rwarn[0].(string)
+		if !strings.Contains(first, "retriever=dense") {
+			t.Errorf("/search?retriever=dense: warning didn't mention the value: %s", first)
+		}
+	}
+
 	// /search with a malformed sort value (iter 310) must surface a warning
 	// in the response. Covers the iter-292/309/310/311/313 warnings machinery.
 	wresp := mustGet(t, base+"/search?q=raft&sort=newest")
