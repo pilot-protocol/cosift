@@ -578,9 +578,15 @@ type pebbleHTTP struct {
 	// latency varied 0.2 s to 5.5 s. 5 s TTL keeps the cache effective
 	// for the landing page (polls every ~30 s) without serving very
 	// stale numbers.
-	statsBodyMu   sync.Mutex
-	statsBodyBlob []byte
-	statsBodyAt   time.Time
+	//
+	// Iter 437: stale-while-revalidate. After TTL, return stale body
+	// immediately and refresh async; only the first-ever call pays the
+	// cold-cache cost. statsRefreshing is a single-flight guard so we
+	// don't fan out N background refreshes when a burst arrives stale.
+	statsBodyMu     sync.Mutex
+	statsBodyBlob   []byte
+	statsBodyAt     time.Time
+	statsRefreshing atomic.Bool
 
 	// Iter 276: bounded paraphrase cache. /research?expand=paraphrase fans
 	// out 3 paraphrases × N sub-queries — same hot path as HyDE but each
@@ -1545,32 +1551,74 @@ func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
-	// Iter 435: cache the marshalled body for 5 s. /stats does pebble.Stats
-	// (counter cache helps) + PQStatus (iterates 500K HNSW nodes under
-	// h.mu read lock that contends with AddPassage writers from the in-
-	// serve crawler). Caching the whole body bypasses both hot paths;
-	// landing-page poll cadence (~30 s) hits cache almost always.
+	// Iter 435/437: stale-while-revalidate cache.
+	//   - Fresh hit (< TTL): return cached, X-Cache: HIT.
+	//   - Stale (have cache, past TTL): return cached, X-Cache: STALE,
+	//     kick a background refresh (single-flight via statsRefreshing).
+	//   - Cold (no cache): compute synchronously, X-Cache: MISS.
 	const statsBodyTTL = 5 * time.Second
 	s.statsBodyMu.Lock()
-	if !s.statsBodyAt.IsZero() && time.Since(s.statsBodyAt) < statsBodyTTL && s.statsBodyBlob != nil {
-		body := s.statsBodyBlob
-		s.statsBodyMu.Unlock()
+	body := s.statsBodyBlob
+	age := time.Since(s.statsBodyAt)
+	cached := body != nil && !s.statsBodyAt.IsZero()
+	s.statsBodyMu.Unlock()
+
+	if cached && age < statsBodyTTL {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		_, _ = w.Write(body)
 		return
 	}
-	s.statsBodyMu.Unlock()
+	if cached {
+		if s.statsRefreshing.CompareAndSwap(false, true) {
+			go func() {
+				defer s.statsRefreshing.Store(false)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if newBody, err := s.buildStatsBody(ctx); err == nil {
+					s.statsBodyMu.Lock()
+					s.statsBodyBlob = newBody
+					s.statsBodyAt = time.Now()
+					s.statsBodyMu.Unlock()
+				}
+			}()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "STALE")
+		_, _ = w.Write(body)
+		return
+	}
 
-	st, err := s.store.Stats(r.Context())
+	// Cold path: compute synchronously and populate the cache.
+	newBody, err := s.buildStatsBody(r.Context())
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.statsBodyMu.Lock()
+	s.statsBodyBlob = newBody
+	s.statsBodyAt = time.Now()
+	s.statsBodyMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	_, _ = w.Write(newBody)
+}
+
+// buildStatsBody collects every signal /stats surfaces and marshals it.
+// Heavy paths: PebbleStore.Stats (d-family scan, partially counter-cached
+// since iter 435), HNSW.PQStatus (O(N) under h.mu read lock that
+// contends with crawler writers). Called by handleStats both
+// synchronously (cold) and from a background goroutine (SWR refresh).
+// Iter 437.
+func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
+	st, err := s.store.Stats(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Iter 238: surface the iter-207 running counters here too so /stats is
 	// the one canonical "shape of the index" call instead of "ask /stats for
 	// doc count, then ask /metrics for average length". Both reads are O(1).
-	sumLen, indexedDocs, _ := s.store.CorpusStats(r.Context())
+	sumLen, indexedDocs, _ := s.store.CorpusStats(ctx)
 	var avg float64
 	if indexedDocs > 0 {
 		avg = float64(sumLen) / float64(indexedDocs)
@@ -1677,18 +1725,7 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["docs_added_since_start"] = added
 		out["docs_per_minute"] = rate
 	}
-	// Iter 435: marshal once, populate cache + serve.
-	body, mErr := json.Marshal(out)
-	if mErr != nil {
-		writeProblem(w, http.StatusInternalServerError, mErr.Error())
-		return
-	}
-	s.statsBodyMu.Lock()
-	s.statsBodyBlob = body
-	s.statsBodyAt = time.Now()
-	s.statsBodyMu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(body)
+	return json.Marshal(out)
 }
 
 // Iter 231: Prometheus-format scrape endpoint. Hand-written plain text
