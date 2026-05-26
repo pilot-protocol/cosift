@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1333,6 +1334,62 @@ func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int6
 	sumLen, _ = p.readMetaInt64Locked("sum_doc_len")
 	count, _ = p.readMetaInt64Locked("indexed_docs")
 	return sumLen, count, nil
+}
+
+// DomainCount is the (host, doc count) tuple returned by TopDomains.
+type DomainCount struct {
+	Host  string `json:"host"`
+	Count int    `json:"count"`
+}
+
+// TopDomains prefix-scans the 'h' family (which holds host -> docID
+// mappings, one entry per indexed doc) and returns the top-N hosts by
+// count, sorted desc. Linear in the number of indexed docs but very fast
+// on Pebble (key-only scan, no value decode). Iter 405.
+func (p *PebbleStore) TopDomains(ctx context.Context, topN int) ([]DomainCount, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if topN <= 0 {
+		topN = 20
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famHost},
+		UpperBound: []byte{famHost + 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+	counts := make(map[string]int, 256)
+	for valid := it.First(); valid; valid = it.Next() {
+		k := it.Key()
+		// Key layout: 'h' + host + '\0' + 8-byte ID. Find the null.
+		if len(k) < 1+1+8 {
+			continue
+		}
+		hostBytes := k[1:]
+		// Trim trailing 8-byte id + 1-byte separator.
+		if len(hostBytes) <= 9 {
+			continue
+		}
+		host := string(hostBytes[:len(hostBytes)-9])
+		counts[host]++
+	}
+	out := make([]DomainCount, 0, len(counts))
+	for h, c := range counts {
+		out = append(out, DomainCount{Host: h, Count: c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Host < out[j].Host
+	})
+	if len(out) > topN {
+		out = out[:topN]
+	}
+	return out, nil
 }
 
 // SumDocLengths scans the 'l' family and returns (total doc_len, count).

@@ -255,6 +255,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /docs/{file...}", wrap(srv.handleSwaggerAsset))
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
+	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -690,6 +691,23 @@ func (s *pebbleHTTP) handleSwaggerAsset(w http.ResponseWriter, r *http.Request) 
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// handleDomains returns the top-N indexed hosts by doc count. Iter 405.
+// Used by the landing page to show 'what's indexed right now.'
+func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
+	topN := 25
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			topN = n
+		}
+	}
+	domains, err := s.store.TopDomains(r.Context(), topN)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"top": topN, "domains": domains})
 }
 
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {

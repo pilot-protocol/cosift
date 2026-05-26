@@ -288,6 +288,18 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
   </div>
 </section>
 
+<section class="section" id="domains">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Right now in the index</div>
+      <h2>Top <em>sources</em> by doc count.</h2>
+    </div>
+    <div id="domains-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
+      <div style="color: var(--ink-dim); font-size: 14px;">loading…</div>
+    </div>
+  </div>
+</section>
+
 <section class="section" id="try">
   <div class="wrap">
     <div class="section-head">
@@ -395,6 +407,34 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setHTML('hc-retrievers', '<span class="pill">server temporarily busy — indexing</span>');
     });
   }
+  function loadDomains() {
+    fetch('/domains?top=30').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      var doms = d.domains || [];
+      if (doms.length === 0) {
+        setHTML('domains-grid', '<div style="color: var(--ink-dim); font-size: 14px;">corpus empty</div>');
+        return;
+      }
+      var max = doms[0].count;
+      var html = doms.map(function (it) {
+        var pct = Math.round((it.count / max) * 100);
+        return '<div style="border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--bg-2); position: relative; overflow: hidden;">' +
+          '<div style="position: absolute; left: 0; top: 0; bottom: 0; width: ' + pct + '%; background: var(--accent-dim); pointer-events: none;"></div>' +
+          '<div style="position: relative; display: flex; justify-content: space-between; align-items: center; gap: 12px;">' +
+          '<span style="font-family: var(--mono); font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + esc(it.host) + '</span>' +
+          '<span style="font-family: var(--serif); font-size: 18px; color: var(--accent);">' + nf(it.count) + '</span>' +
+          '</div></div>';
+      }).join('');
+      setHTML('domains-grid', html);
+    }).catch(function (e) {
+      setHTML('domains-grid', '<div style="color: var(--ink-dim); font-size: 14px;">temporarily unavailable</div>');
+    });
+  }
+  loadDomains();
+  setInterval(loadDomains, 10000);
+
   load();
   setInterval(load, 5000);
 
