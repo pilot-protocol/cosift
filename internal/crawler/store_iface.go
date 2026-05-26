@@ -56,6 +56,13 @@ type PassageWriter interface {
 	UpsertPassage(ctx context.Context, p *store.Passage) error
 }
 
+// PassageWriterBatch is an optional optimization: callers (the crawler)
+// with all of a doc's chunks already in memory can hand them over in one
+// call so the underlying writer can take the HNSW lock once. Iter 443.
+type PassageWriterBatch interface {
+	UpsertPassageBatch(ctx context.Context, ps []*store.Passage) error
+}
+
 // Compile-time interface satisfaction checks. Build fails fast if either
 // backend drifts.
 var (

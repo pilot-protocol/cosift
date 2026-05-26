@@ -418,7 +418,52 @@ func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) 
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.addPassageLocked(url, title, offset, length, cp)
+}
 
+// AddPassageBatch inserts N passages under a single lock acquisition.
+// Reduces lock churn for callers that already have all of a document's
+// passages assembled (the crawler is one such caller). Each input vec
+// is normalized in place; provide caller-owned copies if that matters.
+// Iter 443.
+type PassageInput struct {
+	URL    string
+	Title  string
+	Offset int
+	Length int
+	Vec    []float32
+}
+
+func (h *HNSW) AddPassageBatch(items []PassageInput) {
+	if len(items) == 0 {
+		return
+	}
+	prepared := make([]PassageInput, 0, len(items))
+	for _, it := range items {
+		if len(it.Vec) != h.dim {
+			continue
+		}
+		cp := make([]float32, len(it.Vec))
+		copy(cp, it.Vec)
+		normalizeInPlace(cp)
+		prepared = append(prepared, PassageInput{
+			URL: it.URL, Title: it.Title, Offset: it.Offset, Length: it.Length, Vec: cp,
+		})
+	}
+	if len(prepared) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, it := range prepared {
+		h.addPassageLocked(it.URL, it.Title, it.Offset, it.Length, it.Vec)
+	}
+}
+
+// addPassageLocked is the unlocked insert body shared by AddPassage and
+// AddPassageBatch. Caller MUST already hold h.mu (write lock). cp must
+// already be a unit-norm float32 vector of length h.dim. Iter 443.
+func (h *HNSW) addPassageLocked(url, title string, offset, length int, cp []float32) {
 	level := h.randLevel()
 	newIdx := len(h.nodes)
 	h.nodes = append(h.nodes, hnswNode{

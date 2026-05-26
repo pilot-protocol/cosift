@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,15 +76,34 @@ func NewWithBackend(cfg config.Crawler, s CrawlerStore, idx LexicalIndexer) *Cra
 }
 
 func newBare(cfg config.Crawler) *Crawler {
+	// Iter 443: heavier HTTP pooling for the 256-worker config. Defaults
+	// (MaxIdleConns=50, MaxConnsPerHost=2) throttle the crawler at any
+	// host with multiple in-flight URLs. Bumping to 500 idle and 16/host
+	// matches what real crawlers run.
+	transport := &http.Transport{
+		MaxIdleConns:          500,
+		MaxIdleConnsPerHost:   16,
+		MaxConnsPerHost:       16,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+		ResponseHeaderTimeout: 15 * time.Second,
+	}
+	// Iter 443: optional proxy pool. Each request picks a random proxy
+	// from cfg.Proxies; empty list = direct connection.
+	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 {
+		var pmu sync.Mutex
+		var prng = rand.New(rand.NewSource(time.Now().UnixNano()))
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			pmu.Lock()
+			idx := prng.Intn(len(proxies))
+			pmu.Unlock()
+			return proxies[idx], nil
+		}
+		log.Printf("crawler: proxy pool enabled (%d proxies)", len(proxies))
+	}
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:          50,
-			MaxConnsPerHost:       2,
-			IdleConnTimeout:       90 * time.Second,
-			ForceAttemptHTTP2:     true,
-			ResponseHeaderTimeout: 15 * time.Second,
-		},
+		Timeout:   30 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
@@ -96,6 +116,26 @@ func newBare(cfg config.Crawler) *Crawler {
 		robots = NewRobots(httpClient, cfg.UserAgent)
 	}
 	return &Crawler{cfg: cfg, http: httpClient, robots: robots}
+}
+
+// parseProxies turns config.Crawler.Proxies (string URLs) into a slice of
+// *url.URL ready to be returned from http.Transport.Proxy. Malformed
+// entries are logged and skipped. Iter 443.
+func parseProxies(raw []string) []*url.URL {
+	out := make([]*url.URL, 0, len(raw))
+	for _, s := range raw {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" {
+			log.Printf("crawler: skipping malformed proxy %q: %v", s, err)
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // WithEmbedder enables dense indexing during crawl: every successfully indexed
@@ -532,17 +572,28 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				// Iter 212: vector writes go through the optional PassageWriter
 				// so Pebble-backed crawlers (no SQL passages table) can opt out
 				// or supply their own HNSW bridge.
+				// Iter 443: prefer the optional Batch interface so the underlying
+				// writer can take its lock once for all chunks of this doc.
 				if c.passageWriter != nil {
+					ps := make([]*store.Passage, len(chunks))
 					for i, ch := range chunks {
-						p := &store.Passage{
+						ps[i] = &store.Passage{
 							DocID:     id,
 							Offset:    ch.Offset,
 							Length:    ch.Length,
 							Model:     c.embedder.Model(),
 							Embedding: vecs[i],
 						}
-						if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
-							log.Printf("save passage %s offset=%d: %v", item.URL, ch.Offset, upErr)
+					}
+					if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
+						if upErr := bw.UpsertPassageBatch(ctx, ps); upErr != nil {
+							log.Printf("save passages %s: %v", item.URL, upErr)
+						}
+					} else {
+						for i, p := range ps {
+							if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
+								log.Printf("save passage %s offset=%d: %v", item.URL, chunks[i].Offset, upErr)
+							}
 						}
 					}
 				}

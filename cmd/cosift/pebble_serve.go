@@ -1563,10 +1563,15 @@ func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Iter 435/437: stale-while-revalidate cache.
 	//   - Fresh hit (< TTL): return cached, X-Cache: HIT.
-	//   - Stale (have cache, past TTL): return cached, X-Cache: STALE,
-	//     kick a background refresh (single-flight via statsRefreshing).
+	//   - Stale (have cache, past TTL but under maxStale): return cached,
+	//     X-Cache: STALE, kick a background refresh (single-flight).
+	//   - Very stale (past maxStale): fall through to synchronous compute
+	//     — protects against the iter-437 case where a refresh goroutine
+	//     hangs under HNSW lock contention and the cache shows ancient
+	//     values (we saw a startup-time vec=654 served for ~15 min).
 	//   - Cold (no cache): compute synchronously, X-Cache: MISS.
 	const statsBodyTTL = 5 * time.Second
+	const statsBodyMaxStale = 60 * time.Second
 	s.statsBodyMu.Lock()
 	body := s.statsBodyBlob
 	age := time.Since(s.statsBodyAt)
@@ -1579,7 +1584,7 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(body)
 		return
 	}
-	if cached {
+	if cached && age < statsBodyMaxStale {
 		if s.statsRefreshing.CompareAndSwap(false, true) {
 			go func() {
 				defer s.statsRefreshing.Store(false)

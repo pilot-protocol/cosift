@@ -70,6 +70,12 @@ func NewOpenAIClient(apiKey, url, model string, dim int) *OpenAIClient {
 		http: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
+				// Iter 443: keep many warm connections to the embedder
+				// (typically a single ollama / vLLM endpoint). Default
+				// MaxConnsPerHost=2 throttles a 256-worker crawler hard.
+				MaxIdleConns:          200,
+				MaxIdleConnsPerHost:   64,
+				MaxConnsPerHost:       64,
 				ForceAttemptHTTP2:     true,
 				IdleConnTimeout:       90 * time.Second,
 				ResponseHeaderTimeout: 45 * time.Second,

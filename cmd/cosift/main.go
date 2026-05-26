@@ -386,6 +386,33 @@ func (w *hnswPassageWriter) UpsertPassage(ctx context.Context, p *store.Passage)
 	return nil
 }
 
+// UpsertPassageBatch (iter 443) writes all passages in a single HNSW lock
+// acquisition — meaningful when a doc has many chunks. Implements the
+// optional crawler.PassageWriterBatch interface; the crawler will call
+// this when present instead of looping UpsertPassage per chunk.
+func (w *hnswPassageWriter) UpsertPassageBatch(ctx context.Context, ps []*store.Passage) error {
+	if len(ps) == 0 {
+		return nil
+	}
+	// All passages in a batch belong to the same DocID (the crawler hands
+	// us one doc's chunks). Resolve url + title once.
+	doc, err := w.ps.GetDocByID(ctx, ps[0].DocID)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return nil
+	}
+	items := make([]index.PassageInput, 0, len(ps))
+	for _, p := range ps {
+		items = append(items, index.PassageInput{
+			URL: doc.URL, Title: doc.Title, Offset: p.Offset, Length: p.Length, Vec: p.Embedding,
+		})
+	}
+	w.hnsw.AddPassageBatch(items)
+	return nil
+}
+
 func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	// Iter 391: hoisted PebbleStore handle so the embedder wiring below can
 	// reach it to attach the HNSW bridge after the backend switch.

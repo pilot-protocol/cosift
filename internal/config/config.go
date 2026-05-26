@@ -149,6 +149,16 @@ type Crawler struct {
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
+	// Proxies (iter 443) — optional list of HTTP proxy URLs (e.g.
+	//   "http://user:pass@proxy.example.com:8080"
+	//   "socks5://proxy.local:1080"
+	// Per-request a proxy is picked at random; empty list = direct
+	// connections. Useful for bypassing per-IP rate limits and basic
+	// anti-bot walls. Go's http.Transport handles HTTP, HTTPS, and SOCKS5
+	// proxy schemes natively (the latter via golang.org/x/net/proxy which
+	// is stdlib-adjacent).
+	Proxies []string `json:"proxies,omitempty"`
+
 	// StatusFile (iter 224) — when non-empty, the crawler writes a JSON
 	// snapshot of frontier counts to this path every 10s. Operators reading
 	// the file (cat / watch / jq) don't contend with the Pebble single-
