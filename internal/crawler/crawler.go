@@ -504,26 +504,18 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		chunker := index.NewChunkerWith(c.chunkSizeFor(host), c.chunkOverlapFor(host))
 		chunks := chunker.Chunk(parsed.Title + "\n\n" + parsed.Text)
 		if len(chunks) > 0 {
-			// Iter 419: cap each text at ~1.5K tokens (4 chars/token rule)
-			// before sending to the embedder. nomic-embed-text's actual model
-			// context is 2048 tokens despite Ollama's num_ctx=8192 upper
-			// bound (see model_info.nomic-bert.context_length). Cutting at
-			// 6000 chars keeps us comfortably under for ALL content shapes,
-			// including PDFs the iter-141 word-splitter handles poorly.
-			const maxEmbedBytes = 6000
+			// Iter 419/421: cap each text by approximate token count, not raw
+			// bytes. nomic-embed-text has a 2048-token model context. A naive
+			// byte cap blows past the limit on dense scripts (CJK: ~1
+			// token/char × 3 bytes/char → 6000 bytes = ~2000 tokens, fails).
+			//
+			// Heuristic: every byte ≤ 0x7F (ASCII / Latin-1) is ~0.25 tokens
+			// (1 token / 4 chars rule); every wider rune is ~1 token. Cap at
+			// 1500 estimated tokens (safe margin under 2048).
+			const tokenCap = 1500
 			texts := make([]string, len(chunks))
 			for i, ch := range chunks {
-				t := ch.Text
-				if len(t) > maxEmbedBytes {
-					// Trim at the last whitespace before the cap so we don't
-					// split a token in half. If none found, hard-cut.
-					cut := strings.LastIndexAny(t[:maxEmbedBytes], " \t\n\r")
-					if cut < maxEmbedBytes/2 {
-						cut = maxEmbedBytes
-					}
-					t = t[:cut]
-				}
-				texts[i] = t
+				texts[i] = truncateForEmbed(ch.Text, tokenCap)
 			}
 			vecs, embErr := c.embedder.Embed(ctx, texts)
 			if embErr != nil {
@@ -801,4 +793,37 @@ func canonicalize(raw string) (string, error) {
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// truncateForEmbed caps text by ESTIMATED token count for nomic-embed-text's
+// 2048-token model context. Each ASCII byte counts as ~0.25 tokens
+// (~4 chars/token rule), each wider rune ~1 token (BERT WordPiece tends to
+// split a Chinese / Japanese / Korean / Arabic char into its own token).
+// Stops at the first whitespace before the cap when possible to avoid
+// bisecting a token. Iter 421.
+func truncateForEmbed(text string, maxTokens int) string {
+	var tokens float64
+	var lastSpaceByte = -1
+	for i, r := range text {
+		// Iter 421 tuning: 0.35 tokens/ASCII byte (≈ 2.86 chars/token) is
+		// the worst case among English prose / source code / CI logs. The
+		// earlier 0.25 (≈ 4 chars/token) underestimated CI log density and
+		// still hit nomic's 2048-token cap. CJK gets 1 token/char.
+		if r > 0x7F {
+			tokens += 1
+		} else {
+			tokens += 0.35
+		}
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
+			lastSpaceByte = i
+		}
+		if tokens >= float64(maxTokens) {
+			cut := i
+			if lastSpaceByte > i/2 {
+				cut = lastSpaceByte
+			}
+			return text[:cut]
+		}
+	}
+	return text
 }
