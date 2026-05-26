@@ -810,13 +810,16 @@ func canonicalize(raw string) (string, error) {
 // Stops at the first whitespace before the cap when possible to avoid
 // bisecting a token. Iter 421.
 func truncateForEmbed(text string, maxTokens int) string {
+	// Iter 430: also enforce a hard byte cap. The token estimate
+	// (0.35/byte for ASCII) underestimates dense source code, CI logs,
+	// stack traces, and JSON-heavy content where punctuation creates many
+	// micro-tokens. nomic-embed-text's 2048-token budget translates to
+	// roughly 2500 bytes in the worst case; cap at 2500 to stay safely
+	// under without re-tokenizing in-process.
+	const byteCap = 2500
 	var tokens float64
 	var lastSpaceByte = -1
 	for i, r := range text {
-		// Iter 421 tuning: 0.35 tokens/ASCII byte (≈ 2.86 chars/token) is
-		// the worst case among English prose / source code / CI logs. The
-		// earlier 0.25 (≈ 4 chars/token) underestimated CI log density and
-		// still hit nomic's 2048-token cap. CJK gets 1 token/char.
 		if r > 0x7F {
 			tokens += 1
 		} else {
@@ -825,7 +828,7 @@ func truncateForEmbed(text string, maxTokens int) string {
 		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
 			lastSpaceByte = i
 		}
-		if tokens >= float64(maxTokens) {
+		if tokens >= float64(maxTokens) || i >= byteCap {
 			cut := i
 			if lastSpaceByte > i/2 {
 				cut = lastSpaceByte
