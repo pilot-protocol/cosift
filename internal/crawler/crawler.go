@@ -504,9 +504,26 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		chunker := index.NewChunkerWith(c.chunkSizeFor(host), c.chunkOverlapFor(host))
 		chunks := chunker.Chunk(parsed.Title + "\n\n" + parsed.Text)
 		if len(chunks) > 0 {
+			// Iter 419: cap each text at ~1.5K tokens (4 chars/token rule)
+			// before sending to the embedder. nomic-embed-text's actual model
+			// context is 2048 tokens despite Ollama's num_ctx=8192 upper
+			// bound (see model_info.nomic-bert.context_length). Cutting at
+			// 6000 chars keeps us comfortably under for ALL content shapes,
+			// including PDFs the iter-141 word-splitter handles poorly.
+			const maxEmbedBytes = 6000
 			texts := make([]string, len(chunks))
 			for i, ch := range chunks {
-				texts[i] = ch.Text
+				t := ch.Text
+				if len(t) > maxEmbedBytes {
+					// Trim at the last whitespace before the cap so we don't
+					// split a token in half. If none found, hard-cut.
+					cut := strings.LastIndexAny(t[:maxEmbedBytes], " \t\n\r")
+					if cut < maxEmbedBytes/2 {
+						cut = maxEmbedBytes
+					}
+					t = t[:cut]
+				}
+				texts[i] = t
 			}
 			vecs, embErr := c.embedder.Embed(ctx, texts)
 			if embErr != nil {
