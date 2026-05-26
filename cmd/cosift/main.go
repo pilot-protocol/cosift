@@ -79,6 +79,18 @@ eval flags:
   -retriever <name>       bm25 | dense | hybrid (default bm25)
   -rerank                 wrap retriever with the LLM listwise reranker
 
+retrieval/synth flags (search, answer, research):
+  -server <URL>           cosift server URL (default: http://<cfg.Server.Addr>)
+  -k <int>                top-k results / sources
+  -retriever <name>       bm25 | dense | hybrid (server default if empty; dense/hybrid need COSIFT_LOAD_HNSW=true + embedder)
+  -rerank                 reorder the candidate pool with the configured reranker
+  -expand <mode>          hyde | paraphrase | true (answer treats -expand as bool)
+  -since / -until <date>  filter by doc PublishedAt (ISO-8601)
+  -include-domains <CSV>  dot-boundary suffix allowlist
+  -exclude-domains <CSV>  dot-boundary suffix denylist
+  -stream                 (answer, research) consume SSE — token-by-token answer + plan/sources events
+  -json                   emit raw JSON instead of human-readable output
+
 flags:
   -config <path>          config file (default: ./cosift.json)
 `
