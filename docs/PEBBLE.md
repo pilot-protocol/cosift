@@ -322,4 +322,5 @@ iter 360 — `cosift pebble-info` surfaces vector_nodes + vector_dim (offline st
 iter 361 — /metrics emits cosift_vector_nodes + cosift_vector_dim gauges when HNSW meta is present
 iter 362 — COSIFT_LOAD_HNSW=true opts into in-memory HNSW graph load at startup; /stats surfaces `hnsw_loaded`
 iter 363 — `/search?retriever=dense` wires the embedder + iter-362 graph end-to-end (warns + falls back when missing pieces)
+iter 364 — `/search?retriever=hybrid` runs BM25 + dense in parallel, RRF-fuses; label `bm25+dense:rrf`
 ```

@@ -823,24 +823,49 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// (iter 363); missing either → warning attached by warningsFor + fall
 	// through to BM25.
 	retrieverParam := r.URL.Query().Get("retriever")
+	denseReady := s.hnsw != nil && s.embedder != nil
 	var hits []index.Hit
 	var effectiveQuery string
 	var err error
-	if retrieverParam == "dense" && s.hnsw != nil && s.embedder != nil {
+	switch {
+	case retrieverParam == "dense" && denseReady:
 		var vecs [][]float32
 		vecs, err = s.embedder.Embed(r.Context(), []string{q})
-		if err == nil && len(vecs) == 1 {
-			vhits := s.hnsw.Search(r.Context(), vecs[0], fetchK)
-			hits = make([]index.Hit, len(vhits))
-			for i, vh := range vhits {
-				hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-			}
-			effectiveQuery = q
-		} else if err != nil {
+		if err != nil {
 			writeProblem(w, http.StatusBadGateway, "embedder: "+err.Error())
 			return
 		}
-	} else {
+		vhits := s.hnsw.Search(r.Context(), vecs[0], fetchK)
+		hits = make([]index.Hit, len(vhits))
+		for i, vh := range vhits {
+			hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+		}
+		effectiveQuery = q
+	case retrieverParam == "hybrid" && denseReady:
+		// Iter 364: hybrid = BM25 (with optional expand) + dense, fused via
+		// RRF. Each retriever returns fetchK candidates; the fused top-fetchK
+		// then feeds the existing filter+enrich+rerank pipeline.
+		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
+		if bm25Err != nil {
+			writeProblem(w, http.StatusInternalServerError, bm25Err.Error())
+			return
+		}
+		vecs, embErr := s.embedder.Embed(r.Context(), []string{q})
+		if embErr != nil {
+			writeProblem(w, http.StatusBadGateway, "embedder: "+embErr.Error())
+			return
+		}
+		denseV := s.hnsw.Search(r.Context(), vecs[0], fetchK)
+		denseHits := make([]index.Hit, len(denseV))
+		for i, vh := range denseV {
+			denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+		}
+		hits = rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
+		if len(hits) > fetchK {
+			hits = hits[:fetchK]
+		}
+		effectiveQuery = bm25Eff
+	default:
 		hits, effectiveQuery, err = s.retrieveWithExpansion(r.Context(), q, fetchK, expandMode)
 		if err != nil {
 			writeProblem(w, http.StatusInternalServerError, err.Error())
@@ -949,11 +974,15 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		sortHitsByDate(out, true)
 	}
 	retrieverLabel := "bm25"
-	// Iter 363: when dense actually fired, label says so. Falls back to bm25
-	// (the case the warning called out) when graph/embedder missing.
-	if retrieverParam == "dense" && s.hnsw != nil && s.embedder != nil {
+	// Iter 363/364: when dense or hybrid actually fired, label says so.
+	// Falls back to bm25 (the case the warning called out) when graph or
+	// embedder missing.
+	switch {
+	case retrieverParam == "dense" && denseReady:
 		retrieverLabel = "dense"
-	} else {
+	case retrieverParam == "hybrid" && denseReady:
+		retrieverLabel = "bm25+dense:rrf"
+	default:
 		switch expandMode {
 		case "paraphrase":
 			if effectiveQuery != q {
@@ -1470,13 +1499,14 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
 	}
-	// Iter 363: dense retrieval needs both a loaded HNSW graph and an
-	// embedder. Missing either falls through to BM25 with a warning.
-	if r.URL.Query().Get("retriever") == "dense" {
-		if s.hnsw == nil {
-			w = append(w, "retriever=dense requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25")
-		} else if s.embedder == nil {
-			w = append(w, "retriever=dense requested but no embedder configured (set cfg.Embeddings.Model) — fell back to BM25")
+	// Iter 363/364: dense + hybrid retrievers need both a loaded HNSW graph
+	// and an embedder. Missing either falls through to BM25 with a warning.
+	if r := r.URL.Query().Get("retriever"); r == "dense" || r == "hybrid" {
+		switch {
+		case s.hnsw == nil:
+			w = append(w, "retriever="+r+" requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25")
+		case s.embedder == nil:
+			w = append(w, "retriever="+r+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to BM25")
 		}
 	}
 	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
