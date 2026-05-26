@@ -422,6 +422,14 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	var parsed *ParsedDoc
 	var perr error
 	if strings.Contains(res.contentType, "pdf") {
+		// Iter 427: ledongthuc/pdf has an unbounded-allocation bug in
+		// (*buffer).readArray on malformed PDFs — heap profile showed it
+		// growing at 2.7 GB/sec until the OOM-killer fired. Disable PDF
+		// parsing by default until we migrate to a safer library; set
+		// COSIFT_CRAWL_PDF=true to re-enable at your own risk.
+		if os.Getenv("COSIFT_CRAWL_PDF") != "true" {
+			return errors.New("pdf: parsing disabled (set COSIFT_CRAWL_PDF=true to enable)")
+		}
 		parsed, perr = ParsePDF(res.body, finalURL)
 	} else {
 		parsed, perr = Parse(res.body, finalURL)

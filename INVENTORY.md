@@ -107,9 +107,26 @@ Operator IPs that may bypass rate limits / hit admin endpoints:
 
 Configured via `COSIFT_RATELIMIT_WHITELIST=<csv>` env var on `pebble-serve` (iter 394).
 
+## Diagnosing memory growth
+
+Set `COSIFT_PPROF_ADDR=127.0.0.1:6060` to expose runtime pprof endpoints
+on loopback only (iter 427). Then on the box:
+
+```bash
+curl -fsS http://127.0.0.1:6060/debug/pprof/heap -o heap.pb.gz
+# Pull to laptop and analyze:
+scp ubuntu@<host>:heap.pb.gz . && go tool pprof -top -nodecount=15 cosift heap.pb.gz
+```
+
+The iter-427 OOM was traced to `ledongthuc/pdf.(*buffer).readArray` —
+99% of 117 GB heap. PDF parsing is now gated behind `COSIFT_CRAWL_PDF=true`
+(default off). Re-enable once we migrate to a safer PDF library.
+
 ## Next steps (deferred)
 
 - vLLM swap-in for Ollama if `/answer` concurrency becomes a bottleneck.
 - Multi-box deployment story (read replicas served from the same GCS snapshot).
 - Cloudflare orange→gray (or install CF Origin Cert) for cosift.pilotprotocol.network to use Let's Encrypt end-to-end.
 - Zombie HNSW slot compaction (~601 K legacy slots from pre-iter-411 partial persists).
+- PQ recall regression: bench-pq shows Recall@10 = 0.07 with PQ vs 0.74 without. Root-cause + fix the PQ path.
+- Migrate off `ledongthuc/pdf` (likely to a safer fork or a fuzzed library); current path skips PDFs to avoid the unbounded-allocation leak.

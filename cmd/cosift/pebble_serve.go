@@ -25,6 +25,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -335,6 +336,23 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
+	// Iter 427: optional pprof endpoint for runaway-memory diagnosis. Only
+	// listens on loopback so it can never be exposed publicly through the
+	// reverse proxy. Set COSIFT_PPROF_ADDR=127.0.0.1:6060 to enable.
+	if pprofAddr := os.Getenv("COSIFT_PPROF_ADDR"); pprofAddr != "" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		go func() {
+			log.Printf("pebble-serve: pprof listening on %s", pprofAddr)
+			if err := http.ListenAndServe(pprofAddr, pprofMux); err != nil {
+				log.Printf("pebble-serve: pprof exited: %v", err)
+			}
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		log.Printf("pebble-serve: shutting down")
