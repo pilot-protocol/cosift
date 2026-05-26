@@ -177,6 +177,25 @@ curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_simi
 }
 ```
 
+### Dense `?retriever=dense`
+
+When the HNSW graph is loaded (`COSIFT_LOAD_HNSW=true`), `/find_similar` can run HNSW cosine search around the source's persisted vector. URL-mode does this with **zero embed RPCs** — the source doc's vector is already in the graph from indexing. Text-mode embeds the supplied `title + text` before searching.
+
+```bash
+# URL-mode dense: no embedder needed; reads source vector from the graph
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&retriever=dense&k=5'
+
+# Text-mode dense: requires a configured embedder
+curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_similar \
+  -d '{"text": "leader election in distributed systems", "retriever": "dense", "k": 5}'
+```
+
+Response shape is identical to BM25-MLT but `retriever` becomes `"dense"` (or `"dense+rerank:<name>"` with `rerank=true`). Fallback rules:
+
+- HNSW graph not loaded → falls through to BM25-MLT with a warning.
+- Text-mode and no embedder → falls through to BM25-MLT with a warning.
+- URL-mode and no embedder → **still works** (graph lookup needs no embedder). The "no embedder" warning is suppressed for this case.
+
 ## `GET /contents` / `POST /contents`
 
 Cached document retrieval.

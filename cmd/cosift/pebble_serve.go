@@ -1484,12 +1484,17 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 	}
 	// Iter 363/364: dense + hybrid retrievers need both a loaded HNSW graph
 	// and an embedder. Missing either falls through to BM25 with a warning.
-	if r := r.URL.Query().Get("retriever"); r == "dense" || r == "hybrid" {
+	// Iter 372: /find_similar?url=X URL-mode-dense reads the source vector
+	// directly from the graph via LookupVectorByURL — no embed RPC. Skip the
+	// embedder warning in that case (would otherwise be misleading: the
+	// request succeeded without an embedder).
+	if rv := r.URL.Query().Get("retriever"); rv == "dense" || rv == "hybrid" {
+		isFindSimilarURLMode := strings.HasSuffix(r.URL.Path, "/find_similar") && r.URL.Query().Get("url") != ""
 		switch {
 		case s.hnsw == nil:
-			w = append(w, "retriever="+r+" requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25")
-		case s.embedder == nil:
-			w = append(w, "retriever="+r+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to BM25")
+			w = append(w, "retriever="+rv+" requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to BM25")
+		case s.embedder == nil && !isFindSimilarURLMode:
+			w = append(w, "retriever="+rv+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to BM25")
 		}
 	}
 	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
