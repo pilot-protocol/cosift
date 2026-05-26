@@ -290,14 +290,22 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// land into the SAME HNSW pointer that /search reads from, so freshly
 	// crawled content is searchable as soon as AddPassage returns.
 	// Checkpoint goroutine persists the graph every crawlCheckpoint.
+	// Iter 404: collect a WaitGroup of crawler goroutines so the final
+	// HNSW persist runs BEFORE ps.Close() — fixes a 'pebble: closed' panic.
+	var crawlWG sync.WaitGroup
 	if *crawlSeeds != "" {
-		if err := srv.startInProcessCrawl(ctx, ps, *crawlSeeds, *crawlCheckpoint, cfg); err != nil {
+		if err := srv.startInProcessCrawl(ctx, ps, *crawlSeeds, *crawlCheckpoint, cfg, &crawlWG); err != nil {
 			log.Printf("pebble-serve: in-process crawler not started: %v", err)
 		}
 	}
 
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
+	servErr := httpSrv.ListenAndServe()
+	// Iter 404: wait for crawler + checkpoint goroutines to finish their
+	// final persist before the deferred ps.Close() runs. Otherwise Persist
+	// can race ps.Close() and panic.
+	crawlWG.Wait()
+	if servErr != nil && servErr != http.ErrServerClosed {
+		return servErr
 	}
 	return nil
 }
@@ -306,7 +314,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 // srv.hnsw to a fresh empty graph if none was loaded (so dense retrieval is
 // live as soon as the first passage lands), then runs the crawler in a
 // goroutine for the server's lifetime.
-func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleStore, seedsFile string, ckpEvery time.Duration, cfg *config.Config) error {
+func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleStore, seedsFile string, ckpEvery time.Duration, cfg *config.Config, wg *sync.WaitGroup) error {
 	if s.embedder == nil {
 		return errors.New("crawl requires embedder configuration (cfg.Embeddings.Model)")
 	}
@@ -344,7 +352,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	s.crawlActive = true
 
 	// Checkpoint goroutine.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		t := time.NewTicker(ckpEvery)
 		defer t.Stop()
 		var lastN int
@@ -372,7 +382,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}()
 
 	// Crawler goroutine.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		log.Printf("in-serve crawler: starting")
 		if err := c.Run(ctx); err != nil {
 			log.Printf("in-serve crawler: exited with error: %v", err)
