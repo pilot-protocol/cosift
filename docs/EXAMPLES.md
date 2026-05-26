@@ -82,6 +82,18 @@ curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fra
 curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&exclude_domains=docs.example.com'
 ```
 
+### Dense / hybrid neighbors (when HNSW is loaded)
+
+```bash
+# Dense: reuses the source's persisted vector — no embed RPC (URL-mode)
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&retriever=dense'
+
+# Hybrid: BM25-MLT ∪ dense, RRF-fused — strongest neighbors signal
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&retriever=hybrid&rerank=true'
+```
+
+Check `/stats` for the `retrievers` field to see what's available before reaching for `dense`/`hybrid`. Falls through to `bm25-mlt` with a warning when the graph isn't loaded.
+
 ### Content-based: feed arbitrary text, find similar indexed docs
 
 ```bash
@@ -255,10 +267,11 @@ cosift answer "what is raft consensus" -stream -rerank
 # Research with paraphrase fan-out
 cosift research "compare raft and paxos" -expand paraphrase -rerank -stream
 
-# Hybrid retrieval — applies to search / answer / research alike (iter 369)
-cosift search   "raft consensus"        -retriever hybrid -rerank
-cosift answer   "what is raft consensus" -retriever hybrid -rerank -stream
-cosift research "compare raft and paxos" -retriever hybrid -expand paraphrase -stream
+# Hybrid retrieval — applies to search / answer / research / find-similar (iter 369, 376)
+cosift search       "raft consensus"        -retriever hybrid -rerank
+cosift answer       "what is raft consensus" -retriever hybrid -rerank -stream
+cosift research     "compare raft and paxos" -retriever hybrid -expand paraphrase -stream
+cosift find-similar https://docs.example.com/raft -retriever hybrid -rerank
 ```
 
 `-server URL` overrides the default endpoint when pebble-serve is on a non-default port.

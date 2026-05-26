@@ -1210,6 +1210,10 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	textTitle := fs.String("text-title", "", "optional title (×3 boost) when using -text or -text-file")
 	// Iter 306: surface the iter-245 filter + rerank flags on the CLI.
 	rerank := fs.Bool("rerank", false, "rerank neighbors against the MLT query (server must have rerank configured)")
+	// Iter 376: retriever choice — bm25-mlt (default) | dense | hybrid.
+	// Dense reads source vector from HNSW for URL-mode; hybrid RRF-fuses
+	// BM25-MLT and dense. Both require COSIFT_LOAD_HNSW=true server-side.
+	retriever := fs.String("retriever", "", "retriever: bm25 (BM25-MLT) | dense | hybrid (server must have HNSW; text-mode dense/hybrid also needs embedder)")
 	since := fs.String("since", "", "ISO date — only neighbors published on or after")
 	until := fs.String("until", "", "ISO date — only neighbors published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of neighbor domains")
@@ -1251,6 +1255,9 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	if *rerank {
 		v.Set("rerank", "true")
 	}
+	if *retriever != "" {
+		v.Set("retriever", *retriever)
+	}
 	if *since != "" {
 		v.Set("since", *since)
 	}
@@ -1286,6 +1293,9 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		}
 		if *rerank {
 			body["rerank"] = true
+		}
+		if *retriever != "" {
+			body["retriever"] = *retriever
 		}
 		if *since != "" {
 			body["since"] = *since
