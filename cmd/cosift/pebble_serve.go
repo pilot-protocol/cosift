@@ -185,6 +185,21 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	} else {
 		srv.startupDocs = 0
 	}
+	// Iter 408/409: stamp cluster config onto srv early so /search's
+	// gateway-mode check fires even on nodes that don't run a crawler.
+	if err := cfg.Cluster.Validate(); err != nil {
+		log.Printf("pebble-serve: cluster config invalid (%v) — running single-node", err)
+	} else {
+		srv.cluster = cfg.Cluster
+		if cfg.Cluster.IsClustered() {
+			role := "leaf"
+			if cfg.Cluster.GatewayMode {
+				role = "gateway+leaf"
+			}
+			log.Printf("pebble-serve: cluster mode (role=%s, shard=%d/%d, peers=%d)",
+				role, cfg.Cluster.MyShardID, cfg.Cluster.NumShards, len(cfg.Cluster.Peers))
+		}
+	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
@@ -352,7 +367,8 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
 	// Iter 408: wire URL routing for clustered mode. Single-node config
 	// (NumShards <= 1) makes route fn a no-op (every URL ownsLocally).
-	s.cluster = cfg.Cluster
+	// s.cluster was stamped at server-init time so search-only nodes also
+	// see it; we just need the router here.
 	if cfg.Cluster.IsClustered() {
 		c = c.WithRouter(
 			func(url string) (bool, string) {
@@ -768,6 +784,149 @@ func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
 		return fmt.Errorf("peer %s returned %d: %s", peerAddr, resp.StatusCode, b)
 	}
 	return nil
+}
+
+// handleSearchGateway is the iter-409 scatter-gather entry. It fans out the
+// search to every peer's /search (including its own shard via the peers[]
+// table), each peer over-fetches k*2 candidates locally, gateway RRF-merges
+// the per-peer lists, and returns the top-k. Slow / failing peers are
+// included in a warnings[] entry but don't block the response.
+func (s *pebbleHTTP) handleSearchGateway(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+	k := 10
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			k = n
+		}
+	}
+	// Each peer returns k*2 candidates to give RRF something to merge.
+	perPeerK := k * 2
+	if perPeerK < 20 {
+		perPeerK = 20
+	}
+
+	// Build the per-peer query — same URL but force cluster_local=1 and a
+	// bumped k. Strip /search prefix so we control the path explicitly.
+	srcQ := r.URL.Query()
+	srcQ.Set("k", strconv.Itoa(perPeerK))
+	srcQ.Set("cluster_local", "1")
+	queryStr := srcQ.Encode()
+
+	type peerResult struct {
+		peerIdx int
+		hits    []index.Hit
+		err     error
+		took    time.Duration
+		label   string
+	}
+	resCh := make(chan peerResult, len(s.cluster.Peers))
+
+	httpClient := &http.Client{Timeout: 8 * time.Second}
+	for i, peer := range s.cluster.Peers {
+		if peer == "" {
+			continue
+		}
+		i, peer := i, peer
+		go func() {
+			t0 := time.Now()
+			endpoint := "http://" + peer + "/search?" + queryStr
+			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
+				endpoint = strings.TrimRight(peer, "/") + "/search?" + queryStr
+			}
+			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
+			if t := s.cluster.PeerAuthToken; t != "" {
+				req.Header.Set("Authorization", "Bearer "+t)
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				resCh <- peerResult{peerIdx: i, err: err, took: time.Since(t0)}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("peer %s returned %d", peer, resp.StatusCode), took: time.Since(t0)}
+				return
+			}
+			var sr struct {
+				Retriever string      `json:"retriever"`
+				Hits      []searchHit `json:"hits"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+			if err := json.Unmarshal(body, &sr); err != nil {
+				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("decode peer %s: %w", peer, err), took: time.Since(t0)}
+				return
+			}
+			hits := make([]index.Hit, len(sr.Hits))
+			for j, h := range sr.Hits {
+				hits[j] = index.Hit{URL: h.URL, Title: h.Title, Score: h.Score}
+			}
+			resCh <- peerResult{peerIdx: i, hits: hits, took: time.Since(t0), label: sr.Retriever}
+		}()
+	}
+	// Collect.
+	lists := make([][]index.Hit, 0, len(s.cluster.Peers))
+	warns := []string{}
+	hitURLToFull := map[string]searchHit{} // for excerpt/title pass-through on merged hits
+	totalCandidates := 0
+	for i := 0; i < len(s.cluster.Peers); i++ {
+		if s.cluster.Peers[i] == "" {
+			continue
+		}
+		select {
+		case res := <-resCh:
+			if res.err != nil {
+				warns = append(warns, fmt.Sprintf("peer %d (%s) failed: %v", res.peerIdx, s.cluster.Peers[res.peerIdx], res.err))
+				continue
+			}
+			lists = append(lists, res.hits)
+			totalCandidates += len(res.hits)
+		case <-r.Context().Done():
+			warns = append(warns, "client context cancelled before all peers responded")
+			break
+		}
+	}
+	// RRF-merge across shards.
+	fused := rrfFuse(lists, 60)
+	if len(fused) > k {
+		fused = fused[:k]
+	}
+	// We don't have per-hit excerpt/title from the merged form in index.Hit
+	// alone — but the per-peer response embedded those. Re-walk lists to
+	// recover full searchHit fields for the top-k URLs.
+	for _, l := range lists {
+		for _, h := range l {
+			if _, ok := hitURLToFull[h.URL]; !ok {
+				// h is index.Hit; we don't have excerpt here without a second
+				// pass. To keep iter 409 tight, leave excerpt empty and let
+				// callers refetch via /contents if they need it. This trades
+				// detail for the RTT savings.
+				hitURLToFull[h.URL] = searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
+			}
+		}
+	}
+	out := make([]searchHit, 0, len(fused))
+	for _, f := range fused {
+		full, ok := hitURLToFull[f.URL]
+		if !ok {
+			full = searchHit{URL: f.URL, Title: f.Title, Score: f.Score}
+		}
+		full.Score = f.Score // fused RRF score
+		out = append(out, full)
+	}
+	resp := searchResponse{
+		Query:           q,
+		Retriever:       fmt.Sprintf("gateway:rrf(%d-shard)", len(lists)),
+		Hits:            out,
+		TotalCandidates: totalCandidates,
+		Warnings:        append(warns, s.warningsFor(r)...),
+		Took:            time.Since(start).String(),
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCrawlEnqueue accepts a single URL forwarded from a peer shard and
@@ -1273,6 +1432,14 @@ func (s *pebbleHTTP) handleResearchPOST(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// Iter 409: gateway scatter-gather. When this process is in cluster
+	// gateway-mode AND the caller hasn't already set ?cluster_local=1
+	// (which is how the gateway tells peers "just do your local search,
+	// don't fan out again"), fan out to peers and RRF-merge their results.
+	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
+		s.handleSearchGateway(w, r)
+		return
+	}
 	start := time.Now()
 	q := r.URL.Query().Get("q")
 	if q == "" {
