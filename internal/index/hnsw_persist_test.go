@@ -181,6 +181,55 @@ func sameURLOrder(a, b []string) bool {
 	return true
 }
 
+// TestLoadHNSWMeta locks down iter 358: the cheap meta-only read must return
+// the same {Dim, NodeCount} that a freshly persisted HNSW graph reports.
+// Lives in the persistence test file because it shares the Pebble-fixture
+// scaffold.
+func TestLoadHNSWMeta(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	// Before any persist: no meta blob → ok=false, no error.
+	if _, ok, err := LoadHNSWMeta(ctx, ps); err != nil || ok {
+		t.Fatalf("LoadHNSWMeta on empty store: want (ok=false, err=nil), got (ok=%v, err=%v)", ok, err)
+	}
+
+	const dim = 16
+	h := NewHNSW(dim)
+	h.rng = rand.New(rand.NewSource(42))
+	rng := rand.New(rand.NewSource(99))
+	const n = 25
+	for i := 0; i < n; i++ {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = float32(rng.NormFloat64())
+		}
+		h.AddPassage(fmt.Sprintf("https://x/%d", i), fmt.Sprintf("doc %d", i), 0, 0, v)
+	}
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	meta, ok, err := LoadHNSWMeta(ctx, ps)
+	if err != nil {
+		t.Fatalf("LoadHNSWMeta after persist: %v", err)
+	}
+	if !ok {
+		t.Fatalf("LoadHNSWMeta after persist: want ok=true")
+	}
+	if meta.Dim != dim {
+		t.Errorf("meta.Dim: want %d, got %d", dim, meta.Dim)
+	}
+	if meta.NodeCount != n {
+		t.Errorf("meta.NodeCount: want %d, got %d", n, meta.NodeCount)
+	}
+}
+
 func sameIntSlice(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
