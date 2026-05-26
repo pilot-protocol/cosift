@@ -26,6 +26,7 @@ func runBenchPQ(ctx context.Context, cfg *config.Config, args []string) error {
 	k := fs.Int("k", 10, "top-K per query")
 	seed := fs.Int64("seed", 1, "sample seed (deterministic; bump to vary the sample)")
 	noPQ := fs.Bool("no-pq", false, "skip loading PQ codes — bench HNSW graph alone")
+	efSearch := fs.Int("ef-search", 0, "override HNSW efSearch (0 = use default/built-in)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -52,6 +53,10 @@ func runBenchPQ(ctx context.Context, cfg *config.Config, args []string) error {
 		return fmt.Errorf("bench-pq: no HNSW graph in %s", d)
 	}
 	loadDur := time.Since(t0)
+	if *efSearch > 0 {
+		g.SetEfSearch(*efSearch)
+		fmt.Printf("bench-pq: efSearch override = %d\n", *efSearch)
+	}
 
 	pqLabel := "off (raw vectors)"
 	if !*noPQ {

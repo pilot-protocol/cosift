@@ -94,6 +94,21 @@ func NewHNSW(dim int) *HNSW {
 	}
 }
 
+// SetEfSearch overrides the query-time candidate-list size. Bigger values
+// raise recall at proportional cost. Iter 438 — exposed for runtime tuning
+// (env COSIFT_HNSW_EF_SEARCH) after we observed Recall@10 dropping to ~0.47
+// on a 800K-vector graph that had been grown via AddPassage rather than
+// rebuilt; bumping efSearch from 50 → 200 recovers recall without a
+// full graph rebuild.
+func (h *HNSW) SetEfSearch(ef int) {
+	if ef <= 0 {
+		return
+	}
+	h.mu.Lock()
+	h.efSearch = ef
+	h.mu.Unlock()
+}
+
 // Len reports the number of inserted vectors.
 func (h *HNSW) Len() int {
 	h.mu.RLock()

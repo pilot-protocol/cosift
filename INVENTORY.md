@@ -160,6 +160,23 @@ recall relative to raw and the speedup over raw HNSW is negligible
 (456µs vs 416µs). PQ is worth revisiting at much larger scale where the
 graph stops fitting in RAM, but at 80K vectors it's a recall regression.
 
+### Iter 438: efSearch tuning under graph erosion
+
+As the post-iter-428 graph grew via AddPassage from 47 K → 817 K vectors,
+self-recall@10 dropped 0.89 → 0.40 at default efSearch=50.
+`COSIFT_HNSW_EF_SEARCH=200` raises this back to 0.55 with ~1.8 ms search
+latency (still 100× faster than brute force). Recall plateaus past 200.
+
+Full recovery would need a re-rebuild. Worth doing every ~Nx growth in
+vector count, e.g. weekly.
+
+| efSearch | Recall@10 mean | hnsw latency |
+|---|---|---|
+| 50  | 0.404 | 589 µs |
+| 100 | 0.490 | 995 µs |
+| 200 | 0.548 | 1.8 ms |
+| 400 | 0.570 | 3.1 ms |
+
 To take a fresh recall measurement against the live serve:
 
 ```bash

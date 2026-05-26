@@ -111,6 +111,16 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		default:
 			hnswGraph = g
 			log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d", g.Len(), vectorDim)
+			// Iter 438: optional efSearch override. Default 50 from NewHNSW
+			// underfits big graphs grown via AddPassage; raising to ~200
+			// restored Recall@10 from 0.47 to ~0.85 on the 800K-vector
+			// production corpus without a graph rebuild.
+			if v := os.Getenv("COSIFT_HNSW_EF_SEARCH"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					g.SetEfSearch(n)
+					log.Printf("pebble-serve: HNSW efSearch override = %d", n)
+				}
+			}
 			// Iter 416: if a PQ codebook + codes exist in this store, wire
 			// them so /search uses asymmetric PQ distance (much faster on
 			// large graphs). When absent, search falls back to raw vectors.
