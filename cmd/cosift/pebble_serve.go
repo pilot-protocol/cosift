@@ -928,30 +928,9 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	case "date_asc":
 		sortHitsByDate(out, true)
 	}
-	retrieverLabel := "bm25"
-	// Iter 363/364: when dense or hybrid actually fired, label says so.
-	// Falls back to bm25 (the case the warning called out) when graph or
-	// embedder missing.
-	switch {
-	case retrieverParam == "dense" && denseReady:
-		retrieverLabel = "dense"
-	case retrieverParam == "hybrid" && denseReady:
-		retrieverLabel = "bm25+dense:rrf"
-	default:
-		switch expandMode {
-		case "paraphrase":
-			if effectiveQuery != q {
-				retrieverLabel = "bm25+paraphrase"
-			}
-		case "true", "hyde":
-			if effectiveQuery != q {
-				retrieverLabel = "bm25+hyde"
-			}
-		}
-	}
-	if wantRerank {
-		retrieverLabel += "+rerank:" + s.reranker.Name()
-	}
+	// Iter 363/364/366: label centralized in buildRetrieverLabel so /answer
+	// and /research report the same vocabulary as /search.
+	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
 	resp := searchResponse{
 		Query:           q,
 		Expand:          normalizeExpandMode(expandMode),
@@ -1516,6 +1495,38 @@ func normalizeExpandMode(raw string) string {
 	}
 }
 
+// Iter 366: buildRetrieverLabel produces the human-readable retriever string
+// surfaced on /search, /answer, /research responses. Mirrors the iter 363/364
+// /search inline switch so all three endpoints report the same vocabulary.
+// expansionFired is the post-hoc "did expand=hyde/paraphrase actually run"
+// signal (effectiveQuery != q for /search & /answer; chat-present for
+// /research where sub-queries are individual). wantRerank appends the
+// "+rerank:<name>" suffix when rerank fired.
+func (s *pebbleHTTP) buildRetrieverLabel(retrieverParam, expandMode string, denseReady, expansionFired, wantRerank bool) string {
+	label := "bm25"
+	switch {
+	case retrieverParam == "dense" && denseReady:
+		label = "dense"
+	case retrieverParam == "hybrid" && denseReady:
+		label = "bm25+dense:rrf"
+	default:
+		switch expandMode {
+		case "paraphrase":
+			if expansionFired {
+				label = "bm25+paraphrase"
+			}
+		case "true", "hyde":
+			if expansionFired {
+				label = "bm25+hyde"
+			}
+		}
+	}
+	if wantRerank && s.reranker != nil {
+		label += "+rerank:" + s.reranker.Name()
+	}
+	return label
+}
+
 // Iter 365: retrieve dispatches retriever choice (bm25 / dense / hybrid) and
 // then expansion (bare / HyDE / paraphrase+RRF) for BM25 paths. Shared by
 // /search, /answer, /research so all three endpoints get the same retriever
@@ -1656,6 +1667,9 @@ type answerResponse struct {
 	Query           string         `json:"query"`
 	EffectiveQuery  string         `json:"effective_query,omitempty"`
 	Expand          string         `json:"expand,omitempty"`
+	// Iter 366: retriever label — same vocabulary as /search ("bm25",
+	// "dense", "bm25+dense:rrf", "+hyde"/"+paraphrase", "+rerank:<name>").
+	Retriever       string         `json:"retriever,omitempty"`
 	Answer          string         `json:"answer"`
 	Sources         []answerSource `json:"sources"`
 	Model           string         `json:"model"`
@@ -1817,9 +1831,13 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
+	// Iter 366: same retriever label vocabulary as /search.
+	denseReady := s.hnsw != nil && s.embedder != nil
+	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
 	if len(sources) == 0 {
 		empty := answerResponse{
-			Query: q, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources in the index.",
+			Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
+			Answer:  "No matching sources in the index.",
 			Sources: sources, Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 		}
 		if effectiveQuery != q {
@@ -1846,7 +1864,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			s.streamAnswer(w, r, sc, msgs, sources, q, len(hits), start)
+			s.streamAnswer(w, r, sc, msgs, sources, q, len(hits), retrieverLabel, start)
 			return
 		}
 		// Not a streaming client — degrade silently to sync rather than 501.
@@ -1858,8 +1876,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := answerResponse{
-		Query: q, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
-		Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
+		Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
+		Answer: answer, Sources: sources,
+		Model:  s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 	}
 	if effectiveQuery != q {
 		resp.EffectiveQuery = effectiveQuery
@@ -1868,7 +1887,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, totalCandidates int, start time.Time) {
+func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, totalCandidates int, retrieverLabel string, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
@@ -1887,7 +1906,11 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 	if warns := s.warningsFor(r); len(warns) > 0 {
 		sse(map[string]any{"type": "warnings", "warnings": warns})
 	}
-	sse(map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model(), "total_candidates": totalCandidates})
+	srcEvt := map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model(), "total_candidates": totalCandidates}
+	if retrieverLabel != "" {
+		srcEvt["retriever"] = retrieverLabel
+	}
+	sse(srcEvt)
 
 	_, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
 		sse(map[string]any{"type": "answer_chunk", "text": delta})
@@ -1915,6 +1938,8 @@ type researchResponse struct {
 	Query           string         `json:"query"`
 	Plan            []string       `json:"plan"`
 	Expand          string         `json:"expand,omitempty"`
+	// Iter 366: retriever label, mirroring /search/answer vocabulary.
+	Retriever       string         `json:"retriever,omitempty"`
 	Answer          string         `json:"answer"`
 	Sources         []answerSource `json:"sources"`
 	Model           string         `json:"model"`
@@ -2093,9 +2118,17 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
+	// Iter 366: retriever label for /research. Sub-queries don't yield a
+	// single effectiveQuery, so "expansion fired" is approximated by intent:
+	// chat is up and expandMode requested it. Matches what warningsFor() uses
+	// to decide whether to flag a silent no-op.
+	denseReady := s.hnsw != nil && s.embedder != nil
+	expandFired := expandMode != "" && s.chat != nil
+	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandFired, wantRerank)
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
-			Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: "No matching sources for any sub-query.",
+			Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
+			Answer:  "No matching sources for any sub-query.",
 			Sources: sources, Model: s.chat.Model(), Warnings: s.warningsFor(r),
 			TotalCandidates: len(best), Took: time.Since(start).String(),
 		})
@@ -2111,8 +2144,9 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
-		Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Answer: answer, Sources: sources,
-		Model: s.chat.Model(), Warnings: s.warningsFor(r),
+		Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
+		Answer: answer, Sources: sources,
+		Model:  s.chat.Model(), Warnings: s.warningsFor(r),
 		TotalCandidates: len(best), Took: time.Since(start).String(),
 	})
 }
@@ -2159,12 +2193,25 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if len(subs) > 5 {
 		subs = subs[:5]
 	}
+	// Iter 257/275: per-sub-query expansion via retrieveWithExpansion.
+	// Iter 365: per-sub-query retriever dispatch (bm25 / dense / hybrid).
+	// Iter 366: read retriever + wantRerank early so the plan event can
+	// surface the full retriever label, not just expand.
+	expandMode := r.URL.Query().Get("expand")
+	retrieverParam := r.URL.Query().Get("retriever")
+	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	denseReady := s.hnsw != nil && s.embedder != nil
+	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandMode != "", wantRerank)
+
 	// Iter 284: surface the active expansion strategy on the plan event so
 	// UIs can render 'using paraphrase' or 'using HyDE' as soon as the plan
 	// arrives, before per-sub-query expansion fires.
 	planEvent := map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()}
-	if mode := normalizeExpandMode(r.URL.Query().Get("expand")); mode != "" {
+	if mode := normalizeExpandMode(expandMode); mode != "" {
 		planEvent["expand"] = mode
+	}
+	if retrieverLabel != "" {
+		planEvent["retriever"] = retrieverLabel
 	}
 	sse(planEvent)
 
@@ -2177,10 +2224,6 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if perSub > 40 {
 		perSub = 40
 	}
-	// Iter 257/275: per-sub-query expansion via retrieveWithExpansion.
-	// Iter 365: per-sub-query retriever dispatch (bm25 / dense / hybrid).
-	expandMode := r.URL.Query().Get("expand")
-	retrieverParam := r.URL.Query().Get("retriever")
 	for _, sq := range subs {
 		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
@@ -2200,8 +2243,8 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
 	// Iter 250: same rerank wiring as /research sync. Pool widens to
 	// rerankCandK, rerank reorders, then truncate to k before SSE 'sources'
-	// fires so the client sees the final rank-ordered list.
-	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	// fires so the client sees the final rank-ordered list. wantRerank was
+	// hoisted to the top of streamResearch in iter 366 for the plan label.
 	keepCap := k
 	if wantRerank {
 		keepCap = s.rerankCandK
@@ -2276,7 +2319,11 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	sse(map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)}) // iter 317
+	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)} // iter 317
+	if retrieverLabel != "" {
+		srcEvt["retriever"] = retrieverLabel // iter 366
+	}
+	sse(srcEvt)
 	if len(sources) == 0 {
 		sse(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
 		return
