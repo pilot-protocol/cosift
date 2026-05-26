@@ -352,7 +352,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery)
 	s.crawlActive = true
 
-	// Checkpoint goroutine.
+	// Checkpoint goroutine. Iter 406/407: incremental persist via PersistFrom
+	// — each tick only writes nodes [lastN, n). Shutdown does a full persist
+	// from 0 so any backlinks added to older nodes get refreshed.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -362,9 +364,15 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		for {
 			select {
 			case <-ctx.Done():
-				if s.hnsw.Len() > lastN {
-					log.Printf("in-serve crawler: final HNSW persist at shutdown (%d nodes)", s.hnsw.Len())
-					_ = s.hnsw.Persist(context.Background(), ps)
+				n := s.hnsw.Len()
+				if n > 0 {
+					t0 := time.Now()
+					log.Printf("in-serve crawler: final HNSW persist at shutdown (%d nodes, full)", n)
+					if err := s.hnsw.Persist(context.Background(), ps); err != nil {
+						log.Printf("in-serve crawler: final HNSW persist failed: %v", err)
+					} else {
+						log.Printf("in-serve crawler: final HNSW persist complete in %s", time.Since(t0))
+					}
 				}
 				return
 			case <-t.C:
@@ -372,11 +380,13 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 				if n == 0 || n == lastN {
 					continue
 				}
-				log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d) ...", n, n-lastN)
-				if err := s.hnsw.Persist(context.Background(), ps); err != nil {
-					log.Printf("in-serve crawler: HNSW persist failed: %v", err)
+				t0 := time.Now()
+				if err := s.hnsw.PersistFrom(context.Background(), ps, lastN); err != nil {
+					log.Printf("in-serve crawler: HNSW persist (incremental from %d) failed: %v", lastN, err)
 					continue
 				}
+				log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, took %s)",
+					n, n-lastN, time.Since(t0))
 				lastN = n
 			}
 		}
