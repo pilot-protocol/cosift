@@ -385,14 +385,32 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 	refresh := fs.Bool("refresh", false, "force re-crawl of URLs already in the frontier")
 	sitemap := fs.String("sitemap", "", "URL of a sitemap.xml (or sitemap index) to seed from")
+	seedsFile := fs.String("seeds-file", "", "path to a text file with one seed URL per line (blank lines and # comments ignored)")
 	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
 	duration := fs.Duration("duration", 0, "iter 223: stop the crawl cleanly after this much time (0 = run until frontier empty or SIGTERM)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	urls := fs.Args()
+	// Iter 397: -seeds-file lets operators target specific websites in bulk
+	// without stuffing dozens of URLs on the command line. Each non-blank,
+	// non-comment line is treated as a seed.
+	if *seedsFile != "" {
+		buf, err := os.ReadFile(*seedsFile)
+		if err != nil {
+			return fmt.Errorf("read -seeds-file %s: %w", *seedsFile, err)
+		}
+		for _, line := range strings.Split(string(buf), "\n") {
+			s := strings.TrimSpace(line)
+			if s == "" || strings.HasPrefix(s, "#") {
+				continue
+			}
+			urls = append(urls, s)
+		}
+		log.Printf("crawler: loaded %d seeds from %s (after dedup of positional args, total queued = %d)", len(urls)-fs.NArg(), *seedsFile, len(urls))
+	}
 	if len(urls) == 0 && *sitemap == "" {
-		return errors.New("crawl: at least one URL or -sitemap is required")
+		return errors.New("crawl: at least one URL, -seeds-file, or -sitemap is required")
 	}
 
 	// Iter 223: bounded crawl via -duration. Wraps the caller's ctx with a
