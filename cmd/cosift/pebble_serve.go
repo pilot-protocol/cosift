@@ -66,6 +66,21 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: opened store with %d indexed docs", indexedDocs)
 	}
 
+	// Iter 357: peek for persisted HNSW vectors. Cheap — short-circuits after
+	// the first 'v'-family entry. Signals to operators whether dense retrieval
+	// could be wired in on this store. Counting all vectors at scale would be
+	// O(N) Pebble iteration and slow startup on 10M+ corpora; the boolean
+	// signal is enough to know "vectors exist, consider configuring an
+	// embedder for ?retriever=dense (future iter)".
+	hasVectors := false
+	_ = ps.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
+		hasVectors = true
+		return false // stop after the first hit
+	})
+	if hasVectors {
+		log.Printf("pebble-serve: HNSW vectors present in store (iter-199 dense index)")
+	}
+
 	// Iter 282: configurable HyDE + paraphrase cache caps (defaults 256).
 	hydeCap := 256
 	if v := os.Getenv("COSIFT_HYDE_CACHE_SIZE"); v != "" {
@@ -112,6 +127,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		hydeCacheCap: hydeCap,
 		paraCache:    make(map[string][]string, paraCap),
 		paraCacheCap: paraCap,
+		hasVectors:   hasVectors,
 		started:      time.Now(),
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
@@ -221,6 +237,12 @@ type pebbleHTTP struct {
 	hydeHits   atomic.Int64
 	hydeMisses atomic.Int64
 
+	// Iter 357: snapshot at startup of whether persisted HNSW vectors exist
+	// in the 'v' family. Cheap peek (first-hit short-circuit). Surfaced on
+	// /stats so operators know whether the store is ready for the future
+	// ?retriever=dense path without needing to grep pebble-info.
+	hasVectors bool
+
 	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without
 	// a counter operators can't tell whether their LLM/HTTP reranker is
@@ -323,6 +345,10 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["hyde_cache_size"] = s.hydeCacheCap
 		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
+	// Iter 357: signal whether the store has HNSW vectors persisted (iter 199
+	// dense path). Boolean — counting all vectors at scale would be O(N) so
+	// /stats stays cheap.
+	out["has_vectors"] = s.hasVectors
 	writeJSON(w, http.StatusOK, out)
 }
 
