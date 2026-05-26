@@ -177,9 +177,11 @@ curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_simi
 }
 ```
 
-### Dense `?retriever=dense`
+### Dense / Hybrid `?retriever=dense` / `?retriever=hybrid`
 
 When the HNSW graph is loaded (`COSIFT_LOAD_HNSW=true`), `/find_similar` can run HNSW cosine search around the source's persisted vector. URL-mode does this with **zero embed RPCs** — the source doc's vector is already in the graph from indexing. Text-mode embeds the supplied `title + text` before searching.
+
+`?retriever=hybrid` runs both BM25-MLT and dense, then RRF-fuses (k=60). The strongest "find similar" signal: lexical precision + semantic recall.
 
 ```bash
 # URL-mode dense: no embedder needed; reads source vector from the graph
@@ -188,13 +190,26 @@ curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fra
 # Text-mode dense: requires a configured embedder
 curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:7777/find_similar \
   -d '{"text": "leader election in distributed systems", "retriever": "dense", "k": 5}'
+
+# Hybrid: BM25-MLT + dense, RRF-fused — strongest neighbors signal
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&retriever=hybrid&rerank=true'
 ```
 
-Response shape is identical to BM25-MLT but `retriever` becomes `"dense"` (or `"dense+rerank:<name>"` with `rerank=true`). Fallback rules:
+Label vocabulary (`retriever` on the response):
 
-- HNSW graph not loaded → falls through to BM25-MLT with a warning.
+| Label | Means |
+|-------|-------|
+| `bm25-mlt` | Default — top-tf·idf terms → BM25 |
+| `dense` | HNSW cosine search around the source vector |
+| `bm25-mlt+dense:rrf` | Hybrid — BM25-MLT ∪ dense, RRF-fused |
+| `...+rerank:<name>` | Appended when a reranker reordered the candidate pool |
+
+Fallback rules:
+
+- HNSW graph not loaded → dense/hybrid silently fall through to BM25-MLT with a warning.
 - Text-mode and no embedder → falls through to BM25-MLT with a warning.
 - URL-mode and no embedder → **still works** (graph lookup needs no embedder). The "no embedder" warning is suppressed for this case.
+- Hybrid with no usable query vector → degrades to BM25-MLT (BM25 list is already fetched).
 
 ## `GET /contents` / `POST /contents`
 

@@ -1133,38 +1133,48 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		fetchK = keepCap * 2
 	}
 
-	// Iter 371: /find_similar?retriever=dense reuses the source's persisted
-	// vector (URL-mode) or embeds the user's text (text-mode) and runs an
-	// HNSW cosine search instead of BM25-MLT. The dense path skips the
-	// term-derivation cost and the embed RPC entirely on URL-mode — the
-	// source's vector is already in the graph from indexing.
-	// Requires both COSIFT_LOAD_HNSW=true at server start (for URL-mode)
-	// AND a configured embedder (for text-mode). Missing either falls
-	// through to BM25-MLT; warningsFor() flags it.
+	// Iter 371/373: /find_similar?retriever=dense reuses the source's
+	// persisted vector (URL-mode) or embeds the user's text (text-mode) and
+	// runs an HNSW cosine search instead of BM25-MLT. ?retriever=hybrid
+	// (iter 373) runs BOTH BM25-MLT and dense, then RRF-fuses — the
+	// strongest "find similar" signal: lexical precision + semantic recall.
+	//
+	// Requires COSIFT_LOAD_HNSW=true at server start (for the graph);
+	// text-mode additionally needs a configured embedder. URL-mode dense
+	// works without an embedder — the source vector is already in the graph
+	// from indexing. Missing requirements fall through to BM25-MLT;
+	// warningsFor() flags it (iter 372 carves out the URL-mode-no-embedder
+	// case so the warning isn't misleading).
 	retrieverParam := r.URL.Query().Get("retriever")
 	useDense := retrieverParam == "dense" && s.hnsw != nil
+	useHybrid := retrieverParam == "hybrid" && s.hnsw != nil
 	var (
 		hits        []index.Hit
 		denseFired  bool
+		bm25Fired   bool
 	)
-	if useDense {
-		var queryVec []float32
-		var ok bool
+	// Helper: fetch the query vector (URL-mode lookup, falling back to
+	// text-mode embed when allowed). Returns ok=false when neither path
+	// produced a usable vector.
+	getQueryVec := func() ([]float32, bool) {
 		if srcURL != "" {
-			queryVec, ok = s.hnsw.LookupVectorByURL(srcURL)
+			if v, ok := s.hnsw.LookupVectorByURL(srcURL); ok {
+				return v, true
+			}
 		}
-		if !ok && s.embedder != nil && (srcText != "" || srcTitle != "") {
-			// Text-mode or URL not found in graph — embed title+text.
+		if s.embedder != nil && (srcText != "" || srcTitle != "") {
 			seed := strings.TrimSpace(srcTitle + " " + srcText)
 			if seed != "" {
 				vecs, embErr := s.embedder.Embed(r.Context(), []string{seed})
 				if embErr == nil && len(vecs) > 0 {
-					queryVec = vecs[0]
-					ok = true
+					return vecs[0], true
 				}
 			}
 		}
-		if ok {
+		return nil, false
+	}
+	if useDense {
+		if queryVec, ok := getQueryVec(); ok {
 			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
 			hits = make([]index.Hit, len(vhits))
 			for i, vh := range vhits {
@@ -1172,8 +1182,34 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			}
 			denseFired = true
 		}
+	} else if useHybrid {
+		// Run BM25-MLT and dense in series; RRF-fuse the two ranked lists.
+		// Each retriever votes fetchK candidates so the fused top-fetchK has
+		// room to balance both signals before filter/enrich/rerank.
+		bm25Hits, bm25Err := s.idx.Search(r.Context(), queryStr, fetchK)
+		if bm25Err != nil {
+			writeProblem(w, http.StatusInternalServerError, bm25Err.Error())
+			return
+		}
+		bm25Fired = true
+		if queryVec, ok := getQueryVec(); ok {
+			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
+			denseHits := make([]index.Hit, len(vhits))
+			for i, vh := range vhits {
+				denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+			}
+			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
+			if len(hits) > fetchK {
+				hits = hits[:fetchK]
+			}
+			denseFired = true
+		} else {
+			// Hybrid fell through to BM25-only (e.g. text-mode + no embedder).
+			// Keep the BM25 hits we already paid for.
+			hits = bm25Hits
+		}
 	}
-	if !denseFired {
+	if !denseFired && !bm25Fired {
 		var err error
 		hits, err = s.idx.Search(r.Context(), queryStr, fetchK)
 		if err != nil {
@@ -1262,11 +1298,17 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cands {
 		out = append(out, c.hit)
 	}
-	// Iter 371: label says dense / dense+rerank when the HNSW path fired;
-	// stays bm25-mlt otherwise (fallback when dense was requested but graph
-	// missing or URL unknown — warningsFor() flags the case).
+	// Iter 371/373: label tracks which retrievers actually fired.
+	//   bm25-mlt              — default, BM25 only
+	//   dense                 — ?retriever=dense fired (graph + vec found)
+	//   bm25-mlt+dense:rrf    — ?retriever=hybrid, both BM25 and dense fired
+	// If dense was requested but fell through (no graph, no vec), the label
+	// stays bm25-mlt and warningsFor() carries the reason.
 	retrieverLabel := "bm25-mlt"
-	if denseFired {
+	switch {
+	case bm25Fired && denseFired:
+		retrieverLabel = "bm25-mlt+dense:rrf"
+	case denseFired:
 		retrieverLabel = "dense"
 	}
 	if wantRerank {
