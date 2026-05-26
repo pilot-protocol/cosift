@@ -2,6 +2,27 @@
 
 Concrete curl invocations for common patterns. All assume the default `127.0.0.1:7777`. See [docs/API.md](API.md) for the full per-endpoint reference and [docs/TUNING.md](TUNING.md) for when to flip which knob.
 
+## Strongest pipelines
+
+The four orthogonal IR knobs — `retriever` × `expand` × `rerank` × `mmr` — compose on every retrieval/synth endpoint. The "give me the best result this server can produce" pipeline drops each knob into its strongest setting:
+
+```bash
+# /search — frontier matrix on a single hit
+curl 'http://127.0.0.1:7777/search?q=raft+leader+election&retriever=hybrid&expand=paraphrase&rerank=true&mmr=0.7'
+# → "retriever": "bm25+dense:rrf+paraphrase+rerank:<name>+mmr:0.70"
+
+# /answer — same matrix, cited LLM synth on top
+curl 'http://127.0.0.1:7777/answer?q=what+is+raft+consensus&retriever=hybrid&expand=hyde&rerank=true&mmr=0.7&stream=true'
+
+# /research — multi-step planner, each sub-query gets the same matrix
+curl 'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&retriever=hybrid&expand=paraphrase&rerank=true&mmr=0.5'
+
+# /find_similar — neighbors of an indexed URL, diversified
+curl 'http://127.0.0.1:7777/find_similar?url=https%3A%2F%2Fdocs.example.com%2Fraft&retriever=hybrid&rerank=true&mmr=0.5'
+```
+
+Each knob has a fall-through if the server can't honor it (no HNSW graph, no embedder, no chat client) — the request still succeeds, the `retriever` label and `warnings[]` tell you what actually fired. See `/stats.retrievers` (or `cosift pebble-info -json`) to discover what's available before sending.
+
 ## Search
 
 ### Bare BM25, top 10
