@@ -307,6 +307,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
 	// 224K-vec corpus we have today it takes ~minutes; operator-only.
 	mux.HandleFunc("POST /admin/pq-train", wrap(srv.handlePQTrain))
+	// Iter 424: backfill-only — re-encode every node that doesn't have a
+	// code yet against the existing codebook. No retrain. Fast.
+	mux.HandleFunc("POST /admin/pq-encode", wrap(srv.handlePQEncode))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -1136,6 +1139,70 @@ func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handlePQEncode backfills PQ codes for every node currently missing one,
+// against the codebook already loaded on this serve. Order-of-magnitude
+// faster than handlePQTrain because it skips k-means; just encode loop.
+// Iter 424.
+func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.hnsw == nil {
+		writeProblem(w, http.StatusBadRequest, "pq-encode: no HNSW loaded")
+		return
+	}
+	if !s.hnsw.HasPQ() {
+		writeProblem(w, http.StatusBadRequest, "pq-encode: no codebook loaded — run /admin/pq-train first")
+		return
+	}
+	t0 := time.Now()
+	ids, codes, err := s.hnsw.EncodeMissing()
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "encode: "+err.Error())
+		return
+	}
+	encodeElapsed := time.Since(t0)
+	if len(ids) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"encoded":       0,
+			"total":         s.hnsw.Len(),
+			"already_full":  true,
+			"total_elapsed": encodeElapsed.String(),
+		})
+		return
+	}
+	// Persist freshly-encoded codes in a single batch.
+	pq := s.hnsw.PQStatus()
+	cb := &index.PQCodebook{Dim: pq.Dim, M: pq.M, K: pq.K, SubDim: pq.Dim / pq.M}
+	entries := make([]store.PQCodeEntry, len(ids))
+	for i := range ids {
+		entries[i] = store.PQCodeEntry{ID: ids[i], Blob: cb.EncodeCodeBlob(codes[i])}
+	}
+	persistT0 := time.Now()
+	if err := s.store.PutPQCodesBatch(r.Context(), entries); err != nil {
+		writeProblem(w, http.StatusInternalServerError, "persist codes: "+err.Error())
+		return
+	}
+	persistElapsed := time.Since(persistT0)
+	total := s.hnsw.Len()
+	coverage := 100.0 * float64(pq.NodesWithCode+len(ids)) / float64(total)
+	totalElapsed := time.Since(t0)
+	log.Printf("pq-encode: backfilled %d codes in %s (persist %s, total %s) → coverage %.1f%%",
+		len(ids), encodeElapsed-persistElapsed, persistElapsed, totalElapsed, coverage)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"encoded":         len(ids),
+		"total":           total,
+		"coverage_pct":    coverage,
+		"encode_elapsed":  (encodeElapsed - persistElapsed).String(),
+		"persist_elapsed": persistElapsed.String(),
+		"total_elapsed":   totalElapsed.String(),
+	})
+}
+
 // handlePQTrain trains a PQ codebook on a sample of the current HNSW
 // graph, then encodes ALL nodes and persists codes + codebook to Pebble.
 // Synchronous; returns when training completes. Iter 415.
@@ -1352,22 +1419,32 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	// state. Only present when the graph is loaded; nil otherwise.
 	if s.hnsw != nil {
 		pq := s.hnsw.PQStatus()
-		if pq.Enabled {
-			coverage := 0.0
-			if pq.NodesTotal > 0 {
-				coverage = 100 * float64(pq.NodesWithCode) / float64(pq.NodesTotal)
-			}
-			out["pq"] = map[string]any{
-				"enabled":         true,
-				"dim":             pq.Dim,
-				"m":               pq.M,
-				"k":               pq.K,
-				"nodes_with_code": pq.NodesWithCode,
-				"coverage_pct":    coverage,
-			}
-		} else {
-			out["pq"] = map[string]any{"enabled": false}
+		// Iter 424: coverage is over VALID nodes (vec != nil), not raw total —
+		// zombie slots from pre-iter-411 partial persists inflate the total
+		// without being searchable. NodesTotal still surfaced for context.
+		denom := pq.NodesValid
+		if denom == 0 {
+			denom = pq.NodesTotal // avoid div-by-zero on a fresh load
 		}
+		coverage := 0.0
+		if denom > 0 {
+			coverage = 100 * float64(pq.NodesWithCode) / float64(denom)
+		}
+		zombies := pq.NodesTotal - pq.NodesValid
+		pqInfo := map[string]any{
+			"enabled":         pq.Enabled,
+			"nodes_with_code": pq.NodesWithCode,
+			"nodes_valid":     pq.NodesValid,
+			"nodes_total":     pq.NodesTotal,
+			"zombie_nodes":    zombies,
+			"coverage_pct":    coverage,
+		}
+		if pq.Enabled {
+			pqInfo["dim"] = pq.Dim
+			pqInfo["m"] = pq.M
+			pqInfo["k"] = pq.K
+		}
+		out["pq"] = pqInfo
 	}
 	// Iter 375: which retrievers actually work right now. Clients can read
 	// this once instead of probing ?retriever=dense + parsing the warning.

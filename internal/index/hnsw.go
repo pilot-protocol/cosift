@@ -119,12 +119,20 @@ func (h *HNSW) HasPQ() bool {
 	return h.codebook != nil
 }
 
-// PQStatus returns an observability snapshot: codebook shape + number of
-// nodes that currently have a code (== len(code) == M). Iter 423.
+// PQStatus returns an observability snapshot: codebook shape + node-count
+// breakdown. Iter 423/424.
+//
+//   NodesTotal     — len(h.nodes), includes zombies from pre-iter-411 corrupt
+//                    persists (vec=nil; can't be searched or encoded).
+//   NodesValid     — nodes with a non-empty vec (the only ones search hits).
+//   NodesWithCode  — nodes with a PQ code of length == codebook.M.
+//                    On a healthy graph: NodesWithCode == NodesValid (100%
+//                    coverage of searchable nodes).
 type PQStatus struct {
 	Enabled       bool
 	Dim, M, K     int
 	NodesWithCode int
+	NodesValid    int
 	NodesTotal    int
 }
 
@@ -132,6 +140,11 @@ func (h *HNSW) PQStatus() PQStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	st := PQStatus{NodesTotal: len(h.nodes)}
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) > 0 {
+			st.NodesValid++
+		}
+	}
 	if h.codebook == nil {
 		return st
 	}
@@ -214,6 +227,43 @@ func (h *HNSW) SampleVectors(n int, rngSeed int64) [][]float32 {
 		out = append(out, cp)
 	}
 	return out
+}
+
+// EncodeMissing fills in PQ codes for nodes whose codes are nil/short
+// against the currently-loaded codebook. Used by the iter-424 backfill
+// path to bring coverage to 100% without re-training. Returns the IDs and
+// codes that were freshly computed (suitable for PutPQCodesBatch); skips
+// zero-value (vec-less) and already-coded nodes. Iter 424.
+func (h *HNSW) EncodeMissing() ([]uint64, [][]uint16, error) {
+	h.mu.Lock() // write-lock: we mutate h.codes
+	defer h.mu.Unlock()
+	if h.codebook == nil {
+		return nil, nil, fmt.Errorf("no codebook loaded")
+	}
+	// Ensure h.codes is parallel to h.nodes (grow if behind).
+	if len(h.codes) < len(h.nodes) {
+		grown := make([][]uint16, len(h.nodes))
+		copy(grown, h.codes)
+		h.codes = grown
+	}
+	ids := []uint64{}
+	codes := [][]uint16{}
+	for i := range h.nodes {
+		if len(h.codes[i]) == h.codebook.M {
+			continue
+		}
+		if len(h.nodes[i].vec) == 0 {
+			continue
+		}
+		code, err := h.codebook.Encode(h.nodes[i].vec)
+		if err != nil {
+			continue
+		}
+		h.codes[i] = code
+		ids = append(ids, uint64(i))
+		codes = append(codes, code)
+	}
+	return ids, codes, nil
 }
 
 // EncodeAll iterates every node in the graph and encodes its vector
