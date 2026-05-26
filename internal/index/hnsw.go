@@ -132,7 +132,11 @@ func (h *HNSW) HasPQ() bool {
 // pqTable is the M*K-element lookup precomputed once per search via
 // codebook.QueryTable.
 func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
-	if h.codebook != nil && idx < len(h.codes) && len(h.codes[idx]) == h.codebook.M {
+	// Iter 417 fix: PQ branch requires a non-nil pqTable. AddPassage's
+	// internal greedyDescend/searchLayer calls pass nil because graph
+	// construction always uses raw vecs — without this guard, the PQ
+	// branch fires with a nil table and PQDistance panics indexing it.
+	if pqTable != nil && h.codebook != nil && idx < len(h.codes) && len(h.codes[idx]) == h.codebook.M {
 		return float64(PQDistance(pqTable, h.codes[idx], h.codebook.M, h.codebook.K))
 	}
 	if len(h.nodes[idx].vec) == 0 {
