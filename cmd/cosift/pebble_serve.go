@@ -991,6 +991,122 @@ func numNonEmpty(ps []string) int {
 	return n
 }
 
+// handleFindSimilarGateway scatters /find_similar to every shard. The
+// owning shard (URL-mode) or every shard (text-mode) produces real
+// neighbors; others return empty. Gateway RRF-merges. Iter 425.
+func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	k := 10
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			k = n
+		}
+	}
+	perPeerK := k * 2
+	if perPeerK < 20 {
+		perPeerK = 20
+	}
+	srcQ := url.Values{}
+	for kk, vv := range r.URL.Query() {
+		srcQ[kk] = vv
+	}
+	srcQ.Set("k", strconv.Itoa(perPeerK))
+	srcQ.Set("cluster_local", "1")
+	queryStr := srcQ.Encode()
+
+	type peerResult struct {
+		peerIdx int
+		hits    []searchHit
+		err     error
+	}
+	resCh := make(chan peerResult, len(s.cluster.Peers))
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	for i, peer := range s.cluster.Peers {
+		if peer == "" {
+			continue
+		}
+		i, peer := i, peer
+		go func() {
+			endpoint := "http://" + peer + "/find_similar?" + queryStr
+			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
+				endpoint = strings.TrimRight(peer, "/") + "/find_similar?" + queryStr
+			}
+			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
+			if t := s.cluster.PeerAuthToken; t != "" {
+				req.Header.Set("Authorization", "Bearer "+t)
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				resCh <- peerResult{peerIdx: i, err: err}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				resCh <- peerResult{peerIdx: i, err: fmt.Errorf("peer %s returned %d", peer, resp.StatusCode)}
+				return
+			}
+			var sr struct {
+				Hits []searchHit `json:"hits"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+			if err := json.Unmarshal(body, &sr); err != nil {
+				resCh <- peerResult{peerIdx: i, err: err}
+				return
+			}
+			resCh <- peerResult{peerIdx: i, hits: sr.Hits}
+		}()
+	}
+	lists := [][]index.Hit{}
+	hitFull := map[string]searchHit{}
+	warns := []string{}
+	total := 0
+	for i := 0; i < len(s.cluster.Peers); i++ {
+		if s.cluster.Peers[i] == "" {
+			continue
+		}
+		select {
+		case res := <-resCh:
+			if res.err != nil {
+				warns = append(warns, fmt.Sprintf("peer %d (%s) failed: %v", res.peerIdx, s.cluster.Peers[res.peerIdx], res.err))
+				continue
+			}
+			total += len(res.hits)
+			peerList := make([]index.Hit, len(res.hits))
+			for j, h := range res.hits {
+				peerList[j] = index.Hit{URL: h.URL, Title: h.Title, Score: h.Score}
+				if _, ok := hitFull[h.URL]; !ok {
+					hitFull[h.URL] = h
+				}
+			}
+			lists = append(lists, peerList)
+		case <-r.Context().Done():
+			warns = append(warns, "client context cancelled")
+			break
+		}
+	}
+	fused := rrfFuse(lists, 60)
+	if len(fused) > k {
+		fused = fused[:k]
+	}
+	out := make([]searchHit, 0, len(fused))
+	for _, f := range fused {
+		full, ok := hitFull[f.URL]
+		if !ok {
+			full = searchHit{URL: f.URL, Title: f.Title}
+		}
+		full.Score = f.Score
+		out = append(out, full)
+	}
+	writeJSON(w, http.StatusOK, searchResponse{
+		Query:           r.URL.Query().Get("url"),
+		Retriever:       fmt.Sprintf("gateway:find_similar:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
+		Hits:            out,
+		TotalCandidates: total,
+		Warnings:        append(warns, s.warningsFor(r)...),
+		Took:            time.Since(start).String(),
+	})
+}
+
 // handleResearchGateway runs the iter-243 planner on the gateway, scatters
 // each sub-query to peers (collecting RRF-merged hits with text), then
 // runs a single research synth. Iter 410.
@@ -2147,6 +2263,15 @@ func sortHitsByDate(hits []searchHit, asc bool) {
 // off the table on the Pebble path (HNSW indexing during crawl is the iter
 // follow-up), this is the cheapest credible /find_similar we can ship.
 func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
+	// Iter 425: gateway scatter-gather. /find_similar runs locally with a
+	// known URL+vec, but in a cluster the URL's shard owns its vector and
+	// only one shard has it. We fan-out to all shards anyway: the owning
+	// shard does the real work; others either fall back to text-mode (if
+	// text supplied) or return empty.
+	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
+		s.handleFindSimilarGateway(w, r)
+		return
+	}
 	start := time.Now()
 	// Iter 298: accept either ?url= (existing behavior) or ?text= (content-
 	// based similarity for unindexed drafts). text path skips the source-URL
