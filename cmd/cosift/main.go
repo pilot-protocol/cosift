@@ -4481,8 +4481,18 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 	} else {
 		_, n, _ := ps.CorpusStats(ctx)
+		// Iter 382: also report HNSW availability so operators can tell from
+		// `cosift doctor` whether dense / hybrid retrievers will work without
+		// firing pebble-info or pebble-serve /stats. Cheap — same 20-byte
+		// meta blob read pebble-info already does (iter 360/377).
+		meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
 		_ = ps.Close()
 		add("pebble store", "PASS", fmt.Sprintf("%d indexed docs", n))
+		if hnswOK {
+			add("HNSW graph", "PASS", fmt.Sprintf("%d nodes, dim=%d — dense/hybrid available (load with COSIFT_LOAD_HNSW=true)", meta.NodeCount, meta.Dim))
+		} else {
+			add("HNSW graph", "INFO", "no vectors persisted — only bm25 / bm25-mlt retrievers (set cfg.Embeddings.Model and re-crawl to add dense)")
+		}
 	}
 
 	// 2c. COSIFT_* env vars (iter 296). Lists which path-2 env overrides are
