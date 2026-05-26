@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -358,6 +359,23 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// listens on loopback so it can never be exposed publicly through the
 	// reverse proxy. Set COSIFT_PPROF_ADDR=127.0.0.1:6060 to enable.
 	if pprofAddr := os.Getenv("COSIFT_PPROF_ADDR"); pprofAddr != "" {
+		// Iter 445: optional mutex / block sampling so the iter-444
+		// dense-search-latency investigation has data. Off by default
+		// because each sample is a couple-µs overhead per contended
+		// lock event. Set rate ≥1 to enable; 1000 means "sample 1 in
+		// 1000 lock waits" which is plenty for diagnosis.
+		if v := os.Getenv("COSIFT_MUTEX_PROFILE_FRACTION"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				runtime.SetMutexProfileFraction(n)
+				log.Printf("pebble-serve: mutex profile fraction = %d", n)
+			}
+		}
+		if v := os.Getenv("COSIFT_BLOCK_PROFILE_RATE"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				runtime.SetBlockProfileRate(n)
+				log.Printf("pebble-serve: block profile rate = %d", n)
+			}
+		}
 		pprofMux := http.NewServeMux()
 		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
 		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
