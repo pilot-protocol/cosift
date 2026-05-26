@@ -777,6 +777,31 @@ func (p *PebbleStore) IteratePQCodes(ctx context.Context, fn func(nodeID uint64,
 	return nil
 }
 
+// ClearVectorFamily removes every persisted HNSW key (meta + nodes) in a
+// single DeleteRange op. Used by `cosift hnsw-rebuild` before writing the
+// freshly-reconstructed graph so leftover entries from the old graph
+// can't shadow new ones at lower indices. Iter 428.
+func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo := []byte{famVector}
+	hi := []byte{famVector + 1}
+	return p.db.DeleteRange(lo, hi, p.writeOpts)
+}
+
+// ClearPQFamily removes every persisted PQ key (codebook + per-node codes).
+// Used by `cosift hnsw-rebuild` because node indices change during rebuild,
+// invalidating the existing codes. Iter 428.
+func (p *PebbleStore) ClearPQFamily(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo := []byte{famPQ}
+	hi := []byte{famPQ + 1}
+	return p.db.DeleteRange(lo, hi, p.writeOpts)
+}
+
 // IterateVectorNodes scans every persisted HNSW node in ascending ID order,
 // invoking fn(nodeID, blob) for each. Returning false from fn stops the scan.
 func (p *PebbleStore) IterateVectorNodes(ctx context.Context, fn func(nodeID uint64, blob []byte) bool) error {

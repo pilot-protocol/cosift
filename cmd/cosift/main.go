@@ -285,6 +285,10 @@ func main() {
 		if err := runBenchPQ(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("bench-pq: %v", err)
 		}
+	case "hnsw-rebuild":
+		if err := runHNSWRebuild(ctx, cfg, flag.Args()[1:]); err != nil {
+			log.Fatalf("hnsw-rebuild: %v", err)
+		}
 	case "refresh-due":
 		if err := runRefreshDue(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("refresh-due: %v", err)
