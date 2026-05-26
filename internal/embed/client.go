@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -49,9 +50,17 @@ type OpenAIClient struct {
 
 // NewOpenAIClient constructs a client. Model and dim are required; URL defaults
 // to the public OpenAI endpoint when empty.
+//
+// Iter 392: URL is forgiving — accepts either the full endpoint
+// ("/v1/embeddings") or the base ("/v1") and appends "/embeddings" when
+// missing. Matches what every other OpenAI-compat client expects, so
+// operators pointing at Ollama / vLLM / TEI with `http://host:port/v1` no
+// longer get 404s.
 func NewOpenAIClient(apiKey, url, model string, dim int) *OpenAIClient {
 	if url == "" {
 		url = "https://api.openai.com/v1/embeddings"
+	} else if !strings.HasSuffix(strings.TrimRight(url, "/"), "/embeddings") {
+		url = strings.TrimRight(url, "/") + "/embeddings"
 	}
 	return &OpenAIClient{
 		APIKey: apiKey,
@@ -102,7 +111,11 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	// Iter 392: only send Authorization when the caller provided a key.
+	// Empty-Bearer headers confuse some local servers (e.g. older vLLM).
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)

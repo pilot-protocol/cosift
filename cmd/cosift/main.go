@@ -308,6 +308,35 @@ func main() {
 	}
 }
 
+// authStatus describes how a configured capability will authenticate to its
+// endpoint, for /doctor output. Iter 392.
+func authStatus(configured bool, key string, urlSet bool) string {
+	switch {
+	case !configured:
+		return "(none)"
+	case key != "":
+		return "bearer-token"
+	case urlSet:
+		return "anonymous(custom-url)"
+	default:
+		return "MISSING"
+	}
+}
+
+// resolveEmbedAPIKey returns the first non-empty embedder API key found in
+// env, in precedence order. Iter 392 adds COSIFT_EMBED_API_KEY so callers
+// using a non-OpenAI embedder don't have to set a variable named for the
+// wrong provider. Empty result is a valid "use anonymously" signal for
+// local self-hosted embedders.
+func resolveEmbedAPIKey() string {
+	for _, k := range []string{"COSIFT_EMBED_API_KEY", "OPENAI_API_KEY", "OPENAI"} {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // hnswPassageWriter bridges the crawler's iter-212 PassageWriter contract to
 // an in-memory index.HNSW graph. Each embedded passage looks up the doc's URL
 // and Title (via *PebbleStore.GetDocByID) and is inserted into the graph; the
@@ -387,19 +416,25 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	// Pebble backend, also build and persist an HNSW graph via the iter-391
 	// hnswPassageWriter bridge — that's the path /search?retriever=dense
 	// needs and that pre-iter-391 was a documented no-op.
+	// Iter 392: API key is OPTIONAL when cfg.Embeddings.URL points at a
+	// custom endpoint (Ollama / vLLM / TEI / etc — local self-hosted
+	// embedders don't need a Bearer token). Required only when hitting the
+	// default OpenAI endpoint.
 	if cfg.Embeddings.Model != "" {
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI")
-		}
-		if apiKey != "" {
+		apiKey := resolveEmbedAPIKey()
+		needsKey := cfg.Embeddings.URL == "" // default OpenAI requires a key
+		if apiKey != "" || !needsKey {
 			dim := cfg.Embeddings.Dim
 			if dim == 0 {
 				dim = 1536
 			}
 			emb := embed.NewOpenAIClient(apiKey, cfg.Embeddings.URL, cfg.Embeddings.Model, dim)
 			c = c.WithEmbedder(emb)
-			log.Printf("crawler: dense embeddings enabled (model=%s, dim=%d)", cfg.Embeddings.Model, dim)
+			authStatus := "anonymous"
+			if apiKey != "" {
+				authStatus = "bearer-token"
+			}
+			log.Printf("crawler: dense embeddings enabled (model=%s, dim=%d, auth=%s)", cfg.Embeddings.Model, dim, authStatus)
 			if pebbleStoreForCrawl != nil {
 				h := index.NewHNSW(dim)
 				c = c.WithPassageWriter(&hnswPassageWriter{ps: pebbleStoreForCrawl, hnsw: h})
@@ -417,7 +452,7 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 				}()
 			}
 		} else {
-			log.Printf("warning: embeddings configured but no OPENAI_API_KEY in env; crawling BM25 only")
+			log.Printf("warning: embeddings configured (default OpenAI endpoint) but no OPENAI_API_KEY in env; crawling BM25 only")
 		}
 	}
 	if *sitemap != "" {
@@ -4590,13 +4625,32 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 	add("config", "PASS", fmt.Sprintf("addr=%s, data_dir=%s", cfg.Server.Addr, cfg.DataDir))
 
 	// 4. API key env (warn — actually pinging is `cosift eval` territory).
-	hasOpenAI := os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("OPENAI") != ""
-	if hasOpenAI {
-		add("OPENAI key", "PASS", "OPENAI_API_KEY (or OPENAI) present")
-	} else if cfg.Embeddings.Model != "" || cfg.Chat.Model != "" {
-		add("OPENAI key", "WARN", "embeddings/chat configured but no OPENAI key in env — dense/answer disabled")
-	} else {
-		add("OPENAI key", "WARN", "no key in env (fine for bm25-only)")
+	// Iter 392: a custom embedder/chat URL (Ollama / vLLM / TEI) doesn't
+	// need a key; PASS when URL is set even without a key. Hosted defaults
+	// (empty URL) still require a key for the configured capability.
+	embedKey := resolveEmbedAPIKey()
+	chatKey := os.Getenv("OPENAI_API_KEY")
+	if chatKey == "" {
+		chatKey = os.Getenv("OPENAI")
+	}
+	embedConfigured := cfg.Embeddings.Model != ""
+	chatConfigured := cfg.Chat.Model != ""
+	embedLocal := cfg.Embeddings.URL != ""
+	chatLocal := cfg.Chat.URL != ""
+	switch {
+	case !embedConfigured && !chatConfigured:
+		add("embed/chat auth", "INFO", "no embed/chat models configured (fine for bm25-only)")
+	case (embedConfigured && (embedKey != "" || embedLocal)) && (!chatConfigured || chatKey != "" || chatLocal):
+		add("embed/chat auth", "PASS", fmt.Sprintf("embed=%s chat=%s", authStatus(embedConfigured, embedKey, embedLocal), authStatus(chatConfigured, chatKey, chatLocal)))
+	default:
+		var missing []string
+		if embedConfigured && embedKey == "" && !embedLocal {
+			missing = append(missing, "embed (no URL, no key)")
+		}
+		if chatConfigured && chatKey == "" && !chatLocal {
+			missing = append(missing, "chat (no URL, no key)")
+		}
+		add("embed/chat auth", "WARN", strings.Join(missing, ", ")+" — set COSIFT_EMBED_API_KEY / OPENAI_API_KEY, or point Embeddings.URL / Chat.URL at a local server")
 	}
 
 	// 5. Eval fixtures.
