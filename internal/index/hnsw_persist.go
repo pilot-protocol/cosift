@@ -50,6 +50,19 @@ const hnswMetaMagic = "HSW1"
 // so concurrent Add() during Persist will partially leak into the saved
 // snapshot — callers expecting a clean snapshot should quiesce writes first.
 func (h *HNSW) Persist(ctx context.Context, ps *store.PebbleStore) error {
+	return h.PersistFrom(ctx, ps, 0)
+}
+
+// PersistFrom writes meta + nodes[fromIdx:] in a single Pebble batch. The
+// crawl-time checkpoint goroutine uses this with fromIdx = last-persisted
+// count, so each checkpoint touches only the newly-added nodes. Meta is
+// always re-written so a reader can size the slice correctly.
+//
+// Caveat: existing nodes whose neighbor lists got new back-pointers since
+// the last persist are NOT rewritten — those edges are lost until the next
+// full-from-zero persist. Acceptable for crawl-time approximations; final
+// shutdown persist always does fromIdx=0. Iter 406.
+func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx int) error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -59,14 +72,17 @@ func (h *HNSW) Persist(ctx context.Context, ps *store.PebbleStore) error {
 	if err := ps.PutVectorMeta(ctx, meta); err != nil {
 		return fmt.Errorf("put vector meta: %w", err)
 	}
-
-	for i := range h.nodes {
-		blob := encodeHNSWNode(&h.nodes[i])
-		if err := ps.PutVectorNode(ctx, uint64(i), blob); err != nil {
-			return fmt.Errorf("put node %d: %w", i, err)
-		}
+	if fromIdx >= len(h.nodes) {
+		return nil // nothing to write
 	}
-	return nil
+	entries := make([]store.VectorNodeEntry, 0, len(h.nodes)-fromIdx)
+	for i := fromIdx; i < len(h.nodes); i++ {
+		entries = append(entries, store.VectorNodeEntry{
+			ID:   uint64(i),
+			Blob: encodeHNSWNode(&h.nodes[i]),
+		})
+	}
+	return ps.PutVectorNodesBatch(ctx, entries)
 }
 
 // LoadHNSW returns an HNSW reconstructed from a PebbleStore. Returns

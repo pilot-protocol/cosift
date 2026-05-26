@@ -636,6 +636,33 @@ func (p *PebbleStore) PutVectorNode(ctx context.Context, nodeID uint64, blob []b
 	return p.db.Set(vectorNodeKey(nodeID), blob, p.writeOpts)
 }
 
+// VectorNodeEntry is one (id, blob) tuple for batched writes. Iter 406.
+type VectorNodeEntry struct {
+	ID   uint64
+	Blob []byte
+}
+
+// PutVectorNodesBatch writes many HNSW-node blobs in a single Pebble batch
+// — significantly faster than per-node Set() because the WAL fsync only
+// happens once. Iter 406: used by index.HNSW.Persist for full snapshots
+// and HNSW.PersistFrom for incremental checkpoints.
+func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorNodeEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	for _, e := range entries {
+		if err := batch.Set(vectorNodeKey(e.ID), e.Blob, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(p.writeOpts)
+}
+
 // IterateVectorNodes scans every persisted HNSW node in ascending ID order,
 // invoking fn(nodeID, blob) for each. Returning false from fn stops the scan.
 func (p *PebbleStore) IterateVectorNodes(ctx context.Context, fn func(nodeID uint64, blob []byte) bool) error {
