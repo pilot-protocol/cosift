@@ -120,7 +120,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 					if int(nodeID) >= len(codes) {
 						return true
 					}
-					code, err := index.DecodePQCode(blob)
+					// Iter 418: codebook-aware decode handles both byte-packed
+					// (new, K≤256) and uint16 LE (legacy) blob shapes.
+					code, err := cb.DecodeCodeBlob(blob)
 					if err != nil || len(code) != cb.M {
 						return true
 					}
@@ -1217,7 +1219,8 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := make([]store.PQCodeEntry, len(ids))
 	for i := range ids {
-		entries[i] = store.PQCodeEntry{ID: ids[i], Blob: index.EncodePQCode(codes[i])}
+		// Iter 418: K≤256 → byte-packed for 2x disk savings.
+		entries[i] = store.PQCodeEntry{ID: ids[i], Blob: cb.EncodeCodeBlob(codes[i])}
 	}
 	if err := s.store.PutPQCodesBatch(r.Context(), entries); err != nil {
 		writeProblem(w, http.StatusInternalServerError, "put codes: "+err.Error())

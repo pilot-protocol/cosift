@@ -87,7 +87,9 @@ func DecodePQCodebook(buf []byte) (*PQCodebook, error) {
 	return cb, nil
 }
 
-// EncodePQCode packs an []uint16 of length M into 2*M bytes LE.
+// EncodePQCode packs an []uint16 of length M into 2*M bytes LE. Iter 414
+// kept this for legacy / large-K (>256) cases. New callers should prefer
+// PQCodebook.EncodeCodeBlob which byte-packs when K ≤ 256 (iter 418).
 func EncodePQCode(code []uint16) []byte {
 	out := make([]byte, 2*len(code))
 	for i, c := range code {
@@ -96,7 +98,9 @@ func EncodePQCode(code []uint16) []byte {
 	return out
 }
 
-// DecodePQCode unpacks the inverse.
+// DecodePQCode unpacks the inverse — uint16 LE form only. Iter 418
+// callers should prefer PQCodebook.DecodeCodeBlob, which auto-detects
+// uint8 vs uint16 blob shapes for backward compat.
 func DecodePQCode(buf []byte) ([]uint16, error) {
 	if len(buf)%2 != 0 {
 		return nil, fmt.Errorf("pq code: odd length %d", len(buf))
@@ -106,6 +110,37 @@ func DecodePQCode(buf []byte) ([]uint16, error) {
 		out[i] = binary.LittleEndian.Uint16(buf[2*i : 2*i+2])
 	}
 	return out, nil
+}
+
+// EncodeCodeBlob serializes one code respecting K: ≤256 → byte-packed
+// (M bytes), >256 → uint16 LE (2*M bytes). Iter 418.
+func (cb *PQCodebook) EncodeCodeBlob(code []uint16) []byte {
+	if cb.K <= 256 {
+		out := make([]byte, len(code))
+		for i, c := range code {
+			out[i] = byte(c)
+		}
+		return out
+	}
+	return EncodePQCode(code)
+}
+
+// DecodeCodeBlob auto-detects the shape: blob length M = byte-packed,
+// 2*M = uint16 LE. Lets a v0.1 corpus (uint16) be read by a v0.2 binary
+// (byte) silently. Iter 418.
+func (cb *PQCodebook) DecodeCodeBlob(blob []byte) ([]uint16, error) {
+	switch len(blob) {
+	case cb.M:
+		out := make([]uint16, cb.M)
+		for i, b := range blob {
+			out[i] = uint16(b)
+		}
+		return out, nil
+	case 2 * cb.M:
+		return DecodePQCode(blob)
+	default:
+		return nil, fmt.Errorf("pq code: got %d bytes, want %d (byte-packed) or %d (uint16 LE)", len(blob), cb.M, 2*cb.M)
+	}
 }
 
 // PersistPQCodebook writes the codebook to Pebble. Iter 414.
@@ -135,9 +170,10 @@ func (h *HNSW) PersistPQCodesFrom(ctx context.Context, ps *store.PebbleStore, fr
 		if len(h.codes[i]) != h.codebook.M {
 			continue
 		}
+		// Iter 418: K≤256 path packs as 1 byte/sub (96 B vs 192 B at M=96).
 		entries = append(entries, store.PQCodeEntry{
 			ID:   uint64(i),
-			Blob: EncodePQCode(h.codes[i]),
+			Blob: h.codebook.EncodeCodeBlob(h.codes[i]),
 		})
 	}
 	if len(entries) == 0 {
