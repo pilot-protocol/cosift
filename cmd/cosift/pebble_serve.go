@@ -114,7 +114,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			// Iter 416: if a PQ codebook + codes exist in this store, wire
 			// them so /search uses asymmetric PQ distance (much faster on
 			// large graphs). When absent, search falls back to raw vectors.
-			if cb, cbOK, _ := index.LoadPQCodebook(ctx, ps); cbOK {
+			//
+			// Iter 429: bench-pq exposed that PQ on this dim=768 corpus drops
+			// Recall@10 from ~0.89 to ~0.60 — the 32× compression has a
+			// recall cost that may exceed the speed benefit. Operators can
+			// keep the codes on disk but disable the runtime path by setting
+			// COSIFT_DISABLE_PQ=true.
+			if os.Getenv("COSIFT_DISABLE_PQ") == "true" {
+				log.Printf("pebble-serve: PQ disabled via COSIFT_DISABLE_PQ — using raw vectors for search")
+			} else if cb, cbOK, _ := index.LoadPQCodebook(ctx, ps); cbOK {
 				codes := make([][]uint16, g.Len())
 				loaded := 0
 				if err := ps.IteratePQCodes(ctx, func(nodeID uint64, blob []byte) bool {

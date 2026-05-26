@@ -122,11 +122,35 @@ The iter-427 OOM was traced to `ledongthuc/pdf.(*buffer).readArray` —
 99% of 117 GB heap. PDF parsing is now gated behind `COSIFT_CRAWL_PDF=true`
 (default off). Re-enable once we migrate to a safer PDF library.
 
+## Recall (iter 428 + 429)
+
+Live `bench-pq` after hnsw-rebuild on the production graph:
+
+| Path | Recall@10 mean | p50 | p95 | Latency (avg) |
+|---|---|---|---|---|
+| Brute force (ground truth) | 1.000 | 1.0 | 1.0 | ~15 ms |
+| HNSW raw vectors (PQ off) | 0.888 | 1.0 | 1.0 | 416 µs |
+| HNSW + PQ M=96 K=256 | 0.598 | 0.7 | 1.0 | 456 µs |
+
+Production now runs with `COSIFT_DISABLE_PQ=true` — the PQ path costs ~30%
+recall relative to raw and the speedup over raw HNSW is negligible
+(456µs vs 416µs). PQ is worth revisiting at much larger scale where the
+graph stops fitting in RAM, but at 80K vectors it's a recall regression.
+
+To take a fresh recall measurement against the live serve:
+
+```bash
+ssh ubuntu@192.222.56.72
+ckpt=$(curl -fsS -X POST http://127.0.0.1:7777/admin/checkpoint | jq -r .path)
+COSIFT_LOAD_HNSW=true ~/cosift -config ~/cosift.json bench-pq -dir "$ckpt" -n 100 -k 10 -seed 7 -no-pq
+rm -rf "$ckpt"
+```
+
 ## Next steps (deferred)
 
-- vLLM swap-in for Ollama if `/answer` concurrency becomes a bottleneck.
+- Investigate why only ~50% of indexed docs have HNSW vectors (was 47K vectors / 110K docs at iter 428). Probably embed failures on certain content types.
+- PQ quality investigation: smaller M (e.g. 48) or different distance metric (symmetric vs asymmetric). Don't re-enable until recall ≥ raw - 5%.
+- Migrate off `ledongthuc/pdf` so PDFs can be re-enabled.
 - Multi-box deployment story (read replicas served from the same GCS snapshot).
 - Cloudflare orange→gray (or install CF Origin Cert) for cosift.pilotprotocol.network to use Let's Encrypt end-to-end.
-- Zombie HNSW slot compaction (~601 K legacy slots from pre-iter-411 partial persists).
-- PQ recall regression: bench-pq shows Recall@10 = 0.07 with PQ vs 0.74 without. Root-cause + fix the PQ path.
-- Migrate off `ledongthuc/pdf` (likely to a safer fork or a fuzzed library); current path skips PDFs to avoid the unbounded-allocation leak.
+- vLLM swap-in for Ollama if `/answer` concurrency becomes a bottleneck.
