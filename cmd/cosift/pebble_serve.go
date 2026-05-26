@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -256,6 +257,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
+	// Iter 408: peer ingest endpoint. Single-node deployments still expose
+	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
+	// (Bearer); when token is empty, requests from any source are accepted.
+	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -345,7 +350,32 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	c := crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
 	c = c.WithEmbedder(s.embedder)
 	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
+	// Iter 408: wire URL routing for clustered mode. Single-node config
+	// (NumShards <= 1) makes route fn a no-op (every URL ownsLocally).
+	s.cluster = cfg.Cluster
+	if cfg.Cluster.IsClustered() {
+		c = c.WithRouter(
+			func(url string) (bool, string) {
+				if cfg.Cluster.OwnsURL(url) {
+					return true, ""
+				}
+				return false, cfg.Cluster.PeerForURL(url)
+			},
+			func(url, peerAddr string) error { return s.forwardURLToPeer(url, peerAddr) },
+		)
+		log.Printf("in-serve crawler: cluster mode (shard=%d/%d, peers=%d)",
+			cfg.Cluster.MyShardID, cfg.Cluster.NumShards, len(cfg.Cluster.Peers))
+	}
+	// Expose Seed so /admin/crawl-enqueue can hand off forwarded URLs.
+	s.crawlSeed = c.Seed
 	for _, u := range seeds {
+		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
+		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
+			if err := s.forwardURLToPeer(u, cfg.Cluster.PeerForURL(u)); err != nil {
+				log.Printf("in-serve crawler: forward initial seed %s: %v", u, err)
+			}
+			continue
+		}
 		_ = c.Seed(u)
 	}
 	log.Printf("in-serve crawler: %d seeds queued (concurrency=%d, depth=%d, checkpoint=%s)",
@@ -418,6 +448,13 @@ type pebbleHTTP struct {
 
 	// Iter 394: per-IP token-bucket rate limiter. Nil = disabled.
 	rl *rateLimiter
+
+	// Iter 408: clustering. Empty cluster cfg = single-node, no-ops below.
+	cluster config.Cluster
+	// crawlSeed is set after startInProcessCrawl runs so /admin/crawl-enqueue
+	// can hand off forwarded URLs into the in-process frontier. Nil when no
+	// in-serve crawler is wired.
+	crawlSeed func(url string) error
 
 	// Iter 403: doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -701,6 +738,69 @@ func (s *pebbleHTTP) handleSwaggerAsset(w http.ResponseWriter, r *http.Request) 
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// forwardURLToPeer POSTs a URL to peer's /admin/crawl-enqueue. Iter 408.
+// Designed to be best-effort — caller logs failures, the URL just doesn't get
+// crawled. A future iter can add retry + persistent queue.
+var forwardHTTP = &http.Client{Timeout: 10 * time.Second}
+
+func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
+	body, _ := json.Marshal(crawlEnqueueReq{URL: rawURL})
+	// peerAddr is host:port; assume http inside the cluster (mTLS / VPN
+	// would be a wrapper concern). Switch to https://... if peers expose TLS.
+	endpoint := "http://" + peerAddr + "/admin/crawl-enqueue"
+	if strings.HasPrefix(peerAddr, "http://") || strings.HasPrefix(peerAddr, "https://") {
+		endpoint = strings.TrimRight(peerAddr, "/") + "/admin/crawl-enqueue"
+	}
+	req, _ := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if t := s.cluster.PeerAuthToken; t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
+	resp, err := forwardHTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return fmt.Errorf("peer %s returned %d: %s", peerAddr, resp.StatusCode, b)
+	}
+	return nil
+}
+
+// handleCrawlEnqueue accepts a single URL forwarded from a peer shard and
+// pushes it onto the local crawler's frontier. Auth via cfg.Cluster.
+// PeerAuthToken Bearer header. Iter 408.
+type crawlEnqueueReq struct {
+	URL string `json:"url"`
+}
+
+func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {
+	// Auth
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+			return
+		}
+	}
+	if s.crawlSeed == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req crawlEnqueueReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.URL == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"url\": \"...\"}")
+		return
+	}
+	if err := s.crawlSeed(req.URL); err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"queued": req.URL})
 }
 
 // handleDomains returns the top-N indexed hosts by doc count. Iter 405.

@@ -41,6 +41,50 @@ type Config struct {
 	// instance might want `expand=true` and `research_strategy=paraphrase`)
 	// without forcing every client to set the params on every URL.
 	Defaults Defaults `json:"defaults"`
+
+	// Cluster: optional sharding/scaling settings. When NumShards=1 (default)
+	// and Peers is empty, cosift runs single-node — code paths are
+	// identical to today. Set NumShards>1 + MyShardID + Peers to participate
+	// in a multi-machine cluster. The crawler routes URLs by hash to the
+	// owning shard (forwarding to peers via POST /admin/crawl-enqueue), and
+	// /search fans out to peers and RRF-merges. Iter 408.
+	Cluster Cluster `json:"cluster"`
+}
+
+// Cluster controls the iter-408 horizontal-scaling shape. All fields are
+// optional. The defaults run as a single-node cluster of size 1, identical
+// to pre-iter-408 behavior — no code path diverges until NumShards>1.
+type Cluster struct {
+	// NumShards is the total number of shards the cluster maintains. Each
+	// URL maps to a shard via fnv32(url) % NumShards. Default 1 = single
+	// node. Once set in a multi-node deployment, this value must match
+	// across every peer or routing breaks.
+	NumShards int `json:"num_shards"`
+
+	// MyShardID is the shard this process owns. Range [0, NumShards).
+	// Default 0. The crawler accepts URLs whose hash lands on MyShardID
+	// and forwards the rest to Peers.
+	MyShardID int `json:"my_shard_id"`
+
+	// Peers lists every shard's address as "host:port" indexed by shard
+	// ID. peers[i] is the host serving shard i. peers[MyShardID] should
+	// equal cfg.Server.Addr (or be empty — self-loop is skipped). Used by
+	// the crawler to forward out-of-shard URLs and by the gateway to
+	// fan out searches. Default empty = single-node.
+	Peers []string `json:"peers"`
+
+	// GatewayMode (default false): when true, /search /answer /research
+	// fan out to every peer and RRF-merge the results. When false, those
+	// endpoints only return data from MyShardID (read-only on this shard's
+	// slice of the corpus). Typical deployment: one or two dedicated
+	// gateway nodes have this on, leaf shards have it off.
+	GatewayMode bool `json:"gateway_mode"`
+
+	// PeerAuthToken is the shared secret presented as a Bearer token on
+	// inter-peer calls (/admin/crawl-enqueue, gateway fan-out). Default
+	// empty (no auth). Required when peers communicate over a public
+	// network; can be left empty inside a private subnet.
+	PeerAuthToken string `json:"peer_auth_token"`
 }
 
 type Server struct {

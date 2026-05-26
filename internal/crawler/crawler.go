@@ -36,6 +36,13 @@ type Crawler struct {
 	http          *http.Client
 	robots        *Robots
 	embedder      embed.Embedder // optional; nil = lexical-only ingest
+
+	// Iter 408: optional URL-routing hook for clustered deployments. When
+	// route returns ownsLocally=false, the crawler calls forward(url,
+	// peerAddr) instead of pushing to its own frontier. Both nil = single-
+	// node (every URL is local).
+	route   RouteFn
+	forward ForwardFn
 }
 
 // New constructs a SQLite-backed crawler. Caller owns store lifecycle.
@@ -103,6 +110,25 @@ func (c *Crawler) WithEmbedder(e embed.Embedder) *Crawler {
 // the Pebble path to bridge passage vectors into an HNSW index. Iter 212.
 func (c *Crawler) WithPassageWriter(pw PassageWriter) *Crawler {
 	c.passageWriter = pw
+	return c
+}
+
+// RouteFn decides which physical shard owns a given canonical URL. The
+// returned ownsLocally=true means "index here." When false, peerAddr is the
+// host:port of the shard that should own the URL — the crawler forwards
+// the URL there via POST /admin/crawl-enqueue. Iter 408.
+type RouteFn func(canonURL string) (ownsLocally bool, peerAddr string)
+
+// ForwardFn is the function the crawler calls when a discovered URL belongs
+// to another shard. Implementation lives outside the crawler package (in
+// pebble_serve.go) so the crawler stays HTTP-client-free. Iter 408.
+type ForwardFn func(canonURL, peerAddr string) error
+
+// WithRouter wires sharding-aware URL routing. When nil (default), every
+// URL is owned locally — preserves the single-node code path. Iter 408.
+func (c *Crawler) WithRouter(route RouteFn, forward ForwardFn) *Crawler {
+	c.route = route
+	c.forward = forward
 	return c
 }
 
@@ -619,6 +645,18 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 	for _, cand := range candidates {
 		if cap > 0 && queuedPerHost[cand.host] >= cap {
 			continue
+		}
+		// Iter 408: in clustered mode, route URL to its owning shard. The
+		// route fn returns ownsLocally=true for single-node and same-shard;
+		// otherwise we forward via HTTP (peer-side calls PushFrontier).
+		if c.route != nil {
+			owns, peer := c.route(cand.canon)
+			if !owns && peer != "" && c.forward != nil {
+				if err := c.forward(cand.canon, peer); err != nil {
+					log.Printf("crawler: forward %s to peer %s: %v", cand.canon, peer, err)
+				}
+				continue
+			}
 		}
 		// PushFrontier is INSERT OR IGNORE — dedup is at the persistent layer.
 		_ = c.store.PushFrontier(ctx, cand.canon, depth, 0.5)
