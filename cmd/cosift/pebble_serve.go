@@ -2774,6 +2774,10 @@ func runVerifyViaServer(ctx context.Context, serverURL string, asJSON bool) erro
 func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("pebble-info", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
+	// Iter 380: machine-readable output for tooling / dashboards. Mirrors
+	// the shape /stats returns (iter 375's retrievers list, iter 358's
+	// vector meta) so the same jq filters compose against either source.
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text (no pebble.Metrics dump)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -2792,6 +2796,33 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 		return err
 	}
 	sumLen, indexedDocs, _ := ps.CorpusStats(ctx)
+	meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
+
+	if *asJSON {
+		retrievers := []string{"bm25", "bm25-mlt"}
+		if hnswOK {
+			retrievers = append(retrievers, "dense", "hybrid")
+		}
+		out := map[string]any{
+			"path":         d,
+			"documents":    st.Documents,
+			"indexed_docs": indexedDocs,
+			"sum_doc_len":  sumLen,
+			"hnsw_loaded":  hnswOK,
+			"retrievers":   retrievers,
+		}
+		if indexedDocs > 0 {
+			out["avg_doc_len"] = float64(sumLen) / float64(indexedDocs)
+		}
+		if hnswOK {
+			out["vector_nodes"] = meta.NodeCount
+			out["vector_dim"] = meta.Dim
+		}
+		blob, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(blob))
+		return nil
+	}
+
 	fmt.Printf("PebbleStore: %s\n\n", d)
 	fmt.Printf("  documents:    %d\n", st.Documents)
 	// Iter 285: surface iter-207 counters here too. pebble-info already needs
@@ -2810,7 +2841,6 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	// always. dense/hybrid need the graph (meta present) AND, for non-URL
 	// modes, a runtime embedder — offline we can only check the persisted
 	// shape, so we report 'available with embedder' rather than asserting.
-	meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
 	if hnswOK {
 		fmt.Printf("  vector_nodes: %d\n", meta.NodeCount)
 		fmt.Printf("  vector_dim:   %d\n", meta.Dim)
