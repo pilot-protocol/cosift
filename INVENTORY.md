@@ -2,7 +2,17 @@
 
 Living document — what's where, who can reach it, how to restore.
 
-Last updated: 2026-05-26 (iter 426)
+Last updated: 2026-05-26 (iter 443)
+
+**Live state**: 180K docs, 1.06M HNSW vectors, growing ~1300/min. PQ
+disabled. efSearch=200. 4 GB Pebble block cache. 0 OOMs since iter 427's
+PDF leak fix. Public site healthy via DNS-only on cosift.pilotprotocol
+.network (CF orange-cloud was incompatible with self-signed cert; user
+flipped to gray). BM25 warm latency ~250 ms, dense ~250 ms, hybrid
+~1-2 s under crawl write contention. Recall@10 (no-PQ, ef=200) = 0.61
+mean / 0.90 p50 — degraded from post-rebuild 0.89 mean as the corpus
+grew via AddPassage; ready for another `hnsw-rebuild -force` when
+recall drops below acceptable.
 
 ## Production-shaped (running)
 
