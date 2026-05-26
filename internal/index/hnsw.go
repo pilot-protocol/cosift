@@ -64,6 +64,13 @@ type HNSW struct {
 	nodes      []hnswNode
 	entryPoint int // index into nodes; -1 when empty
 	maxLevel   int // current top layer
+
+	// Iter 416: optional PQ acceleration. When codebook != nil, Search uses
+	// asymmetric distance against per-node codes instead of the d-dim dot
+	// product. Set via UsePQ() at startup. AddPassage continues to write
+	// raw vectors; new nodes need a subsequent pq-train to get codes.
+	codebook *PQCodebook
+	codes    [][]uint16 // parallel to nodes; nil entries fall back to raw vec
 }
 
 type hnswNode struct {
@@ -92,6 +99,46 @@ func (h *HNSW) Len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.nodes)
+}
+
+// UsePQ enables iter-416 asymmetric-distance search. codes is parallel to
+// h.nodes; a nil/empty entry at index i means that node is searched via
+// its raw vec (graceful coexistence during gradual rollouts). Call once
+// at startup after LoadHNSW. Iter 416.
+func (h *HNSW) UsePQ(cb *PQCodebook, codes [][]uint16) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.codebook = cb
+	h.codes = codes
+}
+
+// HasPQ reports whether a codebook is wired. Iter 416.
+func (h *HNSW) HasPQ() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.codebook != nil
+}
+
+// distanceToNode returns a comparable distance from query q to node[idx].
+// Lower = closer in BOTH branches. Iter 416.
+//
+//   - PQ branch: float32(PQDistance(table, code, M, K)) — squared-L2 distance
+//     over reconstructed (uncompressed) approximation. For unit-normalized
+//     vectors this is monotonic with cosine distance, so HNSW pruning
+//     thresholds stay coherent.
+//   - Raw branch: -dot(q, h.nodes[idx].vec). Identical to the iter-203
+//     baseline.
+//
+// pqTable is the M*K-element lookup precomputed once per search via
+// codebook.QueryTable.
+func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
+	if h.codebook != nil && idx < len(h.codes) && len(h.codes[idx]) == h.codebook.M {
+		return float64(PQDistance(pqTable, h.codes[idx], h.codebook.M, h.codebook.K))
+	}
+	if len(h.nodes[idx].vec) == 0 {
+		return math.MaxFloat64 // skip zombie nodes (iter 411 defensive)
+	}
+	return -float64(dot(q, h.nodes[idx].vec))
 }
 
 // SampleVectors returns up to n vectors drawn uniformly at random from the
@@ -217,14 +264,14 @@ func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) 
 	// 1. Greedy-descend from the current entry point down to level+1.
 	curEntry := h.entryPoint
 	for lvl := h.maxLevel; lvl > level; lvl-- {
-		curEntry = h.greedyDescend(cp, curEntry, lvl)
+		curEntry = h.greedyDescend(cp, nil, curEntry, lvl)
 	}
 
 	// 2. For each layer ≤ level, find efConstruction candidates and link
 	//    the new node to its top-M nearest among them. Then make the link
 	//    bidirectional, pruning the neighbor's list if it overflows.
 	for lvl := minInt(level, h.maxLevel); lvl >= 0; lvl-- {
-		cands := h.searchLayer(cp, []int{curEntry}, h.efConstruction, lvl)
+		cands := h.searchLayer(cp, nil, []int{curEntry}, h.efConstruction, lvl)
 		mCap := h.M
 		if lvl == 0 {
 			mCap = h.Mmax0
@@ -267,11 +314,21 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	if len(h.nodes) == 0 {
 		return nil
 	}
+	// Iter 416: precompute the PQ asymmetric-distance lookup table once per
+	// search if codebook is loaded. nil otherwise → raw dot-product path.
+	var pqTable []float32
+	if h.codebook != nil {
+		var err error
+		pqTable, err = h.codebook.QueryTable(q)
+		if err != nil {
+			pqTable = nil
+		}
+	}
 
 	// 1. Greedy-descend through upper layers to find the layer-0 entry.
 	ep := h.entryPoint
 	for lvl := h.maxLevel; lvl > 0; lvl-- {
-		ep = h.greedyDescend(q, ep, lvl)
+		ep = h.greedyDescend(q, pqTable, ep, lvl)
 	}
 
 	// 2. ef-search at layer 0.
@@ -279,7 +336,7 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	if ef < k {
 		ef = k
 	}
-	cands := h.searchLayer(q, []int{ep}, ef, 0)
+	cands := h.searchLayer(q, pqTable, []int{ep}, ef, 0)
 
 	// 3. Doc-level max-passage aggregation (mirrors VectorIndex.Search).
 	type best struct {
@@ -289,7 +346,16 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	bestByURL := make(map[string]best, len(cands))
 	for _, c := range cands {
 		url := h.nodes[c.idx].url
-		score := -c.dist
+		// Iter 416: convert c.dist back to a cosine-shaped score for output.
+		// Raw branch stored c.dist = -dot (cos = -dist).
+		// PQ branch stored c.dist = L2² over unit-norm vecs ≈ 2(1-cos), so
+		// cos ≈ 1 - dist/2.
+		var score float32
+		if h.codebook != nil {
+			score = float32(1 - c.dist/2)
+		} else {
+			score = float32(-c.dist)
+		}
 		cur, ok := bestByURL[url]
 		if !ok || score > cur.score {
 			bestByURL[url] = best{nodeIdx: c.idx, score: score}
@@ -320,9 +386,10 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 // greedyDescend walks the graph at a single layer toward the query, always
 // stepping to the neighbor closer to the query than the current node.
 // Returns the index of the local minimum found at this layer.
-func (h *HNSW) greedyDescend(q []float32, start int, lvl int) int {
+// Iter 416: pqTable threaded through to enable PQ-distance traversal.
+func (h *HNSW) greedyDescend(q []float32, pqTable []float32, start int, lvl int) int {
 	cur := start
-	curDist := -dot(q, h.nodes[cur].vec)
+	curDist := float32(h.distanceToNode(q, pqTable, cur))
 	for {
 		moved := false
 		// Iter 411: same defensive guard as searchLayer — skip zero-value
@@ -331,7 +398,7 @@ func (h *HNSW) greedyDescend(q []float32, start int, lvl int) int {
 			return cur
 		}
 		for _, nb := range h.nodes[cur].neighbors[minInt(lvl, len(h.nodes[cur].neighbors)-1)] {
-			d := -dot(q, h.nodes[nb].vec)
+			d := float32(h.distanceToNode(q, pqTable, nb))
 			if d < curDist {
 				curDist = d
 				cur = nb
@@ -353,7 +420,8 @@ type candEntry struct {
 // searchLayer is the core HNSW search routine. From the given entry points,
 // expands the nearest-first frontier until the top ef candidates are stable.
 // Returns the ef best candidates at this layer, sorted by ascending dist.
-func (h *HNSW) searchLayer(q []float32, entryPoints []int, ef int, lvl int) []candEntry {
+// Iter 416: pqTable enables PQ-distance traversal when set (nil = raw).
+func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef int, lvl int) []candEntry {
 	visited := make(map[int]struct{}, ef*2)
 	// Candidates: min-heap by dist (front-of-queue is the nearest to expand).
 	cands := &candMinHeap{}
@@ -363,7 +431,7 @@ func (h *HNSW) searchLayer(q []float32, entryPoints []int, ef int, lvl int) []ca
 	heap.Init(results)
 
 	for _, ep := range entryPoints {
-		d := -dot(q, h.nodes[ep].vec)
+		d := float32(h.distanceToNode(q, pqTable, ep))
 		heap.Push(cands, candEntry{idx: ep, dist: d})
 		heap.Push(results, candEntry{idx: ep, dist: d})
 		visited[ep] = struct{}{}
@@ -390,7 +458,7 @@ func (h *HNSW) searchLayer(q []float32, entryPoints []int, ef int, lvl int) []ca
 				continue
 			}
 			visited[nb] = struct{}{}
-			d := -dot(q, h.nodes[nb].vec)
+			d := float32(h.distanceToNode(q, pqTable, nb))
 			if results.Len() < ef {
 				heap.Push(cands, candEntry{idx: nb, dist: d})
 				heap.Push(results, candEntry{idx: nb, dist: d})

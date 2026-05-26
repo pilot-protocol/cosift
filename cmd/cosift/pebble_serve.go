@@ -110,6 +110,31 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		default:
 			hnswGraph = g
 			log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d", g.Len(), vectorDim)
+			// Iter 416: if a PQ codebook + codes exist in this store, wire
+			// them so /search uses asymmetric PQ distance (much faster on
+			// large graphs). When absent, search falls back to raw vectors.
+			if cb, cbOK, _ := index.LoadPQCodebook(ctx, ps); cbOK {
+				codes := make([][]uint16, g.Len())
+				loaded := 0
+				if err := ps.IteratePQCodes(ctx, func(nodeID uint64, blob []byte) bool {
+					if int(nodeID) >= len(codes) {
+						return true
+					}
+					code, err := index.DecodePQCode(blob)
+					if err != nil || len(code) != cb.M {
+						return true
+					}
+					codes[int(nodeID)] = code
+					loaded++
+					return true
+				}); err != nil {
+					log.Printf("pebble-serve: PQ codes iterate failed: %v — falling back to raw vectors", err)
+				} else {
+					g.UsePQ(cb, codes)
+					log.Printf("pebble-serve: PQ search enabled (codebook: dim=%d M=%d K=%d, codes=%d/%d)",
+						cb.Dim, cb.M, cb.K, loaded, g.Len())
+				}
+			}
 		}
 	}
 	if hasVectors {
