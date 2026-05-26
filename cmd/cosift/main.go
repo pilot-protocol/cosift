@@ -55,7 +55,7 @@ usage:
   cosift answer <text>      hit a running cosift server's /answer (single-question LLM answer with cited sources)
   cosift admin <stats|config|recrawl|recrawl-domain|reembed>   admin-token-protected operator endpoints (token via -token or COSIFT_ADMIN_TOKEN env)
   cosift stats              print index stats
-  cosift doctor             pre-flight check (data dir, sqlite, pebble, env)
+  cosift doctor [-json] [-server URL] [-token T]  pre-flight check (data dir, sqlite, pebble, HNSW, env; -json for CI)
 
   Path-2 (Pebble) commands — see docs/PEBBLE.md and docs/API.md:
   cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
@@ -4137,9 +4137,9 @@ func runOutcomes(ctx context.Context, cfg *config.Config, args []string) error {
 // doctorCheck is one row of the doctor report. Promoted from a locally-typed
 // struct so the iter-58 defaults check can be tested without stdout capture.
 type doctorCheck struct {
-	Name   string
-	Status string // "PASS" | "WARN" | "FAIL"
-	Detail string
+	Name   string `json:"name"`
+	Status string `json:"status"` // "PASS" | "WARN" | "FAIL" | "INFO" | "SKIP"
+	Detail string `json:"detail"`
 }
 
 // doctorDefaultsChecks cross-checks the iter-55 defaults block against
@@ -4436,6 +4436,9 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	remoteServer := fs.String("server", "", "remote cosift URL to additionally probe (empty = local checks only)")
 	remoteToken := fs.String("token", "", "admin bearer token for -server admin-endpoint check (defaults to COSIFT_ADMIN_TOKEN env)")
+	// Iter 383: machine-readable output for CI gates. Same checks, same
+	// non-zero exit on FAIL, just JSON instead of '[PASS] name — detail'.
+	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text (suitable for jq / CI)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -4568,10 +4571,25 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 
 	fail := 0
 	for _, c := range checks {
-		fmt.Printf("%-6s %s — %s\n", "["+c.Status+"]", c.Name, c.Detail)
 		if c.Status == "FAIL" {
 			fail++
 		}
+	}
+	if *asJSON {
+		out := map[string]any{
+			"checks": checks,
+			"fail":   fail,
+			"ready":  fail == 0,
+		}
+		blob, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(blob))
+		if fail > 0 {
+			return errors.New("doctor failures")
+		}
+		return nil
+	}
+	for _, c := range checks {
+		fmt.Printf("%-6s %s — %s\n", "["+c.Status+"]", c.Name, c.Detail)
 	}
 	fmt.Println()
 	if fail > 0 {
