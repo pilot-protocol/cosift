@@ -318,4 +318,5 @@ iter 356 — TestPebbleServeEndToEnd asserts `?expand=true` normalizes to 'hyde'
 iter 357 — pebble-serve peeks 'v' family at startup; logs + surfaces `has_vectors` on /stats (first concrete HNSW-direction step)
 iter 358 — new `index.LoadHNSWMeta` (cheap 20-byte read); /stats surfaces vector_nodes + vector_dim when meta is persisted
 iter 359 — TestLoadHNSWMeta locks down the iter-358 meta-only roundtrip (empty store → ok=false; persisted → exact dim+count)
+iter 360 — `cosift pebble-info` surfaces vector_nodes + vector_dim (offline store inspection now sees the dense shape)
 ```

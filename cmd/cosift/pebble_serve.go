@@ -2510,6 +2510,14 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 		fmt.Printf("  sum_doc_len:  %d\n", sumLen)
 		fmt.Printf("  avg_doc_len:  %.2f\n", float64(sumLen)/float64(indexedDocs))
 	}
+	// Iter 360: when an HNSW meta blob is persisted, surface dim+nodes here
+	// too. Same cheap 20-byte read pebble-serve does at startup (iter 358).
+	// Operators running pebble-info to inspect an offline store get the dense
+	// shape without opening pebble-serve.
+	if meta, ok, err := index.LoadHNSWMeta(ctx, ps); err == nil && ok {
+		fmt.Printf("  vector_nodes: %d\n", meta.NodeCount)
+		fmt.Printf("  vector_dim:   %d\n", meta.Dim)
+	}
 	fmt.Println()
 	fmt.Println("--- pebble.Metrics ---")
 	fmt.Println(ps.Metrics().String())
