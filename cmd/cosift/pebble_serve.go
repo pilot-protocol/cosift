@@ -2799,9 +2799,25 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	// too. Same cheap 20-byte read pebble-serve does at startup (iter 358).
 	// Operators running pebble-info to inspect an offline store get the dense
 	// shape without opening pebble-serve.
-	if meta, ok, err := index.LoadHNSWMeta(ctx, ps); err == nil && ok {
+	// Iter 377: also print the retrievers this store can power. bm25/bm25-mlt
+	// always. dense/hybrid need the graph (meta present) AND, for non-URL
+	// modes, a runtime embedder — offline we can only check the persisted
+	// shape, so we report 'available with embedder' rather than asserting.
+	meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
+	if hnswOK {
 		fmt.Printf("  vector_nodes: %d\n", meta.NodeCount)
 		fmt.Printf("  vector_dim:   %d\n", meta.Dim)
+	}
+	fmt.Println()
+	fmt.Println("--- retrievers ---")
+	fmt.Println("  bm25, bm25-mlt: always (BM25 index)")
+	if hnswOK {
+		fmt.Println("  dense:          available — /find_similar?url= works without embedder;")
+		fmt.Println("                  /search /answer /research need an embedder configured at server start")
+		fmt.Println("  hybrid:         available (same requirements as dense)")
+	} else {
+		fmt.Println("  dense, hybrid:  unavailable — no HNSW graph persisted in this store")
+		fmt.Println("                  (build embeddings during crawl with cfg.Embeddings.Model set)")
 	}
 	fmt.Println()
 	fmt.Println("--- pebble.Metrics ---")
