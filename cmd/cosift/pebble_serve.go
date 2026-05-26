@@ -401,12 +401,18 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// Checkpoint goroutine. Iter 406/407: incremental persist via PersistFrom
 	// — each tick only writes nodes [lastN, n). Shutdown does a full persist
 	// from 0 so any backlinks added to older nodes get refreshed.
+	// Iter 412: seed lastN from the loaded graph so the first checkpoint
+	// after restart only writes NEW nodes (delta during this run), not the
+	// whole graph again — those N nodes are already on disk.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		t := time.NewTicker(ckpEvery)
 		defer t.Stop()
-		var lastN int
+		lastN := s.hnsw.Len()
+		if lastN > 0 {
+			log.Printf("in-serve crawler: checkpoint baseline = %d nodes (loaded from disk)", lastN)
+		}
 		for {
 			select {
 			case <-ctx.Done():
