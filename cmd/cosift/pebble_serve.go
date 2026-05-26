@@ -930,6 +930,32 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			out = reordered
 		}
 	}
+	// Iter 384: MMR diversification. ?mmr=<lambda> (0..1) reorders the
+	// candidate pool to balance query relevance against diversity from
+	// previously-selected hits. Requires HNSW (per-hit vectors) and an
+	// embedder when the query vector wasn't already computed by the
+	// dense/hybrid path. Composes after rerank — rerank gives quality
+	// ordering, MMR diversifies it. warningsFor() handles the silent
+	// fall-through when MMR was requested but couldn't fire.
+	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && len(out) > 1 && s.hnsw != nil {
+		var qVec []float32
+		// Hybrid/dense path already embedded the query — try to reuse it.
+		// For BM25-only path we need to embed q if an embedder is configured.
+		if s.embedder != nil {
+			if vecs, embErr := s.embedder.Embed(r.Context(), []string{q}); embErr == nil && len(vecs) > 0 {
+				qVec = vecs[0]
+			}
+		}
+		if len(qVec) > 0 {
+			hitVecs := make([][]float32, len(out))
+			for i := range out {
+				if v, ok := s.hnsw.LookupVectorByURL(out[i].URL); ok {
+					hitVecs[i] = v
+				}
+			}
+			out = mmrSelect(qVec, out, hitVecs, mmrLambda)
+		}
+	}
 	if len(out) > k {
 		out = out[:k]
 	}
@@ -945,6 +971,12 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Iter 363/364/366: label centralized in buildRetrieverLabel so /answer
 	// and /research report the same vocabulary as /search.
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
+	// Iter 384: mmr suffix when diversification actually fired (HNSW loaded
+	// + embedder available). Same conditional as the apply site above —
+	// the label tracks the real pipeline.
+	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && s.hnsw != nil && s.embedder != nil && mmrLambda < 1.0 {
+		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
 	resp := searchResponse{
 		Query:           q,
 		Expand:          normalizeExpandMode(expandMode),
@@ -1560,6 +1592,18 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "retriever="+rv+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to "+fallback)
 		}
 	}
+	// Iter 384: MMR diversification needs HNSW + embedder. Bad values (non-
+	// float, out of [0,1]) fall through silently — flag them. Missing
+	// requirements also warn.
+	if raw := r.URL.Query().Get("mmr"); raw != "" {
+		if _, ok := parseMMRLambda(raw); !ok {
+			w = append(w, "mmr="+raw+" is not a float in [0,1] — diversification skipped")
+		} else if s.hnsw == nil {
+			w = append(w, "mmr requires HNSW graph (set COSIFT_LOAD_HNSW=true at server start) — diversification skipped")
+		} else if s.embedder == nil {
+			w = append(w, "mmr requires an embedder to vectorize the query (set cfg.Embeddings.Model) — diversification skipped")
+		}
+	}
 	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
 	if sortVal := r.URL.Query().Get("sort"); sortVal != "" {
 		switch sortVal {
@@ -1610,6 +1654,107 @@ func normalizeExpandMode(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// parseMMRLambda parses ?mmr= as a float in [0, 1]. Returns (lambda, true)
+// when valid. Empty value or out-of-range returns (0, false) so the caller
+// can short-circuit without firing MMR. Iter 384.
+func parseMMRLambda(raw string) (float64, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, false
+	}
+	if v < 0 || v > 1 {
+		return 0, false
+	}
+	return v, true
+}
+
+// cosineUnit returns the dot product of two unit-normalized float32 slices.
+// HNSW stores vectors in unit form, so this is equivalent to cosine similarity.
+// Returns 0 on length mismatch — caller is responsible for filtering missing
+// vectors before calling. Iter 384.
+func cosineUnit(a, b []float32) float32 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var s float32
+	i := 0
+	for ; i <= len(a)-4; i += 4 {
+		s += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]
+	}
+	for ; i < len(a); i++ {
+		s += a[i] * b[i]
+	}
+	return s
+}
+
+// mmrSelect implements Maximal Marginal Relevance (Carbonell & Goldstein '98).
+// Greedy selection: at each step, pick the candidate that maximizes
+//
+//	score = λ · sim(q, c) - (1-λ) · max_{s∈selected} sim(c, s)
+//
+// hits and hitVecs are aligned by index. Candidates whose vectors are missing
+// (zero-length) keep their relevance-only ranking — MMR can only diversify
+// what it can compare. lambda=1 → pure relevance (no diversification);
+// lambda=0 → pure diversity (ignore query relevance entirely). 0.7 is a
+// common starting point.
+//
+// Returns the input hits reordered by MMR score; never drops anything.
+// Truncation to k happens at the call site so warnings + total_candidates
+// stay accurate. Iter 384.
+func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda float64) []searchHit {
+	if len(hits) <= 1 || lambda >= 1.0 {
+		return hits
+	}
+	n := len(hits)
+	selected := make([]bool, n)
+	order := make([]int, 0, n)
+	// Precompute relevance — dot(qVec, hitVec). Hits with no vec score 0.
+	rel := make([]float64, n)
+	for i := range hits {
+		if len(hitVecs[i]) > 0 {
+			rel[i] = float64(cosineUnit(qVec, hitVecs[i]))
+		}
+	}
+	for len(order) < n {
+		bestI := -1
+		bestScore := -math.MaxFloat64
+		for i := 0; i < n; i++ {
+			if selected[i] {
+				continue
+			}
+			// Max similarity to anything already picked.
+			var maxSim float64
+			for _, j := range order {
+				if len(hitVecs[i]) == 0 || len(hitVecs[j]) == 0 {
+					continue
+				}
+				sim := float64(cosineUnit(hitVecs[i], hitVecs[j]))
+				if sim > maxSim {
+					maxSim = sim
+				}
+			}
+			score := lambda*rel[i] - (1.0-lambda)*maxSim
+			if score > bestScore {
+				bestScore = score
+				bestI = i
+			}
+		}
+		if bestI < 0 {
+			break // safety — shouldn't happen with selected[] tracked above
+		}
+		selected[bestI] = true
+		order = append(order, bestI)
+	}
+	out := make([]searchHit, 0, n)
+	for _, i := range order {
+		out = append(out, hits[i])
+	}
+	return out
 }
 
 // Iter 366: buildRetrieverLabel produces the human-readable retriever string

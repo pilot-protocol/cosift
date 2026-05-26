@@ -304,6 +304,42 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
+	// /search?mmr=0.5 (iter 384) without HNSW must silently fall through
+	// (no MMR diversification) and emit a warning. Search results still
+	// return — MMR is a re-ranker, never a gate.
+	mres := mustGet(t, base+"/search?q=raft&mmr=0.5")
+	if mhits, _ := mres["hits"].([]any); len(mhits) == 0 {
+		t.Errorf("/search?mmr=0.5 without HNSW: should still return hits, got 0")
+	}
+	if rt, _ := mres["retriever"].(string); strings.Contains(rt, "mmr:") {
+		t.Errorf("/search?mmr=0.5 without HNSW: retriever label should NOT contain mmr suffix, got %q", rt)
+	}
+	mwarn, _ := mres["warnings"].([]any)
+	sawMMRWarn := false
+	for _, w := range mwarn {
+		if s, _ := w.(string); strings.Contains(s, "mmr requires HNSW") {
+			sawMMRWarn = true
+			break
+		}
+	}
+	if !sawMMRWarn {
+		t.Errorf("/search?mmr=0.5 without HNSW: want warning mentioning HNSW, got %v", mwarn)
+	}
+
+	// /search?mmr=nope (iter 384): unparseable values warn instead of silently
+	// being ignored. Mirrors the iter-310/311 sort=/k= warning pattern.
+	mbres := mustGet(t, base+"/search?q=raft&mmr=nope")
+	sawBadMMR := false
+	for _, w := range mbres["warnings"].([]any) {
+		if s, _ := w.(string); strings.Contains(s, "mmr=nope") {
+			sawBadMMR = true
+			break
+		}
+	}
+	if !sawBadMMR {
+		t.Errorf("/search?mmr=nope: want warning mentioning the bad value, got %v", mbres["warnings"])
+	}
+
 	// /search with a malformed sort value (iter 310) must surface a warning
 	// in the response. Covers the iter-292/309/310/311/313 warnings machinery.
 	wresp := mustGet(t, base+"/search?q=raft&sort=newest")

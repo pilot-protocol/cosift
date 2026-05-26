@@ -45,6 +45,26 @@ Missing either → request silently falls through to BM25 with a warning. No 5xx
 
 **Cost**: `dense` = 1 embed call + 1 HNSW search per /search. `hybrid` = 1 embed + BM25 + HNSW + RRF merge. For /research, multiply by sub-queries (each gets its own retrieval). HNSW search is O(log N) so the dense cost is dominated by the embed RPC.
 
+### Diversification: `?mmr=<lambda>`
+
+After retrieval (+rerank) the candidate pool is often dominated by near-duplicates — multiple chunks of the same paper, sibling pages on one site, paraphrases of the same concept. `mmr` reorders the pool with Maximal Marginal Relevance: at each step, pick the candidate maximizing
+
+```
+score = λ · sim(q, c)  −  (1−λ) · max_{s ∈ selected} sim(c, s)
+```
+
+`λ` lives in [0,1]:
+- **1.0** — pure relevance, MMR is a no-op (same as not passing the flag).
+- **0.7** — small diversification nudge; the top result is still always the most relevant hit, but later positions are reshuffled to break up duplicates.
+- **0.5** — equal weight; useful when "give me a sampling of different angles" matters more than ranking precision.
+- **0.0** — pure diversity, query relevance ignored.
+
+**Requirements**: HNSW graph loaded (`COSIFT_LOAD_HNSW=true`) AND an embedder (to vectorize the query and look up per-hit vectors from the graph). Missing either → warning + silent skip (`retriever` label stays unchanged).
+
+**Cost**: one embed RPC for the query + linear scans over the pool (O(K²) similarity comparisons where K = pool size ≤ rerankCandK). Negligible compared to LLM rerank.
+
+**Composability**: `retriever=hybrid&rerank=true&mmr=0.7` is the strongest end-to-end /search you can build — BM25+dense fused, LLM-reranked, then diversified.
+
 ### BM25 parameters: `COSIFT_BM25_K1`, `COSIFT_BM25_B`
 
 Defaults: k1=1.2, b=0.75. Visible on `/stats` as `bm25_k1` / `bm25_b`.

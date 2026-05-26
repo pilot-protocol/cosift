@@ -179,6 +179,78 @@ func TestPeekWarnings(t *testing.T) {
 	}
 }
 
+// TestParseMMRLambda — iter 384. Valid floats in [0,1] pass; everything else
+// short-circuits MMR.
+func TestParseMMRLambda(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"", 0, false},
+		{"0", 0, true},
+		{"0.5", 0.5, true},
+		{"1", 1, true},
+		{"-0.1", 0, false},
+		{"1.5", 0, false},
+		{"not a number", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := parseMMRLambda(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("parseMMRLambda(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestMMRSelect — iter 384. With 3 candidates: a (highly relevant), b
+// (near-duplicate of a, also highly relevant), c (moderately relevant but
+// diverse). At λ=0.4 (diversity-leaning) MMR picks a, then c (diverse from
+// a beats the near-dup b), then b. λ=1.0 reverts to pure relevance.
+func TestMMRSelect(t *testing.T) {
+	q := []float32{1, 0, 0}
+	hits := []searchHit{
+		{URL: "https://a", Title: "highly relevant"},
+		{URL: "https://b", Title: "near-duplicate of a"},
+		{URL: "https://c", Title: "diverse from a"},
+	}
+	// a near q (rel=1.0); b near q AND near a (rel=0.999, sim(b,a)=0.999);
+	// c moderate q + orthogonal-ish to a (rel=0.3, sim(c,a)=0.3).
+	vecs := [][]float32{
+		{1, 0, 0},
+		{0.999, 0.045, 0},
+		{0.3, 0.954, 0},
+	}
+	got := mmrSelect(q, hits, vecs, 0.4)
+	if len(got) != 3 {
+		t.Fatalf("mmrSelect: want 3 hits returned, got %d", len(got))
+	}
+	if got[0].URL != "https://a" {
+		t.Errorf("mmrSelect[0]: want https://a (highest relevance), got %s", got[0].URL)
+	}
+	if got[1].URL != "https://c" {
+		t.Errorf("mmrSelect[1]: want https://c (diverse from a beats near-dup b at λ=0.4), got %s", got[1].URL)
+	}
+	if got[2].URL != "https://b" {
+		t.Errorf("mmrSelect[2]: want https://b (penalized as near-dup of a), got %s", got[2].URL)
+	}
+
+	// λ=1 → identity (pure relevance, no diversification). Returns hits unchanged.
+	identity := mmrSelect(q, hits, vecs, 1.0)
+	if identity[0].URL != "https://a" || identity[1].URL != "https://b" || identity[2].URL != "https://c" {
+		t.Errorf("mmrSelect(λ=1): want input order [a b c], got %+v", identity)
+	}
+
+	// Empty / single-hit short-circuits.
+	if out := mmrSelect(q, nil, nil, 0.4); len(out) != 0 {
+		t.Errorf("mmrSelect(empty): want empty, got %+v", out)
+	}
+	single := mmrSelect(q, hits[:1], vecs[:1], 0.4)
+	if len(single) != 1 || single[0].URL != "https://a" {
+		t.Errorf("mmrSelect(single): want pass-through, got %+v", single)
+	}
+}
+
 // TestPebbleInfoJSON locks down the iter-380/381 jq-friendly shape so future
 // changes to the offline pebble-info path can't silently drop a field or
 // regress the retrievers list. /stats reads the same shape — broken parity
