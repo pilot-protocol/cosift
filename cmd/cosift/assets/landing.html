@@ -157,6 +157,26 @@ code, pre { font-family: var(--mono); font-size: 0.88em; }
 .term .out { color: var(--ink-dim); }
 .term .acc { color: var(--accent); }
 
+/* Interactive try-it */
+.tryit { border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); padding: 28px; }
+.tryit-form { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 16px; }
+.tryit-input { font-family: var(--sans); font-size: 16px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--ink); outline: none; }
+.tryit-input:focus { border-color: var(--accent); }
+.tryit-knobs { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; font-size: 13px; color: var(--ink-dim); }
+.tryit-knobs label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.tryit-knobs select, .tryit-knobs input[type=number] { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-family: var(--mono); font-size: 12px; }
+.tryit-meta { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-bottom: 14px; min-height: 20px; }
+.tryit-meta code { background: var(--bg-deep); padding: 1px 7px; border-radius: 4px; color: var(--accent); font-size: 12px; }
+.tryit-hits { display: flex; flex-direction: column; gap: 10px; }
+.hit { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); transition: 0.12s; }
+.hit:hover { border-color: var(--line-2); }
+.hit-title { font-weight: 500; font-size: 15px; margin-bottom: 4px; }
+.hit-title a { color: var(--ink); text-decoration: none; }
+.hit-title a:hover { color: var(--accent); }
+.hit-url { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-bottom: 6px; word-break: break-all; }
+.hit-excerpt { font-size: 13px; color: var(--ink-dim); line-height: 1.55; }
+.hit-score { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-left: 8px; }
+
 .health-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
 .health-card { border: 1px solid var(--line); border-radius: 12px; padding: 20px; background: var(--bg-2); }
 .health-card .label { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
@@ -180,6 +200,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
     <div class="nav-row">
       <a href="/" class="brand">cosift<small>self-hostable search</small></a>
       <div class="nav-links">
+        <a class="nav-link" href="/docs">API · Try it</a>
         <a class="nav-link" href="/openapi.json">OpenAPI</a>
         <a class="nav-link" href="/stats">Stats</a>
         <a class="nav-link" href="/metrics">Metrics</a>
@@ -268,20 +289,39 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
 <section class="section" id="try">
   <div class="wrap">
     <div class="section-head">
-      <div class="eyebrow">Curl recipes</div>
-      <h2>Try the <em>frontier</em> pipeline.</h2>
+      <div class="eyebrow">Try it now</div>
+      <h2>Search the <em>live</em> <span class="accent">corpus.</span></h2>
     </div>
-    <div class="term">
-<span class="out"># Hybrid + diversification + time-decay</span>
-<span class="prompt">$</span> curl '<span id="cmd-host">/</span>search?q=raft+consensus&amp;retriever=<span class="acc">hybrid</span>&amp;mmr=<span class="acc">0.7</span>&amp;decay=<span class="acc">30</span>'
-
-<span class="out"># Cited synth with R1-style reasoning, stripped before delivery</span>
-<span class="prompt">$</span> curl '<span id="cmd-host2">/</span>answer?q=what+is+raft+consensus&amp;retriever=<span class="acc">hybrid</span>&amp;mmr=<span class="acc">0.6</span>'
-
-<span class="out"># Multi-step research, SSE streamed</span>
-<span class="prompt">$</span> curl -N -H 'Accept: text/event-stream' \
-       '<span id="cmd-host3">/</span>research?q=compare+raft+and+paxos&amp;retriever=<span class="acc">hybrid</span>&amp;rerank=<span class="acc">true</span>&amp;stream=<span class="acc">true</span>'
+    <div class="tryit">
+      <form class="tryit-form" id="tryit-form" autocomplete="off">
+        <input class="tryit-input" id="tryit-q" type="text" placeholder="raft consensus, garbage collection, hashring…" value="bm25 search algorithm" />
+        <button class="btn primary" type="submit">Search <span class="arr">→</span></button>
+      </form>
+      <div class="tryit-knobs">
+        <label>retriever
+          <select id="tryit-retriever">
+            <option value="bm25" selected>bm25</option>
+            <option value="dense">dense</option>
+            <option value="hybrid">hybrid</option>
+          </select>
+        </label>
+        <label>mmr λ
+          <input type="number" id="tryit-mmr" min="0" max="1" step="0.05" placeholder="off" style="width:70px"/>
+        </label>
+        <label>decay (days)
+          <input type="number" id="tryit-decay" min="1" max="3650" step="1" placeholder="off" style="width:80px"/>
+        </label>
+        <label>k
+          <input type="number" id="tryit-k" min="1" max="20" value="5" style="width:60px"/>
+        </label>
+      </div>
+      <div class="tryit-meta" id="tryit-meta"></div>
+      <div class="tryit-hits" id="tryit-hits"></div>
     </div>
+    <p style="margin-top: 24px; color: var(--ink-dim); font-size: 13px;">
+      Direct API access: <a href="/docs">/docs</a> · <a href="/openapi.json">/openapi.json</a> ·
+      <code>curl '/search?q=…&amp;retriever=hybrid&amp;mmr=0.7&amp;decay=30'</code>
+    </p>
   </div>
 </section>
 
@@ -337,6 +377,45 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
   }
   load();
   setInterval(load, 5000);
+
+  // Try-it search widget (iter 398)
+  function esc(s) { return String(s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]); }); }
+  function runSearch(e) {
+    if (e) e.preventDefault();
+    var q = document.getElementById('tryit-q').value.trim();
+    if (!q) return;
+    var p = new URLSearchParams();
+    p.set('q', q);
+    p.set('k', document.getElementById('tryit-k').value || '5');
+    var retr = document.getElementById('tryit-retriever').value;
+    if (retr && retr !== 'bm25') p.set('retriever', retr);
+    var mmr = document.getElementById('tryit-mmr').value;
+    if (mmr) p.set('mmr', mmr);
+    var decay = document.getElementById('tryit-decay').value;
+    if (decay) p.set('decay', decay);
+    var meta = document.getElementById('tryit-meta');
+    var hitsDiv = document.getElementById('tryit-hits');
+    meta.innerHTML = '<span style="color:var(--ink-dim)">running…</span>';
+    hitsDiv.innerHTML = '';
+    var t0 = performance.now();
+    fetch('/search?' + p.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      var elapsed = Math.round(performance.now() - t0);
+      var warns = (d.warnings || []).map(function (w) { return '<div style="color:#c98; margin-top:4px">⚠ ' + esc(w) + '</div>'; }).join('');
+      meta.innerHTML = 'retriever <code>' + esc(d.retriever || '—') + '</code> · ' + (d.hits || []).length + ' hits · ' + elapsed + 'ms client RT · server ' + esc(d.took || '—') + warns;
+      var html = (d.hits || []).map(function (h) {
+        return '<div class="hit">' +
+          '<div class="hit-title"><a href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.title || h.url) + '</a>' +
+          '<span class="hit-score">' + (h.score || 0).toFixed(3) + '</span></div>' +
+          '<div class="hit-url">' + esc(h.url) + '</div>' +
+          (h.excerpt ? '<div class="hit-excerpt">' + esc(h.excerpt.slice(0, 280)) + (h.excerpt.length > 280 ? '…' : '') + '</div>' : '') +
+          '</div>';
+      }).join('');
+      hitsDiv.innerHTML = html || '<div style="color:var(--ink-dim);font-size:13px">no hits</div>';
+    }).catch(function (e) {
+      meta.innerHTML = '<span style="color:#e88">error: ' + esc(e.message) + '</span>';
+    });
+  }
+  document.getElementById('tryit-form').addEventListener('submit', runSearch);
 })();
 </script>
 </body>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cosift API · interactive docs</title>
+<link rel="stylesheet" href="/docs/swagger-ui.css">
+<style>
+  body { margin: 0; background: #0b0b0a; }
+  .topbar { background: #0b0b0a; border-bottom: 1px solid #1d1d1b; padding: 14px 28px; }
+  .topbar a { color: #eceae3; font-family: 'Instrument Serif', serif; font-size: 22px; font-style: italic; text-decoration: none; }
+  .topbar a small { font-family: 'Inter Tight', sans-serif; font-size: 11px; color: #8a8a83; font-style: normal; letter-spacing: 0.08em; text-transform: uppercase; margin-left: 10px; }
+  .swagger-ui .topbar { display: none; }
+</style>
+</head>
+<body>
+<div class="topbar"><a href="/">cosift<small>interactive API docs</small></a></div>
+<div id="swagger-ui"></div>
+<script src="/docs/swagger-ui-bundle.js"></script>
+<script>
+window.onload = function () {
+  SwaggerUIBundle({
+    url: '/openapi.json',
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    presets: [SwaggerUIBundle.presets.apis],
+    tryItOutEnabled: true,
+    persistAuthorization: true
+  });
+};
+</script>
+</body>
+</html>

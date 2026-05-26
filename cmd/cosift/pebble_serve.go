@@ -230,6 +230,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// self-contained executable, no separate static-asset deployment.
 	mux.HandleFunc("GET /", wrap(srv.handleLanding))
 	mux.HandleFunc("GET /openapi.json", wrap(srv.handleOpenAPI))
+	// Iter 398: Swagger UI bundled into the binary. /docs renders the
+	// interactive spec; /docs/swagger-ui.css and /docs/swagger-ui-bundle.js
+	// serve the dist assets locally so the page works air-gapped (no CDN).
+	mux.HandleFunc("GET /docs", wrap(srv.handleSwaggerUI))
+	mux.HandleFunc("GET /docs/{file...}", wrap(srv.handleSwaggerAsset))
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
@@ -503,6 +508,15 @@ var landingHTML []byte
 //go:embed assets/openapi.json
 var openapiJSON []byte
 
+//go:embed assets/swagger/index.html
+var swaggerIndexHTML []byte
+
+//go:embed assets/swagger/swagger-ui.css
+var swaggerUICSS []byte
+
+//go:embed assets/swagger/swagger-ui-bundle.js
+var swaggerUIJS []byte
+
 // handleLanding serves the iter-396 self-host dashboard. Only matches exact
 // "/" — Go 1.22's ServeMux routes sub-paths to the longest match, so this
 // won't accidentally swallow /search etc.
@@ -520,6 +534,28 @@ func (s *pebbleHTTP) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Write(openapiJSON)
+}
+
+func (s *pebbleHTTP) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Write(swaggerIndexHTML)
+}
+
+func (s *pebbleHTTP) handleSwaggerAsset(w http.ResponseWriter, r *http.Request) {
+	file := r.PathValue("file")
+	switch file {
+	case "swagger-ui.css":
+		w.Header().Set("Content-Type", "text/css")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(swaggerUICSS)
+	case "swagger-ui-bundle.js":
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(swaggerUIJS)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
