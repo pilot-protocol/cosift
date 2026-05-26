@@ -196,6 +196,13 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		if !strings.Contains(first, "retriever=hybrid") {
 			t.Errorf("/find_similar?retriever=hybrid: warning didn't mention the value: %s", first)
 		}
+		// Iter 379: warning text says "BM25-MLT" on /find_similar (the
+		// actual fallback retriever), not the generic "BM25" used for
+		// /search/answer/research. Catches accidental regression of the
+		// per-endpoint suffix.
+		if !strings.Contains(first, "BM25-MLT") {
+			t.Errorf("/find_similar warning should mention BM25-MLT fallback (matches retriever label), got: %s", first)
+		}
 	}
 
 	// /find_similar?retriever=dense&url=X without graph: also falls through.
