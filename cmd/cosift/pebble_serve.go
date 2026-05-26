@@ -1133,10 +1133,53 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		fetchK = keepCap * 2
 	}
 
-	hits, err := s.idx.Search(r.Context(), queryStr, fetchK)
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, err.Error())
-		return
+	// Iter 371: /find_similar?retriever=dense reuses the source's persisted
+	// vector (URL-mode) or embeds the user's text (text-mode) and runs an
+	// HNSW cosine search instead of BM25-MLT. The dense path skips the
+	// term-derivation cost and the embed RPC entirely on URL-mode — the
+	// source's vector is already in the graph from indexing.
+	// Requires both COSIFT_LOAD_HNSW=true at server start (for URL-mode)
+	// AND a configured embedder (for text-mode). Missing either falls
+	// through to BM25-MLT; warningsFor() flags it.
+	retrieverParam := r.URL.Query().Get("retriever")
+	useDense := retrieverParam == "dense" && s.hnsw != nil
+	var (
+		hits        []index.Hit
+		denseFired  bool
+	)
+	if useDense {
+		var queryVec []float32
+		var ok bool
+		if srcURL != "" {
+			queryVec, ok = s.hnsw.LookupVectorByURL(srcURL)
+		}
+		if !ok && s.embedder != nil && (srcText != "" || srcTitle != "") {
+			// Text-mode or URL not found in graph — embed title+text.
+			seed := strings.TrimSpace(srcTitle + " " + srcText)
+			if seed != "" {
+				vecs, embErr := s.embedder.Embed(r.Context(), []string{seed})
+				if embErr == nil && len(vecs) > 0 {
+					queryVec = vecs[0]
+					ok = true
+				}
+			}
+		}
+		if ok {
+			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
+			hits = make([]index.Hit, len(vhits))
+			for i, vh := range vhits {
+				hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
+			}
+			denseFired = true
+		}
+	}
+	if !denseFired {
+		var err error
+		hits, err = s.idx.Search(r.Context(), queryStr, fetchK)
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	type fsCand struct {
 		hit        searchHit
@@ -1219,9 +1262,15 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cands {
 		out = append(out, c.hit)
 	}
+	// Iter 371: label says dense / dense+rerank when the HNSW path fired;
+	// stays bm25-mlt otherwise (fallback when dense was requested but graph
+	// missing or URL unknown — warningsFor() flags the case).
 	retrieverLabel := "bm25-mlt"
+	if denseFired {
+		retrieverLabel = "dense"
+	}
 	if wantRerank {
-		retrieverLabel = "bm25-mlt+rerank:" + s.reranker.Name()
+		retrieverLabel += "+rerank:" + s.reranker.Name()
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
 		Query:           queryStr,

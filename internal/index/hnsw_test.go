@@ -86,6 +86,37 @@ func TestHNSWSearchEmpty(t *testing.T) {
 }
 
 // TestHNSWSearchSingle — index with exactly one vector returns it.
+// TestHNSWLookupVectorByURL locks down iter 371: /find_similar?retriever=dense
+// reads the source's persisted vector by URL so it can skip the embed RPC.
+// Must return a unit-normalized vector (HNSW stores normalized passages),
+// must NOT alias the graph's internal slice, and must report not-found.
+func TestHNSWLookupVectorByURL(t *testing.T) {
+	h := NewHNSW(4)
+	h.Add("https://a", "doc a", []float32{1, 0, 0, 0})
+	h.Add("https://b", "doc b", []float32{0, 1, 0, 0})
+
+	vec, ok := h.LookupVectorByURL("https://a")
+	if !ok {
+		t.Fatalf("LookupVectorByURL(\"https://a\"): want ok=true")
+	}
+	if len(vec) != 4 {
+		t.Fatalf("vec len: want 4, got %d", len(vec))
+	}
+	if vec[0] < 0.99 {
+		t.Errorf("vec[0]: want ~1.0 (unit-normalized), got %.3f", vec[0])
+	}
+	// Mutating the returned slice must not poison subsequent searches.
+	vec[0] = 999
+	hits := h.Search(context.Background(), []float32{1, 0, 0, 0}, 1)
+	if len(hits) == 0 || hits[0].URL != "https://a" || hits[0].Score < 0.99 {
+		t.Errorf("graph state mutated by caller: hits=%+v", hits)
+	}
+
+	if _, ok := h.LookupVectorByURL("https://missing"); ok {
+		t.Errorf("LookupVectorByURL(\"https://missing\"): want ok=false")
+	}
+}
+
 func TestHNSWSearchSingle(t *testing.T) {
 	h := NewHNSW(4)
 	h.Add("https://only", "the only", []float32{1, 0, 0, 0})

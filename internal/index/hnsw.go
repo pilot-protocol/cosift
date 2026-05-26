@@ -93,6 +93,25 @@ func (h *HNSW) Len() int {
 	return len(h.nodes)
 }
 
+// LookupVectorByURL returns the persisted unit-normalized vector for the
+// first passage whose url matches. Used by /find_similar?retriever=dense to
+// skip the embed RPC — the source doc's vector is already in the graph.
+// Linear scan; for 1M passages this is ~few ms, dominated by cache misses.
+// Returns (nil, false) when the URL has no indexed passage. Iter 371.
+func (h *HNSW) LookupVectorByURL(url string) ([]float32, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for i := range h.nodes {
+		if h.nodes[i].url == url {
+			// Copy: caller shouldn't be able to mutate graph internals.
+			cp := make([]float32, len(h.nodes[i].vec))
+			copy(cp, h.nodes[i].vec)
+			return cp, true
+		}
+	}
+	return nil, false
+}
+
 // Add inserts a doc-level embedding without span info. Mirrors
 // VectorIndex.Add — equivalent to AddPassage(url, title, 0, 0, vec).
 func (h *HNSW) Add(url, title string, vec []float32) {
