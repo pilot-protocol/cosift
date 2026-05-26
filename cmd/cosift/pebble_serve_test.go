@@ -158,6 +158,44 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
+	// /find_similar?retriever=hybrid (iter 373) without a loaded HNSW graph
+	// must silently fall through to BM25-MLT and emit a warning. Parallel
+	// to the iter-367 /search?retriever=dense fallback contract — locks in
+	// the iter-371/372/373 behavior so a future refactor can't regress it
+	// to a 5xx or a dropped warning.
+	hr := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&retriever=hybrid&k=5")
+	if rt, _ := hr["retriever"].(string); rt != "bm25-mlt" {
+		t.Errorf("/find_similar?retriever=hybrid without graph: want fallback 'bm25-mlt', got %q", rt)
+	}
+	if hits, _ := hr["hits"].([]any); len(hits) == 0 {
+		t.Errorf("/find_similar?retriever=hybrid without graph: BM25-MLT fallback should still return hits, got 0")
+	}
+	hrwarn, _ := hr["warnings"].([]any)
+	if len(hrwarn) == 0 {
+		t.Errorf("/find_similar?retriever=hybrid without graph: want a warning, got none")
+	} else {
+		first, _ := hrwarn[0].(string)
+		if !strings.Contains(first, "retriever=hybrid") {
+			t.Errorf("/find_similar?retriever=hybrid: warning didn't mention the value: %s", first)
+		}
+	}
+
+	// /find_similar?retriever=dense&url=X without graph: also falls through.
+	// Iter 372 specifically: the URL-mode carve-out suppresses the
+	// 'no embedder' warning, so the only warning we should see is the
+	// graph-missing one — NOT a misleading 'no embedder' duplicate.
+	dr := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&retriever=dense")
+	if rt, _ := dr["retriever"].(string); rt != "bm25-mlt" {
+		t.Errorf("/find_similar?retriever=dense without graph: want fallback 'bm25-mlt', got %q", rt)
+	}
+	drwarn, _ := dr["warnings"].([]any)
+	for _, w := range drwarn {
+		ws, _ := w.(string)
+		if strings.Contains(ws, "no embedder configured") {
+			t.Errorf("/find_similar?retriever=dense&url=X: URL-mode warning carve-out failed; got misleading embedder warning: %s", ws)
+		}
+	}
+
 	// /verify — counter drift check (iter 230). 503 on drift; we expect OK.
 	vresp, err := http.Get(base + "/verify")
 	if err != nil {
