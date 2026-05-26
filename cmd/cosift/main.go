@@ -308,7 +308,32 @@ func main() {
 	}
 }
 
+// hnswPassageWriter bridges the crawler's iter-212 PassageWriter contract to
+// an in-memory index.HNSW graph. Each embedded passage looks up the doc's URL
+// and Title (via *PebbleStore.GetDocByID) and is inserted into the graph; the
+// graph is persisted to Pebble's 'v' family in a single Persist() call at the
+// end of the crawl. Iter 391.
+type hnswPassageWriter struct {
+	ps   *store.PebbleStore
+	hnsw *index.HNSW
+}
+
+func (w *hnswPassageWriter) UpsertPassage(ctx context.Context, p *store.Passage) error {
+	doc, err := w.ps.GetDocByID(ctx, p.DocID)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return nil // doc was deleted between index and embed — skip silently
+	}
+	w.hnsw.AddPassage(doc.URL, doc.Title, p.Offset, p.Length, p.Embedding)
+	return nil
+}
+
 func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
+	// Iter 391: hoisted PebbleStore handle so the embedder wiring below can
+	// reach it to attach the HNSW bridge after the backend switch.
+	var pebbleStoreForCrawl *store.PebbleStore
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 	refresh := fs.Bool("refresh", false, "force re-crawl of URLs already in the frontier")
 	sitemap := fs.String("sitemap", "", "URL of a sitemap.xml (or sitemap index) to seed from")
@@ -346,20 +371,22 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		// data dir layout under cfg.DataDir for Pebble: a sibling "pebble"
 		// subdir so SQLite and Pebble stores can coexist during migration.
 		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
-		ps, err := openPebbleOrFriendlyErr(pebbleDir)
+		var err error
+		pebbleStoreForCrawl, err = openPebbleOrFriendlyErr(pebbleDir)
 		if err != nil {
 			return err
 		}
-		defer ps.Close()
-		c = crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
+		defer pebbleStoreForCrawl.Close()
+		c = crawler.NewWithBackend(cfg.Crawler, pebbleStoreForCrawl, index.NewPebbleBM25(pebbleStoreForCrawl))
 		log.Printf("crawler: pebble backend at %s", pebbleDir)
 	default:
 		return fmt.Errorf("crawl: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}
 
-	// Iter 186 / 213: auto-wire embedder when configured. Works for both
-	// backends; PebbleStore's vector-write path is currently no-op until a
-	// PassageWriter bridge to HNSW is provided.
+	// Iter 186 / 213 / 391: auto-wire embedder when configured. For the
+	// Pebble backend, also build and persist an HNSW graph via the iter-391
+	// hnswPassageWriter bridge — that's the path /search?retriever=dense
+	// needs and that pre-iter-391 was a documented no-op.
 	if cfg.Embeddings.Model != "" {
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
@@ -373,6 +400,22 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 			emb := embed.NewOpenAIClient(apiKey, cfg.Embeddings.URL, cfg.Embeddings.Model, dim)
 			c = c.WithEmbedder(emb)
 			log.Printf("crawler: dense embeddings enabled (model=%s, dim=%d)", cfg.Embeddings.Model, dim)
+			if pebbleStoreForCrawl != nil {
+				h := index.NewHNSW(dim)
+				c = c.WithPassageWriter(&hnswPassageWriter{ps: pebbleStoreForCrawl, hnsw: h})
+				log.Printf("crawler: HNSW vector index attached (in-memory build, persisted at crawl end)")
+				defer func() {
+					if h.Len() == 0 {
+						return
+					}
+					log.Printf("crawler: persisting HNSW graph (%d nodes, dim=%d) to Pebble...", h.Len(), dim)
+					if err := h.Persist(context.Background(), pebbleStoreForCrawl); err != nil {
+						log.Printf("crawler: HNSW persist failed: %v", err)
+					} else {
+						log.Printf("crawler: HNSW persist complete")
+					}
+				}()
+			}
 		} else {
 			log.Printf("warning: embeddings configured but no OPENAI_API_KEY in env; crawling BM25 only")
 		}
