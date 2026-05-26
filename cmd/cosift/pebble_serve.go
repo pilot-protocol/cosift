@@ -1332,10 +1332,17 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
 	// Iter 357/358: signal whether the store has HNSW vectors persisted, and
-	// (when meta is available) surface dim + node count. Cheap fields — meta
-	// is 20 bytes, read once at startup.
+	// (when meta is available) surface dim + node count.
+	// Iter 422: when the graph is loaded in memory, report s.hnsw.Len()
+	// instead of the startup-cached vectorNodes count — otherwise /stats
+	// shows the corpus frozen in time while the in-serve crawler keeps
+	// growing the graph.
 	out["has_vectors"] = s.hasVectors
-	if s.vectorNodes > 0 {
+	switch {
+	case s.hnsw != nil:
+		out["vector_nodes"] = s.hnsw.Len()
+		out["vector_dim"] = s.vectorDim
+	case s.vectorNodes > 0:
 		out["vector_nodes"] = s.vectorNodes
 		out["vector_dim"] = s.vectorDim
 	}
@@ -1463,12 +1470,16 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_warnings_emitted_total Responses that carried at least one warning (misconfigured request).\n")
 	fmt.Fprintf(w, "# TYPE cosift_warnings_emitted_total counter\n")
 	fmt.Fprintf(w, "cosift_warnings_emitted_total %d\n", s.warningsEmitted.Load())
-	// Iter 361: HNSW vector index shape (iter 358 cheap meta read). Gauges
-	// rather than counters — these are static snapshots at startup.
-	if s.vectorNodes > 0 {
-		fmt.Fprintf(w, "# HELP cosift_vector_nodes Number of HNSW vector nodes persisted in the 'v' family.\n")
+	// Iter 361/422: HNSW vector index shape. Live count when graph is
+	// loaded; startup-cached otherwise.
+	vectorNodesLive := s.vectorNodes
+	if s.hnsw != nil {
+		vectorNodesLive = s.hnsw.Len()
+	}
+	if vectorNodesLive > 0 {
+		fmt.Fprintf(w, "# HELP cosift_vector_nodes Number of HNSW vector nodes in memory (or persisted when not loaded).\n")
 		fmt.Fprintf(w, "# TYPE cosift_vector_nodes gauge\n")
-		fmt.Fprintf(w, "cosift_vector_nodes %d\n", s.vectorNodes)
+		fmt.Fprintf(w, "cosift_vector_nodes %d\n", vectorNodesLive)
 		fmt.Fprintf(w, "# HELP cosift_vector_dim Embedding dimension of the persisted HNSW index.\n")
 		fmt.Fprintf(w, "# TYPE cosift_vector_dim gauge\n")
 		fmt.Fprintf(w, "cosift_vector_dim %d\n", s.vectorDim)
