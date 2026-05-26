@@ -1692,30 +1692,27 @@ func cosineUnit(a, b []float32) float32 {
 	return s
 }
 
-// mmrSelect implements Maximal Marginal Relevance (Carbonell & Goldstein '98).
-// Greedy selection: at each step, pick the candidate that maximizes
+// mmrOrder computes a permutation of [0..n-1] via Maximal Marginal Relevance
+// (Carbonell & Goldstein '98). At each step picks the candidate maximizing
 //
 //	score = λ · sim(q, c) - (1-λ) · max_{s∈selected} sim(c, s)
 //
-// hits and hitVecs are aligned by index. Candidates whose vectors are missing
-// (zero-length) keep their relevance-only ranking — MMR can only diversify
+// Candidates whose vectors are missing (zero-length) score 0 on relevance
+// and 0 against any other missing-vec candidate — MMR can only diversify
 // what it can compare. lambda=1 → pure relevance (no diversification);
-// lambda=0 → pure diversity (ignore query relevance entirely). 0.7 is a
-// common starting point.
+// lambda=0 → pure diversity. 0.5–0.7 is a typical starting point.
 //
-// Returns the input hits reordered by MMR score; never drops anything.
-// Truncation to k happens at the call site so warnings + total_candidates
-// stay accurate. Iter 384.
-func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda float64) []searchHit {
-	if len(hits) <= 1 || lambda >= 1.0 {
-		return hits
+// Returns the permutation as a []int; never drops anything. The caller
+// applies it to whatever URL-keyed slice it has. Iter 384/385.
+func mmrOrder(qVec []float32, hitVecs [][]float32, lambda float64) []int {
+	n := len(hitVecs)
+	if n == 0 {
+		return nil
 	}
-	n := len(hits)
 	selected := make([]bool, n)
 	order := make([]int, 0, n)
-	// Precompute relevance — dot(qVec, hitVec). Hits with no vec score 0.
 	rel := make([]float64, n)
-	for i := range hits {
+	for i := range hitVecs {
 		if len(hitVecs[i]) > 0 {
 			rel[i] = float64(cosineUnit(qVec, hitVecs[i]))
 		}
@@ -1727,7 +1724,6 @@ func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda flo
 			if selected[i] {
 				continue
 			}
-			// Max similarity to anything already picked.
 			var maxSim float64
 			for _, j := range order {
 				if len(hitVecs[i]) == 0 || len(hitVecs[j]) == 0 {
@@ -1745,16 +1741,47 @@ func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda flo
 			}
 		}
 		if bestI < 0 {
-			break // safety — shouldn't happen with selected[] tracked above
+			break
 		}
 		selected[bestI] = true
 		order = append(order, bestI)
 	}
-	out := make([]searchHit, 0, n)
+	return order
+}
+
+// mmrSelect — thin /search wrapper around mmrOrder that operates on []searchHit
+// directly. Iter 384.
+func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda float64) []searchHit {
+	if len(hits) <= 1 || lambda >= 1.0 {
+		return hits
+	}
+	order := mmrOrder(qVec, hitVecs, lambda)
+	out := make([]searchHit, 0, len(hits))
 	for _, i := range order {
 		out = append(out, hits[i])
 	}
 	return out
+}
+
+// applyMMRPermutation embeds q, looks up per-URL vectors from HNSW, and
+// returns an MMR permutation. Returns nil when MMR can't fire (no graph,
+// no embedder, embed failed, λ≥1, single-element pool). Shared by /answer
+// and /research synth endpoints. Iter 385.
+func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q string, lambda float64) []int {
+	if s.hnsw == nil || s.embedder == nil || len(urls) <= 1 || lambda >= 1.0 {
+		return nil
+	}
+	vecs, err := s.embedder.Embed(ctx, []string{q})
+	if err != nil || len(vecs) == 0 {
+		return nil
+	}
+	hitVecs := make([][]float32, len(urls))
+	for i, u := range urls {
+		if v, ok := s.hnsw.LookupVectorByURL(u); ok {
+			hitVecs[i] = v
+		}
+	}
+	return mmrOrder(vecs[0], hitVecs, lambda)
 }
 
 // Iter 366: buildRetrieverLabel produces the human-readable retriever string
@@ -2081,6 +2108,25 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
+	// Iter 385: MMR diversification on /answer — same pattern as /search.
+	// Synth quality benefits when the top-k sources cover different
+	// angles instead of being 5 paraphrases of the same paper.
+	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
+	mmrFired := false
+	if mmrSet && len(cands) > 1 {
+		urls := make([]string, len(cands))
+		for i := range cands {
+			urls[i] = cands[i].src.URL
+		}
+		if order := s.applyMMRPermutation(r.Context(), urls, q, mmrLambda); order != nil {
+			reordered := make([]cand, len(order))
+			for i, idx := range order {
+				reordered[i] = cands[idx]
+			}
+			cands = reordered
+			mmrFired = true
+		}
+	}
 	if len(cands) > k {
 		cands = cands[:k]
 	}
@@ -2096,6 +2142,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	// Iter 366: same retriever label vocabulary as /search.
 	denseReady := s.hnsw != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
+	if mmrFired {
+		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
 	if len(sources) == 0 {
 		empty := answerResponse{
 			Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
@@ -2368,6 +2417,25 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
+	// Iter 385: MMR diversification on /research sync. /research aggregates
+	// across sub-queries — duplicate-ish docs accumulate fast. MMR after
+	// rerank, before truncation.
+	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
+	mmrFired := false
+	if mmrSet && len(cands) > 1 {
+		urls := make([]string, len(cands))
+		for i := range cands {
+			urls[i] = cands[i].src.URL
+		}
+		if order := s.applyMMRPermutation(r.Context(), urls, q, mmrLambda); order != nil {
+			reordered := make([]cand, len(order))
+			for i, idx := range order {
+				reordered[i] = cands[idx]
+			}
+			cands = reordered
+			mmrFired = true
+		}
+	}
 	if len(cands) > k {
 		cands = cands[:k]
 	}
@@ -2387,6 +2455,9 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	denseReady := s.hnsw != nil && s.embedder != nil
 	expandFired := expandMode != "" && s.chat != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandFired, wantRerank)
+	if mmrFired {
+		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
 	if len(sources) == 0 {
 		writeJSON(w, http.StatusOK, researchResponse{
 			Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
@@ -2569,6 +2640,25 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			cands = reordered
 		}
 	}
+	// Iter 385: MMR diversification on /research stream — same pattern as sync.
+	// Updates retrieverLabel so the iter-366 retriever field on the sources
+	// SSE event reflects what actually fired (planEvent's label, emitted
+	// earlier, says what was requested — usually identical when MMR succeeds).
+	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
+	if mmrSet && len(cands) > 1 {
+		urls := make([]string, len(cands))
+		for i := range cands {
+			urls[i] = cands[i].src.URL
+		}
+		if order := s.applyMMRPermutation(r.Context(), urls, q, mmrLambda); order != nil {
+			reordered := make([]cand, len(order))
+			for i, idx := range order {
+				reordered[i] = cands[idx]
+			}
+			cands = reordered
+			retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+		}
+	}
 	if len(cands) > k {
 		cands = cands[:k]
 	}
@@ -2583,7 +2673,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	}
 	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)} // iter 317
 	if retrieverLabel != "" {
-		srcEvt["retriever"] = retrieverLabel // iter 366
+		srcEvt["retriever"] = retrieverLabel // iter 366/385
 	}
 	sse(srcEvt)
 	if len(sources) == 0 {

@@ -83,6 +83,7 @@ retrieval/synth flags (search, answer, research):
   -server <URL>           cosift server URL (default: http://<cfg.Server.Addr>)
   -k <int>                top-k results / sources
   -retriever <name>       bm25 | dense | hybrid (server default if empty; dense/hybrid need COSIFT_LOAD_HNSW=true + embedder)
+  -mmr <lambda>           MMR diversification λ ∈ [0,1] (needs HNSW + embedder server-side)
   -rerank                 reorder the candidate pool with the configured reranker
   -expand <mode>          hyde | paraphrase | true (answer treats -expand as bool)
   -since / -until <date>  filter by doc PublishedAt (ISO-8601)
@@ -483,6 +484,8 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	k := fs.Int("k", 10, "max results")
 	retriever := fs.String("retriever", "", "bm25 | dense | hybrid (server default if empty)")
+	// Iter 385: MMR lambda passthrough for /search.
+	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (needs HNSW + embedder server-side)")
 	rerankFlag := fs.Bool("rerank", false, "wrap retrieval with LLM listwise reranker (server must have it configured)")
 	expand := fs.Bool("expand", false, "LLM paraphrase + RRF fusion (server must have a paraphraser)")
 	since := fs.String("since", "", "ISO date — only results published on or after")
@@ -507,6 +510,9 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	v.Set("k", strconv.Itoa(*k))
 	if *retriever != "" {
 		v.Set("retriever", *retriever)
+	}
+	if *mmr != "" {
+		v.Set("mmr", *mmr)
 	}
 	if *rerankFlag {
 		v.Set("rerank", "true")
@@ -1063,6 +1069,8 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	// Iter 369: per-sub-query retriever choice — applies to every sub-query
 	// the planner emits. Server uses bm25 by default if this is empty.
 	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
+	// Iter 385: MMR lambda passthrough for /research.
+	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (needs HNSW + embedder server-side)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
@@ -1096,6 +1104,9 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	}
 	if *retriever != "" {
 		v.Set("retriever", *retriever)
+	}
+	if *mmr != "" {
+		v.Set("mmr", *mmr)
 	}
 	if *since != "" {
 		v.Set("since", *since)
@@ -1551,6 +1562,8 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	// Iter 369: expose the iter-365 retriever choice (dense/hybrid). Empty
 	// passes nothing → server uses its default (bm25).
 	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
+	// Iter 385: MMR lambda passthrough. Empty → no diversification.
+	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (0.7 = mostly relevance with some diversity; needs HNSW + embedder server-side)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
@@ -1579,6 +1592,9 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	}
 	if *retriever != "" {
 		v.Set("retriever", *retriever)
+	}
+	if *mmr != "" {
+		v.Set("mmr", *mmr)
 	}
 	if *since != "" {
 		v.Set("since", *since)
