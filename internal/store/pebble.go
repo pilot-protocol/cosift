@@ -61,6 +61,8 @@ const (
 	famDocLen  byte = 'l' // 'l' + docID → doc_len (varint)
 	famVector  byte = 'v' // 'v' + 0x01 + uint64-be(nodeID) → hnsw node blob
 	//                       'v' + 0x00 + "meta"           → hnsw graph meta
+	famPQ      byte = 'q' // 'q' + 0x00 + "codebook"       → PQ codebook blob (iter 414)
+	//                       'q' + 0x01 + uint64-be(nodeID) → per-node PQ code (M*2 bytes)
 	famDocMeta byte = 'i' // 'i' + uint64-be(docID) → uvarint(urlLen)+url+uvarint(titleLen)+title
 	//                      iter 207: cheap URL+title side-blob (~50 bytes vs ~1KB+ gob)
 	//                      so BM25 hit-resolution skips the full Document decode.
@@ -661,6 +663,111 @@ func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorN
 		}
 	}
 	return batch.Commit(p.writeOpts)
+}
+
+// --- iter 414: Product Quantization storage. ---
+//
+// Two key layouts under the 'q' family:
+//   'q' + 0x00 + "codebook"        → codebook blob (M*K*subDim float32 + header)
+//   'q' + 0x01 + uint64-be(nodeID) → per-node PQ code (2*M bytes raw)
+//
+// The codebook is small (~768KB at M=96 K=256 subDim=8) so a single Get
+// reads it at startup. Per-node codes are tiny (192 B at M=96) so writes
+// can be batched alongside HNSW node writes.
+
+func pqCodebookKey() []byte { return []byte{famPQ, 0x00, 'c', 'o', 'd', 'e', 'b', 'o', 'o', 'k'} }
+
+func pqCodeKey(nodeID uint64) []byte {
+	k := make([]byte, 2+8)
+	k[0] = famPQ
+	k[1] = 0x01
+	binary.BigEndian.PutUint64(k[2:], nodeID)
+	return k
+}
+
+// PutPQCodebook writes the trained codebook blob. Atomic single-key write.
+func (p *PebbleStore) PutPQCodebook(ctx context.Context, blob []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.db.Set(pqCodebookKey(), blob, p.writeOpts)
+}
+
+// GetPQCodebook returns the codebook blob, or ok=false if none persisted.
+func (p *PebbleStore) GetPQCodebook(ctx context.Context) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	val, closer, err := p.db.Get(pqCodebookKey())
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer closer.Close()
+	out := make([]byte, len(val))
+	copy(out, val)
+	return out, true, nil
+}
+
+// PQCodeEntry is one (nodeID, code-blob) tuple for batched PQ code writes.
+type PQCodeEntry struct {
+	ID   uint64
+	Blob []byte
+}
+
+// PutPQCodesBatch writes many per-node PQ codes in a single Pebble batch.
+// Iter 414.
+func (p *PebbleStore) PutPQCodesBatch(ctx context.Context, entries []PQCodeEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	for _, e := range entries {
+		if err := batch.Set(pqCodeKey(e.ID), e.Blob, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(p.writeOpts)
+}
+
+// IteratePQCodes scans every persisted PQ code in ascending node-ID order.
+func (p *PebbleStore) IteratePQCodes(ctx context.Context, fn func(nodeID uint64, blob []byte) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo := []byte{famPQ, 0x01}
+	hi := []byte{famPQ, 0x02}
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		k := it.Key()
+		if len(k) != 2+8 {
+			continue
+		}
+		nodeID := binary.BigEndian.Uint64(k[2:])
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return err
+		}
+		blob := make([]byte, len(val))
+		copy(blob, val)
+		if !fn(nodeID, blob) {
+			return nil
+		}
+	}
+	return nil
 }
 
 // IterateVectorNodes scans every persisted HNSW node in ascending ID order,
