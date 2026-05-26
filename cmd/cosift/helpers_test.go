@@ -181,6 +181,43 @@ func TestPeekWarnings(t *testing.T) {
 	}
 }
 
+// TestRateLimiter — iter 394. Burst is consumed instantly, then the bucket
+// refills at rpm/60 per second. Whitelisted IPs bypass entirely.
+func TestRateLimiter(t *testing.T) {
+	rl := &rateLimiter{
+		rpm:       60, // 1 token/sec refill
+		burst:     3,
+		whitelist: map[string]bool{"127.0.0.1": true},
+	}
+	// 3 burst tokens → all allowed.
+	for i := 0; i < 3; i++ {
+		if !rl.allow("10.0.0.1") {
+			t.Errorf("burst[%d]: expected allow", i)
+		}
+	}
+	// 4th immediately → denied (bucket empty, no time elapsed).
+	if rl.allow("10.0.0.1") {
+		t.Errorf("4th request: expected deny")
+	}
+	// Whitelisted IP always allowed.
+	for i := 0; i < 100; i++ {
+		if !rl.allow("127.0.0.1") {
+			t.Errorf("whitelist[%d]: expected allow", i)
+		}
+	}
+	// Different IPs get independent buckets.
+	if !rl.allow("10.0.0.2") {
+		t.Errorf("second IP first request: expected allow")
+	}
+	// Nil limiter is a no-op (limiting disabled).
+	var disabled *rateLimiter
+	for i := 0; i < 1000; i++ {
+		if !disabled.allow("any") {
+			t.Errorf("nil rl[%d]: expected allow", i)
+		}
+	}
+}
+
 // TestParseDecayHalfLife — iter 389. Valid positive floats pass; everything
 // else short-circuits time-decay.
 func TestParseDecayHalfLife(t *testing.T) {

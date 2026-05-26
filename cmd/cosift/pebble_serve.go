@@ -21,6 +21,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -213,20 +214,30 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", srv.count(srv.handleHealthz))
-	mux.HandleFunc("GET /stats", srv.count(srv.handleStats))
-	mux.HandleFunc("GET /search", srv.count(srv.handleSearch))
-	mux.HandleFunc("POST /search", srv.count(srv.handleSearchPOST))
-	mux.HandleFunc("GET /contents", srv.count(srv.handleContents))
-	mux.HandleFunc("POST /contents", srv.count(srv.handleContentsBatch))
-	mux.HandleFunc("GET /verify", srv.count(srv.handleVerify))
-	mux.HandleFunc("GET /metrics", srv.count(srv.handleMetrics))
-	mux.HandleFunc("GET /find_similar", srv.count(srv.handleFindSimilar))
-	mux.HandleFunc("POST /find_similar", srv.count(srv.handleFindSimilarPOST))
-	mux.HandleFunc("GET /answer", srv.count(srv.handleAnswer))
-	mux.HandleFunc("POST /answer", srv.count(srv.handleAnswerPOST))
-	mux.HandleFunc("GET /research", srv.count(srv.handleResearch))
-	mux.HandleFunc("POST /research", srv.count(srv.handleResearchPOST))
+	// Iter 394: optional per-IP token-bucket rate limit. Built once from env;
+	// nil when disabled (COSIFT_RATELIMIT_RPM unset or 0). Wraps every route
+	// below — including /healthz so monitoring hits are budgeted too;
+	// operators wanting unlimited probes should set
+	// COSIFT_RATELIMIT_WHITELIST to include their monitoring source.
+	srv.rl = newRateLimiterFromEnv()
+	if srv.rl != nil {
+		log.Printf("pebble-serve: rate limit active (rpm=%.0f burst=%.0f whitelist=%v)", srv.rl.rpm, srv.rl.burst, srv.rl.whitelistList())
+	}
+	wrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(h)) }
+	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
+	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
+	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
+	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
+	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
+	mux.HandleFunc("POST /contents", wrap(srv.handleContentsBatch))
+	mux.HandleFunc("GET /verify", wrap(srv.handleVerify))
+	mux.HandleFunc("GET /metrics", wrap(srv.handleMetrics))
+	mux.HandleFunc("GET /find_similar", wrap(srv.handleFindSimilar))
+	mux.HandleFunc("POST /find_similar", wrap(srv.handleFindSimilarPOST))
+	mux.HandleFunc("GET /answer", wrap(srv.handleAnswer))
+	mux.HandleFunc("POST /answer", wrap(srv.handleAnswerPOST))
+	mux.HandleFunc("GET /research", wrap(srv.handleResearch))
+	mux.HandleFunc("POST /research", wrap(srv.handleResearchPOST))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -259,6 +270,9 @@ type pebbleHTTP struct {
 	chat       embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
 	reranker   rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
 	rerankCandK int            // candidates pulled for rerank; default 20
+
+	// Iter 394: per-IP token-bucket rate limiter. Nil = disabled.
+	rl *rateLimiter
 
 	// Iter 259: bounded in-memory HyDE cache. /research?expand=true issues a
 	// chat call PER sub-query, so a sticky workload (repeated queries, slow
@@ -348,6 +362,120 @@ type endpointMetrics struct {
 // path is sync.Map.Load + two atomic Adds — no contention even under high
 // RPS. Duration is sampled after the handler returns so streaming endpoints
 // account for their full open connection time.
+// rateLimiter is a per-IP token-bucket limiter. Active when
+// COSIFT_RATELIMIT_RPM > 0; nil = disabled. Whitelisted IPs bypass entirely.
+// Iter 394.
+type rateLimiter struct {
+	rpm       float64
+	burst     float64
+	whitelist map[string]bool
+	buckets   sync.Map // string IP → *rateLimitBucket
+}
+
+type rateLimitBucket struct {
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+// newRateLimiterFromEnv reads COSIFT_RATELIMIT_RPM / _BURST / _WHITELIST.
+// Returns nil when RPM is unset or non-positive — limiting is off by default
+// so the no-config self-host story stays simple. Iter 394.
+func newRateLimiterFromEnv() *rateLimiter {
+	rpmStr := os.Getenv("COSIFT_RATELIMIT_RPM")
+	if rpmStr == "" {
+		return nil
+	}
+	rpm, err := strconv.ParseFloat(rpmStr, 64)
+	if err != nil || rpm <= 0 {
+		return nil
+	}
+	burst := 10.0
+	if v := os.Getenv("COSIFT_RATELIMIT_BURST"); v != "" {
+		if b, err := strconv.ParseFloat(v, 64); err == nil && b > 0 {
+			burst = b
+		}
+	}
+	wl := map[string]bool{}
+	for _, ip := range strings.Split(os.Getenv("COSIFT_RATELIMIT_WHITELIST"), ",") {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			wl[ip] = true
+		}
+	}
+	return &rateLimiter{rpm: rpm, burst: burst, whitelist: wl}
+}
+
+// whitelistList returns the whitelisted IPs as a slice (for logging only).
+func (rl *rateLimiter) whitelistList() []string {
+	if rl == nil {
+		return nil
+	}
+	out := make([]string, 0, len(rl.whitelist))
+	for ip := range rl.whitelist {
+		out = append(out, ip)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// allow returns whether the request from ip may proceed. Side-effects: drains
+// one token from the IP's bucket on success.
+func (rl *rateLimiter) allow(ip string) bool {
+	if rl == nil {
+		return true
+	}
+	if rl.whitelist[ip] {
+		return true
+	}
+	bv, _ := rl.buckets.LoadOrStore(ip, &rateLimitBucket{tokens: rl.burst, last: time.Now()})
+	b := bv.(*rateLimitBucket)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	elapsed := now.Sub(b.last).Seconds()
+	b.tokens += elapsed * rl.rpm / 60.0
+	if b.tokens > rl.burst {
+		b.tokens = rl.burst
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// stripPort drops ":port" from a "host:port" or "[v6]:port" RemoteAddr. Falls
+// back to the input on parse failure (so we still get SOME per-client key).
+func stripPort(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
+// rateLimit is the HTTP middleware that gates each request through the per-IP
+// limiter. Returns 429 with a JSON problem doc + Retry-After hint when the
+// bucket is empty. No-op when s.rl is nil. Iter 394.
+//
+// X-Forwarded-For is honored ONLY when the request came from a configured
+// trusted proxy; otherwise clients could spoof their IP by setting the header.
+// For self-host with cosift directly on the public network, leave
+// cfg.Server.TrustedProxies empty (default) and the RemoteAddr is used.
+func (s *pebbleHTTP) rateLimit(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := stripPort(r.RemoteAddr)
+		if !s.rl.allow(ip) {
+			w.Header().Set("Retry-After", "60")
+			writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded for ip="+ip)
+			return
+		}
+		h(w, r)
+	}
+}
+
 func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Path
