@@ -24,6 +24,20 @@ curl 'http://127.0.0.1:7777/search?q=raft+consensus&rerank=true&expand=paraphras
 
 `retriever` in the response becomes `bm25+paraphrase+rerank:<name>`. `total_candidates` shows how deep the BM25 pool went before filter + rerank.
 
+### Hybrid retrieval (BM25 + dense, RRF-fused)
+
+Requires `COSIFT_LOAD_HNSW=true` at server start AND a configured embedder. See `docs/TUNING.md` for the requirements.
+
+```bash
+# Dense-only — best on semantic / paraphrase-heavy queries
+curl 'http://127.0.0.1:7777/search?q=leader+election+in+distributed+systems&retriever=dense'
+
+# Hybrid — BM25's lexical precision + dense's semantic recall, RRF-fused (k=60)
+curl 'http://127.0.0.1:7777/search?q=raft+consensus&retriever=hybrid&rerank=true'
+```
+
+`retriever` becomes `dense` or `bm25+dense:rrf` (or `bm25+dense:rrf+rerank:<name>` when combined). If the graph isn't loaded the call silently falls through to BM25 and emits a warning — check `.warnings[]` first when you're not seeing the expected label.
+
 ### Latency-sensitive (skip enrichment, no chat)
 
 ```bash
@@ -240,6 +254,11 @@ cosift answer "what is raft consensus" -stream -rerank
 
 # Research with paraphrase fan-out
 cosift research "compare raft and paxos" -expand paraphrase -rerank -stream
+
+# Hybrid retrieval — applies to search / answer / research alike (iter 369)
+cosift search   "raft consensus"        -retriever hybrid -rerank
+cosift answer   "what is raft consensus" -retriever hybrid -rerank -stream
+cosift research "compare raft and paxos" -retriever hybrid -expand paraphrase -stream
 ```
 
 `-server URL` overrides the default endpoint when pebble-serve is on a non-default port.

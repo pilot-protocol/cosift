@@ -1048,6 +1048,9 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	k := fs.Int("k", 0, "number of sources fed to synth (1-20, server default if 0)")
 	expand := fs.String("expand", "", "retrieval expansion: hyde | paraphrase (empty = no expansion)")
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth")
+	// Iter 369: per-sub-query retriever choice — applies to every sub-query
+	// the planner emits. Server uses bm25 by default if this is empty.
+	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
@@ -1078,6 +1081,9 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	}
 	if *rerank {
 		v.Set("rerank", "true")
+	}
+	if *retriever != "" {
+		v.Set("retriever", *retriever)
 	}
 	if *since != "" {
 		v.Set("since", *since)
@@ -1520,6 +1526,9 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
 	// Iter 304: expose the iter-249/241 quality + scope flags on the CLI.
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth (server must have rerank configured)")
+	// Iter 369: expose the iter-365 retriever choice (dense/hybrid). Empty
+	// passes nothing → server uses its default (bm25).
+	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
 	includeDomains := fs.String("include-domains", "", "CSV allowlist of source domains")
@@ -1545,6 +1554,9 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	}
 	if *rerank {
 		v.Set("rerank", "true")
+	}
+	if *retriever != "" {
+		v.Set("retriever", *retriever)
 	}
 	if *since != "" {
 		v.Set("since", *since)
