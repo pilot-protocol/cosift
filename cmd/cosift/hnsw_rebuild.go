@@ -24,6 +24,7 @@ func runHNSWRebuild(ctx context.Context, cfg *config.Config, args []string) erro
 	fs := flag.NewFlagSet("hnsw-rebuild", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
 	dryRun := fs.Bool("dry-run", false, "load and report counts without writing changes back")
+	force := fs.Bool("force", false, "rebuild even when zombie count is 0 — useful for restoring graph topology that has degraded as the corpus grew via AddPassage (iter 439)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -58,8 +59,8 @@ func runHNSWRebuild(ctx context.Context, cfg *config.Config, args []string) erro
 		loadDur.Round(time.Millisecond), g.Len(), valid, zombies,
 		100*float64(zombies)/float64(g.Len()))
 
-	if zombies == 0 {
-		fmt.Println("hnsw-rebuild: no zombies — nothing to do")
+	if zombies == 0 && !*force {
+		fmt.Println("hnsw-rebuild: no zombies — nothing to do (pass -force to rebuild anyway for topology refresh)")
 		return nil
 	}
 

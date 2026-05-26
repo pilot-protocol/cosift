@@ -192,6 +192,27 @@ latency (still 100× faster than brute force). Recall plateaus past 200.
 Full recovery would need a re-rebuild. Worth doing every ~Nx growth in
 vector count, e.g. weekly.
 
+**Iter 440 cost note**: a force-rebuild on the 924K-vec graph took
+24m 46s (AddPassage cost is O(log N) per insert; the total scales with
+N log N, plus dim work per neighbor evaluation). Crawler work during
+the rebuild window is lost when the rebuilt checkpoint is swapped in —
+operator gives up roughly `rebuild_minutes × crawl_rate` of docs. At
+~1300/min that's ~30 K. The lost URLs are re-crawled later, so the
+loss is temporary.
+
+Workflow:
+```
+ssh ubuntu@<host>
+ckpt=$(curl -fsS -X POST http://127.0.0.1:7777/admin/checkpoint | jq -r .path)
+~/cosift hnsw-rebuild -dir "$ckpt" -force
+sudo systemctl stop cosift-serve
+mv ~/cosift-data/pebble ~/cosift-data/pebble.old
+mv "$ckpt" ~/cosift-data/pebble
+sudo systemctl start cosift-serve
+# Optional: retrain PQ after rebuild
+curl -fsS -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:7777/admin/pq-train
+```
+
 | efSearch | Recall@10 mean | hnsw latency |
 |---|---|---|
 | 50  | 0.404 | 589 µs |
