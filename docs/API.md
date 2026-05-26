@@ -53,11 +53,13 @@ curl http://127.0.0.1:7777/stats
   "bm25_b": 0.75,
   "reranker": "llm:gpt-4o-mini",
   "rerank_candidate_k": 20,
-  "chat_model": "gpt-4o-mini"
+  "chat_model": "gpt-4o-mini",
+  "hnsw_loaded": true,
+  "retrievers": ["bm25", "bm25-mlt", "dense", "hybrid"]
 }
 ```
 
-`reranker`, `rerank_candidate_k`, and `chat_model` only appear when the matching capability is configured.
+`reranker`, `rerank_candidate_k`, and `chat_model` only appear when the matching capability is configured. `retrievers` lists what actually works on this server right now — `bm25` and `bm25-mlt` always; `dense`/`hybrid` only when the HNSW graph is loaded and an embedder is configured. When the graph is loaded but no embedder, `dense:find_similar_url_only` indicates that only URL-mode `/find_similar?retriever=dense` is available (it reuses the source's persisted vector and doesn't need an embedder).
 
 ## `GET /metrics`
 

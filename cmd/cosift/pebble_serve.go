@@ -412,6 +412,20 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	// Iter 362: whether the graph is loaded into memory for dense retrieval.
 	out["hnsw_loaded"] = s.hnsw != nil
+	// Iter 375: which retrievers actually work right now. Clients can read
+	// this once instead of probing ?retriever=dense + parsing the warning.
+	// bm25 always — index is always available. dense/hybrid require a
+	// loaded graph; the embedder lets dense/hybrid handle text-mode and
+	// new queries. /find_similar URL-mode dense works without embedder, but
+	// that's an endpoint-specific carve-out — keep this list general.
+	retrievers := []string{"bm25", "bm25-mlt"}
+	if s.hnsw != nil && s.embedder != nil {
+		retrievers = append(retrievers, "dense", "hybrid")
+	} else if s.hnsw != nil {
+		// Graph but no embedder — only URL-mode /find_similar can use dense.
+		retrievers = append(retrievers, "dense:find_similar_url_only")
+	}
+	out["retrievers"] = retrievers
 	writeJSON(w, http.StatusOK, out)
 }
 

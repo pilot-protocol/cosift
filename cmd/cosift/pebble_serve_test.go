@@ -102,6 +102,24 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if _, ok := stats["bm25_b"].(float64); !ok {
 		t.Errorf("stats: missing bm25_b, got %v", stats["bm25_b"])
 	}
+	// Iter 375: retrievers list lets clients introspect capability without
+	// probing each ?retriever= value. No HNSW graph in the fixture, so it
+	// should be exactly bm25 + bm25-mlt.
+	rArr, ok := stats["retrievers"].([]any)
+	if !ok || len(rArr) < 2 {
+		t.Errorf("stats: missing retrievers array, got %v", stats["retrievers"])
+	} else {
+		gotR := map[string]bool{}
+		for _, v := range rArr {
+			gotR[v.(string)] = true
+		}
+		if !gotR["bm25"] || !gotR["bm25-mlt"] {
+			t.Errorf("stats retrievers: want bm25 + bm25-mlt, got %v", rArr)
+		}
+		if gotR["dense"] || gotR["hybrid"] {
+			t.Errorf("stats retrievers: dense/hybrid leaked into list without a loaded HNSW graph: %v", rArr)
+		}
+	}
 
 	// /search — raft query
 	got := mustGet(t, base+"/search?q=raft+consensus&k=3")
