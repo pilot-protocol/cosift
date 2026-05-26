@@ -573,6 +573,15 @@ type pebbleHTTP struct {
 	hydeCache    map[string]string
 	hydeCacheCap int // iter 282: env-configurable via COSIFT_HYDE_CACHE_SIZE
 
+	// Iter 435: marshalled /stats body cache. PQStatus's lock contended
+	// hard with the crawler's AddPassage writers — observed /stats
+	// latency varied 0.2 s to 5.5 s. 5 s TTL keeps the cache effective
+	// for the landing page (polls every ~30 s) without serving very
+	// stale numbers.
+	statsBodyMu   sync.Mutex
+	statsBodyBlob []byte
+	statsBodyAt   time.Time
+
 	// Iter 276: bounded paraphrase cache. /research?expand=paraphrase fans
 	// out 3 paraphrases × N sub-queries — same hot path as HyDE but each
 	// miss is 3x larger by output volume. Keyed on q only (fixed n=3 today).
@@ -1536,6 +1545,23 @@ func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
+	// Iter 435: cache the marshalled body for 5 s. /stats does pebble.Stats
+	// (counter cache helps) + PQStatus (iterates 500K HNSW nodes under
+	// h.mu read lock that contends with AddPassage writers from the in-
+	// serve crawler). Caching the whole body bypasses both hot paths;
+	// landing-page poll cadence (~30 s) hits cache almost always.
+	const statsBodyTTL = 5 * time.Second
+	s.statsBodyMu.Lock()
+	if !s.statsBodyAt.IsZero() && time.Since(s.statsBodyAt) < statsBodyTTL && s.statsBodyBlob != nil {
+		body := s.statsBodyBlob
+		s.statsBodyMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		_, _ = w.Write(body)
+		return
+	}
+	s.statsBodyMu.Unlock()
+
 	st, err := s.store.Stats(r.Context())
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
@@ -1651,7 +1677,18 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["docs_added_since_start"] = added
 		out["docs_per_minute"] = rate
 	}
-	writeJSON(w, http.StatusOK, out)
+	// Iter 435: marshal once, populate cache + serve.
+	body, mErr := json.Marshal(out)
+	if mErr != nil {
+		writeProblem(w, http.StatusInternalServerError, mErr.Error())
+		return
+	}
+	s.statsBodyMu.Lock()
+	s.statsBodyBlob = body
+	s.statsBodyAt = time.Now()
+	s.statsBodyMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
 }
 
 // Iter 231: Prometheus-format scrape endpoint. Hand-written plain text

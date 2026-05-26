@@ -49,6 +49,14 @@ type PebbleStore struct {
 	nextID    atomic.Int64
 	mu        sync.Mutex            // serializes the rare URL→ID race during Upsert
 	writeOpts *pebble.WriteOptions  // iter 219: Sync (default) or NoSync (crawl-workload opt-in)
+
+	// Iter 435: Stats() does a full 'd' family iterator scan to count
+	// documents. With 120K docs across 870 SSTables that takes ~2.5 s and
+	// dominates /stats latency. Cache the result for a short TTL so the
+	// landing page (polls every ~30 s) hits cached on most page loads.
+	statsCacheMu sync.Mutex
+	statsCacheAt time.Time
+	statsCacheVal Stats
 }
 
 const (
@@ -495,6 +503,18 @@ func (p *PebbleStore) Stats(ctx context.Context) (Stats, error) {
 	if err := ctx.Err(); err != nil {
 		return Stats{}, err
 	}
+	// Iter 435: 5-second TTL cache. Doc count moves slowly relative to
+	// landing-page poll interval; serving slightly stale counts is fine
+	// and saves 2.5 s on each repeat hit.
+	const statsTTL = 5 * time.Second
+	p.statsCacheMu.Lock()
+	if !p.statsCacheAt.IsZero() && time.Since(p.statsCacheAt) < statsTTL {
+		st := p.statsCacheVal
+		p.statsCacheMu.Unlock()
+		return st, nil
+	}
+	p.statsCacheMu.Unlock()
+
 	// Count docs via prefix scan. Cheap on Pebble — iterator skips block
 	// boundaries, no full scan needed beyond the 'd' family.
 	prefix := []byte{famDoc}
@@ -508,7 +528,13 @@ func (p *PebbleStore) Stats(ctx context.Context) (Stats, error) {
 	for valid := it.First(); valid; valid = it.Next() {
 		n++
 	}
-	return Stats{Documents: n}, nil
+	st := Stats{Documents: n}
+
+	p.statsCacheMu.Lock()
+	p.statsCacheVal = st
+	p.statsCacheAt = time.Now()
+	p.statsCacheMu.Unlock()
+	return st, nil
 }
 
 // lookupIDByURL returns the stored doc ID for a URL, ok=false when missing.
