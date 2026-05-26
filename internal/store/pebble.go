@@ -138,6 +138,13 @@ func OpenPebble(path string) (*PebbleStore, error) {
 // Close flushes and closes the underlying Pebble DB.
 func (p *PebbleStore) Close() error { return p.db.Close() }
 
+// Checkpoint creates a consistent, point-in-time snapshot of the DB at destDir
+// via hard-links to live SSTs. Cheap (no data copy) and safe to tar afterwards
+// — Pebble's compactor cannot mutate hard-linked files. destDir must not exist.
+func (p *PebbleStore) Checkpoint(destDir string) error {
+	return p.db.Checkpoint(destDir)
+}
+
 // envInt reads an env var as int with a default. Empty / malformed → default.
 func envInt(name string, defaultV int) int {
 	v := os.Getenv(name)

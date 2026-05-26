@@ -2,7 +2,7 @@
 
 Living document — what's where, who can reach it, how to restore.
 
-Last updated: 2026-05-26 (iter 394)
+Last updated: 2026-05-26 (iter 426)
 
 ## Production-shaped (running)
 
@@ -24,9 +24,10 @@ Last updated: 2026-05-26 (iter 394)
 - `ollama serve` (systemd, port 11434, localhost only)
   - `nomic-embed-text:latest` (137M params, 768d, 274 MB on disk, ~1.2 GB GPU)
   - `qwen2.5:7b-instruct` (7.6B params, 4.7 GB on disk, ~7 GB GPU)
-- `cosift pebble-serve -dir ~/cosift-data/pebble -addr 127.0.0.1:7777` (manual, started under nohup, NOT systemd yet)
-  - Logs: `~/pebble-serve.log`
-  - PID file: none — use `pgrep -f "cosift.*pebble-serve"`
+- `cosift pebble-serve` (`cosift-serve.service` systemd unit) — in-process continuous crawler + HTTP server on 127.0.0.1:7777
+  - Logs: `journalctl -u cosift-serve -f`
+  - Caddy reverse-proxies 0.0.0.0:443 → 127.0.0.1:7777 with `lb_try_duration=90s` for restart resilience.
+- `cosift-snapshot.timer` (every 4 h) → `cosift-snapshot.service` → `~/snapshot.sh` → GCS upload, prune to KEEP=14.
 
 **Files on box:**
 - `~/cosift` (linux/arm64 binary; deploy with `scp` from local cross-compile)
@@ -57,9 +58,14 @@ Last updated: 2026-05-26 (iter 394)
 | Storage class | Standard |
 | Access | uniform bucket-level (IAM-only, no per-object ACLs) |
 | Path layout | `snapshots/<UTC-timestamp>/cosift-snapshot.tar.gz` |
-| First snapshot | `2026-05-26T17-16-37Z` (24.4 MiB; covers the 275-doc go.dev corpus + HNSW + config) |
+| Cadence | every 4h (00,04,08,12,16,20 UTC) via `cosift-snapshot.timer` |
+| Retention | last 14 snapshots (~56 h of recovery history) |
+| Service account | `cosift-snapshot@vulture-vision-cloud.iam.gserviceaccount.com` (storage.objectAdmin on this bucket only) |
+| Key file on GH200 | `~/.gcp-snapshot-key.json` (chmod 600) |
 
 **Restore on a fresh box:**
+
+The archive contains a Pebble checkpoint dir named `cosift-ckpt-<nanos>` (not `cosift-data/pebble`) plus `cosift.json`. Rename the checkpoint dir to whatever path your serve flag points at.
 
 ```bash
 # 1. Pull binary (cross-compile or release artifact)
@@ -67,9 +73,12 @@ scp cosift-linux-arm64 ubuntu@<host>:~/cosift && ssh ubuntu@<host> 'chmod +x ~/c
 
 # 2. Restore data
 ssh ubuntu@<host> '
-  gcloud storage cp gs://pilot-cosift-index/snapshots/<stamp>/cosift-snapshot.tar.gz /tmp/ &&
-  tar -xzf /tmp/cosift-snapshot.tar.gz -C ~/ &&
-  ls ~/cosift-data/pebble
+  STAMP=$(gcloud storage ls gs://pilot-cosift-index/snapshots/ | sort | tail -1)
+  gcloud storage cp ${STAMP}cosift-snapshot.tar.gz /tmp/ &&
+  mkdir -p ~/cosift-data &&
+  tar -xzf /tmp/cosift-snapshot.tar.gz -C /tmp/ &&
+  mv /tmp/cosift-ckpt-* ~/cosift-data/pebble &&
+  mv /tmp/cosift.json ~/cosift.json
 '
 
 # 3. Start
@@ -79,15 +88,16 @@ ssh ubuntu@<host> '
 '
 ```
 
-## Snapshot policy
+## Snapshot policy (iter 426)
 
-Currently manual. Suggested cadence once we have a real crawl loop:
+Automated via systemd timer:
+- `scripts/snapshot.sh` — calls `POST /admin/checkpoint` (consistent hard-linked dir, no compactor race), tars it, uploads to GCS, prunes to KEEP=14.
+- `scripts/cosift-snapshot.service` — systemd oneshot running `snapshot.sh` as `ubuntu`.
+- `scripts/cosift-snapshot.timer` — `OnCalendar=*-*-* 00,04,08,12,16,20:00:00`, randomized delay 60s.
 
-- After every meaningful corpus growth (e.g., new seed batch finishes)
-- Daily during active dev
-- Weekly otherwise
+Manual snapshot now: `bash ~/snapshot.sh` (uses same env as the timer).
 
-To take one now: see `scripts/snapshot.sh` (TODO — not yet written).
+Tune via env on the service: `COSIFT_KEEP` (history depth), `COSIFT_GCS_BUCKET`, `COSIFT_ADMIN_URL`, `COSIFT_ADMIN_TOKEN`.
 
 ## Access whitelist
 
@@ -99,8 +109,7 @@ Configured via `COSIFT_RATELIMIT_WHITELIST=<csv>` env var on `pebble-serve` (ite
 
 ## Next steps (deferred)
 
-- Systemd unit for `pebble-serve` so it survives reboots.
-- TLS terminator on port 443 → 7777 (caddy / nginx) so curl from outside works.
-- Snapshot cron (daily) → GCS.
 - vLLM swap-in for Ollama if `/answer` concurrency becomes a bottleneck.
 - Multi-box deployment story (read replicas served from the same GCS snapshot).
+- Cloudflare orange→gray (or install CF Origin Cert) for cosift.pilotprotocol.network to use Let's Encrypt end-to-end.
+- Zombie HNSW slot compaction (~601 K legacy slots from pre-iter-411 partial persists).

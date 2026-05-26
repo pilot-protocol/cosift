@@ -310,6 +310,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Iter 424: backfill-only — re-encode every node that doesn't have a
 	// code yet against the existing codebook. No retrain. Fast.
 	mux.HandleFunc("POST /admin/pq-encode", wrap(srv.handlePQEncode))
+	// Iter 426: pebble checkpoint endpoint. Creates a hard-linked, consistent
+	// snapshot dir that's safe to tar without racing background compactions.
+	mux.HandleFunc("POST /admin/checkpoint", wrap(srv.handleCheckpoint))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -1316,6 +1319,36 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 		"encode_elapsed":  (encodeElapsed - persistElapsed).String(),
 		"persist_elapsed": persistElapsed.String(),
 		"total_elapsed":   totalElapsed.String(),
+	})
+}
+
+// handleCheckpoint creates a Pebble checkpoint (hard-linked, point-in-time)
+// at a server-chosen path under COSIFT_CHECKPOINT_DIR (default /tmp). The
+// returned path is safe to tar — Pebble's compactor cannot mutate hard-linked
+// SSTs. Caller is responsible for deleting the dir after consuming it. Iter 426.
+func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	base := os.Getenv("COSIFT_CHECKPOINT_DIR")
+	if base == "" {
+		base = "/tmp"
+	}
+	dest := filepath.Join(base, fmt.Sprintf("cosift-ckpt-%d", time.Now().UnixNano()))
+	t0 := time.Now()
+	if err := s.store.Checkpoint(dest); err != nil {
+		writeProblem(w, http.StatusInternalServerError, "checkpoint: "+err.Error())
+		return
+	}
+	elapsed := time.Since(t0)
+	log.Printf("checkpoint: created %s in %s", dest, elapsed)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":    dest,
+		"elapsed": elapsed.String(),
 	})
 }
 
