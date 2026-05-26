@@ -231,6 +231,21 @@ func (h *HNSW) Add(url, title string, vec []float32) {
 	h.AddPassage(url, title, 0, 0, vec)
 }
 
+// codeFor encodes one vector against the loaded codebook. Caller is the
+// AddPassage hot path. Returns nil if codebook isn't set or encode fails.
+// Caller holds h.mu (write or no lock during init; encode is read-only).
+// Iter 417.
+func (h *HNSW) codeFor(vec []float32) []uint16 {
+	if h.codebook == nil {
+		return nil
+	}
+	code, err := h.codebook.Encode(vec)
+	if err != nil {
+		return nil
+	}
+	return code
+}
+
 // AddPassage inserts a passage with explicit byte-span info. The vector is
 // L2-normalized in place before storage. Bidirectional links are created
 // from the new node to its nearest neighbors at every layer up to its
@@ -253,6 +268,20 @@ func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) 
 		level:     level,
 		neighbors: make([][]int, level+1),
 	})
+	// Iter 417: when a codebook is loaded, encode the new vec inline and
+	// keep h.codes parallel to h.nodes. The crawl-time PQ checkpoint
+	// (iter 417 in pebble_serve) writes [lastN, len) of these to Pebble.
+	if h.codebook != nil {
+		code := h.codeFor(cp)
+		if cap(h.codes) <= newIdx {
+			grown := make([][]uint16, newIdx+1, (newIdx+1)*2)
+			copy(grown, h.codes)
+			h.codes = grown
+		} else if len(h.codes) <= newIdx {
+			h.codes = h.codes[:newIdx+1]
+		}
+		h.codes[newIdx] = code
+	}
 
 	// First node: becomes the entry point trivially.
 	if newIdx == 0 {

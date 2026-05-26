@@ -113,6 +113,42 @@ func (cb *PQCodebook) Persist(ctx context.Context, ps *store.PebbleStore) error 
 	return ps.PutPQCodebook(ctx, EncodePQCodebook(cb))
 }
 
+// PersistPQCodesFrom writes h.codes[fromIdx:] to the Pebble 'q' family in
+// a single batch. Mirrors the iter-406 incremental HNSW persist pattern —
+// the crawl-time checkpoint loop calls this with the running lastN to
+// avoid re-writing already-persisted codes. Iter 417.
+//
+// Skips entries where h.codes[i] is nil/short (no code yet, e.g. AddPassage
+// fired before the codebook was loaded). Caller can re-run pq-train later
+// to backfill those nodes.
+func (h *HNSW) PersistPQCodesFrom(ctx context.Context, ps *store.PebbleStore, fromIdx int) (int, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.codebook == nil {
+		return 0, nil // no codebook = nothing to persist
+	}
+	if fromIdx >= len(h.codes) {
+		return 0, nil
+	}
+	entries := make([]store.PQCodeEntry, 0, len(h.codes)-fromIdx)
+	for i := fromIdx; i < len(h.codes); i++ {
+		if len(h.codes[i]) != h.codebook.M {
+			continue
+		}
+		entries = append(entries, store.PQCodeEntry{
+			ID:   uint64(i),
+			Blob: EncodePQCode(h.codes[i]),
+		})
+	}
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	if err := ps.PutPQCodesBatch(ctx, entries); err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
 // LoadPQCodebook reads a persisted codebook, or (nil, false, nil) if absent.
 func LoadPQCodebook(ctx context.Context, ps *store.PebbleStore) (*PQCodebook, bool, error) {
 	blob, ok, err := ps.GetPQCodebook(ctx)

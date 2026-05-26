@@ -466,8 +466,24 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 					log.Printf("in-serve crawler: HNSW persist (incremental from %d) failed: %v", lastN, err)
 					continue
 				}
-				log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, took %s)",
-					n, n-lastN, time.Since(t0))
+				// Iter 417: alongside HNSW node writes, persist any newly-
+				// encoded PQ codes for nodes [lastN, n). Skipped silently
+				// when no codebook is loaded.
+				pqWritten := 0
+				if s.hnsw.HasPQ() {
+					if w, err := s.hnsw.PersistPQCodesFrom(context.Background(), ps, lastN); err != nil {
+						log.Printf("in-serve crawler: PQ codes persist failed: %v", err)
+					} else {
+						pqWritten = w
+					}
+				}
+				if pqWritten > 0 {
+					log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, +%d PQ codes, took %s)",
+						n, n-lastN, pqWritten, time.Since(t0))
+				} else {
+					log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, took %s)",
+						n, n-lastN, time.Since(t0))
+				}
 				lastN = n
 			}
 		}
