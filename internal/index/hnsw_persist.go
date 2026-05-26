@@ -73,6 +73,30 @@ func (h *HNSW) Persist(ctx context.Context, ps *store.PebbleStore) error {
 // (nil, false, nil) when no persisted index exists — callers should
 // build a fresh one in that case. Errors are reserved for actual decode
 // failures or storage I/O problems.
+
+// HNSWMeta is the small index-shape summary callers want without paying
+// the cost of loading the full graph: vector dimension and node count.
+// Iter 358.
+type HNSWMeta struct {
+	Dim       int
+	NodeCount int
+}
+
+// LoadHNSWMeta reads just the persisted meta blob (20 bytes) and returns
+// (dim, nodeCount). Cheap — does not iterate the 'v' family node entries.
+// Returns ok=false when no HNSW meta has been persisted yet. Iter 358.
+func LoadHNSWMeta(ctx context.Context, ps *store.PebbleStore) (HNSWMeta, bool, error) {
+	blob, ok, err := ps.GetVectorMeta(ctx)
+	if err != nil || !ok {
+		return HNSWMeta{}, ok, err
+	}
+	m, err := decodeHNSWMeta(blob)
+	if err != nil {
+		return HNSWMeta{}, false, err
+	}
+	return HNSWMeta{Dim: m.dim, NodeCount: m.nodeCount}, true, nil
+}
+
 func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	metaBlob, ok, err := ps.GetVectorMeta(ctx)
 	if err != nil {

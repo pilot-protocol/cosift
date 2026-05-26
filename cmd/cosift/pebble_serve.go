@@ -66,19 +66,29 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: opened store with %d indexed docs", indexedDocs)
 	}
 
-	// Iter 357: peek for persisted HNSW vectors. Cheap — short-circuits after
-	// the first 'v'-family entry. Signals to operators whether dense retrieval
-	// could be wired in on this store. Counting all vectors at scale would be
-	// O(N) Pebble iteration and slow startup on 10M+ corpora; the boolean
-	// signal is enough to know "vectors exist, consider configuring an
-	// embedder for ?retriever=dense (future iter)".
+	// Iter 357/358: peek for persisted HNSW vectors. The iter-358 meta read
+	// is 20 bytes (dim+nodeCount); the iter-357 first-entry probe falls back
+	// when meta is absent but vector entries exist (edge case during a
+	// partial persist). Loading the full graph stays a future-iter concern
+	// — gigabytes of RAM at 10M-vector scale.
 	hasVectors := false
-	_ = ps.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
+	var vectorDim, vectorNodes int
+	if meta, ok, err := index.LoadHNSWMeta(ctx, ps); err == nil && ok {
 		hasVectors = true
-		return false // stop after the first hit
-	})
+		vectorDim = meta.Dim
+		vectorNodes = meta.NodeCount
+	} else {
+		_ = ps.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
+			hasVectors = true
+			return false
+		})
+	}
 	if hasVectors {
-		log.Printf("pebble-serve: HNSW vectors present in store (iter-199 dense index)")
+		if vectorNodes > 0 {
+			log.Printf("pebble-serve: HNSW index present: %d nodes, dim=%d (graph not loaded into memory)", vectorNodes, vectorDim)
+		} else {
+			log.Printf("pebble-serve: HNSW vector entries present (no meta blob — partial persist?)")
+		}
 	}
 
 	// Iter 282: configurable HyDE + paraphrase cache caps (defaults 256).
@@ -128,6 +138,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		paraCache:    make(map[string][]string, paraCap),
 		paraCacheCap: paraCap,
 		hasVectors:   hasVectors,
+		vectorDim:    vectorDim,
+		vectorNodes:  vectorNodes,
 		started:      time.Now(),
 	}
 	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
@@ -242,6 +254,10 @@ type pebbleHTTP struct {
 	// /stats so operators know whether the store is ready for the future
 	// ?retriever=dense path without needing to grep pebble-info.
 	hasVectors bool
+	// Iter 358: when an HNSW meta blob is persisted (the normal case),
+	// surface dim + node count too. Cheap 20-byte read at startup.
+	vectorDim   int
+	vectorNodes int
 
 	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without
@@ -345,10 +361,14 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["hyde_cache_size"] = s.hydeCacheCap
 		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
-	// Iter 357: signal whether the store has HNSW vectors persisted (iter 199
-	// dense path). Boolean — counting all vectors at scale would be O(N) so
-	// /stats stays cheap.
+	// Iter 357/358: signal whether the store has HNSW vectors persisted, and
+	// (when meta is available) surface dim + node count. Cheap fields — meta
+	// is 20 bytes, read once at startup.
 	out["has_vectors"] = s.hasVectors
+	if s.vectorNodes > 0 {
+		out["vector_nodes"] = s.vectorNodes
+		out["vector_dim"] = s.vectorDim
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

@@ -316,4 +316,5 @@ iter 354 — helpers_test.go: rrfFuse contract test (iter 272 — paraphrase str
 iter 355 — helpers_test.go: parseSubQueries (iter 243) + iter-354 tie-flakiness fix on the rrfFuse fixture
 iter 356 — TestPebbleServeEndToEnd asserts `?expand=true` normalizes to 'hyde' and fires no-chat warning (iters 252/292/308)
 iter 357 — pebble-serve peeks 'v' family at startup; logs + surfaces `has_vectors` on /stats (first concrete HNSW-direction step)
+iter 358 — new `index.LoadHNSWMeta` (cheap 20-byte read); /stats surfaces vector_nodes + vector_dim when meta is persisted
 ```
