@@ -6,7 +6,9 @@ package main
 // behavior contracts are clearer when locked down at the function level.
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/calinteodor/cosift/internal/index"
 	"github.com/calinteodor/cosift/internal/server"
@@ -176,6 +178,73 @@ func TestPeekWarnings(t *testing.T) {
 				t.Errorf("%s: warning %d: want %q, got %q", c.name, i, c.want[i], got[i])
 			}
 		}
+	}
+}
+
+// TestParseDecayHalfLife — iter 389. Valid positive floats pass; everything
+// else short-circuits time-decay.
+func TestParseDecayHalfLife(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"", 0, false},
+		{"30", 30, true},
+		{"0.5", 0.5, true},
+		{"0", 0, false},
+		{"-1", 0, false},
+		{"36500", 36500, true},
+		{"36501", 0, false},
+		{"nan", 0, false},
+		{"hello", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := parseDecayHalfLife(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("parseDecayHalfLife(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestApplyTimeDecay — iter 389. Hits with publish dates get multiplied by
+// exp(-ln2 · age / halfLife) and resort. Half-life=30 days: 30d-old hit
+// drops to 0.5x; 60d-old to 0.25x. Hits without PublishedAt are unchanged.
+func TestApplyTimeDecay(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d30 := now.AddDate(0, 0, -30)
+	d60 := now.AddDate(0, 0, -60)
+	hits := []searchHit{
+		{URL: "https://fresh", Score: 1.0, PublishedAt: &now},
+		{URL: "https://30d", Score: 1.0, PublishedAt: &d30},
+		{URL: "https://60d", Score: 1.0, PublishedAt: &d60},
+		{URL: "https://nodate", Score: 0.9}, // no PublishedAt — kept as-is
+	}
+	applyTimeDecay(hits, 30, now)
+
+	// Fresh: ~1.0; 30d: ~0.5; 60d: ~0.25; nodate: 0.9 unchanged.
+	// After decay+resort: fresh (1.0) > nodate (0.9) > 30d (0.5) > 60d (0.25).
+	wantURLs := []string{"https://fresh", "https://nodate", "https://30d", "https://60d"}
+	for i, u := range wantURLs {
+		if hits[i].URL != u {
+			t.Errorf("hits[%d]: want URL %q, got %q (score=%v)", i, u, hits[i].URL, hits[i].Score)
+		}
+	}
+	if math.Abs(float64(hits[2].Score-0.5)) > 0.01 {
+		t.Errorf("30d-old hit score: want ~0.5, got %v", hits[2].Score)
+	}
+	if math.Abs(float64(hits[3].Score-0.25)) > 0.01 {
+		t.Errorf("60d-old hit score: want ~0.25, got %v", hits[3].Score)
+	}
+	if hits[1].Score != 0.9 {
+		t.Errorf("nodate hit score: want unchanged 0.9, got %v", hits[1].Score)
+	}
+
+	// Empty / non-positive halfLife is a no-op.
+	hits2 := []searchHit{{URL: "https://a", Score: 1.0, PublishedAt: &d60}}
+	applyTimeDecay(hits2, 0, now)
+	if hits2[0].Score != 1.0 {
+		t.Errorf("halfLife=0: want no-op, got score %v", hits2[0].Score)
 	}
 }
 

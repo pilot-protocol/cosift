@@ -45,6 +45,20 @@ Missing either → request silently falls through to BM25 with a warning. No 5xx
 
 **Cost**: `dense` = 1 embed call + 1 HNSW search per /search. `hybrid` = 1 embed + BM25 + HNSW + RRF merge. For /research, multiply by sub-queries (each gets its own retrieval). HNSW search is O(log N) so the dense cost is dominated by the embed RPC.
 
+### Time-decay: `?decay=<half_life_days>`
+
+Use when freshness matters: news, releases, "latest" research. Multiplies each hit's score by `exp(-ln(2) · age_days / half_life)`. A doc from `half_life` days ago is worth half as much as a doc from today.
+
+| Half-life | Behavior |
+|-----------|----------|
+| 7 | Very fresh — week-old docs are already at 0.5x. Use for news / fast-moving topics. |
+| 30 | Modest decay — month-old docs at 0.5x, quarter-old at 0.125x. Typical "prefer recent" setting. |
+| 365 | Mild decay — year-old docs at 0.5x. Good for evergreen content where age is a soft signal. |
+
+Hits without a known `PublishedAt` are left unchanged — no signal means no penalty. Date filters (`since`/`until`) compose: `decay` is a soft re-weight, `since`/`until` are hard gates.
+
+Applies BEFORE rerank, so when over-fetching the rerank pool sees the freshest-AND-most-relevant top-N. Pool re-sort transparently re-aligns `rerankTexts` so `decay` + `rerank` compose correctly.
+
 ### Diversification: `?mmr=<lambda>`
 
 After retrieval (+rerank) the candidate pool is often dominated by near-duplicates — multiple chunks of the same paper, sibling pages on one site, paraphrases of the same concept. `mmr` reorders the pool with Maximal Marginal Relevance: at each step, pick the candidate maximizing

@@ -853,6 +853,13 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if wantRerank {
 		enrich = true // rerank needs per-doc text — overrides enrich opt-out
 	}
+	// Iter 389: time-decay multiplier needs PublishedAt per hit, which lives
+	// behind the enrich flag. Force enrich when decay is requested so the
+	// signal is available downstream.
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	if decaySet {
+		enrich = true
+	}
 	includeText := r.URL.Query().Get("include_text") == "true"
 	out := make([]searchHit, 0, keepCap)
 	var rerankTexts []string
@@ -904,6 +911,27 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		out = append(out, hit)
 		if len(out) >= keepCap {
 			break
+		}
+	}
+	// Iter 389: time-decay multiplier. Runs BEFORE rerank so the rerank pool
+	// reflects both quality and recency — when fetchK is over-fetched, the
+	// reranker still sees the freshest-AND-most-relevant top-N. Hits without
+	// PublishedAt are left alone (no signal, no penalty). The pool re-sort
+	// re-aligns rerankTexts via a URL→text map so both knobs compose.
+	if decaySet {
+		var textByURL map[string]string
+		if wantRerank && len(rerankTexts) == len(out) {
+			textByURL = make(map[string]string, len(out))
+			for i, h := range out {
+				textByURL[h.URL] = rerankTexts[i]
+			}
+		}
+		applyTimeDecay(out, decayHalfLife, time.Now())
+		if textByURL != nil {
+			rerankTexts = rerankTexts[:0]
+			for _, h := range out {
+				rerankTexts = append(rerankTexts, textByURL[h.URL])
+			}
 		}
 	}
 	// Iter 248: rerank now that we have keepCap candidates with text.
@@ -976,6 +1004,10 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// the label tracks the real pipeline.
 	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && s.hnsw != nil && s.embedder != nil && mmrLambda < 1.0 {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+	}
+	// Iter 389: decay suffix when time-decay was applied.
+	if decaySet {
+		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	resp := searchResponse{
 		Query:           q,
@@ -1637,6 +1669,13 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "mmr requires an embedder to vectorize the query (set cfg.Embeddings.Model) — diversification skipped")
 		}
 	}
+	// Iter 389: invalid decay half-life flags loudly instead of silently
+	// being ignored. Empty value is fine (no decay requested).
+	if raw := r.URL.Query().Get("decay"); raw != "" {
+		if _, ok := parseDecayHalfLife(raw); !ok {
+			w = append(w, "decay="+raw+" is not a positive half-life in days (≤ 36500) — time-decay skipped")
+		}
+	}
 	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
 	if sortVal := r.URL.Query().Get("sort"); sortVal != "" {
 		switch sortVal {
@@ -1687,6 +1726,48 @@ func normalizeExpandMode(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// parseDecayHalfLife parses ?decay= as a positive half-life in days. Returns
+// (halfLife, true) when valid. Empty / non-positive → (0, false) so caller
+// short-circuits. Bounded at 36500 (100 years) to avoid pathological values.
+// Iter 389.
+func parseDecayHalfLife(raw string) (float64, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, false
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 36500 {
+		return 0, false
+	}
+	return v, true
+}
+
+// applyTimeDecay multiplies each hit's Score by exp(-ln(2) * age_days /
+// halfLifeDays) using hit.PublishedAt. Hits with zero PublishedAt are left
+// unchanged — no signal means no penalty. Resorts by the adjusted score.
+// Half-life H means a doc from H days ago gets 0.5x, 2H gets 0.25x, etc.
+// Iter 389.
+func applyTimeDecay(hits []searchHit, halfLifeDays float64, now time.Time) {
+	if halfLifeDays <= 0 || len(hits) == 0 {
+		return
+	}
+	ln2 := math.Ln2
+	for i := range hits {
+		if hits[i].PublishedAt == nil || hits[i].PublishedAt.IsZero() {
+			continue
+		}
+		ageDays := now.Sub(*hits[i].PublishedAt).Hours() / 24.0
+		if ageDays < 0 {
+			ageDays = 0 // future-dated docs treated as fresh, not boosted
+		}
+		mult := math.Exp(-ln2 * ageDays / halfLifeDays)
+		hits[i].Score *= mult
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 }
 
 // parseMMRLambda parses ?mmr= as a float in [0, 1]. Returns (lambda, true)
