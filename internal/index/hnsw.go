@@ -187,6 +187,66 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 	return -float64(dot(q, h.nodes[idx].vec))
 }
 
+// BruteForceTopK performs an exact O(N) scan over every valid node and
+// returns the top-k passages by cosine similarity, with the same doc-level
+// max-passage aggregation as Search. Independent of PQ — always uses the
+// raw stored vectors. Used by `cosift bench-pq` to compute ground truth
+// against which the approximate search paths are graded. Iter 427.
+func (h *HNSW) BruteForceTopK(query []float32, k int) []VectorHit {
+	if len(query) != h.dim || k <= 0 {
+		return nil
+	}
+	q := make([]float32, len(query))
+	copy(q, query)
+	normalizeInPlace(q)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.nodes) == 0 {
+		return nil
+	}
+
+	type best struct {
+		nodeIdx int
+		score   float32
+	}
+	bestByURL := make(map[string]best, 1024)
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) == 0 {
+			continue // zombie / partial-persisted
+		}
+		s := dot(q, h.nodes[i].vec)
+		url := h.nodes[i].url
+		cur, ok := bestByURL[url]
+		if !ok || s > cur.score {
+			bestByURL[url] = best{nodeIdx: i, score: s}
+		}
+	}
+	if len(bestByURL) == 0 {
+		return nil
+	}
+	out := make([]best, 0, len(bestByURL))
+	for _, e := range bestByURL {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].score > out[b].score })
+	if k > len(out) {
+		k = len(out)
+	}
+	hits := make([]VectorHit, 0, k)
+	for i := 0; i < k; i++ {
+		n := h.nodes[out[i].nodeIdx]
+		hits = append(hits, VectorHit{
+			URL:    n.url,
+			Title:  n.title,
+			Score:  float64(out[i].score),
+			Offset: n.offset,
+			Length: n.length,
+		})
+	}
+	return hits
+}
+
 // SampleVectors returns up to n vectors drawn uniformly at random from the
 // graph (without replacement). Used by iter-415 PQ codebook training to
 // build a representative training set without loading the entire corpus
