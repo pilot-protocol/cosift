@@ -34,6 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/calinteodor/cosift/internal/crawler"
+
 	"github.com/calinteodor/cosift/internal/config"
 	"github.com/calinteodor/cosift/internal/embed"
 	"github.com/calinteodor/cosift/internal/index"
@@ -45,6 +47,13 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	fs := flag.NewFlagSet("pebble-serve", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (required; the SQLite cfg.DataDir is ignored)")
 	addr := fs.String("addr", cfg.Server.Addr, "listen address (defaults to server.addr from cosift.json)")
+	// Iter 402: -crawl-seeds-file lets pebble-serve run an in-process crawler
+	// against the same PebbleStore. Eliminates the writer-lock dance between
+	// cosift-serve and cosift-crawl — search + crawl + index growth all in one
+	// process, one binary, one lock. The crawler runs as a goroutine for the
+	// lifetime of the server.
+	crawlSeeds := fs.String("crawl-seeds-file", "", "if set, run a continuous in-process crawler against these seeds while serving")
+	crawlCheckpoint := fs.Duration("crawl-checkpoint", 60*time.Second, "HNSW persist cadence for the in-serve crawler")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -266,9 +275,101 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		defer cancel()
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
+
+	// Iter 402: in-process crawler. Reuses ps + srv.hnsw + srv.embedder. The
+	// crawler.Crawler uses concurrency from cfg.Crawler.MaxConcurrent. Vectors
+	// land into the SAME HNSW pointer that /search reads from, so freshly
+	// crawled content is searchable as soon as AddPassage returns.
+	// Checkpoint goroutine persists the graph every crawlCheckpoint.
+	if *crawlSeeds != "" {
+		if err := srv.startInProcessCrawl(ctx, ps, *crawlSeeds, *crawlCheckpoint, cfg); err != nil {
+			log.Printf("pebble-serve: in-process crawler not started: %v", err)
+		}
+	}
+
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
+	return nil
+}
+
+// startInProcessCrawl wires the iter-402 crawler-inside-serve flow. Bumps
+// srv.hnsw to a fresh empty graph if none was loaded (so dense retrieval is
+// live as soon as the first passage lands), then runs the crawler in a
+// goroutine for the server's lifetime.
+func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleStore, seedsFile string, ckpEvery time.Duration, cfg *config.Config) error {
+	if s.embedder == nil {
+		return errors.New("crawl requires embedder configuration (cfg.Embeddings.Model)")
+	}
+	buf, err := os.ReadFile(seedsFile)
+	if err != nil {
+		return fmt.Errorf("read seeds file: %w", err)
+	}
+	var seeds []string
+	for _, line := range strings.Split(string(buf), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		seeds = append(seeds, t)
+	}
+	if len(seeds) == 0 {
+		return errors.New("seeds file empty after parsing")
+	}
+
+	// Ensure HNSW is non-nil so the bridge can call AddPassage. /search reads
+	// the same pointer, so growth is immediately searchable.
+	if s.hnsw == nil {
+		s.hnsw = index.NewHNSW(s.embedder.Dim())
+		log.Printf("in-serve crawler: created fresh HNSW (dim=%d)", s.embedder.Dim())
+	}
+
+	c := crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
+	c = c.WithEmbedder(s.embedder)
+	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
+	for _, u := range seeds {
+		_ = c.Seed(u)
+	}
+	log.Printf("in-serve crawler: %d seeds queued (concurrency=%d, depth=%d, checkpoint=%s)",
+		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery)
+
+	// Checkpoint goroutine.
+	go func() {
+		t := time.NewTicker(ckpEvery)
+		defer t.Stop()
+		var lastN int
+		for {
+			select {
+			case <-ctx.Done():
+				if s.hnsw.Len() > lastN {
+					log.Printf("in-serve crawler: final HNSW persist at shutdown (%d nodes)", s.hnsw.Len())
+					_ = s.hnsw.Persist(context.Background(), ps)
+				}
+				return
+			case <-t.C:
+				n := s.hnsw.Len()
+				if n == 0 || n == lastN {
+					continue
+				}
+				log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d) ...", n, n-lastN)
+				if err := s.hnsw.Persist(context.Background(), ps); err != nil {
+					log.Printf("in-serve crawler: HNSW persist failed: %v", err)
+					continue
+				}
+				lastN = n
+			}
+		}
+	}()
+
+	// Crawler goroutine.
+	go func() {
+		log.Printf("in-serve crawler: starting")
+		if err := c.Run(ctx); err != nil {
+			log.Printf("in-serve crawler: exited with error: %v", err)
+			return
+		}
+		log.Printf("in-serve crawler: frontier drained")
+	}()
 	return nil
 }
 

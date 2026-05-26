@@ -4,17 +4,45 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>cosift API · interactive docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/docs/swagger-ui.css">
 <style>
-  body { margin: 0; background: #0b0b0a; }
-  .topbar { background: #0b0b0a; border-bottom: 1px solid #1d1d1b; padding: 14px 28px; }
-  .topbar a { color: #eceae3; font-family: 'Instrument Serif', serif; font-size: 22px; font-style: italic; text-decoration: none; }
-  .topbar a small { font-family: 'Inter Tight', sans-serif; font-size: 11px; color: #8a8a83; font-style: normal; letter-spacing: 0.08em; text-transform: uppercase; margin-left: 10px; }
+  /* Let Swagger UI render in its native (light) theme; just stack a thin
+     cosift-branded topbar on top so the page identifies as cosift. */
+  body { margin: 0; background: #fafaf7; font-family: 'Inter Tight', sans-serif; }
+  .cosift-bar {
+    background: #0b0b0a;
+    border-bottom: 1px solid #1d1d1b;
+    padding: 14px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .cosift-bar .brand { display: flex; align-items: baseline; gap: 12px; }
+  .cosift-bar a { text-decoration: none; }
+  .cosift-bar .name { color: #eceae3; font-family: 'Instrument Serif', serif; font-size: 22px; font-style: italic; }
+  .cosift-bar .name small { font-family: 'Inter Tight', sans-serif; font-size: 11px; color: #8a8a83; font-style: normal; letter-spacing: 0.08em; text-transform: uppercase; margin-left: 8px; }
+  .cosift-bar .links { display: flex; gap: 22px; }
+  .cosift-bar .links a { color: #8a8a83; font-size: 13px; }
+  .cosift-bar .links a:hover { color: oklch(0.88 0.22 125); }
+  /* Hide Swagger's own topbar (its dark blue header). */
   .swagger-ui .topbar { display: none; }
+  /* Pull Swagger content up slightly. */
+  .swagger-ui { padding-top: 18px; }
 </style>
 </head>
 <body>
-<div class="topbar"><a href="/">cosift<small>interactive API docs</small></a></div>
+<div class="cosift-bar">
+  <a href="/" class="brand"><span class="name">cosift<small>interactive API docs</small></span></a>
+  <div class="links">
+    <a href="/">Home</a>
+    <a href="/stats">/stats</a>
+    <a href="/openapi.json">openapi.json</a>
+    <a href="https://github.com/pilot-protocol/cosift">GitHub</a>
+  </div>
+</div>
 <div id="swagger-ui"></div>
 <script src="/docs/swagger-ui-bundle.js"></script>
 <script>
@@ -25,7 +53,8 @@ window.onload = function () {
     deepLinking: true,
     presets: [SwaggerUIBundle.presets.apis],
     tryItOutEnabled: true,
-    persistAuthorization: true
+    persistAuthorization: true,
+    defaultModelsExpandDepth: 0
   });
 };
 </script>
