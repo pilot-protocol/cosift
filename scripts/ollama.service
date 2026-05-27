@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/ollama serve
-Environment="OLLAMA_NUM_PARALLEL=4"
+Environment="OLLAMA_NUM_PARALLEL=10"
 Environment="OLLAMA_KEEP_ALIVE=24h"
 User=ollama
 Group=ollama
