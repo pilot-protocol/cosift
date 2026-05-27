@@ -2,17 +2,23 @@
 
 Living document — what's where, who can reach it, how to restore.
 
-Last updated: 2026-05-26 (iter 443)
+Last updated: 2026-05-27 (iter 450)
 
-**Live state**: 180K docs, 1.06M HNSW vectors, growing ~1300/min. PQ
-disabled. efSearch=200. 4 GB Pebble block cache. 0 OOMs since iter 427's
-PDF leak fix. Public site healthy via DNS-only on cosift.pilotprotocol
-.network (CF orange-cloud was incompatible with self-signed cert; user
-flipped to gray). BM25 warm latency ~250 ms, dense ~250 ms, hybrid
-~1-2 s under crawl write contention. Recall@10 (no-PQ, ef=200) = 0.61
-mean / 0.90 p50 — degraded from post-rebuild 0.89 mean as the corpus
-grew via AddPassage; ready for another `hnsw-rebuild -force` when
-recall drops below acceptable.
+**Live state** (post embed-throughput work, iters 446-450):
+- 249 K docs, 1.85 M HNSW vectors. Growing ~750 docs/min, 13.5 K vec/min.
+- 4 ollama replicas (ports 11434-11437). Crawler pipeline:
+  `Throttle(16) → Batch(max=128, wait=20ms) → RoundRobin(4) → ollama`.
+  Search bypasses the throttle/batcher — direct round-robin.
+- `/search` latency: BM25 30-70 ms, dense 37-50 ms, **hybrid 87-99 ms**.
+- 0 OOMs since iter-427 PDF leak fix.
+- Auto-snapshot fired at 00:00 UTC via `cosift-snapshot.timer` (9 GiB
+  tarball uploaded to gs://pilot-cosift-index/snapshots/ in ~80 s).
+- GPU usage 5 % of 96 GB; could host 8-16 more ollama replicas if
+  embed becomes the bottleneck again. RAM 8 % of 525 GiB.
+- HNSW efSearch=200, PQ disabled (iter 429), Pebble cache 32 GiB.
+- Recall@10 (no-PQ, ef=200) = 0.61 mean / 0.90 p50 — degraded from
+  post-rebuild 0.89 mean as the corpus grew via AddPassage; ready for
+  another `hnsw-rebuild -force` when recall drops below acceptable.
 
 ## Production-shaped (running)
 
