@@ -156,6 +156,19 @@ type Crawler struct {
 	// once per process lifetime (in-memory cache). Default false.
 	AutoSitemap bool `json:"auto_sitemap,omitempty"`
 
+	// RemoteFetcherURL (iter 474) — optional Cloudflare-Worker (or any
+	// HTTP service speaking the same shape) that fetches URLs on behalf
+	// of the crawler. When set, cosift's HTTP transport is wrapped so
+	// every outbound GET becomes a POST to this URL with {url, ...}
+	// body; the worker fetches from its own egress IPs and returns the
+	// upstream body. Lets a single cosift box crawl through CF's 300+
+	// POPs without per-IP rate limiting on the target sites.
+	//
+	// See scripts/cf-fetch-worker.js for the worker code. Pair with
+	// RemoteFetcherToken for the shared Bearer.
+	RemoteFetcherURL   string `json:"remote_fetcher_url,omitempty"`
+	RemoteFetcherToken string `json:"remote_fetcher_token,omitempty"`
+
 	// Proxies (iter 443) — optional list of HTTP proxy URLs (e.g.
 	//   "http://user:pass@proxy.example.com:8080"
 	//   "socks5://proxy.local:1080"

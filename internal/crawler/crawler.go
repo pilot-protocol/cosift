@@ -109,9 +109,18 @@ func newBare(cfg config.Crawler) *Crawler {
 		}
 		log.Printf("crawler: proxy pool enabled (%d proxies)", len(proxies))
 	}
+	// Iter 474: optional remote fetcher (CF Worker pool, etc.). When
+	// configured, wraps the transport so every outbound GET goes through
+	// the worker. Crawler logic is unchanged; only the network egress
+	// shifts. Falls back to direct fetch for non-GET (robots, etc.).
+	var rt http.RoundTripper = transport
+	if cfg.RemoteFetcherURL != "" {
+		rt = newRemoteFetcherTransport(cfg.RemoteFetcherURL, cfg.RemoteFetcherToken, transport)
+		log.Printf("crawler: remote fetcher enabled (%s)", cfg.RemoteFetcherURL)
+	}
 	httpClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: transport,
+		Transport: rt,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
