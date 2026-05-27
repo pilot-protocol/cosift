@@ -358,7 +358,16 @@ func (t *ThrottledEmbedder) Embed(ctx context.Context, texts []string) ([][]floa
 type CachedEmbedder struct {
 	inner Embedder
 	dir   string
+	// Iter 454: atomic hit/miss counters for /stats visibility.
+	hits   atomic.Uint64
+	misses atomic.Uint64
 }
+
+// Hits returns the cumulative number of texts served from the cache.
+func (c *CachedEmbedder) Hits() uint64 { return c.hits.Load() }
+
+// Misses returns the cumulative number of texts that fell through to inner.
+func (c *CachedEmbedder) Misses() uint64 { return c.misses.Load() }
 
 // NewCachedEmbedder wraps inner. The cache directory is created if missing.
 // Pass an empty dir to disable persistence (handy for tests).
@@ -381,10 +390,12 @@ func (c *CachedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		v, ok := c.readCache(t)
 		if ok {
 			out[i] = v
+			c.hits.Add(1)
 			continue
 		}
 		miss = append(miss, i)
 		missTexts = append(missTexts, t)
+		c.misses.Add(1)
 	}
 	if len(missTexts) > 0 {
 		fresh, err := c.inner.Embed(ctx, missTexts)

@@ -1736,6 +1736,24 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		out["hyde_cache_size"] = s.hydeCacheCap
 		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
+	// Iter 454: embed cache hit/miss counters so operators can see how
+	// often re-fetches are skipping ollama. The cache wraps the round-
+	// robin embedder when cfg.Embeddings.CacheDir is set; type-assert
+	// down to extract the counters.
+	if ce, ok := s.embedder.(*embed.CachedEmbedder); ok {
+		hits := ce.Hits()
+		misses := ce.Misses()
+		total := hits + misses
+		hitRate := 0.0
+		if total > 0 {
+			hitRate = 100 * float64(hits) / float64(total)
+		}
+		out["embed_cache"] = map[string]any{
+			"hits":         hits,
+			"misses":       misses,
+			"hit_rate_pct": hitRate,
+		}
+	}
 	// Iter 357/358: signal whether the store has HNSW vectors persisted, and
 	// (when meta is available) surface dim + node count.
 	// Iter 422: when the graph is loaded in memory, report s.hnsw.Len()
