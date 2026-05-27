@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -433,6 +434,26 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// Look up prior doc once: needed for both conditional GET (validators) and
 	// content-hash dedup later. Missing is fine — empty prior means full fetch.
 	prior, _ := c.store.GetDocByURL(ctx, item.URL)
+
+	// Iter 455: opt-in pre-fetch URL-level dedup. If we already have a
+	// healthy copy of this URL fetched within COSIFT_REFETCH_AFTER_HOURS,
+	// skip the HTTP call entirely. Saves the 200ms-2s fetch cost on
+	// revisits at the cost of missing freshly-updated content during the
+	// staleness window. Default 0 = disabled (every revisit issues a
+	// conditional GET, matching iter-191 behavior).
+	if prior != nil && len(prior.ContentSHA) > 0 {
+		refetchHours := 0
+		if v := os.Getenv("COSIFT_REFETCH_AFTER_HOURS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				refetchHours = n
+			}
+		}
+		if refetchHours > 0 && time.Since(prior.FetchedAt) < time.Duration(refetchHours)*time.Hour {
+			prior.FetchedAt = time.Now()
+			_, _ = c.store.UpsertDocument(ctx, prior)
+			return nil
+		}
+	}
 
 	res, err := c.fetch(ctx, item.URL, prior)
 	if err != nil {

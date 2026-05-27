@@ -48,6 +48,8 @@ type Server struct {
 	adminToken      string             // optional; empty disables /admin/*
 	feedbackLimiter *ipLimiter         // nil = no rate limiting (tests opt out)
 	llmLimiter      *ipLimiter         // protects /answer + /research (LLM credits)
+	contentsLimiter *ipLimiter         // protects /contents (batch fetch / enumeration)
+	adminLimiter    *ipLimiter         // protects /admin/* (defense-in-depth on token leak)
 	metrics         *Metrics           // never nil — initialized in New()
 	ipResolver      *clientIPResolver  // nil = direct peer only
 	paraphraser     *paraphraser       // nil disables ?expand=true
@@ -137,6 +139,12 @@ func New(s *store.Store) *Server {
 		idx:             index.NewBM25(s),
 		feedbackLimiter: newIPLimiter(60, time.Minute),
 		llmLimiter:      newIPLimiter(10, time.Minute),
+		// /contents batch: conservative — 120/min/IP covers normal
+		// operator use while blocking bulk DB enumeration.
+		contentsLimiter: newIPLimiter(120, time.Minute),
+		// /admin/*: tighter — 30/min/IP is plenty for human ops use
+		// and far below an attacker spam pattern if the token leaks.
+		adminLimiter: newIPLimiter(30, time.Minute),
 		metrics:         NewMetrics(),
 	}
 	// Wire the corpus-size gauge — read lazily at scrape time so the numbers
@@ -396,15 +404,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("GET /robots.txt", s.handleRobotsTxt)
 	mux.HandleFunc("GET /find_similar", s.handleFindSimilar)
-	mux.HandleFunc("GET /contents", s.handleContents)
-	mux.HandleFunc("POST /contents", s.handleContentsBatch)
+	mux.HandleFunc("GET /contents", s.rateLimit(s.contentsLimiter, s.handleContents))
+	mux.HandleFunc("POST /contents", s.rateLimit(s.contentsLimiter, s.handleContentsBatch))
 	mux.HandleFunc("GET /answer", s.rateLimit(s.llmLimiter, s.handleAnswer))
 	mux.HandleFunc("GET /research", s.rateLimit(s.llmLimiter, s.handleResearch))
-	mux.HandleFunc("POST /admin/recrawl", s.requireAdmin(s.handleAdminRecrawl))
-	mux.HandleFunc("POST /admin/recrawl-by-domain", s.requireAdmin(s.handleAdminRecrawlByDomain))
-	mux.HandleFunc("POST /admin/reembed", s.requireAdmin(s.handleAdminReembed))
-	mux.HandleFunc("GET /admin/stats", s.requireAdmin(s.handleAdminStats))
-	mux.HandleFunc("GET /admin/config", s.requireAdmin(s.handleAdminConfig))
+	mux.HandleFunc("POST /admin/recrawl", s.rateLimit(s.adminLimiter, s.requireAdmin(s.handleAdminRecrawl)))
+	mux.HandleFunc("POST /admin/recrawl-by-domain", s.rateLimit(s.adminLimiter, s.requireAdmin(s.handleAdminRecrawlByDomain)))
+	mux.HandleFunc("POST /admin/reembed", s.rateLimit(s.adminLimiter, s.requireAdmin(s.handleAdminReembed)))
+	mux.HandleFunc("GET /admin/stats", s.rateLimit(s.adminLimiter, s.requireAdmin(s.handleAdminStats)))
+	mux.HandleFunc("GET /admin/config", s.rateLimit(s.adminLimiter, s.requireAdmin(s.handleAdminConfig)))
 	mux.HandleFunc("GET /dashboard", s.handleDashboard)
 	mux.HandleFunc("POST /feedback", s.handleFeedback)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
