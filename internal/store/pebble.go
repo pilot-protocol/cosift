@@ -150,6 +150,12 @@ func OpenPebble(path string) (*PebbleStore, error) {
 		}
 		_ = closer.Close()
 	}
+	// Iter 472: restore the iter-470 frontier round-robin cursor so a
+	// restart doesn't re-walk 'a'-'b' from scratch.
+	if cv, ccloser, err := db.Get(metaKey("frontier_cursor")); err == nil {
+		p.frontierCursor = append([]byte(nil), cv...)
+		_ = ccloser.Close()
+	}
 	return p, nil
 }
 
@@ -1171,9 +1177,11 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	// hog the cursor and hosts later in the alphabet take days to reach.
 	// Cursor = {famFrontier, 'q', host, 0xFF} — lex-greater than any real
 	// URL key for this host (URLs are ASCII), so the next SeekGE lands on
-	// the first URL of the NEXT host.
+	// the first URL of the NEXT host. Iter 472: also persist to pebble
+	// so a restart resumes where it stopped.
+	var skipKey []byte
 	if pickedHost != "" {
-		skipKey := make([]byte, 2+len(pickedHost)+1)
+		skipKey = make([]byte, 2+len(pickedHost)+1)
 		skipKey[0] = famFrontier
 		skipKey[1] = 'q'
 		copy(skipKey[2:], pickedHost)
@@ -1205,6 +1213,13 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	}
 	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
 		return FrontierItem{}, false, err
+	}
+	// Iter 472: persist the cursor in the same atomic batch as the status
+	// transition, so we never desync the state on a crash.
+	if len(skipKey) > 0 {
+		if err := batch.Set(metaKey("frontier_cursor"), skipKey, nil); err != nil {
+			return FrontierItem{}, false, err
+		}
 	}
 	if err := batch.Commit(p.writeOpts); err != nil {
 		return FrontierItem{}, false, err
