@@ -58,6 +58,15 @@ type PebbleStore struct {
 	statsCacheMu sync.Mutex
 	statsCacheAt time.Time
 	statsCacheVal Stats
+
+	// Iter 470: round-robin cursor for ClaimFrontier. Previously the
+	// iterator always started at the alphabetically-first queued URL,
+	// which starved hosts late in the alphabet (e.g. pilotprotocol.* was
+	// queued 15 min ago and never picked up). Holds the last-claimed
+	// (host, url) tuple; next claim seeks past it so each call resumes
+	// where the previous one stopped, wrapping at the end.
+	frontierCursorMu sync.Mutex
+	frontierCursor   []byte
 }
 
 const (
@@ -1085,8 +1094,11 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	}
 
 	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
-	// whose host is NOT in inflightHosts. Fall back to first overall if all
-	// hosts are busy.
+	// whose host is NOT in inflightHosts. Iter 470 — start the scan from
+	// the LAST-CLAIMED key (round-robin), wrapping at the end. Previously
+	// we always started at the first queued URL, so hosts late in the
+	// alphabet (e.g. pilotprotocol.network) could be starved indefinitely
+	// when many earlier-alpha hosts had queued URLs.
 	qIt, err := p.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte{famFrontier, 'q'},
 		UpperBound: []byte{famFrontier, 'q' + 1},
@@ -1096,31 +1108,54 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	}
 	defer qIt.Close()
 
+	p.frontierCursorMu.Lock()
+	cursor := append([]byte(nil), p.frontierCursor...)
+	p.frontierCursorMu.Unlock()
+
 	var pickedHost, pickedURL string
 	var fallbackHost, fallbackURL string
 	var fallbackFound bool
-	for valid := qIt.First(); valid; valid = qIt.Next() {
-		host := frontierStatusIndexHost(qIt.Key())
-		if host == "" {
-			continue
+
+	scan := func(start func() bool) (found bool) {
+		for valid := start(); valid; valid = qIt.Next() {
+			host := frontierStatusIndexHost(qIt.Key())
+			if host == "" {
+				continue
+			}
+			key := qIt.Key()
+			urlOffset := 2 + len(host) + 1
+			if urlOffset > len(key) {
+				continue
+			}
+			url := string(key[urlOffset:])
+			if !fallbackFound {
+				fallbackHost = host
+				fallbackURL = url
+				fallbackFound = true
+			}
+			if _, busy := inflightHosts[host]; !busy {
+				pickedHost = host
+				pickedURL = url
+				return true
+			}
 		}
-		// The URL portion follows host + 0x00.
-		key := qIt.Key()
-		urlOffset := 2 + len(host) + 1
-		if urlOffset > len(key) {
-			continue
+		return false
+	}
+
+	// First sweep: cursor points to the first key of the next host
+	// (set by the previous claim's iter-470 skipKey logic), so a plain
+	// SeekGE lands at the first URL of that next host directly.
+	startFromCursor := func() bool {
+		if len(cursor) > 0 {
+			return qIt.SeekGE(cursor)
 		}
-		url := string(key[urlOffset:])
-		if !fallbackFound {
-			fallbackHost = host
-			fallbackURL = url
-			fallbackFound = true
-		}
-		if _, busy := inflightHosts[host]; !busy {
-			pickedHost = host
-			pickedURL = url
-			break
-		}
+		return qIt.First()
+	}
+	if !scan(startFromCursor) {
+		// Wrap: try from the beginning. fallbackHost will be set from the
+		// first sweep if any URL existed (so we can reuse it without
+		// re-iterating).
+		_ = scan(qIt.First)
 	}
 	if pickedURL == "" {
 		if !fallbackFound {
@@ -1128,6 +1163,24 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		}
 		pickedHost = fallbackHost
 		pickedURL = fallbackURL
+	}
+
+	// Iter 470: advance the round-robin cursor PAST the picked host's
+	// entire URL block. Without this, each claim only advances by one URL,
+	// so hosts with thousands of queued URLs (github.com, en.wikipedia.org)
+	// hog the cursor and hosts later in the alphabet take days to reach.
+	// Cursor = {famFrontier, 'q', host, 0xFF} — lex-greater than any real
+	// URL key for this host (URLs are ASCII), so the next SeekGE lands on
+	// the first URL of the NEXT host.
+	if pickedHost != "" {
+		skipKey := make([]byte, 2+len(pickedHost)+1)
+		skipKey[0] = famFrontier
+		skipKey[1] = 'q'
+		copy(skipKey[2:], pickedHost)
+		skipKey[2+len(pickedHost)] = 0xFF
+		p.frontierCursorMu.Lock()
+		p.frontierCursor = skipKey
+		p.frontierCursorMu.Unlock()
 	}
 
 	// Step 3: atomic transition. Read primary, flip status, swap indexes.
