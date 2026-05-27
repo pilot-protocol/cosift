@@ -234,6 +234,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       <div class="stat"><div class="stat-num" id="stat-vectors">—</div><div class="stat-label">Vector passages</div></div>
       <div class="stat"><div class="stat-num" id="stat-retrievers">—</div><div class="stat-label">Retrievers live</div></div>
       <div class="stat"><div class="stat-num"><span class="accent" id="stat-rate">—</span></div><div class="stat-label">Docs / min</div></div>
+      <div class="stat"><div class="stat-num" id="stat-webpct">—</div><div class="stat-label">% of Common Crawl</div></div>
     </div>
 
     <div class="cta-row">
@@ -419,6 +420,12 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       var retr = d.retrievers || [];
       setText('stat-retrievers', retr.length);
       setText('stat-rate', d.crawl_active ? (d.docs_per_minute || 0).toFixed(1) : '—');
+      // Iter 469: % of indexed web. Use 'auto' precision: 0.00001 % if tiny.
+      if (typeof d.web_pct === 'number') {
+        var p = d.web_pct;
+        var formatted = p < 0.0001 ? p.toExponential(2) : p < 1 ? p.toFixed(4) : p.toFixed(2);
+        setText('stat-webpct', formatted + '%');
+      }
       setText('hc-backend', d.backend || '—');
       setText('hc-uptime', d.uptime || '—');
       setText('hc-bm25', (d.bm25_k1 ?? '—') + ' / ' + (d.bm25_b ?? '—'));

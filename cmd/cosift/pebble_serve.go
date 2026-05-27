@@ -1886,6 +1886,19 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	// instead of the startup-cached vectorNodes count — otherwise /stats
 	// shows the corpus frozen in time while the in-serve crawler keeps
 	// growing the graph.
+	// Iter 469: "% of the indexed web" novelty stat. The web is too big to
+	// give a meaningful number, but Common Crawl's monthly snapshot is
+	// ~3.5 B unique pages — a recognizable reference point. Operators can
+	// override with COSIFT_WEB_DENOMINATOR if they want a different scale
+	// (e.g. their own intranet, a TLD slice, etc.).
+	webDenom := int64(3_500_000_000)
+	if v := os.Getenv("COSIFT_WEB_DENOMINATOR"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			webDenom = n
+		}
+	}
+	out["web_pct"] = 100.0 * float64(st.Documents) / float64(webDenom)
+	out["web_denominator"] = webDenom
 	out["has_vectors"] = s.hasVectors
 	switch {
 	case s.hnsw != nil:
