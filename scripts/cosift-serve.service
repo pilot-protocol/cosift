@@ -16,6 +16,7 @@ Environment=COSIFT_PPROF_ADDR=127.0.0.1:6060
 Environment=COSIFT_MUTEX_PROFILE_FRACTION=100
 Environment=COSIFT_DISABLE_PQ=true
 Environment=COSIFT_HNSW_EF_SEARCH=200
+Environment=COSIFT_CRAWL_EMBED_CONCURRENCY=16
 Environment=COSIFT_PEBBLE_CACHE_MB=32768
 ExecStart=/home/ubuntu/cosift -config /home/ubuntu/cosift.json pebble-serve -dir /home/ubuntu/cosift-data/pebble -addr 127.0.0.1:7777 -crawl-seeds-file /home/ubuntu/seeds.txt -crawl-checkpoint 60s
 Restart=on-failure

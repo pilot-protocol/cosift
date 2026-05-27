@@ -11,6 +11,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -641,7 +642,16 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		auth := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix || auth[len(prefix):] != s.adminToken {
+		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+			writeProblem(w, http.StatusUnauthorized, "invalid or missing bearer token")
+			return
+		}
+		// Constant-time comparison closes the per-byte timing side
+		// channel that `!=` exposed. Without this, an attacker who can
+		// measure response timing can brute-force the admin token one
+		// byte at a time. subtle.ConstantTimeCompare returns 1 only
+		// when both slices have equal length AND equal bytes.
+		if subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), []byte(s.adminToken)) != 1 {
 			writeProblem(w, http.StatusUnauthorized, "invalid or missing bearer token")
 			return
 		}

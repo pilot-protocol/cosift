@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -149,6 +150,38 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 		out[d.Index] = d.Embedding
 	}
 	return out, nil
+}
+
+// RoundRobinEmbedder fans Embed calls across N inner Embedders. Use this
+// when a single embedder backend can't saturate the available GPU — e.g.
+// multiple ollama instances each holding their own copy of nomic-embed-
+// text, or multiple vLLM workers. Per-call round-robin via an atomic
+// counter; concurrent calls hit different backends without coordination.
+// Iter 449.
+type RoundRobinEmbedder struct {
+	inners []Embedder
+	next   atomic.Uint64
+}
+
+// NewRoundRobinEmbedder takes one or more inner embedders and returns
+// a single Embedder that distributes calls across them. Returns inners[0]
+// unwrapped when len(inners) == 1; nil when empty.
+func NewRoundRobinEmbedder(inners []Embedder) Embedder {
+	switch len(inners) {
+	case 0:
+		return nil
+	case 1:
+		return inners[0]
+	}
+	return &RoundRobinEmbedder{inners: inners}
+}
+
+func (r *RoundRobinEmbedder) Model() string { return r.inners[0].Model() }
+func (r *RoundRobinEmbedder) Dim() int      { return r.inners[0].Dim() }
+
+func (r *RoundRobinEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	idx := int(r.next.Add(1)-1) % len(r.inners)
+	return r.inners[idx].Embed(ctx, texts)
 }
 
 // ThrottledEmbedder wraps an Embedder behind a semaphore that caps the

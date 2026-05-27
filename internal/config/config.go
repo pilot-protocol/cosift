@@ -224,6 +224,12 @@ type Embeddings struct {
 	// URL of an OpenAI-compatible embeddings endpoint, or empty to disable.
 	URL string `json:"url"`
 
+	// URLs (iter 449) — optional list of backend endpoints for fan-out.
+	// When non-empty takes precedence over URL: cosift round-robins
+	// embed requests across the entries. Use for multi-replica ollama /
+	// vLLM deployments where one model copy can't saturate the GPU.
+	URLs []string `json:"urls,omitempty"`
+
 	// Model name to pass to the embeddings endpoint.
 	Model string `json:"model"`
 

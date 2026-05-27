@@ -265,12 +265,25 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// semantics as chat above.
 	if cfg.Embeddings.Model != "" {
 		apiKey := resolveAPIKey("embed")
-		srv.embedder = embed.NewOpenAIClient(apiKey, cfg.Embeddings.URL, cfg.Embeddings.Model, cfg.Embeddings.Dim)
+		// Iter 449: when cfg.Embeddings.URLs is set, build one client per
+		// URL and wrap them in a RoundRobinEmbedder so cosift fans embed
+		// requests across multiple backends. Falls back to single-URL
+		// behavior when URLs is empty.
+		urls := cfg.Embeddings.URLs
+		if len(urls) == 0 {
+			urls = []string{cfg.Embeddings.URL}
+		}
+		clients := make([]embed.Embedder, 0, len(urls))
+		for _, u := range urls {
+			clients = append(clients, embed.NewOpenAIClient(apiKey, u, cfg.Embeddings.Model, cfg.Embeddings.Dim))
+		}
+		srv.embedder = embed.NewRoundRobinEmbedder(clients)
 		auth := "anonymous"
 		if apiKey != "" {
 			auth = "bearer-token"
 		}
-		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s)", cfg.Embeddings.Model, cfg.Embeddings.Dim, auth)
+		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s, backends=%d)",
+			cfg.Embeddings.Model, cfg.Embeddings.Dim, auth, len(clients))
 	}
 	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
 	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
