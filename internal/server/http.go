@@ -2766,9 +2766,11 @@ func (s *Server) enrichSources(ctx context.Context, sources []AnswerSource) {
 	}
 }
 
-const answerSystemPrompt = `You are a research assistant. Answer the user's question using ONLY the provided sources.
+const answerSystemPrompt = `You are a research assistant. Answer the user's question using the provided sources.
 - Cite sources by their numeric id in square brackets, e.g. [1] or [2,3]. Every factual claim needs a citation.
-- If the sources do not contain the answer, say so plainly. Do not invent facts.
+- Synthesize the answer from what the sources state, including reasonable inferences from adjacent context — sources rarely state every answer verbatim.
+- Only fall back to "the sources do not cover X" if NONE of the sources have any relevant material at all. Do not refuse just because the exact formula, number, or phrase isn't quoted verbatim — extract whatever IS there and say so.
+- Do not invent facts not supported by the sources.
 - Keep the answer focused on what the sources actually say; do not pad.`
 
 func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
