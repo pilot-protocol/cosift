@@ -183,6 +183,27 @@ hosts get ≤ ~3 req/s. UA mimics Chrome to bypass simple bot walls
 (Cloudflare still fingerprints TLS so the heavy CF-protected sites
 return 403/429 anyway; that would need a real headless browser).
 
+## Doc count saturation (iter 460)
+
+The `documents` metric can plateau even while `vector_nodes` keeps
+climbing. Vec grows from any successful indexing — new URL OR existing
+URL with changed content. Doc count grows ONLY from net-new URLs.
+
+When the frontier consists mostly of URLs already in the doc store
+(re-fetch loop), vec advances on content-changed pages while docs
+stays flat. Plus the live crawl outcomes histogram is typically
+dominated by anti-bot rejections (HTTP 429/403, especially from CF-
+protected sites) which produce no index activity at all.
+
+Mitigations for growing the unique URL count:
+  - Push fresh sitemaps via /admin/sitemap-import (best — many sites
+    list every page in one document)
+  - Expand seeds.txt with non-anti-bot domains
+  - Drop COSIFT_REFETCH_AFTER_HOURS to 0 if revisits are wanted
+    (currently 24h skip)
+  - Headless browser to bypass CF anti-bot (~1 GB Chromium dep, not
+    in scope)
+
 ## Recall (iter 428 + 429)
 
 Live `bench-pq` after hnsw-rebuild on the production graph:
