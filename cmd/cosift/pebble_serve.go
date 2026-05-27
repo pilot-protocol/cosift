@@ -345,6 +345,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
+	// Iter 456: import a sitemap.xml (or sitemap-index) and push every
+	// listed URL into the live frontier.
+	mux.HandleFunc("POST /admin/sitemap-import", wrap(srv.handleSitemapImport))
 	// Iter 415: PQ training admin endpoint. Same auth as crawl-enqueue
 	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
 	// 224K-vec corpus we have today it takes ~minutes; operator-only.
@@ -531,6 +534,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 	// Expose Seed so /admin/crawl-enqueue can hand off forwarded URLs.
 	s.crawlSeed = c.Seed
+	// Iter 456: expose SeedSitemap so /admin/sitemap-import can push
+	// sitemap-discovered URLs into the live frontier.
+	s.crawlSeedSitemap = c.SeedSitemap
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -640,6 +646,9 @@ type pebbleHTTP struct {
 	// can hand off forwarded URLs into the in-process frontier. Nil when no
 	// in-serve crawler is wired.
 	crawlSeed func(url string) error
+	// crawlSeedSitemap (iter 456) wraps Crawler.SeedSitemap so the /admin/
+	// sitemap-import endpoint can push sitemap URLs into the live frontier.
+	crawlSeedSitemap func(ctx context.Context, url string) (int, error)
 
 	// Iter 403: doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -1615,6 +1624,46 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queued": req.URL})
+}
+
+// handleSitemapImport fetches a sitemap.xml (or sitemap-index, one level
+// of recursion) and pushes every <loc> entry to the live frontier. Same
+// auth as crawl-enqueue. Synchronous — returns when all URLs are queued.
+// For very large sitemaps (>50K URLs) the call may take seconds. Iter 456.
+type sitemapImportReq struct {
+	URL string `json:"url"`
+}
+
+func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedSitemap == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req sitemapImportReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.URL == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"url\": \"https://.../sitemap.xml\"}")
+		return
+	}
+	t0 := time.Now()
+	n, err := s.crawlSeedSitemap(r.Context(), req.URL)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("sitemap-import: queued %d URLs from %s in %s", n, req.URL, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sitemap":  req.URL,
+		"queued":   n,
+		"elapsed":  time.Since(t0).String(),
+	})
 }
 
 // handleDomains returns the top-N indexed hosts by doc count. Iter 405.
