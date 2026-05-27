@@ -223,7 +223,10 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 <div class="topbar">
   <div class="topbar-row">
     <a href="/" class="brand">cosift <small>chat</small></a>
-    <div style="display: flex; gap: 12px; align-items: center;">
+    <div style="display: flex; gap: 16px; align-items: center; flex: 1; justify-content: flex-end;">
+      <div id="corpus-badge" style="font-family: var(--mono); font-size: 11px; color: var(--ink-dim); display: none;">
+        <span id="cb-docs">—</span> docs · <span id="cb-vec">—</span> passages · <span id="cb-rate">—</span>/min
+      </div>
       <div class="topbar-links">
         <a href="/">home</a>
         <a href="/docs">api</a>
@@ -453,6 +456,23 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   }
 
   autoresize();
+
+  // Live corpus stats in the topbar — refresh every 30 s.
+  function nf(n) { return Number(n).toLocaleString(); }
+  function loadStats() {
+    fetch('/stats').then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (d) {
+      if (!d) return;
+      document.getElementById('cb-docs').textContent = nf(d.documents || 0);
+      document.getElementById('cb-vec').textContent = nf(d.vector_nodes || 0);
+      var rate = (d.docs_per_minute || 0).toFixed(0);
+      document.getElementById('cb-rate').textContent = rate;
+      document.getElementById('corpus-badge').style.display = '';
+    }).catch(function () {});
+  }
+  loadStats();
+  setInterval(loadStats, 30000);
 })();
 </script>
 </body>
