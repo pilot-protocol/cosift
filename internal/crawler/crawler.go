@@ -45,6 +45,13 @@ type Crawler struct {
 	// node (every URL is local).
 	route   RouteFn
 	forward ForwardFn
+
+	// Iter 461: auto-sitemap-discovery cache. First time we see a host,
+	// background-fetch its /sitemap.xml and enqueue everything it lists.
+	// Subsequent URLs from the same host skip the lookup. Empty / unset
+	// keeps iter-456 manual /admin/sitemap-import behavior unchanged.
+	autoSitemapMu    sync.Mutex
+	autoSitemapSeen  map[string]struct{}
 }
 
 // New constructs a SQLite-backed crawler. Caller owns store lifecycle.
@@ -117,6 +124,51 @@ func newBare(cfg config.Crawler) *Crawler {
 		robots = NewRobots(httpClient, cfg.UserAgent)
 	}
 	return &Crawler{cfg: cfg, http: httpClient, robots: robots}
+}
+
+// maybeAutoSitemap kicks off a background sitemap discovery the first
+// time we see a host. Subsequent URLs from the same host return
+// immediately. Disabled when COSIFT_AUTO_SITEMAP=false. Iter 461.
+func (c *Crawler) maybeAutoSitemap(ctx context.Context, u *url.URL) {
+	if u == nil || u.Host == "" {
+		return
+	}
+	if !c.cfg.AutoSitemap {
+		return
+	}
+	c.autoSitemapMu.Lock()
+	if c.autoSitemapSeen == nil {
+		c.autoSitemapSeen = make(map[string]struct{})
+	}
+	if _, ok := c.autoSitemapSeen[u.Host]; ok {
+		c.autoSitemapMu.Unlock()
+		return
+	}
+	c.autoSitemapSeen[u.Host] = struct{}{}
+	c.autoSitemapMu.Unlock()
+
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	host := u.Host
+	go func() {
+		// Detach from the request ctx (which gets canceled when the
+		// triggering URL's processing finishes) so the goroutine has
+		// time to finish a possibly-slow sitemap-index walk. Cap at 5 min.
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		smURL := scheme + "://" + host + "/sitemap.xml"
+		n, err := c.SeedSitemap(sctx, smURL)
+		if err != nil {
+			// Most hosts don't have /sitemap.xml at the root — 404 / 403 /
+			// connection-refused are routine. Silence them.
+			return
+		}
+		if n > 0 {
+			log.Printf("auto-sitemap %s: enqueued %d URLs", host, n)
+		}
+	}()
 }
 
 // parseProxies turns config.Crawler.Proxies (string URLs) into a slice of
@@ -406,6 +458,10 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
 	u, _ := url.Parse(item.URL)
 	if u != nil {
+		// Iter 461: first time we see a host, fire-and-forget a sitemap
+		// discovery. Compounds: each new host typically brings hundreds-
+		// to-thousands of URLs in one batch.
+		c.maybeAutoSitemap(ctx, u)
 		if err := gate.Wait(ctx, u.Host); err != nil {
 			return err
 		}

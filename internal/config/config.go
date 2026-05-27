@@ -149,6 +149,13 @@ type Crawler struct {
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
+	// AutoSitemap (iter 461) — when true, the crawler fires a
+	// fire-and-forget /sitemap.xml fetch the first time it sees a host.
+	// Compounds URL discovery: every new host typically brings hundreds-
+	// to-thousands of URLs in one batch. Each host is probed at most
+	// once per process lifetime (in-memory cache). Default false.
+	AutoSitemap bool `json:"auto_sitemap,omitempty"`
+
 	// Proxies (iter 443) — optional list of HTTP proxy URLs (e.g.
 	//   "http://user:pass@proxy.example.com:8080"
 	//   "socks5://proxy.local:1080"
