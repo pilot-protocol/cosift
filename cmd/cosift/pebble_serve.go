@@ -478,8 +478,29 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 			crawlEmbedCap = n
 		}
 	}
-	crawlEmbedder := embed.NewThrottledEmbedder(s.embedder, crawlEmbedCap)
-	log.Printf("pebble-serve: crawler embed concurrency capped at %d (search uses unthrottled embedder)", crawlEmbedCap)
+	// Iter 450: batch crawler embeds via BatchingEmbedder. Coalesces many
+	// per-doc embed calls into one larger inner.Embed per ~20 ms window
+	// (up to maxBatch=128 texts). Search bypasses the batcher (uses
+	// s.embedder directly) so interactive latency stays sub-100 ms.
+	// Operator overrides:
+	//   COSIFT_EMBED_BATCH=128       — texts per inner call
+	//   COSIFT_EMBED_BATCH_WAIT_MS=20 — drain timer in ms
+	batchMax := 128
+	if v := os.Getenv("COSIFT_EMBED_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			batchMax = n
+		}
+	}
+	batchWait := 20 * time.Millisecond
+	if v := os.Getenv("COSIFT_EMBED_BATCH_WAIT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			batchWait = time.Duration(n) * time.Millisecond
+		}
+	}
+	batchedEmbedder := embed.NewBatchingEmbedder(s.embedder, batchMax, batchWait)
+	crawlEmbedder := embed.NewThrottledEmbedder(batchedEmbedder, crawlEmbedCap)
+	log.Printf("pebble-serve: crawler embed = throttle(%d) → batch(max=%d, wait=%s) → round-robin → backends; search bypasses batcher",
+		crawlEmbedCap, batchMax, batchWait)
 	c = c.WithEmbedder(crawlEmbedder)
 	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
 	// Iter 408: wire URL routing for clustered mode. Single-node config

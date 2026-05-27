@@ -152,6 +152,141 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	return out, nil
 }
 
+// BatchingEmbedder coalesces concurrent Embed calls from multiple
+// goroutines into single, larger HTTP requests to the inner backend.
+// Workers submit their texts and block on a result channel; a single
+// drainer goroutine packs texts into a batch until it hits maxBatch
+// items OR maxWait has elapsed, then issues one inner.Embed call and
+// distributes results back to each waiter.
+//
+// Why: ollama / vLLM serve N small (5-10 text) requests less efficiently
+// than 1 large (50-100 text) request — the per-request HTTP/JSON
+// overhead and the per-batch GPU launch cost amortize across more
+// inputs. Iter 449 saw 994 docs/min with 16 in-flight per-doc embed
+// calls; batching to 64-128 texts per call should give 2-3× more
+// embeddings/sec on the same GPU.
+//
+// Caveat: per-Embed latency rises by up to maxWait (typically 10-30 ms).
+// For the crawler this is invisible. For interactive /search embeds it
+// hurts — wrap the crawler embedder only, not the search one. Iter 450.
+type BatchingEmbedder struct {
+	inner    Embedder
+	maxBatch int
+	maxWait  time.Duration
+	queue    chan batchJob
+	stop     chan struct{}
+}
+
+type batchJob struct {
+	ctx   context.Context
+	texts []string
+	out   chan batchResult
+}
+
+type batchResult struct {
+	vecs [][]float32
+	err  error
+}
+
+// NewBatchingEmbedder wraps inner with a coalescing batcher. maxBatch
+// = upper bound on number of texts per inner.Embed call (typical 64-
+// 128). maxWait = how long the drainer waits to fill a batch before
+// flushing what it has (typical 5-30 ms). Spawns one background
+// goroutine that lives for the lifetime of the embedder.
+func NewBatchingEmbedder(inner Embedder, maxBatch int, maxWait time.Duration) *BatchingEmbedder {
+	if maxBatch <= 0 {
+		maxBatch = 64
+	}
+	if maxWait <= 0 {
+		maxWait = 20 * time.Millisecond
+	}
+	b := &BatchingEmbedder{
+		inner:    inner,
+		maxBatch: maxBatch,
+		maxWait:  maxWait,
+		queue:    make(chan batchJob, 1024),
+		stop:     make(chan struct{}),
+	}
+	go b.drain()
+	return b
+}
+
+func (b *BatchingEmbedder) Model() string { return b.inner.Model() }
+func (b *BatchingEmbedder) Dim() int      { return b.inner.Dim() }
+
+func (b *BatchingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	out := make(chan batchResult, 1)
+	select {
+	case b.queue <- batchJob{ctx: ctx, texts: texts, out: out}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case r := <-out:
+		return r.vecs, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (b *BatchingEmbedder) drain() {
+	for {
+		// Block for the first job — no timer running until something arrives.
+		var first batchJob
+		select {
+		case first = <-b.queue:
+		case <-b.stop:
+			return
+		}
+		jobs := []batchJob{first}
+		texts := make([]string, 0, b.maxBatch)
+		texts = append(texts, first.texts...)
+		// Now coalesce more jobs until we hit maxBatch or maxWait expires.
+		timer := time.NewTimer(b.maxWait)
+	gather:
+		for len(texts) < b.maxBatch {
+			select {
+			case j := <-b.queue:
+				// Skip the timer reset — once we start a batch we want to
+				// fire on the original deadline so latency stays bounded.
+				if len(texts)+len(j.texts) > b.maxBatch && len(jobs) > 0 {
+					// Putting this job back would deadlock. Just send it
+					// in this batch even though we overshoot maxBatch
+					// slightly — preferable to a stuck waiter.
+				}
+				jobs = append(jobs, j)
+				texts = append(texts, j.texts...)
+			case <-timer.C:
+				break gather
+			case <-b.stop:
+				timer.Stop()
+				return
+			}
+		}
+		timer.Stop()
+		// Single inner.Embed call for the coalesced batch.
+		vecs, err := b.inner.Embed(first.ctx, texts)
+		// Distribute back to each waiter.
+		off := 0
+		for _, j := range jobs {
+			n := len(j.texts)
+			if err != nil {
+				j.out <- batchResult{err: err}
+			} else {
+				j.out <- batchResult{vecs: vecs[off : off+n]}
+			}
+			off += n
+		}
+	}
+}
+
+// Close stops the drainer goroutine. Pending jobs in the queue will be
+// dropped — caller should drain or cancel outstanding contexts first.
+func (b *BatchingEmbedder) Close() { close(b.stop) }
+
 // RoundRobinEmbedder fans Embed calls across N inner Embedders. Use this
 // when a single embedder backend can't saturate the available GPU — e.g.
 // multiple ollama instances each holding their own copy of nomic-embed-
