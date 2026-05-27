@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -285,6 +286,14 @@ func main() {
 		if err := runBenchPQ(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("bench-pq: %v", err)
 		}
+	case "parse-pdf":
+		// Iter 464: subprocess sandbox entry point. Stdin = pdf bytes,
+		// stdout = JSON {title, text} or {error}. Sets a soft memory
+		// limit so the kernel can kill us via OOM if the ledongthuc/pdf
+		// library starts allocating without bound — parent survives.
+		debug.SetMemoryLimit(500 << 20) // 500 MiB soft cap
+		crawler.ParsePDFChild(os.Stdin, os.Stdout)
+		return
 	case "hnsw-rebuild":
 		if err := runHNSWRebuild(ctx, cfg, flag.Args()[1:]); err != nil {
 			log.Fatalf("hnsw-rebuild: %v", err)

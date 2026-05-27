@@ -541,13 +541,16 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if strings.Contains(res.contentType, "pdf") {
 		// Iter 427: ledongthuc/pdf has an unbounded-allocation bug in
 		// (*buffer).readArray on malformed PDFs — heap profile showed it
-		// growing at 2.7 GB/sec until the OOM-killer fired. Disable PDF
-		// parsing by default until we migrate to a safer library; set
-		// COSIFT_CRAWL_PDF=true to re-enable at your own risk.
-		if os.Getenv("COSIFT_CRAWL_PDF") != "true" {
-			return errors.New("pdf: parsing disabled (set COSIFT_CRAWL_PDF=true to enable)")
+		// growing at 2.7 GB/sec until the OOM-killer fired.
+		// Iter 464: re-enabled safely via subprocess sandbox. The child
+		// process has a 500 MiB soft memory limit (debug.SetMemoryLimit)
+		// and a 30 s wall-clock cap; if it OOMs or hangs, only the child
+		// dies. The parent (crawler) returns a clean error and moves on.
+		// Disable with COSIFT_CRAWL_PDF=false; default is sandboxed-on.
+		if os.Getenv("COSIFT_CRAWL_PDF") == "false" {
+			return errors.New("pdf: parsing disabled (unset COSIFT_CRAWL_PDF=false to re-enable)")
 		}
-		parsed, perr = ParsePDF(res.body, finalURL)
+		parsed, perr = ParsePDFSandboxed(ctx, res.body, finalURL, "", 0)
 	} else {
 		parsed, perr = Parse(res.body, finalURL)
 	}
