@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/rerank"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // FetchFn fetches and parses a single URL. Used by /contents on store-miss.

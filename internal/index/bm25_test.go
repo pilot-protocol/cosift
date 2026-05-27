@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // newTestStore opens a store at a t.TempDir() — small, isolated, auto-cleaned.

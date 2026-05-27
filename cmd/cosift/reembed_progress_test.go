@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 // TestRunReembedAcceptsProgressFlag verifies the iter-107 flag-wiring without

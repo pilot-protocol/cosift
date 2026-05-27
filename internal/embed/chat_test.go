@@ -139,7 +139,12 @@ func TestStripThinkingBlocks(t *testing.T) {
 		{"<think>line1\nline2\nline3</think>\n\nFinal: yes", "Final: yes"},
 		{"<think>a</think>before<think>b</think>after", "beforeafter"},
 		{"  <think>think</think>  trimmed  ", "trimmed"},
-		{"<think>unclosed but never closed", "<think>unclosed but never closed"}, // never strip unclosed
+		// Iter 477e: orphaned <think> (no closing tag) gets scrubbed too. Qwen3.5
+		// + max_tokens cap can cut a model mid-reasoning, leaving a hanging
+		// <think>...; previously we kept the text. The new policy strips the
+		// orphan so the visible reply isn't polluted with truncated reasoning.
+		{"<think>unclosed but never closed", ""},
+		{"answer first<think>then trailing think cut off", "answer first"},
 		{"", ""},
 	}
 	for _, c := range cases {

@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // LoadVectorIndex builds an in-memory VectorIndex from all passages in the

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // Iter 165 — polymorphic chat stub that switches reply on the system prompt

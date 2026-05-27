@@ -146,6 +146,17 @@ type Crawler struct {
 	// ExcludeDomains is a blocklist.
 	ExcludeDomains []string `json:"exclude_domains"`
 
+	// ExcludeURLPatterns (iter 503) drops URLs whose full string contains
+	// any listed substring. Finer-grained than ExcludeDomains — lets an
+	// operator ban "bandcamp.com/album/" while still allowing the
+	// "bandcamp.com/blog" path on the same host. Substring match (not
+	// glob, not regex) for predictability and zero-dep simplicity; if
+	// operators need full regex they can pre-filter at the seed list.
+	// Matched against the URL string before fetch, so saves the HTTP
+	// round-trip too. Examples:
+	//   "exclude_url_patterns": ["/album/", "/profile", "?from=footer"]
+	ExcludeURLPatterns []string `json:"exclude_url_patterns,omitempty"`
+
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
@@ -168,6 +179,17 @@ type Crawler struct {
 	// RemoteFetcherToken for the shared Bearer.
 	RemoteFetcherURL   string `json:"remote_fetcher_url,omitempty"`
 	RemoteFetcherToken string `json:"remote_fetcher_token,omitempty"`
+
+	// RemoteFetcherURLs (iter 483) — optional pool of Worker URLs. When
+	// set (non-empty), the crawler round-robins outbound fetches across
+	// the pool instead of hammering a single Worker. Each Worker on
+	// Cloudflare's free tier handles 100K req/day; spreading load across
+	// 5-10 Workers eliminates the HTTP/2 ENHANCE_YOUR_CALM stream cap
+	// that throttles a single deployment to ~2K docs/min.
+	//
+	// All Workers in the pool MUST share the same RemoteFetcherToken.
+	// Falls back to RemoteFetcherURL when this is empty.
+	RemoteFetcherURLs []string `json:"remote_fetcher_urls,omitempty"`
 
 	// Proxies (iter 443) — optional list of HTTP proxy URLs (e.g.
 	//   "http://user:pass@proxy.example.com:8080"
@@ -227,6 +249,20 @@ type Crawler struct {
 	//   "per_host_chunk_overlap": {"papers.example.com": 128, "feed.x.com": 32}
 	PerHostChunkSize    map[string]int `json:"per_host_chunk_size,omitempty"`
 	PerHostChunkOverlap map[string]int `json:"per_host_chunk_overlap,omitempty"`
+
+	// MinTextLen (iter 502) drops parsed pages whose extracted text falls
+	// below this many characters before they reach the index. Aggregator
+	// pages (commerce listings, sitemap stubs, "page not found", footer-
+	// only auto-discovered URLs) routinely parse to <200 chars of real
+	// content and inflate the corpus without adding signal — they
+	// dominate retrieval cost while shadowing higher-quality long-form
+	// pages in BM25 IDF.
+	//
+	// Zero / unset = keep every non-empty parse (pre-iter-502 behavior).
+	// Recommended starting value: 200 for general crawls; raise to 500
+	// or 1000 for research/news corpora where short pages are almost
+	// always navigation cruft.
+	MinTextLen int `json:"min_text_len,omitempty"`
 }
 
 type Federation struct {
@@ -351,6 +387,23 @@ type Defaults struct {
 	// Note: composes orthogonally with ExpandMainWeight when both expand
 	// AND hybrid are active.
 	HybridDenseWeight float64 `json:"hybrid_dense_weight"`
+
+	// HostBoosts (iter 504) is a host-suffix → score multiplier map applied
+	// to fused retrieval scores. Operators upweight authoritative sources
+	// (e.g. "wikipedia.org": 1.5, "arxiv.org": 1.5, "nih.gov": 1.4) or
+	// downweight long-tail aggregators ("bandcamp.com": 0.4, "itch.io":
+	// 0.5) without rebuilding the index — the boost runs at query time
+	// post-fusion.
+	//
+	// Suffix matching is longest-match-wins, so "blog.example.com": 0.7
+	// composes cleanly with "example.com": 1.2. Default multiplier when
+	// nothing matches is 1.0 — empty map (default) is a no-op and keeps
+	// retrieval on the unboosted fast path.
+	//
+	// Applied by /query (the LLM-orchestrated endpoint). Per-request
+	// override at retrieval API surfaces is left to operators via standard
+	// JSON config reload.
+	HostBoosts map[string]float64 `json:"host_boosts,omitempty"`
 }
 
 // Default returns sensible defaults for a fresh install.
@@ -361,7 +414,7 @@ func Default() *Config {
 			Addr: "127.0.0.1:7777",
 		},
 		Crawler: Crawler{
-			UserAgent:      "CosiftBot/0.0 (+https://github.com/calinteodor/cosift)",
+			UserAgent:      "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)",
 			MaxConcurrent:  8,
 			PerHostDelayMs: 1000,
 			MaxBodyBytes:   5 << 20, // 5 MB

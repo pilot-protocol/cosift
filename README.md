@@ -1,5 +1,7 @@
 # Cosift
 
+[![codecov](https://codecov.io/gh/pilot-protocol/cosift/branch/main/graph/badge.svg)](https://codecov.io/gh/pilot-protocol/cosift)
+
 A self-hostable HTTP API for **searching, retrieving, and researching** content you've indexed. A single Go binary handles the whole loop: it crawls a set of URLs you point it at, builds an inverted-index and optional dense-vector store of what it finds, and exposes search + retrieval + LLM-grounded synthesis over plain HTTP.
 
 Designed to run on a small VPS, a laptop, or a container. Three dependencies, no cgo. SQLite for storage. Any OpenAI-compatible LLM/embedding provider — including local ones (vLLM, llama.cpp, text-embeddings-inference) — plugs in via HTTP.

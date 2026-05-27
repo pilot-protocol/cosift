@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // HyDE (Hypothetical Document Embeddings) — Gao et al. 2022. The intuition:

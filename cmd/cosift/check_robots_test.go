@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 // canned robots.txt server: blocks /private and /api/, allows everything else.

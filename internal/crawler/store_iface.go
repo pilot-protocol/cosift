@@ -9,7 +9,7 @@ package crawler
 import (
 	"context"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // CrawlerStore is the storage surface the crawler depends on. Both
@@ -61,6 +61,20 @@ type PassageWriter interface {
 // call so the underlying writer can take the HNSW lock once. Iter 443.
 type PassageWriterBatch interface {
 	UpsertPassageBatch(ctx context.Context, ps []*store.Passage) error
+}
+
+// URLInvalidator is the optional zombie-reclaim surface. When a doc is
+// re-crawled (URL already in famDoc), the old passage vectors persist in
+// the HNSW graph alongside the new ones — same URL, multiple generations
+// of chunks. The main Search dedupes by URL at the candidate level, but
+// the dead nodes still steal ef-search slots and graph memory, dragging
+// recall on bloated graphs. This interface lets the crawler ask the
+// writer to mark all prior passages for a URL as invalid (vec=nil) right
+// before the new chunk batch is inserted. Returns the count zeroed.
+// Optional: writers without invalidation support are skipped silently.
+// Iter 477.
+type URLInvalidator interface {
+	MarkURLInvalid(ctx context.Context, url string) (int, error)
 }
 
 // Compile-time interface satisfaction checks. Build fails fast if either

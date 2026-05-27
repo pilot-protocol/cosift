@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/server"
 )
 
 func TestRenderAnswerMarkdownWithStrategy(t *testing.T) {

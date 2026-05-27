@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 func newAnswerSSEStub(t *testing.T, events [][2]string) (*httptest.Server, func() *url.URL) {

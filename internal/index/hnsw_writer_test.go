@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // TestHNSWWriterBridgesPassagesIntoGraph — iter 214. The PassageWriter

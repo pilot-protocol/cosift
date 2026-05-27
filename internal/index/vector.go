@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -358,4 +359,108 @@ func RRFWeighted(lists [][]string, weights []float64, topK int, rrfK float64) []
 		out = append(out, pairs[i].url)
 	}
 	return out
+}
+
+// RRFWithHostBoosts is RRFWeighted with an additional per-host score
+// multiplier applied to the fused score before final sort. Operators use
+// it to upweight authoritative hosts (wikipedia.org, arxiv.org, nih.gov)
+// or downweight long-tail aggregators without rebuilding the index.
+//
+// hostBoosts maps host suffix → multiplier. A URL's effective multiplier
+// is the most-specific matching suffix (longest match wins), or 1.0 when
+// nothing matches. Suffix matching mirrors ExcludeDomains semantics, so
+// "wikipedia.org": 1.5 boosts every subdomain (en., zh., …).
+//
+// Iter 504: keeps the no-host-boost callers on the cheap path — when
+// hostBoosts is empty, falls through to RRFWeighted.
+func RRFWithHostBoosts(lists [][]string, weights []float64, hostBoosts map[string]float64, topK int, rrfK float64) []string {
+	if len(hostBoosts) == 0 {
+		return RRFWeighted(lists, weights, topK, rrfK)
+	}
+	if rrfK <= 0 {
+		rrfK = 60
+	}
+	useWeights := len(weights) == len(lists)
+	if useWeights {
+		for _, w := range weights {
+			if w <= 0 {
+				useWeights = false
+				break
+			}
+		}
+	}
+	scores := make(map[string]float64)
+	for i, list := range lists {
+		w := 1.0
+		if useWeights {
+			w = weights[i]
+		}
+		for rank, url := range list {
+			scores[url] += w / (rrfK + float64(rank+1))
+		}
+	}
+	// Apply host-suffix boosts. Longest-match wins so an operator can set
+	// blogs.example.com=0.3 while keeping example.com=1.2.
+	for url, base := range scores {
+		mult := HostBoostFor(url, hostBoosts)
+		if mult != 1.0 {
+			scores[url] = base * mult
+		}
+	}
+	type pair struct {
+		url   string
+		score float64
+	}
+	pairs := make([]pair, 0, len(scores))
+	for u, s := range scores {
+		pairs = append(pairs, pair{u, s})
+	}
+	sort.Slice(pairs, func(a, b int) bool { return pairs[a].score > pairs[b].score })
+	if topK <= 0 || topK > len(pairs) {
+		topK = len(pairs)
+	}
+	out := make([]string, 0, topK)
+	for i := 0; i < topK; i++ {
+		out = append(out, pairs[i].url)
+	}
+	return out
+}
+
+// HostBoostFor extracts the host from a URL and returns the longest-suffix
+// match from boosts (1.0 when nothing matches or url unparseable). Pure
+// function so retrieval-time fusion can stay lock-free.
+func HostBoostFor(rawURL string, boosts map[string]float64) float64 {
+	// Cheap host extraction without net/url to avoid the alloc per URL.
+	// All URLs we see come from the crawler / store and are already
+	// well-formed; fallback to 1.0 if parsing fails.
+	i := strings.Index(rawURL, "://")
+	if i < 0 {
+		return 1.0
+	}
+	rest := rawURL[i+3:]
+	end := strings.IndexAny(rest, "/?#")
+	host := rest
+	if end >= 0 {
+		host = rest[:end]
+	}
+	host = strings.ToLower(host)
+	// Strip trailing port.
+	if c := strings.LastIndex(host, ":"); c >= 0 {
+		host = host[:c]
+	}
+	best := 1.0
+	bestLen := -1
+	for suf, mult := range boosts {
+		if suf == "" {
+			continue
+		}
+		s := strings.ToLower(suf)
+		if host == s || strings.HasSuffix(host, "."+s) {
+			if len(s) > bestLen {
+				best = mult
+				bestLen = len(s)
+			}
+		}
+	}
+	return best
 }

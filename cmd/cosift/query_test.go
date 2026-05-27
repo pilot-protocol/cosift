@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // seedQueryTestStore creates a temp store + index with three docs that share

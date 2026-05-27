@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 const urlsetXML = `<?xml version="1.0" encoding="UTF-8"?>

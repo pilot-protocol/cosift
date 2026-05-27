@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // seedReembedStore inserts N docs so the reembed loop has something to process.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/server"
 )
 
 // newReembedSSEStub serves /admin/reembed with a canned event sequence.

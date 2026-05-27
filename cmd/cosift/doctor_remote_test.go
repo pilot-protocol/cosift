@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/server"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // remoteCheckByName picks out a doctorCheck by Name. Returns nil when missing.

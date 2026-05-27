@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/server"
 )
 
 func newAnswerStub(t *testing.T, resp server.AnswerResponse) (*httptest.Server, func() *url.URL) {

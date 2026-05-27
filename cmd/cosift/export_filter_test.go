@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/eval"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/eval"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // seedExportFilterStore puts 4 docs across 3 domains and 3 dates so each

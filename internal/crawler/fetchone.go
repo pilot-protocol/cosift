@@ -34,7 +34,7 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 		client = defaultHTTPClient()
 	}
 	if userAgent == "" {
-		userAgent = "CosiftBot/0.0 (+https://github.com/calinteodor/cosift)"
+		userAgent = "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)"
 	}
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = 5 << 20

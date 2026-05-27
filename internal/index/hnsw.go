@@ -189,6 +189,14 @@ func (h *HNSW) PQStatus() PQStatus {
 // pqTable is the M*K-element lookup precomputed once per search via
 // codebook.QueryTable.
 func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
+	// Iter 503b: out-of-range neighbor IDs from corrupt-load state crashed
+	// crawler workers (each AddPassage runs internal greedy descent → search,
+	// which dereferenced a stale neighbor index >= len(h.nodes)). Recovered
+	// at the worker boundary but each event abandoned an in-flight doc.
+	// Treat oob the same as a zombie: unreachable, search continues.
+	if idx < 0 || idx >= len(h.nodes) {
+		return math.MaxFloat64
+	}
 	// Iter 417 fix: PQ branch requires a non-nil pqTable. AddPassage's
 	// internal greedyDescend/searchLayer calls pass nil because graph
 	// construction always uses raw vecs — without this guard, the PQ
@@ -404,6 +412,32 @@ func (h *HNSW) codeFor(vec []float32) []uint16 {
 	return code
 }
 
+// MarkURLPassagesInvalid zeros out vec (and pq code, if present) for every
+// node whose url matches. Returns the count zeroed. Dead nodes remain in
+// the graph as link targets so neighbor adjacency lists stay consistent
+// (searchLayer/Search both already skip nodes with empty vec — iter 411
+// "zombie / partial-persisted" guard). Lets the crawler reclaim recall +
+// memory on re-fetch instead of accumulating generations of stale chunks
+// for the same URL. Iter 477.
+func (h *HNSW) MarkURLPassagesInvalid(url string) int {
+	if url == "" {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for i := range h.nodes {
+		if h.nodes[i].url == url && len(h.nodes[i].vec) > 0 {
+			h.nodes[i].vec = nil
+			if h.codes != nil && i < len(h.codes) {
+				h.codes[i] = nil
+			}
+			n++
+		}
+	}
+	return n
+}
+
 // AddPassage inserts a passage with explicit byte-span info. The vector is
 // L2-normalized in place before storage. Bidirectional links are created
 // from the new node to its nearest neighbors at every layer up to its
@@ -589,6 +623,13 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	}
 	bestByURL := make(map[string]best, len(cands))
 	for _, c := range cands {
+		// Iter 477: skip zombie nodes (vec invalidated by
+		// MarkURLPassagesInvalid). searchLayer's distance computation
+		// against an empty vec returns garbage (-Inf with the dot
+		// branch), and they'd otherwise burn URL slots in the dedup.
+		if len(h.nodes[c.idx].vec) == 0 {
+			continue
+		}
 		url := h.nodes[c.idx].url
 		// Iter 416: convert c.dist back to a cosine-shaped score for output.
 		// Raw branch stored c.dist = -dot (cos = -dist).
@@ -633,6 +674,13 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 // Iter 416: pqTable threaded through to enable PQ-distance traversal.
 func (h *HNSW) greedyDescend(q []float32, pqTable []float32, start int, lvl int) int {
 	cur := start
+	// Iter 503b: bounds guard against corrupt-load start indices. distanceToNode
+	// already returns +Inf for oob, but the subsequent neighbor-list deref
+	// below would still panic. Bail to a sentinel the caller's filtering
+	// already handles.
+	if cur < 0 || cur >= len(h.nodes) {
+		return cur
+	}
 	curDist := float32(h.distanceToNode(q, pqTable, cur))
 	for {
 		moved := false
@@ -693,6 +741,12 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 		// from a failed-incremental-persist gap pre-iter-411 fix) would
 		// produce nbIdx=-1 and panic. Skip such nodes; their absence from
 		// the graph is harmless beyond reduced recall.
+		// Iter 503b: also guard against an oob nearest.idx — corrupt
+		// post-compact saves can leave neighbor lists pointing past the
+		// current node slice. Same recovery: skip.
+		if nearest.idx < 0 || nearest.idx >= len(h.nodes) {
+			continue
+		}
 		if len(h.nodes[nearest.idx].neighbors) == 0 {
 			continue
 		}
@@ -724,7 +778,16 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 
 // addBackLink wires a back-edge from neighbor to newIdx at the given layer,
 // pruning neighbor's list if it overflows the per-layer cap.
+//
+// Iter 503b: bounds-guard both `neighbor` and any existing entry in the
+// neighbor list. Corrupt-load graphs (post-failed-persist gap) can produce
+// search results that reference node IDs beyond the current node slice;
+// without these guards a single bad index panics the entire crawler worker
+// and the in-flight doc is lost.
 func (h *HNSW) addBackLink(neighbor, newIdx, lvl int) {
+	if neighbor < 0 || neighbor >= len(h.nodes) {
+		return
+	}
 	if lvl >= len(h.nodes[neighbor].neighbors) {
 		return // neighbor doesn't participate at this layer
 	}
@@ -740,10 +803,15 @@ func (h *HNSW) addBackLink(neighbor, newIdx, lvl int) {
 	nbVec := h.nodes[neighbor].vec
 	cands := make([]candEntry, 0, len(h.nodes[neighbor].neighbors[lvl]))
 	for _, nb := range h.nodes[neighbor].neighbors[lvl] {
+		if nb < 0 || nb >= len(h.nodes) {
+			continue // drop oob neighbor entries silently
+		}
 		cands = append(cands, candEntry{idx: nb, dist: -dot(nbVec, h.nodes[nb].vec)})
 	}
 	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
-	cands = cands[:mCap]
+	if len(cands) > mCap {
+		cands = cands[:mCap]
+	}
 	out := make([]int, len(cands))
 	for i, c := range cands {
 		out[i] = c.idx

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/server"
 )
 
 func newFindSimilarStub(t *testing.T, resp server.FindSimilarResponse) (*httptest.Server, func() *url.URL) {

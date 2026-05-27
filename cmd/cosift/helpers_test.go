@@ -7,12 +7,13 @@ package main
 
 import (
 	"math"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/server"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 func TestNormalizeExpandMode(t *testing.T) {
@@ -218,18 +219,21 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
-// TestParseDecayHalfLife — iter 389. Valid positive floats pass; everything
-// else short-circuits time-decay.
+// TestParseDecayHalfLife — iter 389/498. Valid positive floats pass; "0"
+// explicitly disables; empty now returns the iter-498 default (180 days,
+// overridable via COSIFT_DEFAULT_DECAY_DAYS env).
 func TestParseDecayHalfLife(t *testing.T) {
+	// Ensure no env override leaks from the caller's shell.
+	_ = os.Unsetenv("COSIFT_DEFAULT_DECAY_DAYS")
 	cases := []struct {
 		in   string
 		want float64
 		ok   bool
 	}{
-		{"", 0, false},
+		{"", 180, true}, // iter 498: empty triggers default-on, half-life 180 days
 		{"30", 30, true},
 		{"0.5", 0.5, true},
-		{"0", 0, false},
+		{"0", 0, false}, // explicit 0 = disable (overrides any default)
 		{"-1", 0, false},
 		{"36500", 36500, true},
 		{"36501", 0, false},
@@ -241,6 +245,13 @@ func TestParseDecayHalfLife(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("parseDecayHalfLife(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
 		}
+	}
+
+	// Operators can disable via env, restoring iter-389 behavior.
+	_ = os.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	defer os.Unsetenv("COSIFT_DEFAULT_DECAY_DAYS")
+	if got, ok := parseDecayHalfLife(""); ok || got != 0 {
+		t.Errorf("env=0 should disable default decay; got (%v, %v)", got, ok)
 	}
 }
 

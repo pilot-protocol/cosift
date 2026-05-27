@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/server"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // e2eScriptedChat returns scripted replies for sequential Chat/ChatStream calls.

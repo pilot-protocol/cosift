@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 func newPebbleBM25(t *testing.T) (*store.PebbleStore, *PebbleBM25) {

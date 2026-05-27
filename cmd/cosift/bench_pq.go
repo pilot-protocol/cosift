@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/index"
 )
 
 // runBenchPQ samples N vectors from the persisted HNSW graph, runs each as

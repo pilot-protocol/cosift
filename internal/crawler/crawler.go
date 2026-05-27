@@ -21,12 +21,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
@@ -52,6 +53,24 @@ type Crawler struct {
 	// keeps iter-456 manual /admin/sitemap-import behavior unchanged.
 	autoSitemapMu    sync.Mutex
 	autoSitemapSeen  map[string]struct{}
+
+	// Iter 477b: bounded diagnostic counter for the zombie-reclaim path.
+	// Logs the first few zero-hit cases so we can confirm the code path
+	// is actually reached even when no prior passages exist. Cheap (just
+	// an int read on the hot path; not atomic — diagnostic only).
+	zombieDebugLogged int
+
+	// Iter 482b: per-host error-rate tracking via sync.Map + atomic
+	// counters. With 512 workers we cannot afford a single write lock
+	// on every claim's completion — that bottlenecked iter 482 and cost
+	// ~25% throughput. sync.Map.LoadOrStore lets us avoid the lock on
+	// the steady-state path (host already in map).
+	hostStats sync.Map // host (string) → *hostFetchStats
+}
+
+type hostFetchStats struct {
+	attempts  atomic.Int32
+	successes atomic.Int32
 }
 
 // New constructs a SQLite-backed crawler. Caller owns store lifecycle.
@@ -88,13 +107,37 @@ func newBare(cfg config.Crawler) *Crawler {
 	// (MaxIdleConns=50, MaxConnsPerHost=2) throttle the crawler at any
 	// host with multiple in-flight URLs. Bumping to 500 idle and 16/host
 	// matches what real crawlers run.
+	// Iter 482: tighter response-header timeout. The previous 15s waited too
+	// long on dead/slow hosts — at 512 workers each stuck fetch holds a slot,
+	// throttling overall docs/min throughput more than tail-latency hurts.
+	// Most healthy servers send headers in <1s; 6s gives plenty of margin
+	// for slow-but-real ones while shedding the long tail. Override via
+	// COSIFT_FETCH_HEADER_TIMEOUT_MS.
+	respHeaderTimeout := 6 * time.Second
+	if v := os.Getenv("COSIFT_FETCH_HEADER_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			respHeaderTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+	// Iter 483b: scale connection pool to match worker concurrency. The
+	// previous 16-per-host was right when MaxConcurrent was ~50; at 512
+	// workers + multi-worker CF pool, 16-per-host capped throughput at
+	// ~2K docs/min because crawler workers spent most time queued waiting
+	// for an HTTP conn to free. 128 per host gives plenty of headroom
+	// while staying well below file-descriptor limits.
+	maxConnsPerHost := 128
+	if v := os.Getenv("COSIFT_MAX_CONNS_PER_HOST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConnsPerHost = n
+		}
+	}
 	transport := &http.Transport{
-		MaxIdleConns:          500,
-		MaxIdleConnsPerHost:   16,
-		MaxConnsPerHost:       16,
+		MaxIdleConns:          2000,
+		MaxIdleConnsPerHost:   maxConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
-		ResponseHeaderTimeout: 15 * time.Second,
+		ResponseHeaderTimeout: respHeaderTimeout,
 	}
 	// Iter 443: optional proxy pool. Each request picks a random proxy
 	// from cfg.Proxies; empty list = direct connection.
@@ -114,12 +157,26 @@ func newBare(cfg config.Crawler) *Crawler {
 	// the worker. Crawler logic is unchanged; only the network egress
 	// shifts. Falls back to direct fetch for non-GET (robots, etc.).
 	var rt http.RoundTripper = transport
-	if cfg.RemoteFetcherURL != "" {
-		rt = newRemoteFetcherTransport(cfg.RemoteFetcherURL, cfg.RemoteFetcherToken, transport)
-		log.Printf("crawler: remote fetcher enabled (%s)", cfg.RemoteFetcherURL)
+	// Iter 483: prefer the pool field when set; fall back to the singular URL.
+	urls := cfg.RemoteFetcherURLs
+	if len(urls) == 0 && cfg.RemoteFetcherURL != "" {
+		urls = []string{cfg.RemoteFetcherURL}
+	}
+	if len(urls) > 0 {
+		rt = newRemoteFetcherTransport(urls, cfg.RemoteFetcherToken, transport)
+		log.Printf("crawler: remote fetcher enabled (%d workers in pool)", len(urls))
+	}
+	// Iter 482: 30s overall timeout was generous to a fault — most useful
+	// fetches finish in <3s. Drop to 12s so dead URLs free up the worker
+	// faster. Override via COSIFT_FETCH_TIMEOUT_MS.
+	overallTimeout := 12 * time.Second
+	if v := os.Getenv("COSIFT_FETCH_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			overallTimeout = time.Duration(n) * time.Millisecond
+		}
 	}
 	httpClient := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   overallTimeout,
 		Transport: rt,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
@@ -420,12 +477,54 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 			sleepCtx(ctx, 200*time.Millisecond)
 			continue
 		}
-		if err := c.processClaimed(ctx, item, gate); err != nil {
+		err = c.processClaimed(ctx, item, gate)
+		if u, perr := url.Parse(item.URL); perr == nil && u.Host != "" {
+			c.recordHostResult(u.Host, err == nil)
+		}
+		if err != nil {
 			log.Printf("crawl %s: %v", item.URL, err)
 			_ = c.store.FailFrontier(ctx, item.URL, err.Error())
 			continue
 		}
 		_ = c.store.CompleteFrontier(ctx, item.URL)
+	}
+}
+
+// isHostBlacklisted reports whether a host has seen enough failures to
+// short-circuit further claims. Defaults: require ≥20 attempts before
+// judging (cold-start protection), blacklist when success ratio < 20%.
+// Iter 482b: lock-free via sync.Map + atomic load.
+func (c *Crawler) isHostBlacklisted(host string) bool {
+	if host == "" {
+		return false
+	}
+	v, ok := c.hostStats.Load(host)
+	if !ok {
+		return false
+	}
+	s := v.(*hostFetchStats)
+	att := s.attempts.Load()
+	if att < 20 {
+		return false
+	}
+	succ := s.successes.Load()
+	return float64(succ)/float64(att) < 0.20
+}
+
+// recordHostResult updates per-host success/attempt counters. Called from
+// the worker loop after each processClaimed return. Iter 482b: lock-free
+// hot path via sync.Map + atomic counter increment. Only the first call
+// for a given host pays the LoadOrStore cost; subsequent calls just bump
+// the atomic int32 counters.
+func (c *Crawler) recordHostResult(host string, success bool) {
+	if host == "" {
+		return
+	}
+	v, _ := c.hostStats.LoadOrStore(host, &hostFetchStats{})
+	s := v.(*hostFetchStats)
+	s.attempts.Add(1)
+	if success {
+		s.successes.Add(1)
 	}
 }
 
@@ -464,8 +563,43 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	}
 }
 
+// FetchAndIndexNow bypasses the persistent frontier and runs the
+// fetch-parse-index pipeline synchronously for a single URL. Returns the
+// crawler's per-URL error semantics: nil on success (incl. 304-not-modified
+// and content-hash-no-change), error string from the inner stage on failure.
+// Used by admin endpoints to inject genuinely-novel seeds without waiting
+// for the round-robin cursor to find them in a multi-million-entry frontier.
+// Side effect: discovered links ARE pushed to the frontier via enqueueLinks
+// (this is desired — seed URLs should fan out further crawls). Iter 480.
+func (c *Crawler) FetchAndIndexNow(ctx context.Context, url string) error {
+	// Build a one-off host gate so per-host delay still applies if multiple
+	// FetchAndIndexNow calls overlap. The gate is fresh — the worker pool's
+	// own gate is goroutine-local to Run(). For a single direct fetch the
+	// overhead is just one mutex+map.
+	gate := newHostGate(time.Duration(c.cfg.PerHostDelayMs)*time.Millisecond, nil)
+	item := store.FrontierItem{URL: url, Depth: 0, Priority: 1.0}
+	return c.processClaimed(ctx, item, gate)
+}
+
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
 	u, _ := url.Parse(item.URL)
+	// Iter 477g: claim-time exclude check. Prior enqueueLinks already
+	// filters via allowedDomain, but stale frontier entries from before
+	// an exclude was added (or imported from sitemap before the rule)
+	// keep getting claimed and consuming round-robin cycles per host.
+	// Fast-skip them here so they get marked done immediately, freeing
+	// the cursor to reach quality hosts. Returning nil signals success
+	// to the worker so the frontier entry transitions queued → done.
+	if !c.allowedDomain(item.URL) {
+		return nil
+	}
+	// Iter 482: error-rate blacklist. After we've tried a host N times
+	// and seen <20% success, fast-skip subsequent claims to that host.
+	// Burning workers on the same dead hosts (auth walls, dead Tumblr,
+	// rate-limited APIs) is the single biggest waste of throughput.
+	if u != nil && c.isHostBlacklisted(u.Host) {
+		return nil
+	}
 	if u != nil {
 		// Iter 461: first time we see a host, fire-and-forget a sitemap
 		// discovery. Compounds: each new host typically brings hundreds-
@@ -569,6 +703,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if strings.TrimSpace(parsed.Text) == "" {
 		return errors.New("empty content")
 	}
+	// Iter 502: drop low-content pages before they hit the index. See
+	// config.Crawler.MinTextLen — defaults to 0 (off) so existing
+	// deployments keep current behavior.
+	if c.cfg.MinTextLen > 0 && len(parsed.Text) < c.cfg.MinTextLen {
+		return errors.New("text below min_text_len")
+	}
 
 	finalU, _ := url.Parse(finalURL)
 	sha := sha256.Sum256([]byte(parsed.Text))
@@ -669,6 +809,30 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				// writes give readers more chances to slip in. Same total
 				// lock time, smaller bursts.
 				if c.passageWriter != nil {
+					// Iter 477: zombie-passage reclaim. When this URL was
+					// previously crawled, the prior generation of chunks
+					// still lives in the HNSW graph (same url, stale vecs).
+					// Mark them invalid before adding the fresh set so the
+					// graph doesn't accumulate generations. Gated by env
+					// COSIFT_ZOMBIE_RECLAIM=1 until soaked; off-by-default
+					// preserves prior behavior bit-for-bit.
+					if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+						inv, ok := c.passageWriter.(URLInvalidator)
+						if !ok {
+							log.Printf("zombie-reclaim: passageWriter %T does NOT implement URLInvalidator (one-time check)", c.passageWriter)
+						} else {
+							n, err := inv.MarkURLInvalid(ctx, item.URL)
+							if err != nil {
+								log.Printf("zombie-reclaim %s: %v", item.URL, err)
+							} else if n > 0 {
+								log.Printf("zombie-reclaim %s: invalidated %d stale passages", item.URL, n)
+							} else if c.zombieDebugLogged < 5 {
+								// Diagnostic: first few zero-hit cases to confirm code path is reached.
+								log.Printf("zombie-reclaim %s: 0 prior passages (diagnostic)", item.URL)
+								c.zombieDebugLogged++
+							}
+						}
+					}
 					for i, ch := range chunks {
 						p := &store.Passage{
 							DocID:     id,
@@ -795,9 +959,34 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 		}
 	}
 
+	// Iter 477d: pre-enqueue freshness filter. The 24h refetch-skip path in
+	// processClaimed bails out instantly when prior.FetchedAt is recent,
+	// but only AFTER claiming the URL — so the frontier fills with re-claim
+	// candidates that immediately bail, starving never-seen URLs in the same
+	// queue. Filter here so re-claims of fresh docs never enter the frontier
+	// in the first place. Gated by COSIFT_PREFER_NEW_URLS=1; default off
+	// preserves prior behavior. Cost: one GetDocByURL per candidate (cheap
+	// hash lookup in Pebble's 'd' family).
+	preferNew := os.Getenv("COSIFT_PREFER_NEW_URLS") == "1"
+	var freshWindow time.Duration
+	if preferNew {
+		hours := 24
+		if v := os.Getenv("COSIFT_REFETCH_AFTER_HOURS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				hours = n
+			}
+		}
+		freshWindow = time.Duration(hours) * time.Hour
+	}
+
 	for _, cand := range candidates {
 		if cap > 0 && queuedPerHost[cand.host] >= cap {
 			continue
+		}
+		if preferNew {
+			if prior, _ := c.store.GetDocByURL(ctx, cand.canon); prior != nil && !prior.FetchedAt.IsZero() && time.Since(prior.FetchedAt) < freshWindow {
+				continue // already indexed within freshness window — skip enqueue
+			}
 		}
 		// Iter 408: in clustered mode, route URL to its owning shard. The
 		// route fn returns ownsLocally=true for single-node and same-shard;
@@ -823,6 +1012,15 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
+	}
+	// Iter 503: URL-substring blocklist. Cheaper than domain-suffix checks
+	// because it short-circuits before URL.Parse runs again anywhere; runs
+	// once per candidate. Operator-curated so false-positives are their
+	// call.
+	for _, pat := range c.cfg.ExcludeURLPatterns {
+		if pat != "" && strings.Contains(rawURL, pat) {
+			return false
+		}
 	}
 	h := u.Host
 	for _, d := range c.cfg.ExcludeDomains {

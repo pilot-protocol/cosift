@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/embed"
 )
 
 // stubJudgeChat returns a scripted reply. Lets us test judgeAnswer's parsing

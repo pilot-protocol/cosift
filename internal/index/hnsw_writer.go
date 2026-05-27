@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // HNSWWriter satisfies the crawler's PassageWriter interface against a
@@ -80,6 +80,17 @@ func (w *HNSWWriter) UpsertPassage(ctx context.Context, p *store.Passage) error 
 		}
 	}
 	return nil
+}
+
+// MarkURLInvalid zeros out every HNSW node whose url matches. Returns
+// the count zeroed. Lets the crawler tell us "this URL's prior passages
+// are stale" before pushing the new chunk batch. Satisfies the optional
+// crawler.URLInvalidator interface. Iter 477.
+func (w *HNSWWriter) MarkURLInvalid(ctx context.Context, url string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.hnsw.MarkURLPassagesInvalid(url), nil
 }
 
 // Flush forces an immediate Persist of the current HNSW state. Crawler

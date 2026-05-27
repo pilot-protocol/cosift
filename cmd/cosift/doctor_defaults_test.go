@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 // findCheck returns the first check matching name, or zero value if absent.

@@ -28,14 +28,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/crawler"
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/eval"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/rerank"
-	"github.com/calinteodor/cosift/internal/server"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/crawler"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/eval"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 const usage = `cosift — self-hostable search + research
@@ -420,6 +420,17 @@ func (w *hnswPassageWriter) UpsertPassageBatch(ctx context.Context, ps []*store.
 	}
 	w.hnsw.AddPassageBatch(items)
 	return nil
+}
+
+// MarkURLInvalid satisfies the optional crawler.URLInvalidator interface.
+// Lets the crawler reclaim zombie passages (prior generations of chunks for
+// the same URL) before pushing a fresh chunk batch. Returns count zeroed.
+// Iter 477.
+func (w *hnswPassageWriter) MarkURLInvalid(ctx context.Context, url string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.hnsw.MarkURLPassagesInvalid(url), nil
 }
 
 func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
@@ -4529,7 +4540,7 @@ func runCheckRobots(ctx context.Context, cfg *config.Config, args []string) erro
 		return errors.New("usage: cosift check-robots [-user-agent UA] <url...>")
 	}
 	if *userAgent == "" {
-		*userAgent = "CosiftBot/0.0 (+https://github.com/calinteodor/cosift)"
+		*userAgent = "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)"
 	}
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	r := crawler.NewRobots(httpClient, *userAgent)

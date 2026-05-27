@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/calinteodor/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/index"
 )
 
 // selectPRFTerms picks the most distinctive terms across a result set for

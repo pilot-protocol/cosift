@@ -3,7 +3,7 @@ package crawler
 import (
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 func TestCrawlerMaxBodyBytesForUsesOverride(t *testing.T) {

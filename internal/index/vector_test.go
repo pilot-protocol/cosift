@@ -277,6 +277,61 @@ func TestRRFWeightedNilWeightsFallsBackToEqual(t *testing.T) {
 	}
 }
 
+func TestHostBoostFor(t *testing.T) {
+	boosts := map[string]float64{
+		"wikipedia.org": 1.5,
+		"example.com":   1.2,
+		"blogs.example.com": 0.5, // longest-match-wins overrides example.com=1.2
+	}
+	cases := []struct {
+		url  string
+		want float64
+	}{
+		{"https://en.wikipedia.org/wiki/Foo", 1.5},
+		{"https://example.com/article", 1.2},
+		{"https://blogs.example.com/post", 0.5},     // suffix-specific override wins
+		{"https://random.example.org/x", 1.0},        // not in map
+		{"not-a-url", 1.0},                            // no scheme
+		{"https://EXAMPLE.com/up", 1.2},               // case-insensitive
+		{"https://example.com:8080/path", 1.2},        // port stripped
+	}
+	for _, tc := range cases {
+		got := HostBoostFor(tc.url, boosts)
+		if got != tc.want {
+			t.Errorf("HostBoostFor(%q) = %v want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestRRFWithHostBoostsEmptyMapMatchesUnboosted(t *testing.T) {
+	lists := [][]string{{"https://a.com/x", "https://b.com/y", "https://c.com/z"}}
+	base := RRFWeighted(lists, nil, 3, 60)
+	boosted := RRFWithHostBoosts(lists, nil, nil, 3, 60)
+	for i := range base {
+		if base[i] != boosted[i] {
+			t.Errorf("rank %d: unboosted=%s boosted=%s — empty map must be no-op",
+				i, base[i], boosted[i])
+		}
+	}
+}
+
+func TestRRFWithHostBoostsReordersByHost(t *testing.T) {
+	// Two retrievers agree on identical ranking; host boost on c.com flips
+	// it past a.com and b.com.
+	lists := [][]string{
+		{"https://a.com/1", "https://b.com/2", "https://c.com/3"},
+		{"https://a.com/1", "https://b.com/2", "https://c.com/3"},
+	}
+	unboosted := RRFWeighted(lists, nil, 3, 60)
+	if unboosted[0] != "https://a.com/1" {
+		t.Fatalf("sanity: expected a.com first, got %s", unboosted[0])
+	}
+	boosted := RRFWithHostBoosts(lists, nil, map[string]float64{"c.com": 5.0}, 3, 60)
+	if boosted[0] != "https://c.com/3" {
+		t.Errorf("expected c.com first after 5x boost, got %s (full: %v)", boosted[0], boosted)
+	}
+}
+
 func TestRRFWeightedDefensiveFallback(t *testing.T) {
 	// Length mismatch and non-positive weight must both fall back to equal-weight,
 	// not silently drop a retriever. The safer-on-conflict default established

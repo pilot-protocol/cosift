@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 func seedRecrawlByDomainStore(t *testing.T) *store.Store {

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // TestPebbleServeEndToEnd — populate a Pebble store, launch the
@@ -26,6 +26,10 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
 	}
+	// Iter 498: time-decay default-on changes retriever labels for these
+	// assertions ("bm25" → "bm25+decay:180d"). Test contract is about
+	// retriever-selection logic, not decay; disable decay for this fixture.
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
 
 	dir := filepath.Join(t.TempDir(), "pebble")
 	ps, err := store.OpenPebble(dir)

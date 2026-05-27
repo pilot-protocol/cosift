@@ -78,11 +78,11 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   border-bottom: 1px solid var(--line);
 }
 .topbar-row {
-  max-width: 1100px; margin: 0 auto;
-  padding: 0 24px; height: 56px;
+  max-width: none; margin: 0;
+  padding: 0 32px; height: 56px;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
-.brand { font-family: var(--serif); font-size: 22px; font-style: italic; }
+.brand { font-family: var(--sans); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .brand small { font-family: var(--sans); font-style: normal; font-size: 11px; color: var(--ink-dim); letter-spacing: 0.06em; text-transform: uppercase; margin-left: 8px; }
 .topbar-links { display: flex; gap: 20px; font-size: 14px; }
 .topbar-links a { color: var(--ink-dim); }
@@ -96,8 +96,8 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 
 .chat-wrap {
   flex: 1; display: flex; flex-direction: column;
-  max-width: 1100px; width: 100%; margin: 0 auto;
-  padding: 0 24px; min-height: 0;
+  max-width: none; width: 100%; margin: 0;
+  padding: 0 32px; min-height: 0;
 }
 .messages {
   flex: 1; overflow-y: auto;
@@ -107,7 +107,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 .empty-state {
   text-align: center; padding: 64px 24px; color: var(--ink-dim);
 }
-.empty-state h1 { font-family: var(--serif); font-style: italic; font-size: 36px; color: var(--ink); margin-bottom: 12px; }
+.empty-state h1 { font-family: var(--sans); font-weight: 600; letter-spacing: -0.02em; font-size: 32px; color: var(--ink); margin-bottom: 12px; }
 .empty-state p { font-size: 15px; max-width: 480px; margin: 0 auto; }
 .suggestions {
   display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
@@ -128,7 +128,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   font-size: 13px; font-weight: 600; letter-spacing: -0.02em;
 }
 .msg-user .msg-avatar { background: var(--user-bubble); color: var(--ink); }
-.msg-assistant .msg-avatar { background: var(--accent); color: var(--accent-ink); font-family: var(--serif); font-style: italic; font-size: 18px; }
+.msg-assistant .msg-avatar { background: var(--accent); color: var(--accent-ink); font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .msg-body { flex: 1; min-width: 0; }
 .msg-role { font-size: 12px; color: var(--ink-dim); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 6px; }
 .msg-content {
@@ -169,8 +169,8 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   position: sticky; bottom: 0;
 }
 .composer-row {
-  max-width: 1100px; margin: 0 auto;
-  padding: 0 24px;
+  max-width: none; margin: 0;
+  padding: 0 32px;
   display: flex; gap: 12px; align-items: flex-end;
 }
 .composer-input {
@@ -216,7 +216,48 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   margin-left: 1px;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Iter 478b: typography for markdown-rendered answer bodies. Tight defaults
+   that read like prose, no extra vertical air. Citation badges stay inline. */
+.msg-body h1, .msg-body h2, .msg-body h3, .msg-body h4 {
+  font-weight: 600; margin: 14px 0 6px; line-height: 1.25;
+}
+.msg-body h1 { font-size: 19px; }
+.msg-body h2 { font-size: 17px; }
+.msg-body h3 { font-size: 15px; }
+.msg-body h4 { font-size: 14px; color: var(--ink-dim); }
+.msg-body p { margin: 0 0 10px; }
+.msg-body ul, .msg-body ol { margin: 0 0 10px; padding-left: 22px; }
+.msg-body li { margin-bottom: 4px; }
+.msg-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em; padding: 1px 5px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 4px;
+}
+.msg-body pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px; line-height: 1.5;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px; padding: 12px 14px;
+  overflow-x: auto; margin: 8px 0 14px;
+}
+.msg-body pre code { background: none; padding: 0; font-size: inherit; }
+.msg-body blockquote {
+  border-left: 3px solid var(--line-2);
+  margin: 0 0 10px; padding: 2px 0 2px 14px;
+  color: var(--ink-dim);
+}
+.msg-body table { border-collapse: collapse; margin: 8px 0 14px; }
+.msg-body th, .msg-body td { border: 1px solid var(--line); padding: 6px 10px; }
+.msg-body th { background: color-mix(in srgb, var(--ink) 5%, transparent); text-align: left; }
+.msg-body a:not(.cite) { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.msg-body hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
 </style>
+<!-- Iter 478b: marked.js for markdown rendering. ~25KB minified, no auth.
+     Falls back to plain text+citations if CDN unreachable (offline self-host). -->
+<script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 </head>
 <body>
 
@@ -260,8 +301,9 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   <div class="composer-row">
     <textarea id="input" class="composer-input" rows="1" placeholder="Ask anything…" autofocus></textarea>
     <div class="composer-controls">
-      <select id="mode" title="answer = single-shot RAG · research = multi-step planner">
-        <option value="answer" selected>answer</option>
+      <select id="mode" title="query = LLM-planned hybrid (default) · answer = direct RAG · research = multi-step planner">
+        <option value="query" selected>query</option>
+        <option value="answer">answer</option>
         <option value="research">research</option>
       </select>
       <button id="send" class="send-btn">Send →</button>
@@ -338,8 +380,25 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   }
 
   function renderCitedHTML(text) {
-    // Replace [n] / [n,m] tokens with clickable cite badges.
-    return esc(text).replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, function (full, body) {
+    // Iter 478b: render markdown if marked.js is available, else fall back
+    // to plain-text escape. Either path runs the [n] / [n,m] citation rewrite
+    // afterward. marked is loaded via CDN in <head>; if it fails (offline) we
+    // degrade gracefully to text + citations.
+    var html;
+    if (typeof marked !== 'undefined' && marked.parse) {
+      // marked already escapes HTML by default in v4+. GFM tables/strikethrough on.
+      try {
+        html = marked.parse(text, { gfm: true, breaks: true, mangle: false, headerIds: false });
+      } catch (e) {
+        html = esc(text).replace(/\n/g, '<br>');
+      }
+    } else {
+      html = esc(text).replace(/\n/g, '<br>');
+    }
+    // Rewrite [n] and [n,m] citation tokens into linkable badges. This runs
+    // POST markdown render so markdown links containing [text](url) aren't
+    // mistaken for citations — our regex requires digits-only inside [].
+    return html.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, function (full, body) {
       return body.split(',').map(function (n) {
         n = n.trim();
         return '<a class="cite" href="#src-' + n + '">' + n + '</a>';
@@ -393,10 +452,49 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
     asst.contentEl.parentNode.insertBefore(statusBadge, asst.contentEl);
     setBusy(true);
 
-    var endpoint = modeEl.value === 'research' ? '/research' : '/answer';
-    var url = endpoint + '?q=' + encodeURIComponent(q) + '&k=5&stream=true';
+    var mode = modeEl.value;
+    var endpoint = mode === 'research' ? '/research'
+                 : mode === 'query'    ? '/query'
+                 : '/answer';
+    // Iter 499: /query returns JSON synchronously (LLM-planner orchestrates
+    // 3-way expansion + RRF fusion + synth — adds ~20s latency but better
+    // results on vague queries). /answer and /research stream via SSE.
+    var isStream = (mode !== 'query');
+    var url = endpoint + '?q=' + encodeURIComponent(q) + '&k=5' + (isStream ? '&stream=true' : '');
 
     try {
+      if (!isStream) {
+        // /query path: single JSON response, no streaming
+        statusBadge.innerHTML = '<span class="dot"></span> planning query…';
+        var resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var d = await resp.json();
+        // Render the plan as a compact preamble
+        if (d.plan) {
+          var planBox = document.createElement('div');
+          planBox.style.cssText = 'margin: 6px 0 12px; padding: 8px 12px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); font-size: 12px; font-family: var(--mono); color: var(--ink-dim); border-radius: 4px;';
+          planBox.innerHTML = '<strong>plan:</strong> intent=' + esc(d.plan.intent || '') +
+            ' · retriever=' + esc(d.plan.retriever || '') +
+            (d.plan.since_days != null ? ' · since=' + d.plan.since_days + 'd' : '') +
+            (d.plan.decay_days != null ? ' · decay=' + d.plan.decay_days + 'd' : '') +
+            '<br><strong>queries:</strong> ' + (d.plan.queries || []).map(esc).join(' · ');
+          asst.contentEl.appendChild(planBox);
+        }
+        sources = d.sources || [];
+        renderSources(asst.sourcesEl, sources);
+        accumulated = d.answer || '';
+        asst.contentEl.innerHTML += renderCitedHTML(accumulated);
+        statusBadge.remove();
+        asst.contentEl.classList.remove('cursor');
+        if (d.took) {
+          var meta = document.createElement('div');
+          meta.style.cssText = 'font-size: 11px; color: var(--ink-dim); font-family: var(--mono); margin-top: 8px;';
+          meta.textContent = 'answered in ' + d.took;
+          asst.contentEl.appendChild(meta);
+        }
+        setBusy(false);
+        return;
+      }
       var resp = await fetch(url, { headers: { 'Accept': 'text/event-stream' } });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       var reader = resp.body.getReader();
@@ -435,6 +533,14 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
                 meta.textContent = 'answered in ' + ev.took;
                 asst.contentEl.appendChild(meta);
               }
+            } else if (ev.type === 'suggest_escalation') {
+              // Iter 489: when /answer bails with no-info, surface a button
+              // to retry via /research?strategy=planner. The eval showed
+              // planner-decomposition recovers ~40% of these misses.
+              var hint = document.createElement('div');
+              hint.style.cssText = 'margin-top: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 13px;';
+              hint.innerHTML = 'Sources looked thin. <a href="' + esc(ev.suggest_escalation) + '" style="color: var(--accent); text-decoration: underline;">Try multi-step research mode →</a>';
+              asst.contentEl.appendChild(hint);
             } else if (ev.type === 'error') {
               throw new Error(ev.error || 'stream error');
             } else if (ev.type === 'warnings') {

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -77,9 +79,36 @@ func NewOpenAIChat(apiKey, url, model string) *OpenAIChatClient {
 func (c *OpenAIChatClient) Model() string { return c.model }
 
 type chatReq struct {
-	Model       string    `json:"model"`
-	Messages    []ChatMsg `json:"messages"`
-	Temperature float64   `json:"temperature"`
+	Model              string                 `json:"model"`
+	Messages           []ChatMsg              `json:"messages"`
+	Temperature        float64                `json:"temperature"`
+	MaxTokens          int                    `json:"max_tokens,omitempty"`
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
+}
+
+// chatMaxTokens caps generation at a sane bound so a thinking-loop or
+// runaway response can't burn the entire 32k context window. Default
+// 2048 (enough for 1500-word /answer responses); operators can raise
+// via COSIFT_CHAT_MAX_TOKENS for /research-style long outputs.
+func chatMaxTokens() int {
+	if v := os.Getenv("COSIFT_CHAT_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2048
+}
+
+// chatTemplateKwargs is the per-call extra args dict vLLM forwards into the
+// model's Jinja chat template. Today the only consumer is qwen3/qwen3.5
+// `enable_thinking` toggle — emitting "Thinking Process:" prose mid-answer
+// is a quality + latency regression for /answer. Disable by default; iter
+// 477e. Operators wanting to inspect reasoning can flip COSIFT_THINKING=1.
+func chatTemplateKwargs() map[string]interface{} {
+	if os.Getenv("COSIFT_THINKING") == "1" {
+		return nil
+	}
+	return map[string]interface{}{"enable_thinking": false}
 }
 
 type chatResp struct {
@@ -103,8 +132,24 @@ type chatResp struct {
 // before strip.
 var thinkBlockRE = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
 
+// thinkProsePrefixRE matches qwen3-style thinking-mode prose that some
+// models emit even when <think> tags are disabled — typically starts with
+// "Thinking Process:" or "Let me think" and runs until a clear answer
+// marker ("Final Answer:", "## Answer", or just numbered "5.  **Final"...).
+// Anchored to start so we don't strip mid-answer mentions.
+var thinkProsePrefixRE = regexp.MustCompile(`(?si)^\s*(?:thinking process|reasoning|let me think|let's think)[\s\S]*?(?:final answer:?\s*|##\s*answer\s*|\*\*final answer\*\*:?\s*)`)
+
+// orphanThinkOpenRE strips a trailing/orphaned `<think>` with no closing tag.
+// Happens when the model gets cut off by max_tokens mid-think. We keep
+// content before any <think> and discard everything from <think> onward
+// as a last-resort scrub.
+var orphanThinkOpenRE = regexp.MustCompile(`(?s)<think>.*$`)
+
 func stripThinkingBlocks(s string) string {
-	return strings.TrimSpace(thinkBlockRE.ReplaceAllString(s, ""))
+	s = thinkBlockRE.ReplaceAllString(s, "")
+	s = orphanThinkOpenRE.ReplaceAllString(s, "")
+	s = thinkProsePrefixRE.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // Chat sends messages and returns the assistant content. Temperature pinned to
@@ -113,7 +158,7 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	if len(msgs) == 0 {
 		return "", errors.New("chat: no messages")
 	}
-	body, err := json.Marshal(chatReq{Model: c.model, Messages: msgs, Temperature: 0})
+	body, err := json.Marshal(chatReq{Model: c.model, Messages: msgs, Temperature: 0, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs()})
 	if err != nil {
 		return "", err
 	}
@@ -150,6 +195,17 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	return stripThinkingBlocks(parsed.Choices[0].Message.Content), nil
 }
 
+// chatStreamReq mirrors chatReq + the stream flag. Kept separate so the
+// non-stream Chat() path doesn't bear an unused field at marshal time.
+type chatStreamReq struct {
+	Model              string                 `json:"model"`
+	Messages           []ChatMsg              `json:"messages"`
+	Temperature        float64                `json:"temperature"`
+	Stream             bool                   `json:"stream"`
+	MaxTokens          int                    `json:"max_tokens,omitempty"`
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
+}
+
 // ChatStream sends the request with stream=true and parses the SSE response
 // chunk-by-chunk. Each delta fires onChunk; the full concatenated content is
 // returned at the end. OpenAI, vLLM, llama.cpp, Together, Azure, and most
@@ -162,12 +218,7 @@ func (c *OpenAIChatClient) ChatStream(ctx context.Context, msgs []ChatMsg, onChu
 	if len(msgs) == 0 {
 		return "", errors.New("chat: no messages")
 	}
-	body, err := json.Marshal(struct {
-		Model       string    `json:"model"`
-		Messages    []ChatMsg `json:"messages"`
-		Temperature float64   `json:"temperature"`
-		Stream      bool      `json:"stream"`
-	}{Model: c.model, Messages: msgs, Temperature: 0, Stream: true})
+	body, err := json.Marshal(chatStreamReq{Model: c.model, Messages: msgs, Temperature: 0, Stream: true, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs()})
 	if err != nil {
 		return "", err
 	}

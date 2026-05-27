@@ -14,6 +14,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -37,13 +38,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/crawler"
+	"github.com/pilot-protocol/cosift/internal/crawler"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/rerank"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) error {
@@ -309,13 +310,26 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		srv.reranker = rerank.NewHTTPReranker(cfg.Rerank.URL, apiKey, cfg.Rerank.Model)
 		log.Printf("pebble-serve: rerank enabled (http: %s, model=%s)", cfg.Rerank.URL, cfg.Rerank.Model)
 	} else if cfg.Rerank.Enabled && srv.chat != nil {
-		srv.reranker = rerank.NewLLMReranker(srv.chat)
-		log.Printf("pebble-serve: rerank enabled (llm: %s)", cfg.Chat.Model)
+		// Iter 477: when cfg.Rerank.Model is set and differs from cfg.Chat.Model,
+		// build a separate chat client for rerank pointing at the same /v1 URL
+		// but with the alternate model. Lets operators dedicate a small/fast
+		// model (e.g. qwen3.5:0.8b) to rerank so it doesn't queue behind chat
+		// generations on the same model. Falls back to the main chat client
+		// when Rerank.Model is empty or equal to Chat.Model.
+		rerankChat := srv.chat
+		if cfg.Rerank.Model != "" && cfg.Rerank.Model != cfg.Chat.Model {
+			apiKey := resolveAPIKey("chat")
+			rerankChat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Rerank.Model)
+			log.Printf("pebble-serve: rerank using dedicated chat (model=%s, url=%s)", cfg.Rerank.Model, cfg.Chat.URL)
+		}
+		srv.reranker = rerank.NewLLMReranker(rerankChat)
+		log.Printf("pebble-serve: rerank enabled (llm: %s)", rerankChat.Model())
 	}
 	srv.rerankCandK = cfg.Rerank.CandidateK
 	if srv.rerankCandK <= 0 {
 		srv.rerankCandK = 20
 	}
+	srv.hostBoosts = cfg.Defaults.HostBoosts
 
 	mux := http.NewServeMux()
 	// Iter 394: optional per-IP token-bucket rate limit. Built once from env;
@@ -351,6 +365,17 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
+	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
+	mux.HandleFunc("POST /admin/rss-import", wrap(srv.handleRSSImport))
+	mux.HandleFunc("POST /admin/crawl-now", wrap(srv.handleCrawlNow))
+	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
+	mux.HandleFunc("POST /admin/wet-import-bulk", wrap(srv.handleWETImportBulk))
+	mux.HandleFunc("POST /admin/site-pack", wrap(srv.handleSitePack))
+	mux.HandleFunc("POST /admin/embed-backfill", wrap(srv.handleEmbedBackfill))
+	mux.HandleFunc("GET /admin/eval-quick", wrap(srv.handleEvalQuick))
+	mux.HandleFunc("POST /admin/hnsw-compact", wrap(srv.handleHNSWCompact))
+	mux.HandleFunc("GET /query", wrap(srv.handleQuery))
+	mux.HandleFunc("POST /query", wrap(srv.handleQuery))
 	// Iter 456: import a sitemap.xml (or sitemap-index) and push every
 	// listed URL into the live frontier.
 	mux.HandleFunc("POST /admin/sitemap-import", wrap(srv.handleSitemapImport))
@@ -543,6 +568,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// Iter 456: expose SeedSitemap so /admin/sitemap-import can push
 	// sitemap-discovered URLs into the live frontier.
 	s.crawlSeedSitemap = c.SeedSitemap
+	s.crawlSeedRSS = c.SeedRSS
+	s.crawlFetchNow = c.FetchAndIndexNow
+	s.crawlSeedWET = c.SeedWET
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -589,6 +617,16 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 			case <-t.C:
 				n := s.hnsw.Len()
 				if n == 0 || n == lastN {
+					continue
+				}
+				// Iter 501: graph can shrink (e.g., /admin/hnsw-compact rewrites
+				// indices and writes a smaller meta). When that happens, lastN
+				// from before the compaction is stale and > n; PersistFrom(lastN)
+				// would be a no-op forever, stranding any new AddPassages until
+				// shutdown. The compact handler does its own full Persist so disk
+				// is already in sync; we just need to resync lastN here.
+				if n < lastN {
+					lastN = n
 					continue
 				}
 				t0 := time.Now()
@@ -643,6 +681,11 @@ type pebbleHTTP struct {
 	reranker   rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
 	rerankCandK int            // candidates pulled for rerank; default 20
 
+	// hostBoosts (iter 504) is the operator-configured host-suffix →
+	// multiplier map, applied to fused retrieval scores by /query.
+	// Empty / nil = no boosts (fast path).
+	hostBoosts map[string]float64
+
 	// Iter 394: per-IP token-bucket rate limiter. Nil = disabled.
 	rl *rateLimiter
 
@@ -655,6 +698,9 @@ type pebbleHTTP struct {
 	// crawlSeedSitemap (iter 456) wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)
+	crawlSeedRSS     func(ctx context.Context, url string) (int, error)
+	crawlFetchNow    func(ctx context.Context, url string) error
+	crawlSeedWET     func(ctx context.Context, url string, dedupeFresh, lexicalOnly bool) (int, error)
 
 	// Iter 403: doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -1643,6 +1689,37 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"queued": req.URL})
 }
 
+// handleFrontierPurgeHost deletes every queued frontier entry whose host
+// matches the supplied value. Used to drain blacklisted hosts that the
+// round-robin cursor would take days to chew through one-by-one (the
+// cursor visits each host once per cycle; a 5M-entry host needs 5M
+// cycles to drain, days of cycle time at typical claim rates). Iter 477h.
+type frontierPurgeReq struct {
+	Host string `json:"host"`
+}
+
+func (s *pebbleHTTP) handleFrontierPurgeHost(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+			return
+		}
+	}
+	var req frontierPurgeReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.Host == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"host\": \"...\"}")
+		return
+	}
+	n, err := s.store.PurgeFrontierByHost(r.Context(), req.Host)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"purged": n, "host": req.Host})
+}
+
 // handleSitemapImport fetches a sitemap.xml (or sitemap-index, one level
 // of recursion) and pushes every <loc> entry to the live frontier. Same
 // auth as crawl-enqueue. Synchronous — returns when all URLs are queued.
@@ -1680,6 +1757,759 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 		"sitemap":  req.URL,
 		"queued":   n,
 		"elapsed":  time.Since(t0).String(),
+	})
+}
+
+// handleCrawlNow runs the fetch-parse-index pipeline synchronously for one
+// or more URLs, bypassing the persistent frontier entirely. Use this when
+// the round-robin cursor in a large frontier (10M+) would take hours to
+// reach an explicitly-seeded URL — direct fetch + UpsertDocument + chunk +
+// embed all happen in this request. Returns per-URL outcomes. Iter 480.
+type crawlNowReq struct {
+	URLs []string `json:"urls"`
+	URL  string   `json:"url,omitempty"`
+}
+
+func (s *pebbleHTTP) handleCrawlNow(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlFetchNow == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req crawlNowReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "expected {\"urls\":[...]} or {\"url\":\"...\"}")
+		return
+	}
+	urls := req.URLs
+	if req.URL != "" {
+		urls = append(urls, req.URL)
+	}
+	if len(urls) == 0 {
+		writeProblem(w, http.StatusBadRequest, "no URLs in body")
+		return
+	}
+	results := make([]map[string]any, 0, len(urls))
+	t0 := time.Now()
+	for _, u := range urls {
+		err := s.crawlFetchNow(r.Context(), u)
+		out := map[string]any{"url": u}
+		if err != nil {
+			out["error"] = err.Error()
+		} else {
+			out["ok"] = true
+		}
+		results = append(results, out)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results": results,
+		"elapsed": time.Since(t0).String(),
+	})
+}
+
+// evalQuickQueries is the canned smoke-eval set. Chosen for breadth:
+// 3 definition + 3 technical-howto + 2 comparison + 2 findability. Tracks
+// the same answered/no-info/error verdicts the external 60-Q harness uses,
+// so a regression here predicts a regression in the bigger eval. Hardcoded
+// (no new deps) so any operator can hit /admin/eval-quick and get an
+// answer rate without setting up Python or external test infra. Iter 490.
+var evalQuickQueries = []string{
+	"what is BM25 ranking function",
+	"what is HNSW algorithm",
+	"what is reciprocal rank fusion",
+	"how does retrieval augmented generation work",
+	"how does Go goroutines scheduling work",
+	"explain CAP theorem in distributed systems",
+	"compare BM25 vs dense vector retrieval",
+	"compare REST vs GraphQL APIs",
+	"what is Pilot Protocol overlay network",
+	"what is sentence embedding",
+}
+
+// handleEvalQuick runs the 10-query smoke eval against the running cosift
+// and returns answered-rate + per-query verdicts. Each query hits /answer
+// in-process (re-uses the same chat/retrieval stack as a real /answer call),
+// so the rate that comes back matches what users see. Iter 490.
+func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented, "eval-quick requires cfg.Chat.Model")
+		return
+	}
+	// Iter 500: the server-wide WriteTimeout (60s) was killing this handler
+	// before 10 sequential /answer calls finished — connection closed mid-write,
+	// curl saw "empty reply from server" (exit 52). Disable the deadline for
+	// this long-running admin endpoint via ResponseController. Pairs with
+	// bounded-parallel dispatch below so the 10-query batch finishes in
+	// ~one chat-LLM round-trip instead of ten.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+	type queryResult struct {
+		Query     string `json:"query"`
+		Verdict   string `json:"verdict"` // answered | no_info | empty | error
+		LatencyMs int    `json:"latency_ms"`
+		Sources   int    `json:"sources"`
+		Suggest   string `json:"suggest_escalation,omitempty"`
+	}
+	results := make([]queryResult, len(evalQuickQueries))
+	t0 := time.Now()
+
+	// Bounded-parallel dispatch. vLLM batches concurrent requests so 4-wide
+	// fan-out finishes in roughly one chat round-trip rather than 10.
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, q := range evalQuickQueries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			qStart := time.Now()
+			subReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet,
+				"/answer?q="+url.QueryEscape(q)+"&stream=false&retriever=hybrid", nil)
+			rec := newResponseRecorder()
+			s.handleAnswer(rec, subReq)
+			latencyMs := int(time.Since(qStart) / time.Millisecond)
+
+			var ar answerResponse
+			if jerr := json.Unmarshal(rec.body.Bytes(), &ar); jerr != nil || rec.code >= 400 {
+				results[i] = queryResult{Query: q, Verdict: "error", LatencyMs: latencyMs}
+				return
+			}
+			var verdict string
+			switch {
+			case len(ar.Answer) < 30:
+				verdict = "empty"
+			case answerLooksLikeNoInfo(ar.Answer):
+				verdict = "no_info"
+			default:
+				verdict = "answered"
+			}
+			results[i] = queryResult{
+				Query:     q,
+				Verdict:   verdict,
+				LatencyMs: latencyMs,
+				Sources:   len(ar.Sources),
+				Suggest:   ar.SuggestEscalation,
+			}
+		}(i, q)
+	}
+	wg.Wait()
+
+	answered, noInfo, errors, empty, totalMs := 0, 0, 0, 0, 0
+	for _, r := range results {
+		totalMs += r.LatencyMs
+		switch r.Verdict {
+		case "answered":
+			answered++
+		case "no_info":
+			noInfo++
+		case "empty":
+			empty++
+		default:
+			errors++
+		}
+	}
+	n := len(evalQuickQueries)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"queries":          n,
+		"answered":         answered,
+		"no_info":          noInfo,
+		"empty":            empty,
+		"errors":           errors,
+		"answer_rate_pct":  100 * answered / n,
+		"avg_latency_ms":   totalMs / n,
+		"total_elapsed":    time.Since(t0).String(),
+		"chat_model":       s.chat.Model(),
+		"results":          results,
+	})
+}
+
+// handleHNSWCompact runs HNSW.Compact() in-place, then clears the persisted
+// 'v' family and writes a fresh full snapshot so disk matches the compacted
+// in-memory graph. Cheaper than the offline hnsw-rebuild subcommand: Compact
+// keeps the existing topology among surviving nodes (O(N + edges)), whereas
+// Rebuild re-inserts every node via HNSW search (multiple minutes per million
+// passages). Operators run this when stats.zombie_nodes climbs above ~30% of
+// nodes_total. Iter 501.
+//
+// Synchronous; holds the HNSW write lock during the compact step and the
+// read lock during the persist step. Dense retrieval and AddPassage calls
+// queue for the duration. The server-wide WriteTimeout is disabled here via
+// ResponseController because compacting a multi-million-node graph routinely
+// runs past 60s. Returns counters so operators can confirm progress.
+func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.hnsw == nil {
+		writeProblem(w, http.StatusNotImplemented, "hnsw-compact requires a loaded HNSW graph")
+		return
+	}
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+	skipPersist := r.URL.Query().Get("skip_persist") == "1"
+
+	before := s.hnsw.Len()
+	t0 := time.Now()
+	removed := s.hnsw.Compact()
+	compactDur := time.Since(t0)
+	after := s.hnsw.Len()
+
+	resp := map[string]any{
+		"nodes_before":   before,
+		"nodes_after":    after,
+		"removed":        removed,
+		"compact_ms":     compactDur.Milliseconds(),
+		"persisted":      false,
+	}
+
+	if removed == 0 || skipPersist {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Compact remapped node indices; the persisted 'v' family now points at
+	// stale slots. Wipe and full-rewrite. PQ codes follow node indices too,
+	// so clear 'q' as well — operators must re-run /admin/pq-train if PQ was
+	// in use.
+	persistT0 := time.Now()
+	ctx := r.Context()
+	if err := s.store.ClearVectorFamily(ctx); err != nil {
+		resp["persist_error"] = "clear vector family: " + err.Error()
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	if err := s.store.ClearPQFamily(ctx); err != nil {
+		resp["persist_error"] = "clear pq family: " + err.Error()
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	if err := s.hnsw.Persist(ctx, s.store); err != nil {
+		resp["persist_error"] = "persist: " + err.Error()
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	resp["persisted"] = true
+	resp["persist_ms"] = time.Since(persistT0).Milliseconds()
+	log.Printf("hnsw-compact: removed=%d (%.1f%% zombies) compact=%s persist=%s nodes %d→%d",
+		removed, 100*float64(removed)/float64(before),
+		compactDur.Round(time.Millisecond), time.Since(persistT0).Round(time.Millisecond),
+		before, after)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// responseRecorder captures an http.Handler's output for in-process
+// dispatch. Minimal — only what handleEvalQuick needs. Iter 490.
+type responseRecorder struct {
+	hdr  http.Header
+	body bytes.Buffer
+	code int
+}
+
+func newResponseRecorder() *responseRecorder {
+	return &responseRecorder{hdr: make(http.Header), code: 200}
+}
+
+func (r *responseRecorder) Header() http.Header         { return r.hdr }
+func (r *responseRecorder) Write(b []byte) (int, error) { return r.body.Write(b) }
+func (r *responseRecorder) WriteHeader(c int)           { r.code = c }
+
+// handleEmbedBackfill walks famDocMeta, finds docs whose URL has zero
+// HNSW vector nodes (lexical-only ingest from WET imports, or any docs
+// indexed before an embedder was wired), and embeds them. Pairs with
+// /admin/wet-import?lexical_only=true so bulk-loaded content gets dense
+// retrieval after the fast lexical pass. Iter 487.
+//
+// Body: {"limit": 10000, "workers": 4}
+//   - limit:   cap on docs processed this call (0 = unlimited)
+//   - workers: concurrent embed pipelines (default 4)
+//
+// Idempotent against concurrent re-runs — re-embedding a doc that
+// already has vectors is a no-op because UpsertPassage just adds more
+// nodes pointing at the same URL (which the iter-477 dedup-by-URL in
+// HNSW.Search picks the best of anyway). Cleaner: zombie-reclaim kicks
+// in to invalidate prior, then fresh vectors take over.
+type embedBackfillReq struct {
+	Limit   int `json:"limit,omitempty"`
+	Workers int `json:"workers,omitempty"`
+}
+
+func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.embedder == nil || s.hnsw == nil {
+		writeProblem(w, http.StatusNotImplemented, "embed backfill requires both an embedder and HNSW graph to be configured")
+		return
+	}
+	var req embedBackfillReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	_ = json.Unmarshal(body, &req)
+	if req.Workers <= 0 {
+		req.Workers = 4
+	}
+	if req.Workers > 32 {
+		req.Workers = 32
+	}
+
+	// Pipeline: iter docs → filter (no-vector) → chunker → embed → write.
+	// Bounded channel so we don't materialize the candidate list in memory.
+	type cand struct {
+		docID int64
+		url   string
+	}
+	candCh := make(chan cand, req.Workers*4)
+
+	t0 := time.Now()
+	var scanned, missing, embedded atomic.Int64
+
+	// Find candidates: docs with zero HNSW vectors. Producer.
+	go func() {
+		defer close(candCh)
+		_ = s.store.IterDocsLite(r.Context(), func(docID int64, url string) error {
+			scanned.Add(1)
+			if req.Limit > 0 && missing.Load() >= int64(req.Limit) {
+				return errors.New("limit reached") // sentinel — stops IterDocsLite
+			}
+			if _, ok := s.hnsw.LookupVectorByURL(url); ok {
+				return nil // already has vectors
+			}
+			missing.Add(1)
+			select {
+			case candCh <- cand{docID: docID, url: url}:
+			case <-r.Context().Done():
+				return r.Context().Err()
+			}
+			return nil
+		})
+	}()
+
+	// Worker pool: chunk + embed + write passages per doc.
+	var wg sync.WaitGroup
+	for i := 0; i < req.Workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for c := range candCh {
+				doc, err := s.store.GetDocByID(r.Context(), c.docID)
+				if err != nil || doc == nil || doc.Text == "" {
+					continue
+				}
+				// Use index defaults (NewChunker passes 0,0 = default 320/64).
+				chunker := index.NewChunker()
+				chunks := chunker.Chunk(doc.Text)
+				if len(chunks) == 0 {
+					continue
+				}
+				const tokenCap = 1500
+				texts := make([]string, len(chunks))
+				for j, ch := range chunks {
+					texts[j] = truncateForEmbedLite(ch.Text, tokenCap)
+				}
+				vecs, eErr := s.embedder.Embed(r.Context(), texts)
+				if eErr != nil || len(vecs) != len(chunks) {
+					continue
+				}
+				for j, ch := range chunks {
+					s.hnsw.AddPassage(doc.URL, doc.Title, ch.Offset, ch.Length, vecs[j])
+					_ = j
+				}
+				embedded.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	log.Printf("embed-backfill: scanned=%d missing=%d embedded=%d in %s",
+		scanned.Load(), missing.Load(), embedded.Load(), time.Since(t0).Round(time.Second))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scanned":  scanned.Load(),
+		"missing":  missing.Load(),
+		"embedded": embedded.Load(),
+		"elapsed":  time.Since(t0).String(),
+	})
+}
+
+// truncateForEmbedLite mirrors the crawler's helper without pulling the
+// crawler package in. Same heuristic: cap by approximate token count.
+// Iter 487.
+func truncateForEmbedLite(s string, tokenCap int) string {
+	// Rough: 1 token ≈ 4 chars for ASCII; cap at 4×tokenCap bytes as a
+	// fast upper bound. Real chunker is at ~320 words = ~1200 tokens, so
+	// 1500-token cap rarely triggers.
+	maxBytes := tokenCap * 4
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[:maxBytes]
+}
+
+// handleSitePack discovers a site's sitemaps + RSS feeds and bulk-enqueues
+// everything found. Targets the "I want to index THIS site" operator flow
+// without editing cosift.json + restarting + waiting for the cursor.
+// Discovery order:
+//   1. GET https://<host>/robots.txt — look for `Sitemap:` directives
+//   2. Fallback to canonical /sitemap.xml + /sitemap_index.xml
+//   3. RSS at common paths: /feed, /feed.xml, /rss, /rss.xml, /atom.xml, /feed/atom
+// Each found resource is run through the existing SeedSitemap / SeedRSS
+// primitives. Returns per-resource counts. Iter 492.
+type sitePackReq struct {
+	Host string `json:"host"` // e.g. "example.com" or "blog.example.com" — no scheme
+}
+
+func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedSitemap == nil || s.crawlSeedRSS == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req sitePackReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.Host == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"host\":\"example.com\"}")
+		return
+	}
+	host := strings.TrimSpace(req.Host)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimSuffix(host, "/")
+	if host == "" || strings.Contains(host, "/") {
+		writeProblem(w, http.StatusBadRequest, "host must be a bare hostname like example.com")
+		return
+	}
+	base := "https://" + host
+	hc := &http.Client{Timeout: 20 * time.Second}
+
+	type result struct {
+		Source  string `json:"source"` // "robots-sitemap" | "fallback-sitemap" | "rss"
+		URL     string `json:"url"`
+		Indexed int    `json:"indexed"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := make([]result, 0, 8)
+	t0 := time.Now()
+
+	// Step 1: robots.txt for Sitemap: directives.
+	sitemapsFromRobots := []string{}
+	if rresp, err := hc.Get(base + "/robots.txt"); err == nil && rresp.StatusCode < 400 {
+		rbody, _ := io.ReadAll(io.LimitReader(rresp.Body, 2<<20))
+		rresp.Body.Close()
+		for _, line := range strings.Split(string(rbody), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(strings.ToLower(line), "sitemap:") {
+				val := strings.TrimSpace(line[len("sitemap:"):])
+				if val != "" {
+					sitemapsFromRobots = append(sitemapsFromRobots, val)
+				}
+			}
+		}
+	}
+	// Step 2: if robots.txt gave nothing, try canonical paths.
+	candidateSitemaps := sitemapsFromRobots
+	if len(candidateSitemaps) == 0 {
+		// Iter 493: extended fallback paths. /sitemap.xml is the canonical
+		// spec but many CMSes (WordPress, Yoast, Ghost, Hugo themes) ship
+		// at non-canonical paths. Try a small ordered list before giving up.
+		// Stops on first successful fetch — the order matters: /sitemap.xml
+		// first (most common), then WordPress's /wp-sitemap.xml + Yoast's
+		// per-content-type splits, then index variants.
+		for _, p := range []string{
+			"/sitemap.xml",
+			"/wp-sitemap.xml",         // WordPress 5.5+
+			"/sitemap_index.xml",      // Yoast SEO
+			"/post-sitemap.xml",       // Yoast posts
+			"/page-sitemap.xml",       // Yoast pages
+			"/sitemap-index.xml",      // some CMSes hyphenate
+			"/sitemap.xml.gz",         // gzipped variant (sitemap.go handles .gz)
+		} {
+			candidateSitemaps = append(candidateSitemaps, base+p)
+		}
+	}
+	for _, su := range candidateSitemaps {
+		n, err := s.crawlSeedSitemap(r.Context(), su)
+		res := result{URL: su, Indexed: n}
+		if len(sitemapsFromRobots) > 0 {
+			res.Source = "robots-sitemap"
+		} else {
+			res.Source = "fallback-sitemap"
+		}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		results = append(results, res)
+	}
+	// Step 3: common RSS paths.
+	for _, p := range []string{"/feed", "/feed.xml", "/rss", "/rss.xml", "/atom.xml", "/feed/atom"} {
+		fu := base + p
+		n, err := s.crawlSeedRSS(r.Context(), fu)
+		// Silently skip RSS paths that 404 / don't parse — most sites have
+		// only one of the listed paths.
+		if err != nil && n == 0 {
+			continue
+		}
+		results = append(results, result{Source: "rss", URL: fu, Indexed: n})
+	}
+
+	total := 0
+	for _, r := range results {
+		total += r.Indexed
+	}
+	log.Printf("site-pack: %s discovered %d resources, enqueued %d URLs in %s",
+		host, len(results), total, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":          host,
+		"resources":     len(results),
+		"total_indexed": total,
+		"elapsed":       time.Since(t0).String(),
+		"results":       results,
+	})
+}
+
+// handleWETImportBulk fetches a CommonCrawl `wet.paths.gz` manifest,
+// takes the first N entries (or skip+take), and runs `/admin/wet-import`
+// against each one in parallel. Lets operators bulk-ingest a release with
+// one call instead of repeatedly POSTing per file. Synchronous — blocks
+// until all N finish, returns total docs indexed. Iter 491.
+//
+// Example body:
+//   {"manifest_url":"https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-51/wet.paths.gz",
+//    "count":4, "skip":0, "concurrency":2, "lexical_only":true}
+type wetImportBulkReq struct {
+	ManifestURL string `json:"manifest_url"`
+	Count       int    `json:"count"`
+	Skip        int    `json:"skip,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+	LexicalOnly bool   `json:"lexical_only,omitempty"`
+	DedupeFresh bool   `json:"dedupe_fresh,omitempty"`
+}
+
+func (s *pebbleHTTP) handleWETImportBulk(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedWET == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req wetImportBulkReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.ManifestURL == "" || req.Count <= 0 {
+		writeProblem(w, http.StatusBadRequest, "expected {\"manifest_url\":\"https://.../wet.paths.gz\",\"count\":N}")
+		return
+	}
+	if req.Concurrency <= 0 {
+		req.Concurrency = 2
+	}
+	if req.Concurrency > 8 {
+		req.Concurrency = 8 // beyond this the pebble write lock dominates anyway
+	}
+
+	// Fetch the manifest. wet.paths.gz is a gzipped newline-delimited list
+	// of relative paths under data.commoncrawl.org.
+	mreq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.ManifestURL, nil)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "build manifest request: "+err.Error())
+		return
+	}
+	mreq.Header.Set("User-Agent", "cosift-bulk-import")
+	mresp, err := (&http.Client{Timeout: 60 * time.Second}).Do(mreq)
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "fetch manifest: "+err.Error())
+		return
+	}
+	defer mresp.Body.Close()
+	if mresp.StatusCode >= 400 {
+		writeProblem(w, http.StatusBadGateway, fmt.Sprintf("manifest http %d", mresp.StatusCode))
+		return
+	}
+	zr, err := gzip.NewReader(mresp.Body)
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "gunzip manifest: "+err.Error())
+		return
+	}
+	defer zr.Close()
+	mbody, err := io.ReadAll(io.LimitReader(zr, 32<<20))
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "read manifest: "+err.Error())
+		return
+	}
+	// Each line is a path like "crawl-data/CC-MAIN-.../wet/...warc.wet.gz".
+	// Prepend the data.commoncrawl.org base.
+	all := strings.Split(strings.TrimSpace(string(mbody)), "\n")
+	if req.Skip >= len(all) {
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("skip=%d exceeds manifest size %d", req.Skip, len(all)))
+		return
+	}
+	end := req.Skip + req.Count
+	if end > len(all) {
+		end = len(all)
+	}
+	paths := all[req.Skip:end]
+
+	// Run imports in parallel, bounded by concurrency.
+	type result struct {
+		URL     string `json:"url"`
+		Indexed int    `json:"indexed"`
+		Elapsed string `json:"elapsed"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := make([]result, len(paths))
+	sem := make(chan struct{}, req.Concurrency)
+	var wg sync.WaitGroup
+	t0 := time.Now()
+	for i, p := range paths {
+		i, p := i, strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			full := "https://data.commoncrawl.org/" + p
+			start := time.Now()
+			n, err := s.crawlSeedWET(r.Context(), full, req.DedupeFresh, req.LexicalOnly)
+			results[i].URL = full
+			results[i].Indexed = n
+			results[i].Elapsed = time.Since(start).Round(time.Second).String()
+			if err != nil {
+				results[i].Error = err.Error()
+			}
+		}()
+	}
+	wg.Wait()
+
+	total := 0
+	for _, r := range results {
+		total += r.Indexed
+	}
+	log.Printf("wet-import-bulk: indexed %d docs from %d WET files in %s", total, len(paths), time.Since(t0).Round(time.Second))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"manifest_url":  req.ManifestURL,
+		"files":         len(paths),
+		"total_indexed": total,
+		"elapsed":       time.Since(t0).String(),
+		"results":       results,
+	})
+}
+
+// handleWETImport streams a CommonCrawl WET file (gzipped, pre-extracted
+// plain text per URL) and runs each record through UpsertDocument + BM25
+// indexing + chunk + embed. Bypasses the fetch-and-parse pipeline entirely
+// because WET bodies are already extracted text — typically 50-100× faster
+// than open-web crawling. Iter 485.
+//
+// Example: POST {"url":"https://data.commoncrawl.org/crawl-data/CC-MAIN-2025-09/segments/.../wet/CC-MAIN-...wet.gz"}
+type wetImportReq struct {
+	URL         string `json:"url"`
+	DedupeFresh bool   `json:"dedupe_fresh,omitempty"` // skip URLs already-fresh in famDoc
+	LexicalOnly bool   `json:"lexical_only,omitempty"` // BM25-only ingest, defer dense embed to /admin/embed-backfill
+}
+
+func (s *pebbleHTTP) handleWETImport(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedWET == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req wetImportReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.URL == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"url\":\"https://.../...warc.wet.gz\"}")
+		return
+	}
+	t0 := time.Now()
+	n, err := s.crawlSeedWET(r.Context(), req.URL, req.DedupeFresh, req.LexicalOnly)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("wet-import: indexed %d docs from %s in %s", n, req.URL, time.Since(t0).Round(time.Second))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"wet":     req.URL,
+		"indexed": n,
+		"elapsed": time.Since(t0).String(),
+	})
+}
+
+// handleRSSImport fetches an RSS 2.0 or Atom feed and pushes every <item>/
+// <entry> link to the live frontier. Same auth shape as sitemap-import.
+// Designed to be cron-friendly: idempotent against the frontier (re-seeding
+// the same feed only adds newly-listed items). Iter 478.
+type rssImportReq struct {
+	URL string `json:"url"`
+}
+
+func (s *pebbleHTTP) handleRSSImport(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedRSS == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req rssImportReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.URL == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"url\": \"https://.../feed.xml\"}")
+		return
+	}
+	t0 := time.Now()
+	n, err := s.crawlSeedRSS(r.Context(), req.URL)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("rss-import: queued %d URLs from %s in %s", n, req.URL, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"feed":    req.URL,
+		"queued":  n,
+		"elapsed": time.Since(t0).String(),
 	})
 }
 
@@ -3042,9 +3872,11 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 // streaming, no rerank, no query expansion. Those land in follow-up iters
 // once this surface is exercised. Returns 501 when no chat model is
 // configured so the absent capability fails loud instead of silent.
-const answerSystemPrompt = `You are a research assistant. Answer the user's question using ONLY the provided sources.
+const answerSystemPrompt = `You are a research assistant. Answer the user's question using the provided sources.
 - Cite sources by their numeric id in square brackets, e.g. [1] or [2,3]. Every factual claim needs a citation.
-- If the sources do not contain the answer, say so plainly. Do not invent facts.
+- Synthesize the answer from what the sources state, including reasonable inferences from adjacent context — sources rarely state every answer verbatim.
+- Only fall back to "the sources do not cover X" if NONE of the sources have any relevant material at all. Do not refuse just because the exact formula, number, or phrase isn't quoted verbatim — extract whatever IS there and say so.
+- Do not invent facts not supported by the sources.
 - Keep the answer focused on what the sources actually say; do not pad.`
 
 // Iter 252: HyDE-style query expansion prompt. Borrowed verbatim from
@@ -3340,6 +4172,24 @@ func normalizeExpandMode(raw string) string {
 // Iter 389.
 func parseDecayHalfLife(raw string) (float64, bool) {
 	if raw == "" {
+		// Iter 498: default time-decay on. Half-life from COSIFT_DEFAULT_DECAY_DAYS
+		// (default 180 days = 6 months). Docs older than 6 months get exponentially
+		// less weight in the score; recent docs surface naturally without keyword
+		// hacks like the iter-497 JS regex. Set the env to 0 to disable globally.
+		// Explicit ?decay=N still wins.
+		def := 180.0
+		if v := os.Getenv("COSIFT_DEFAULT_DECAY_DAYS"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+				def = f
+			}
+		}
+		if def <= 0 {
+			return 0, false
+		}
+		return def, true
+	}
+	// Iter 498: explicit decay=0 disables (even if env default is on).
+	if raw == "0" {
 		return 0, false
 	}
 	v, err := strconv.ParseFloat(raw, 64)
@@ -3687,6 +4537,35 @@ type answerResponse struct {
 	Warnings        []string       `json:"warnings,omitempty"`
 	TotalCandidates int            `json:"total_candidates,omitempty"`
 	Took            string         `json:"took"`
+	// Iter 489: when the answer matches a "sources do not contain" pattern,
+	// surface a hint URL pointing at /research?strategy=planner. The 60-Q
+	// eval showed multi-hop decomposition rescues ~40% of findability +
+	// factual-lookup misses. Purely additive — clients decide whether to
+	// render a "Try research mode" affordance.
+	SuggestEscalation string `json:"suggest_escalation,omitempty"`
+}
+
+// answerLooksLikeNoInfo returns true when the answer reads as "sources don't
+// cover this" — the canonical /research-escalation trigger. Same phrase set
+// the eval uses; kept in sync so eval results predict escalation rate.
+// Iter 489.
+func answerLooksLikeNoInfo(s string) bool {
+	if len(s) > 800 {
+		// Long answers with one disclaimer line aren't bails — only treat
+		// short, mostly-disclaimer responses as escalation candidates.
+		return false
+	}
+	low := strings.ToLower(s)
+	for _, p := range []string{
+		"do not contain", "do not provide", "sources don",
+		"not contain the", "no information", "do not include",
+		"do not have", "do not cover", "not mention", "no mention",
+	} {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
@@ -3939,6 +4818,10 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		resp.EffectiveQuery = effectiveQuery
 	}
 	resp.Warnings = s.warningsFor(r)
+	// Iter 489: suggest /research escalation when the model bailed.
+	if answerLooksLikeNoInfo(answer) {
+		resp.SuggestEscalation = "/research?q=" + url.QueryEscape(q) + "&strategy=planner"
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -3967,12 +4850,21 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 	}
 	sse(srcEvt)
 
-	_, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
+	full, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
 		sse(map[string]any{"type": "answer_chunk", "text": delta})
 	})
 	if err != nil {
 		sse(map[string]any{"type": "error", "error": err.Error()})
 		return
+	}
+	// Iter 489: parallel to the sync path — emit a suggest_escalation event
+	// when the streamed answer reads as a no-info bail. UI can render a
+	// "Try research mode" button after the answer finishes streaming.
+	if answerLooksLikeNoInfo(full) {
+		sse(map[string]any{
+			"type":               "suggest_escalation",
+			"suggest_escalation": "/research?q=" + url.QueryEscape(q) + "&strategy=planner",
+		})
 	}
 	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
 }
@@ -3983,6 +4875,256 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 // SQLite-side /research planner strategy. No streaming, no rerank, no
 // paraphrase strategy yet — those follow once this surface is exercised.
 const researchPlanPrompt = `Decompose the user's research question into 2-3 focused sub-queries that, taken together, would cover the answer. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["sub-query 1", "sub-query 2"]`
+
+// queryPlanPrompt is the iter-499 LLM-orchestrator prompt. The model
+// analyzes the user's natural-language query, classifies intent, and
+// outputs a structured retrieval plan: expanded queries (3 variations
+// covering different angles), recency window, retriever choice, and
+// optionally a domain allowlist. The plan then drives a broader RRF-
+// fused retrieval. JSON schema is strict; sanity-checked on receive.
+const queryPlanPrompt = `You analyze a user's natural-language search query and output a JSON retrieval plan.
+
+Output ONLY a JSON object (no markdown, no prose, no commentary) with this exact shape:
+{
+  "intent": "current_news" | "factual_lookup" | "comparison" | "research" | "findability",
+  "queries": ["expanded query 1", "expanded query 2", "expanded query 3"],
+  "since_days": null | <positive integer, days lookback from today>,
+  "retriever": "bm25" | "dense" | "hybrid",
+  "decay_days": <positive integer half-life> | null
+}
+
+Guidance:
+- "queries": 3 paraphrases/expansions of the original. Include entity names, synonyms, related terms. e.g. "latest news from Romania" → ["Romania political news 2026", "Romanian government coalition PSD AUR", "Bucharest current events"]
+- "since_days": only set when the query implies recency (latest/current/recent/today/news). null otherwise.
+- "decay_days": half-life in days. For current-events queries use 60. For factual/research queries use null or 365.
+- "retriever": hybrid is the safe default. Use "bm25" only for exact-term lookups (model names, error codes). Use "dense" only for purely conceptual queries with no keyword overlap.
+- DO NOT invent include_domains. The corpus chooses sources, not you.
+
+Examples:
+Input: "latest news from Romania"
+{"intent":"current_news","queries":["Romania political news 2026","Romanian PSD AUR coalition government","Bucharest economy and politics current"],"since_days":90,"retriever":"hybrid","decay_days":60}
+
+Input: "what is BM25 ranking"
+{"intent":"factual_lookup","queries":["BM25 Okapi ranking function formula","BM25 information retrieval probabilistic","term frequency inverse document frequency BM25"],"since_days":null,"retriever":"hybrid","decay_days":null}
+
+Input: "compare HNSW vs IVF"
+{"intent":"comparison","queries":["HNSW vs IVF approximate nearest neighbor","Hierarchical Navigable Small World versus Inverted File","ANN index tradeoffs HNSW IVF performance"],"since_days":null,"retriever":"hybrid","decay_days":730}`
+
+// queryPlan captures the LLM's structured retrieval plan. Sanitized on
+// parse — out-of-range values clipped to safe defaults. Iter 499.
+type queryPlan struct {
+	Intent     string   `json:"intent"`
+	Queries    []string `json:"queries"`
+	SinceDays  *int     `json:"since_days"`
+	Retriever  string   `json:"retriever"`
+	DecayDays  *int     `json:"decay_days"`
+}
+
+// parseQueryPlan extracts the planner's JSON output and applies guard-rails.
+// Returns a plan with sane defaults if the LLM produces garbage — never
+// errors at the caller, so /query always succeeds. Iter 499.
+func parseQueryPlan(raw, original string) queryPlan {
+	defaultPlan := queryPlan{
+		Intent:    "research",
+		Queries:   []string{original},
+		Retriever: "hybrid",
+	}
+	// Strip code fences if the LLM wrapped output despite the prompt.
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		if i := strings.Index(raw, "\n"); i > 0 {
+			raw = raw[i+1:]
+		}
+		raw = strings.TrimSuffix(raw, "```")
+	}
+	var p queryPlan
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return defaultPlan
+	}
+	if len(p.Queries) == 0 {
+		p.Queries = []string{original}
+	}
+	if len(p.Queries) > 5 {
+		p.Queries = p.Queries[:5]
+	}
+	switch p.Retriever {
+	case "bm25", "dense", "hybrid":
+		// ok
+	default:
+		p.Retriever = "hybrid"
+	}
+	if p.SinceDays != nil && (*p.SinceDays <= 0 || *p.SinceDays > 3650) {
+		p.SinceDays = nil
+	}
+	if p.DecayDays != nil && (*p.DecayDays <= 0 || *p.DecayDays > 3650) {
+		p.DecayDays = nil
+	}
+	if p.Intent == "" {
+		p.Intent = "research"
+	}
+	return p
+}
+
+// handleQuery is the iter-499 LLM-orchestrated search/research endpoint.
+// Flow: (1) LLM planner analyzes intent + emits expanded queries, (2) each
+// expansion runs through /search internals (hybrid + decay), (3) RRF-fuse
+// the per-expansion result lists, (4) optional rerank, (5) synth with
+// citations. Returns the plan in the response so callers can see what was
+// done.
+//
+// Effectively: /research planner-style decomposition, but optimized for
+// QUERY EXPANSION not sub-question DECOMPOSITION. The two are different —
+// research splits multi-faceted questions ("compare X and Y" → "X facts",
+// "Y facts", "X vs Y tradeoffs"); query expands a single intent into
+// paraphrases that catch corpus phrasing variation. Iter 499.
+func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeProblem(w, http.StatusNotImplemented, "/query requires cfg.Chat.Model")
+		return
+	}
+	start := time.Now()
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeProblem(w, http.StatusBadRequest, "missing q parameter")
+		return
+	}
+
+	// Step 1: LLM planner.
+	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
+		{Role: "system", Content: queryPlanPrompt},
+		{Role: "user", Content: q},
+	})
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "plan: "+err.Error())
+		return
+	}
+	plan := parseQueryPlan(planRaw, q)
+
+	// Step 2: run each expanded query through retrieval, dedupe by URL.
+	type hitInfo struct {
+		hit     index.Hit
+		bestRR  float64 // best reciprocal rank across expansions
+	}
+	byURL := make(map[string]*hitInfo, 64)
+	fetchK := 30
+	for _, sub := range plan.Queries {
+		hits, _, err := s.retrieve(r.Context(), sub, fetchK, plan.Retriever, "")
+		if err != nil {
+			continue
+		}
+		for rank, h := range hits {
+			rr := 1.0 / float64(60+rank) // RRF with k=60
+			if existing, ok := byURL[h.URL]; ok {
+				if rr > existing.bestRR {
+					existing.bestRR = rr
+				}
+			} else {
+				byURL[h.URL] = &hitInfo{hit: h, bestRR: rr}
+			}
+		}
+	}
+
+	// Step 3: sort by fused RRF score with optional per-host boosts. Iter 504.
+	fused := make([]index.Hit, 0, len(byURL))
+	for _, v := range byURL {
+		h := v.hit
+		h.Score = v.bestRR
+		if len(s.hostBoosts) > 0 {
+			h.Score *= index.HostBoostFor(h.URL, s.hostBoosts)
+		}
+		fused = append(fused, h)
+	}
+	sort.Slice(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+
+	// Step 4: optional since filter + decay (decay handled by /answer-style
+	// path when we materialize). Apply since filter here on PublishedAt.
+	keep := 10
+	if v := r.URL.Query().Get("k"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			keep = n
+		}
+	}
+	var since time.Time
+	if plan.SinceDays != nil {
+		since = time.Now().AddDate(0, 0, -(*plan.SinceDays))
+	}
+
+	// Step 5: enrich + filter by since.
+	type cand struct {
+		src     answerSource
+		excerpt string
+		text    string
+	}
+	cands := make([]cand, 0, keep)
+	for _, h := range fused {
+		if len(cands) >= keep {
+			break
+		}
+		doc, err := s.store.GetDocByURL(r.Context(), h.URL)
+		if err != nil || doc == nil {
+			continue
+		}
+		if !since.IsZero() && (doc.PublishedAt.IsZero() || doc.PublishedAt.Before(since)) {
+			continue
+		}
+		c := cand{
+			src: answerSource{
+				ID:    len(cands) + 1,
+				URL:   h.URL,
+				Title: h.Title,
+			},
+			excerpt: textExcerpt(doc.Text, 320),
+			text:    doc.Text,
+		}
+		if !doc.PublishedAt.IsZero() {
+			t := doc.PublishedAt
+			c.src.PublishedAt = &t
+		}
+		cands = append(cands, c)
+	}
+
+	// Step 6: synth via answerSystemPrompt.
+	var promptSrcs strings.Builder
+	sources := make([]answerSource, 0, len(cands))
+	for i, c := range cands {
+		c.src.ID = i + 1
+		c.src.Excerpt = c.excerpt
+		fmt.Fprintf(&promptSrcs, "[%d] %s\n%s\n\n", c.src.ID, c.src.URL, truncateForPromptLite(c.text, 1200))
+		sources = append(sources, c.src)
+	}
+
+	answerText := ""
+	if len(cands) > 0 {
+		answerText, err = s.doChat(r.Context(), s.chat, []embed.ChatMsg{
+			{Role: "system", Content: answerSystemPrompt},
+			{Role: "user", Content: "Sources:\n\n" + promptSrcs.String() + "Question: " + q},
+		})
+		if err != nil {
+			writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
+			return
+		}
+	} else {
+		answerText = "No sources matched the planner's expanded queries within the chosen time window."
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"query":   q,
+		"plan":    plan,
+		"answer":  answerText,
+		"sources": sources,
+		"model":   s.chat.Model(),
+		"took":    time.Since(start).String(),
+	})
+}
+
+// truncateForPromptLite caps text by approximate char count for source
+// prompts. Same heuristic the eval-quick path uses. Iter 499.
+func truncateForPromptLite(s string, maxChars int) string {
+	if len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars] + "…"
+}
 
 const researchSynthPrompt = `You are a research assistant. Synthesize an answer to the original question using ONLY the provided sources.
 - Cite sources by their numeric id, e.g. [1] or [2,3]. Every factual claim needs a citation.

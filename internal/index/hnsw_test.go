@@ -157,6 +157,62 @@ func TestHNSWDedupByURL(t *testing.T) {
 	}
 }
 
+// TestHNSWMarkURLPassagesInvalid — zombie reclaim: prior generations of a
+// re-crawled URL's passages must be zeroed (vec=nil) so they fall through
+// the "len(vec)==0" guard in Search/searchLayer. Other URLs' nodes must
+// not be touched. Iter 477.
+func TestHNSWMarkURLPassagesInvalid(t *testing.T) {
+	h := NewHNSW(4)
+	// Old generation of https://reused — 2 passages with different vecs.
+	h.AddPassage("https://reused", "old title", 0, 50, []float32{1, 0, 0, 0})
+	h.AddPassage("https://reused", "old title", 50, 50, []float32{0, 1, 0, 0})
+	// An unrelated URL that must survive intact.
+	h.Add("https://kept", "different doc", []float32{0, 0, 1, 0})
+
+	n := h.MarkURLPassagesInvalid("https://reused")
+	if n != 2 {
+		t.Fatalf("expected 2 invalidations, got %d", n)
+	}
+	// The kept URL still has its vec.
+	if v, ok := h.LookupVectorByURL("https://kept"); !ok || len(v) == 0 {
+		t.Fatalf("https://kept should still have a vec after invalidating a different URL")
+	}
+	// The reused URL's nodes are zombies — LookupVectorByURL returns the
+	// first match's vec, which is now nil-or-empty.
+	if v, ok := h.LookupVectorByURL("https://reused"); ok && len(v) > 0 {
+		t.Fatalf("https://reused vec should be empty after invalidate; got len=%d", len(v))
+	}
+	// Search must skip the zombies and find https://kept.
+	hits := h.Search(context.Background(), []float32{0, 0, 1, 0}, 10)
+	foundKept := false
+	for _, hit := range hits {
+		if hit.URL == "https://reused" {
+			t.Errorf("zombie URL appeared in search results: %+v", hit)
+		}
+		if hit.URL == "https://kept" {
+			foundKept = true
+		}
+	}
+	if !foundKept {
+		t.Errorf("non-zombie URL https://kept missing from search results: %+v", hits)
+	}
+
+	// Re-adding a fresh passage for the URL should work normally; new node
+	// participates in search, with the higher score winning per existing
+	// dedup-by-URL logic.
+	h.AddPassage("https://reused", "new title", 0, 50, []float32{0, 0, 1, 0})
+	hits = h.Search(context.Background(), []float32{0, 0, 1, 0}, 10)
+	foundReused := false
+	for _, hit := range hits {
+		if hit.URL == "https://reused" {
+			foundReused = true
+		}
+	}
+	if !foundReused {
+		t.Errorf("re-added passage for https://reused not found in search: %+v", hits)
+	}
+}
+
 // TestHNSWGraphInvariants — the constructed graph must respect the
 // neighbor cap and contain bidirectional edges. Sanity check on the
 // adjacency-list bookkeeping.

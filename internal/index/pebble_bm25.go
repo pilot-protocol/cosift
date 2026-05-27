@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.

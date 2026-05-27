@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 func TestSiteToHost(t *testing.T) {

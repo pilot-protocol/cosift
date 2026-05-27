@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/embed"
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/rerank"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 func newTestSrv(t *testing.T) (*httptest.Server, *store.Store) {

@@ -150,6 +150,34 @@ func OpenPebble(path string) (*PebbleStore, error) {
 		}
 		_ = closer.Close()
 	}
+	// Iter 480c: cross-check against actual max docID in famDoc. The
+	// pre-iter-480c bug clobbered next_doc_id on every UPDATE, so the
+	// stored value can be far lower than the true high-water mark.
+	// Recover by scanning the LAST key in famDoc (Last() is cheap on the
+	// B-tree — no full table scan needed). If max(famDoc.ID) >= stored
+	// nextID, bump nextID so future allocations don't collide. Adds
+	// ~1ms to startup; safe to run unconditionally.
+	{
+		maxIt, mErr := db.NewIter(&pebble.IterOptions{
+			LowerBound: []byte{famDoc},
+			UpperBound: []byte{famDoc + 1},
+		})
+		if mErr == nil {
+			if maxIt.Last() {
+				key := maxIt.Key()
+				if len(key) == 9 { // 'd' + 8-byte ID
+					maxID := int64(binary.BigEndian.Uint64(key[1:]))
+					stored := p.nextID.Load()
+					if maxID > stored {
+						// Add a small buffer so concurrent in-flight allocations
+						// can't collide either.
+						p.nextID.Store(maxID + 16)
+					}
+				}
+			}
+			_ = maxIt.Close()
+		}
+	}
 	// Iter 472: restore the iter-470 frontier round-robin cursor so a
 	// restart doesn't re-walk 'a'-'b' from scratch.
 	if cv, ccloser, err := db.Get(metaKey("frontier_cursor")); err == nil {
@@ -207,14 +235,20 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 
 	// Resolve existing ID by URL, or allocate a fresh one.
 	var id int64
+	var isNew bool
 	if existingID, ok, err := p.lookupIDByURL(d.URL); err != nil {
 		return 0, err
 	} else if ok {
 		id = existingID
 	} else {
 		id = p.nextID.Add(1)
+		isNew = true
 	}
 	d.ID = id
+	// Iter 480: pipeline-debug trace. Gated by env to keep noise off in prod.
+	if isNew && os.Getenv("COSIFT_DEBUG_UPSERT") == "1" {
+		fmt.Fprintf(os.Stderr, "upsert-new: id=%d url=%s\n", id, d.URL)
+	}
 
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(d); err != nil {
@@ -242,8 +276,20 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 			return 0, err
 		}
 	}
-	if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
-		return 0, err
+	// Iter 480c BUGFIX: only update next_doc_id meta when this is a NEW
+	// allocation. Prior code wrote idBuf unconditionally — including on
+	// UPDATEs of older docs — which clobbered next_doc_id to a LOWER value
+	// every time the crawler touched a re-crawl of an old (low-ID) URL. On
+	// the next genuine new URL, nextID.Add(1) would return an ID that
+	// already existed in famDoc; batch.Set(docKey(id), ...) overwrote that
+	// existing doc instead of allocating a fresh slot. Net effect: famDoc
+	// count stuck forever even as truly-novel URLs were being processed
+	// (they just kept clobbering older entries). This is why the corpus
+	// looked saturated at exactly 300,098.
+	if isNew {
+		if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
+			return 0, err
+		}
 	}
 	if err := batch.Commit(p.writeOpts); err != nil {
 		return 0, fmt.Errorf("commit batch: %w", err)
@@ -693,10 +739,15 @@ type VectorNodeEntry struct {
 	Blob []byte
 }
 
-// PutVectorNodesBatch writes many HNSW-node blobs in a single Pebble batch
-// — significantly faster than per-node Set() because the WAL fsync only
-// happens once. Iter 406: used by index.HNSW.Persist for full snapshots
-// and HNSW.PersistFrom for incremental checkpoints.
+// PutVectorNodesBatch writes many HNSW-node blobs in Pebble batches. Single
+// batch was the original design (one WAL fsync), but Pebble caps a batch at
+// 4 GiB; the iter-501 hnsw-compact full persist of a 7.4M-node graph (~24 GB
+// of blob data) panicked with "batch too large: >= 4.0GB". The shutdown
+// final-persist hit the same limit. Iter 501b chunks by bytes to stay well
+// under the limit and keep memory bounded.
+//
+// Used by index.HNSW.Persist for full snapshots and HNSW.PersistFrom for
+// incremental checkpoints. Iter 406 / 501b.
 func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorNodeEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -704,14 +755,39 @@ func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorN
 	if len(entries) == 0 {
 		return nil
 	}
+	// Cap at ~1 GiB per batch (well below Pebble's 4 GiB hard limit, leaves
+	// headroom for batch overhead). For a graph with 3 KB-avg blobs that's
+	// ~350k entries per batch.
+	const maxBatchBytes = 1 << 30
 	batch := p.db.NewBatch()
-	defer batch.Close()
+	defer func() {
+		if batch != nil {
+			batch.Close()
+		}
+	}()
+	batchBytes := 0
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entryBytes := len(e.Blob) + 16 // blob + key + per-entry overhead
+		if batchBytes > 0 && batchBytes+entryBytes > maxBatchBytes {
+			if err := batch.Commit(p.writeOpts); err != nil {
+				return err
+			}
+			batch.Close()
+			batch = p.db.NewBatch()
+			batchBytes = 0
+		}
 		if err := batch.Set(vectorNodeKey(e.ID), e.Blob, nil); err != nil {
 			return err
 		}
+		batchBytes += entryBytes
 	}
-	return batch.Commit(p.writeOpts)
+	if batchBytes > 0 {
+		return batch.Commit(p.writeOpts)
+	}
+	return nil
 }
 
 // --- iter 414: Product Quantization storage. ---
@@ -1171,6 +1247,45 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		pickedURL = fallbackURL
 	}
 
+	// Iter 479: within the picked host's queued bucket, prefer a URL that
+	// has NO prior doc record. The naive round-robin always picks the first
+	// alphabetical URL per host, which on a saturated link-graph is almost
+	// always already in famDoc — re-crawl with no doc-count growth. RSS- or
+	// sitemap-imported genuinely-novel URLs sit deeper in the host's bucket
+	// and never get picked. Probe up to 32 URLs in the host's block; if
+	// any has no prior doc, take that one. Falls back to pickedURL when
+	// every probed URL is a known doc. Cheap: 32 × ~1ms pebble point-lookups
+	// per claim, vs the alternative of waiting days for the cursor to drain
+	// every host's first-URL.
+	if pickedHost != "" {
+		hostPrefix := make([]byte, 2+len(pickedHost)+1)
+		hostPrefix[0] = famFrontier
+		hostPrefix[1] = 'q'
+		copy(hostPrefix[2:], pickedHost)
+		hostPrefix[2+len(pickedHost)] = 0x00
+		hostUpper := make([]byte, len(hostPrefix))
+		copy(hostUpper, hostPrefix)
+		hostUpper[len(hostUpper)-1] = 0x01
+		probeIt, perr := p.db.NewIter(&pebble.IterOptions{LowerBound: hostPrefix, UpperBound: hostUpper})
+		if perr == nil {
+			const maxProbes = 32
+			probed := 0
+			for valid := probeIt.First(); valid && probed < maxProbes; valid = probeIt.Next() {
+				key := probeIt.Key()
+				urlPart := string(key[len(hostPrefix):])
+				if urlPart == "" {
+					continue
+				}
+				probed++
+				if _, ok, _ := p.lookupIDByURL(urlPart); !ok {
+					pickedURL = urlPart
+					break
+				}
+			}
+			probeIt.Close()
+		}
+	}
+
 	// Iter 470: advance the round-robin cursor PAST the picked host's
 	// entire URL block. Without this, each claim only advances by one URL,
 	// so hosts with thousands of queued URLs (github.com, en.wikipedia.org)
@@ -1297,6 +1412,218 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 		}
 	}
 	return batch.Commit(p.writeOpts)
+}
+
+// UpsertDocumentBatch writes N documents in a single pebble batch + single
+// mu acquire. The fundamental win over looping UpsertDocument: instead of
+// 64 goroutines fighting for p.mu 64 times each, one caller takes the lock
+// once for the whole batch. Throughput ceiling under contention rises from
+// ~3.4 K docs/min (single-call) to an estimated 15-25 K docs/min for the
+// WET-ingest pipeline. Iter 488.
+//
+// Returns parallel slice of assigned IDs (1-1 with input docs). On any
+// error the batch is aborted and no docs are persisted — atomic, like a
+// transaction. Callers wanting per-doc error tolerance should keep using
+// UpsertDocument in a loop.
+func (p *PebbleStore) UpsertDocumentBatch(ctx context.Context, docs []*Document) ([]int64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(docs) == 0 {
+		return nil, nil
+	}
+	for _, d := range docs {
+		if d == nil || d.URL == "" {
+			return nil, errors.New("PebbleStore.UpsertDocumentBatch: nil doc or empty URL")
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ids := make([]int64, len(docs))
+	batch := p.db.NewBatch()
+	defer batch.Close()
+
+	// Track URL→id assignments within this batch so two docs with the same
+	// URL in a single batch resolve to the same ID (rare, but possible from
+	// dedup-disabled WET imports). Initialized lazily.
+	var inBatchURLs map[string]int64
+	var maxNewID int64
+
+	for i, d := range docs {
+		var id int64
+		var isNew bool
+
+		// First check in-batch (this scan), then disk.
+		if inBatchURLs != nil {
+			if existing, ok := inBatchURLs[d.URL]; ok {
+				id = existing
+			}
+		}
+		if id == 0 {
+			if existingID, ok, err := p.lookupIDByURL(d.URL); err != nil {
+				return nil, err
+			} else if ok {
+				id = existingID
+			} else {
+				id = p.nextID.Add(1)
+				isNew = true
+				if id > maxNewID {
+					maxNewID = id
+				}
+			}
+			if inBatchURLs == nil {
+				inBatchURLs = make(map[string]int64, len(docs))
+			}
+			inBatchURLs[d.URL] = id
+		}
+		d.ID = id
+		ids[i] = id
+
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(d); err != nil {
+			return nil, fmt.Errorf("encode doc: %w", err)
+		}
+		idBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(idBuf, uint64(id))
+
+		if err := batch.Set(docKey(id), buf.Bytes(), nil); err != nil {
+			return nil, err
+		}
+		if err := batch.Set(urlKey(d.URL), idBuf, nil); err != nil {
+			return nil, err
+		}
+		if err := batch.Set(docMetaKey(id), packDocMeta(d.URL, d.Title), nil); err != nil {
+			return nil, err
+		}
+		if d.Domain != "" {
+			if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
+				return nil, err
+			}
+		}
+		_ = isNew
+	}
+	// Iter 480c semantics carry through to batched path: only bump
+	// next_doc_id once per batch, to the max NEW ID we allocated. Avoids
+	// clobbering to a lower value if the batch is all-updates.
+	if maxNewID > 0 {
+		idBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(idBuf, uint64(maxNewID))
+		if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
+			return nil, err
+		}
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return nil, fmt.Errorf("commit batch: %w", err)
+	}
+	return ids, nil
+}
+
+// IterDocsLite walks famDocMeta ('i' family) and yields each (url, docID).
+// Cheap — uses the iter-207 side blob, skips the full Document gob decode.
+// Useful for backfill loops (embed catch-up, lang detection, etc.) that
+// only need the URL and ID to dispatch work. Stops on ctx cancel. Iter 487.
+func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famDocMeta},
+		UpperBound: []byte{famDocMeta + 1},
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := it.Key()
+		if len(key) != 9 {
+			continue
+		}
+		docID := int64(binary.BigEndian.Uint64(key[1:]))
+		val, err := it.ValueAndErr()
+		if err != nil {
+			continue
+		}
+		url, _, ok, err := unpackDocMeta(val)
+		if err != nil || !ok || url == "" {
+			continue
+		}
+		if err := fn(docID, url); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PurgeFrontierByHost deletes every QUEUED frontier entry for the given
+// host (both the secondary 'f'+'q'+host index and the primary 'f'+'u'+url
+// entry). Returns the count purged. In-flight and done/errored entries
+// are left alone — those represent active or completed work and aren't
+// re-claimable anyway. Use this to drain stale blacklisted hosts that
+// the slower round-robin cursor would take days to consume one-by-one.
+// Iter 477h.
+func (p *PebbleStore) PurgeFrontierByHost(ctx context.Context, host string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if host == "" {
+		return 0, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Scan the 'f'+'q'+host+0x00+url secondary index for this host.
+	prefix := make([]byte, 2+len(host)+1)
+	prefix[0] = famFrontier
+	prefix[1] = 'q'
+	copy(prefix[2:], host)
+	prefix[2+len(host)] = 0x00
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	upper[len(upper)-1] = 0x01 // bump past the 0x00 separator block
+
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upper})
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	count := 0
+	for valid := it.First(); valid; valid = it.Next() {
+		key := it.Key()
+		// Recover the URL portion (after the 0x00 separator).
+		urlPart := key[len(prefix):]
+		// Delete the secondary index entry...
+		secCopy := make([]byte, len(key))
+		copy(secCopy, key)
+		if err := batch.Delete(secCopy, nil); err != nil {
+			return count, err
+		}
+		// ...and the primary 'f'+'u'+url entry.
+		if err := batch.Delete(frontierKey(string(urlPart)), nil); err != nil {
+			return count, err
+		}
+		count++
+		// Commit in 5k-entry chunks to bound memory.
+		if count%5000 == 0 {
+			if err := batch.Commit(p.writeOpts); err != nil {
+				return count, err
+			}
+			batch.Close()
+			batch = p.db.NewBatch()
+		}
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
 // GetFrontierStats walks the frontier and tallies by status. O(N); iter

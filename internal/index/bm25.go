@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // BM25 parameters. Standard defaults; exposed if we want to tune per corpus.

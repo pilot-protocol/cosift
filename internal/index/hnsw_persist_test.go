@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // TestHNSWPersistRoundTrip — build, persist, load into a fresh HNSW,

@@ -40,7 +40,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 const hnswMetaMagic = "HSW1"

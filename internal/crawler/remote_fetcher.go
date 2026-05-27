@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,18 +35,69 @@ import (
 // worker and go direct via the inner transport. Iter 474.
 type remoteFetcherTransport struct {
 	inner http.RoundTripper
-	url   string
+	urls  []string // pool — picked round-robin per request
 	token string
 	c     *http.Client
+
+	mu  sync.Mutex
+	idx int
+
+	// Iter 484: hosts in this set bypass the CF Worker and fetch direct.
+	// Use for known bot-friendly servers where the Worker adds round-trip
+	// latency without unlocking new access (Wikipedia, arxiv, etc. accept
+	// our User-Agent cleanly). Built once at construction time so the
+	// hot path stays lock-free.
+	directHosts map[string]struct{}
 }
 
-func newRemoteFetcherTransport(workerURL, token string, inner http.RoundTripper) *remoteFetcherTransport {
-	return &remoteFetcherTransport{
-		inner: inner,
-		url:   workerURL,
-		token: token,
-		c:     &http.Client{Transport: inner, Timeout: 60 * time.Second},
+// defaultDirectHosts is the seed allow-list for sites that reliably serve
+// machine clients with no rate-limit drama. Operators can override via
+// COSIFT_DIRECT_HOSTS (comma-separated) — empty disables direct-fetch.
+// Iter 484.
+var defaultDirectHosts = []string{
+	"en.wikipedia.org", "commons.wikimedia.org", "en.wiktionary.org",
+	"arxiv.org", "info.arxiv.org", "export.arxiv.org",
+	"github.com", "raw.githubusercontent.com", "docs.github.com",
+	"doc.rust-lang.org", "docs.rs", "developer.mozilla.org",
+	"go.dev", "pkg.go.dev",
+	"openreview.net", "paperswithcode.com",
+	"huggingface.co", "blog.cloudflare.com",
+	"pilotprotocol.network",
+}
+
+func newRemoteFetcherTransport(workerURLs []string, token string, inner http.RoundTripper) *remoteFetcherTransport {
+	hosts := defaultDirectHosts
+	if v := os.Getenv("COSIFT_DIRECT_HOSTS"); v != "" {
+		hosts = nil
+		for _, h := range strings.Split(v, ",") {
+			h = strings.TrimSpace(strings.ToLower(h))
+			if h != "" {
+				hosts = append(hosts, h)
+			}
+		}
 	}
+	set := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		set[strings.ToLower(h)] = struct{}{}
+	}
+	return &remoteFetcherTransport{
+		inner:       inner,
+		urls:        workerURLs,
+		token:       token,
+		c:           &http.Client{Transport: inner, Timeout: 60 * time.Second},
+		directHosts: set,
+	}
+}
+
+// pickURL returns the next URL in the pool, advancing the round-robin
+// index. Mutex acquisition is cheap (<100ns) versus the network call
+// that follows, so contention here isn't a throughput concern. Iter 483.
+func (t *remoteFetcherTransport) pickURL() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	u := t.urls[t.idx%len(t.urls)]
+	t.idx++
+	return u
 }
 
 type remoteFetcherReq struct {
@@ -55,6 +109,14 @@ type remoteFetcherReq struct {
 func (t *remoteFetcherTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method != http.MethodGet {
 		return t.inner.RoundTrip(req)
+	}
+	// Iter 484: direct-fetch fast path for allow-listed hosts. Skips the
+	// CF Worker entirely — fetch goes straight from this box's egress IP.
+	// Used for known bot-friendly servers where the Worker is dead weight.
+	if t.directHosts != nil && req.URL != nil {
+		if _, ok := t.directHosts[strings.ToLower(req.URL.Host)]; ok {
+			return t.inner.RoundTrip(req)
+		}
 	}
 
 	// Build worker request.
@@ -73,7 +135,7 @@ func (t *remoteFetcherTransport) RoundTrip(req *http.Request) (*http.Response, e
 	if err != nil {
 		return nil, fmt.Errorf("remote-fetcher: marshal: %w", err)
 	}
-	workerReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, t.url, bytes.NewReader(body))
+	workerReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, t.pickURL(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("remote-fetcher: build: %w", err)
 	}

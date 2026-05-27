@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/index"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // seedAnswerStreamStore puts two docs that match the query "widgets" so

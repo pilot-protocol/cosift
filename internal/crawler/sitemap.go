@@ -42,9 +42,13 @@ type sitemapIndex struct {
 }
 
 // SeedSitemap fetches a sitemap, parses out URLs, and pushes each to the
-// persistent frontier at depth 0. Sitemap indices are followed one level deep
-// (industry standard depth: most sites with index files use exactly one level
-// of nesting).
+// persistent frontier at depth 0. Sitemap indices are followed up to two
+// levels deep — iter 494: news sites (theguardian, NYT, BBC etc.) commonly
+// publish a master /sitemap.xml that points at a sitemap-index of monthly
+// indexes that each point at daily sitemaps. One-level recursion missed
+// 99%+ of their URLs. Two levels covers the standard "index → sub-index →
+// urlset" depth without risking runaway fanout. Cap stays at 2 to keep
+// pathological deeply-nested adversarial sitemaps bounded.
 //
 // Politeness: each fetched sitemap counts as one HTTP request, so the same
 // per-host gate semantics as a normal crawl apply if you seed multiple
@@ -53,19 +57,20 @@ type sitemapIndex struct {
 //
 // Returns the number of URLs enqueued.
 func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, error) {
-	urls, err := c.fetchSitemap(ctx, sitemapURL, 1)
-	if err != nil {
-		return 0, err
-	}
+	// Iter 496: stream URLs into the frontier via callback instead of
+	// materializing the full URL list. The prior approach accumulated
+	// every URL across the entire recursive sitemap-index walk into a
+	// single `all` slice, which for a multi-million-URL wired.com-style
+	// site held 100+ GB across in-flight SeedSitemap calls (heap profile
+	// showed strings.Builder.Write at 107 GB). Streaming bounds heap to
+	// O(current sitemap size) regardless of nesting depth or total URLs.
 	n := 0
-	for _, u := range urls {
-		if err := c.Seed(u); err != nil {
-			// Skip individual seed failures (domain rules, scheme); don't fail the batch.
-			continue
+	err := c.fetchSitemapStream(ctx, sitemapURL, 2, func(u string) {
+		if seedErr := c.Seed(u); seedErr == nil {
+			n++
 		}
-		n++
-	}
-	return n, nil
+	})
+	return n, err
 }
 
 // fetchSitemap returns flat URL list. depthRemaining controls index recursion.
@@ -109,54 +114,131 @@ func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining i
 		body = decompressed
 	}
 
-	// Peek at root element. xml.Decoder gives us this without parsing everything.
+	// Iter 496 wrapper kept for any non-streaming callers; new internal
+	// fetchSitemapStream is the leak-free path. Callers prefer streaming.
+	_ = body
+	_ = depthRemaining
+	return nil, fmt.Errorf("fetchSitemap deprecated, use fetchSitemapStream")
+}
+
+// fetchSitemapStream pulls a sitemap (urlset or sitemapindex), pushes
+// every discovered URL through emit, and recurses into sub-sitemaps up
+// to depthRemaining levels. Bounded heap: per-call working set is one
+// sitemap's parsed token stream + transient locBuf string. URLs aren't
+// accumulated; they flow straight to the emit callback (typically
+// c.Seed which writes to the persistent frontier). Iter 496.
+func (c *Crawler) fetchSitemapStream(ctx context.Context, url string, depthRemaining int, emit func(string)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", c.cfg.UserAgent)
+	req.Header.Set("Accept", "application/xml, text/xml")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("sitemap http %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return err
+	}
+	if strings.HasSuffix(strings.ToLower(url), ".gz") ||
+		(len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b) {
+		zr, zerr := gzip.NewReader(bytes.NewReader(body))
+		if zerr != nil {
+			return fmt.Errorf("sitemap gunzip: %w", zerr)
+		}
+		decompressed, derr := io.ReadAll(io.LimitReader(zr, 200<<20))
+		_ = zr.Close()
+		if derr != nil {
+			return fmt.Errorf("sitemap gunzip read: %w", derr)
+		}
+		body = decompressed
+	}
 	rootName, err := xmlRootName(body)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
 	switch rootName {
 	case "urlset":
-		var us sitemapURLSet
-		if err := xml.Unmarshal(body, &us); err != nil {
-			return nil, fmt.Errorf("parse urlset: %w", err)
-		}
-		out := make([]string, 0, len(us.URLs))
-		for _, u := range us.URLs {
-			loc := strings.TrimSpace(u.Loc)
-			if loc != "" {
-				out = append(out, loc)
-			}
-		}
-		return out, nil
-
+		return streamSitemapEmit(body, "url", emit)
 	case "sitemapindex":
 		if depthRemaining <= 0 {
-			return nil, nil // refuse to recurse further
+			return nil
 		}
-		var idx sitemapIndex
-		if err := xml.Unmarshal(body, &idx); err != nil {
-			return nil, fmt.Errorf("parse sitemapindex: %w", err)
+		// For sitemap-index: collect child sitemap URLs streamingly,
+		// then recurse into each. Child URLs themselves are bounded
+		// (typically <1000 per index), so collecting them in a small
+		// slice is fine — we just can't collect the EXPANSION.
+		var childURLs []string
+		if err := streamSitemapEmit(body, "sitemap", func(u string) {
+			childURLs = append(childURLs, u)
+		}); err != nil {
+			return err
 		}
-		var all []string
-		for _, sm := range idx.Sitemaps {
-			loc := strings.TrimSpace(sm.Loc)
-			if loc == "" {
+		// Free the body before recursing (each child call rebuilds its own)
+		body = nil
+		for _, loc := range childURLs {
+			if err := c.fetchSitemapStream(ctx, loc, depthRemaining-1, emit); err != nil {
 				continue
 			}
-			child, err := c.fetchSitemap(ctx, loc, depthRemaining-1)
-			if err != nil {
-				continue // skip bad child sitemaps
-			}
-			all = append(all, child...)
-			// Be polite between sibling sitemap fetches.
 			time.Sleep(50 * time.Millisecond)
 		}
-		return all, nil
-
+		return nil
 	default:
-		return nil, fmt.Errorf("unsupported sitemap root: %s", rootName)
+		return fmt.Errorf("unsupported sitemap root: %s", rootName)
 	}
+}
+
+// streamSitemapEmit decodes the sitemap XML token-by-token and pushes
+// each <loc> string through emit. Used by both urlset (emits article
+// URLs) and sitemapindex (emits child sitemap URLs). Iter 496.
+func streamSitemapEmit(body []byte, itemTag string, emit func(string)) error {
+	dec := xml.NewDecoder(bytes.NewReader(body))
+	var inItem, inLoc bool
+	var locBuf strings.Builder
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case itemTag:
+				inItem = true
+			case "loc":
+				if inItem {
+					inLoc = true
+					locBuf.Reset()
+				}
+			}
+		case xml.CharData:
+			if inLoc {
+				locBuf.Write(t)
+			}
+		case xml.EndElement:
+			switch t.Name.Local {
+			case "loc":
+				if inLoc {
+					if s := strings.TrimSpace(locBuf.String()); s != "" {
+						emit(s)
+					}
+					inLoc = false
+				}
+			case itemTag:
+				inItem = false
+			}
+		}
+	}
+	return nil
 }
 
 // xmlRootName returns the local name of the first start element.

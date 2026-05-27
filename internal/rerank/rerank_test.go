@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/embed"
 )
 
 type scriptedChat struct {

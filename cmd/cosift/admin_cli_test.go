@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/server"
-	"github.com/calinteodor/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/server"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // newAdminStub serves /admin/stats and /admin/config with a single canned

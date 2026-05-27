@@ -1,4 +1,4 @@
-module github.com/calinteodor/cosift
+module github.com/pilot-protocol/cosift
 
 go 1.25.3
 

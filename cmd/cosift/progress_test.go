@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calinteodor/cosift/internal/config"
-	"github.com/calinteodor/cosift/internal/eval"
+	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/eval"
 )
 
 // captureLog redirects the package-default logger to a buffer for the duration

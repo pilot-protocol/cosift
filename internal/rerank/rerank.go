@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/calinteodor/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/embed"
 )
 
 // Candidate is one item to score: an ID the caller will recognize, plus the
