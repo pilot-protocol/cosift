@@ -1,6 +1,8 @@
 package crawler
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -87,6 +89,24 @@ func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining i
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		return nil, err
+	}
+
+	// Iter 459: gzip support. Go's net/http auto-decompresses responses
+	// with Content-Encoding: gzip, but sitemap.xml.gz URLs typically arrive
+	// with Content-Encoding: identity (or absent) and the gzip framing is
+	// part of the BODY. Detect via either the URL extension or magic bytes.
+	if strings.HasSuffix(strings.ToLower(url), ".gz") ||
+		(len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b) {
+		zr, zerr := gzip.NewReader(bytes.NewReader(body))
+		if zerr != nil {
+			return nil, fmt.Errorf("sitemap gunzip: %w", zerr)
+		}
+		decompressed, derr := io.ReadAll(io.LimitReader(zr, 200<<20))
+		_ = zr.Close()
+		if derr != nil {
+			return nil, fmt.Errorf("sitemap gunzip read: %w", derr)
+		}
+		body = decompressed
 	}
 
 	// Peek at root element. xml.Decoder gives us this without parsing everything.
