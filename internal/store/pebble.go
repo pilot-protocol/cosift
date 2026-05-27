@@ -35,6 +35,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1532,6 +1533,107 @@ func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int6
 type DomainCount struct {
 	Host  string `json:"host"`
 	Count int    `json:"count"`
+}
+
+// ListDomains is a paginated + filtered variant of TopDomains. Walks the
+// 'h' family once, counts per host, filters by substring `q` (empty = all),
+// sorts desc by count, returns the slice [offset:offset+limit) plus the
+// total count after filter. Iter 457.
+func (p *PebbleStore) ListDomains(ctx context.Context, q string, offset, limit int) ([]DomainCount, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	q = strings.ToLower(strings.TrimSpace(q))
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famHost},
+		UpperBound: []byte{famHost + 1},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer it.Close()
+	counts := make(map[string]int, 256)
+	for valid := it.First(); valid; valid = it.Next() {
+		k := it.Key()
+		if len(k) < 1+1+8 {
+			continue
+		}
+		hostBytes := k[1:]
+		if len(hostBytes) <= 9 {
+			continue
+		}
+		host := string(hostBytes[:len(hostBytes)-9])
+		if q != "" && !strings.Contains(strings.ToLower(host), q) {
+			continue
+		}
+		counts[host]++
+	}
+	all := make([]DomainCount, 0, len(counts))
+	for h, c := range counts {
+		all = append(all, DomainCount{Host: h, Count: c})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Count != all[j].Count {
+			return all[i].Count > all[j].Count
+		}
+		return all[i].Host < all[j].Host
+	})
+	total := len(all)
+	if offset >= total {
+		return []DomainCount{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return all[offset:end], total, nil
+}
+
+// TopQueuedHosts walks the 'f'+'q' index (queued frontier entries) and
+// returns the top-N hosts by queue depth. Iter 457.
+func (p *PebbleStore) TopQueuedHosts(ctx context.Context, topN int) ([]DomainCount, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if topN <= 0 {
+		topN = 25
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'q'},
+		UpperBound: []byte{famFrontier, 'q' + 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+	counts := make(map[string]int, 256)
+	for valid := it.First(); valid; valid = it.Next() {
+		host := frontierStatusIndexHost(it.Key())
+		if host == "" {
+			continue
+		}
+		counts[host]++
+	}
+	out := make([]DomainCount, 0, len(counts))
+	for h, c := range counts {
+		out = append(out, DomainCount{Host: h, Count: c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Host < out[j].Host
+	})
+	if len(out) > topN {
+		out = out[:topN]
+	}
+	return out, nil
 }
 
 // TopDomains prefix-scans the 'h' family (which holds host -> docID

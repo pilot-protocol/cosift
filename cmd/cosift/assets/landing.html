@@ -289,11 +289,37 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
   </div>
 </section>
 
+<section class="section" id="queue">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Crawl frontier</div>
+      <h2>What's <em>in the queue</em> right now.</h2>
+    </div>
+    <div class="health-row" style="margin-bottom: 24px;">
+      <div class="health-card"><div class="label">Queued</div><div class="value acc" id="q-queued">—</div></div>
+      <div class="health-card"><div class="label">In flight</div><div class="value" id="q-inflight">—</div></div>
+      <div class="health-card"><div class="label">Done</div><div class="value" id="q-done">—</div></div>
+      <div class="health-card"><div class="label">Errored</div><div class="value" id="q-errored">—</div></div>
+    </div>
+    <div id="queue-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
+      <div style="color: var(--ink-dim); font-size: 14px;">loading…</div>
+    </div>
+  </div>
+</section>
+
 <section class="section" id="domains">
   <div class="wrap">
     <div class="section-head">
       <div class="eyebrow">Right now in the index</div>
-      <h2>Top <em>sources</em> by doc count.</h2>
+      <h2>Sources by <em>doc count.</em></h2>
+    </div>
+    <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+      <input id="dom-q" type="search" placeholder="filter hosts…" style="flex: 1; min-width: 200px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--ink); font-family: var(--mono); font-size: 13px;"/>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <button class="btn" id="dom-prev">← prev</button>
+        <span id="dom-pageinfo" style="font-family: var(--mono); font-size: 12px; color: var(--ink-dim); min-width: 120px; text-align: center;">—</span>
+        <button class="btn" id="dom-next">next →</button>
+      </div>
     </div>
     <div id="domains-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
       <div style="color: var(--ink-dim); font-size: 14px;">loading…</div>
@@ -416,17 +442,29 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setHTML('hc-retrievers', '<span class="pill">server temporarily busy — indexing</span>');
     });
   }
+  // Iter 457: paginated + searchable domains list.
+  var domState = { q: '', offset: 0, limit: 24 };
   function loadDomains() {
-    fetch('/domains?top=30').then(function (r) {
+    var p = new URLSearchParams();
+    if (domState.q) p.set('q', domState.q);
+    p.set('offset', domState.offset);
+    p.set('limit', domState.limit);
+    fetch('/domains?' + p).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (d) {
       var doms = d.domains || [];
+      var total = d.total || 0;
+      var from = total === 0 ? 0 : domState.offset + 1;
+      var to = Math.min(domState.offset + domState.limit, total);
+      setText('dom-pageinfo', total === 0 ? 'no matches' : from + '–' + to + ' of ' + nf(total));
+      document.getElementById('dom-prev').disabled = domState.offset <= 0;
+      document.getElementById('dom-next').disabled = to >= total;
       if (doms.length === 0) {
-        setHTML('domains-grid', '<div style="color: var(--ink-dim); font-size: 14px;">corpus empty</div>');
+        setHTML('domains-grid', '<div style="color: var(--ink-dim); font-size: 14px;">no matches</div>');
         return;
       }
-      var max = doms[0].count;
+      var max = Math.max.apply(null, doms.map(function(d){return d.count;}));
       var html = doms.map(function (it) {
         var pct = Math.round((it.count / max) * 100);
         return '<div style="border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--bg-2); position: relative; overflow: hidden;">' +
@@ -441,8 +479,55 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setHTML('domains-grid', '<div style="color: var(--ink-dim); font-size: 14px;">temporarily unavailable</div>');
     });
   }
+  document.getElementById('dom-q').addEventListener('input', function (e) {
+    domState.q = e.target.value;
+    domState.offset = 0;
+    loadDomains();
+  });
+  document.getElementById('dom-prev').addEventListener('click', function () {
+    domState.offset = Math.max(0, domState.offset - domState.limit);
+    loadDomains();
+  });
+  document.getElementById('dom-next').addEventListener('click', function () {
+    domState.offset = domState.offset + domState.limit;
+    loadDomains();
+  });
+
+  // Iter 457: queue visibility — frontier counts + top queued hosts.
+  function loadQueue() {
+    fetch('/queue?top=24').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      setText('q-queued', nf(d.queued || 0));
+      setText('q-inflight', nf(d.in_flight || 0));
+      setText('q-done', nf(d.done || 0));
+      setText('q-errored', nf(d.errored || 0));
+      var hosts = d.top_hosts || [];
+      if (hosts.length === 0) {
+        setHTML('queue-grid', '<div style="color: var(--ink-dim); font-size: 14px;">queue empty</div>');
+        return;
+      }
+      var max = hosts[0].count;
+      var html = hosts.map(function (it) {
+        var pct = Math.round((it.count / max) * 100);
+        return '<div style="border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--bg-2); position: relative; overflow: hidden;">' +
+          '<div style="position: absolute; left: 0; top: 0; bottom: 0; width: ' + pct + '%; background: var(--accent-dim); pointer-events: none;"></div>' +
+          '<div style="position: relative; display: flex; justify-content: space-between; align-items: center; gap: 12px;">' +
+          '<span style="font-family: var(--mono); font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + esc(it.host) + '</span>' +
+          '<span style="font-family: var(--serif); font-size: 18px; color: var(--accent);">' + nf(it.count) + '</span>' +
+          '</div></div>';
+      }).join('');
+      setHTML('queue-grid', html);
+    }).catch(function (e) {
+      setHTML('queue-grid', '<div style="color: var(--ink-dim); font-size: 14px;">temporarily unavailable</div>');
+    });
+  }
+
   loadDomains();
-  setInterval(loadDomains, 10000);
+  setInterval(loadDomains, 15000);
+  loadQueue();
+  setInterval(loadQueue, 5000);
 
   load();
   setInterval(load, 5000);

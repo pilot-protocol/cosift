@@ -341,6 +341,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
+	// Iter 457: frontier queue visibility — counts by status + top-N
+	// hosts in queue. Distinct from /domains which is over INDEXED docs.
+	mux.HandleFunc("GET /queue", wrap(srv.handleQueue))
 	// Iter 408: peer ingest endpoint. Single-node deployments still expose
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
@@ -1666,21 +1669,81 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleDomains returns the top-N indexed hosts by doc count. Iter 405.
-// Used by the landing page to show 'what's indexed right now.'
+// handleDomains returns indexed hosts by doc count. Iter 405 / 457.
+//
+// Query params:
+//   - top:    legacy alias for limit (capped at 500). Preserved for the
+//             iter-405 landing page contract.
+//   - q:      substring filter (case-insensitive) on the host name.
+//   - offset: pagination offset (default 0).
+//   - limit:  page size (default 50, capped at 500).
+//
+// Response:
+//
+//	{"total": N, "offset": M, "limit": L, "domains": [...]}
 func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	// Legacy 'top' alias from iter-405. When set, behaves like limit + no
+	// search/offset; lands as the first page.
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+			offset = 0
+		}
+	}
+	domains, total, err := s.store.ListDomains(r.Context(), q, offset, limit)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":   total,
+		"offset":  offset,
+		"limit":   limit,
+		"q":       q,
+		"domains": domains,
+	})
+}
+
+// handleQueue surfaces frontier queue depth + top-N hosts currently queued
+// for crawl. Iter 457 — fills the gap left by /domains, which only shows
+// already-indexed hosts.
+func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 	topN := 25
 	if v := r.URL.Query().Get("top"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
 			topN = n
 		}
 	}
-	domains, err := s.store.TopDomains(r.Context(), topN)
+	fs, err := s.store.GetFrontierStats(r.Context())
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"top": topN, "domains": domains})
+	hosts, err := s.store.TopQueuedHosts(r.Context(), topN)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"queued":     fs.Queued,
+		"in_flight":  fs.InFlight,
+		"done":       fs.Done,
+		"errored":    fs.Errored,
+		"top_hosts":  hosts,
+	})
 }
 
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
