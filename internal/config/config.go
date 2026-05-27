@@ -235,6 +235,13 @@ type Embeddings struct {
 
 	// Dim of the model output (must match the index).
 	Dim int `json:"dim"`
+
+	// CacheDir (iter 452) — optional directory for a SHA256-keyed disk
+	// cache. Same text → instant cache hit, no ollama call. Useful when
+	// the crawler re-fetches existing URLs (content_hash unchanged) or
+	// when /search receives the same query repeatedly. Empty = disabled.
+	// Cache entries are ~3 KB each (768 float32). Pick a fast disk.
+	CacheDir string `json:"cache_dir,omitempty"`
 }
 
 // Chat selects the chat-completion model used by /answer (and later /research).

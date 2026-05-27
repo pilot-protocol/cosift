@@ -277,13 +277,22 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		for _, u := range urls {
 			clients = append(clients, embed.NewOpenAIClient(apiKey, u, cfg.Embeddings.Model, cfg.Embeddings.Dim))
 		}
-		srv.embedder = embed.NewRoundRobinEmbedder(clients)
+		var base embed.Embedder = embed.NewRoundRobinEmbedder(clients)
+		// Iter 452: optional sha256-keyed disk cache. Both search and
+		// crawler embed paths share the cache layer — same text returns
+		// instantly on re-fetch / re-query, no ollama call.
+		cacheNote := ""
+		if cfg.Embeddings.CacheDir != "" {
+			base = embed.NewCachedEmbedder(base, cfg.Embeddings.CacheDir)
+			cacheNote = fmt.Sprintf(", cache=%s", cfg.Embeddings.CacheDir)
+		}
+		srv.embedder = base
 		auth := "anonymous"
 		if apiKey != "" {
 			auth = "bearer-token"
 		}
-		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s, backends=%d)",
-			cfg.Embeddings.Model, cfg.Embeddings.Dim, auth, len(clients))
+		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s, backends=%d%s)",
+			cfg.Embeddings.Model, cfg.Embeddings.Dim, auth, len(clients), cacheNote)
 	}
 	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
 	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
