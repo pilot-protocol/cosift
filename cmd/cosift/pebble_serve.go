@@ -332,6 +332,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Both embedded into the binary at build time — operators get a single
 	// self-contained executable, no separate static-asset deployment.
 	mux.HandleFunc("GET /", wrap(srv.handleLanding))
+	// Iter 465: full-page chat UI. Streams /answer or /research SSE
+	// into a multi-turn conversation view with citation rendering.
+	mux.HandleFunc("GET /chat", wrap(srv.handleChat))
 	mux.HandleFunc("GET /openapi.json", wrap(srv.handleOpenAPI))
 	// Iter 398: Swagger UI bundled into the binary. /docs renders the
 	// interactive spec; /docs/swagger-ui.css and /docs/swagger-ui-bundle.js
@@ -895,6 +898,9 @@ func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 //go:embed assets/landing.html
 var landingHTML []byte
 
+//go:embed assets/chat.html
+var chatHTML []byte
+
 //go:embed assets/openapi.json
 var openapiJSON []byte
 
@@ -918,6 +924,14 @@ func (s *pebbleHTTP) handleLanding(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.Write(landingHTML)
+}
+
+// handleChat serves the iter-465 multi-turn chat UI. JS calls /answer
+// or /research with stream=true and renders SSE events incrementally.
+func (s *pebbleHTTP) handleChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	_, _ = w.Write(chatHTML)
 }
 
 func (s *pebbleHTTP) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
