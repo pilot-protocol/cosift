@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"strings"
-	"sync"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -25,17 +24,20 @@ import (
 
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
+// hydeL1Max is the hard cap on the in-memory L1 HyDE passage cache.
+// Beyond this, LRU eviction kicks in to prevent unbounded memory growth.
+const hydeL1Max = 10_000
+
 // hydePassager owns the chat client + 2-level cache.
 type hydePassager struct {
 	chat    embed.ChatClient
-	store   *store.Store // optional L2; nil = L1-only
-	metrics *Metrics     // optional cache observability
-	mu      sync.Mutex
-	cache   map[string]string // L1 key: model + "\x00" + query
+	store   *store.Store       // optional L2; nil = L1-only
+	metrics *Metrics           // optional cache observability
+	cache   *lruCache[string]  // L1 key: model + "\x00" + query
 }
 
 func newHydePassager(chat embed.ChatClient, s *store.Store, m *Metrics) *hydePassager {
-	return &hydePassager{chat: chat, store: s, metrics: m, cache: make(map[string]string)}
+	return &hydePassager{chat: chat, store: s, metrics: m, cache: newLRU[string](hydeL1Max, 0)}
 }
 
 // Passage returns the hypothetical-answer text for the query, threading the
@@ -47,23 +49,18 @@ func (p *hydePassager) Passage(ctx context.Context, q string) string {
 	}
 	key := p.chat.Model() + "\x00" + q
 
-	// L1: in-memory.
-	p.mu.Lock()
-	if cached, ok := p.cache[key]; ok {
-		p.mu.Unlock()
+	// L1: in-memory LRU.
+	if cached, ok := p.cache.get(key); ok {
 		if p.metrics != nil {
 			p.metrics.RecordHyDEL1Hit()
 		}
 		return cached
 	}
-	p.mu.Unlock()
 
 	// L2: SQLite.
 	if p.store != nil {
 		if cached, err := p.store.GetHyDE(ctx, p.chat.Model(), q); err == nil && cached != "" {
-			p.mu.Lock()
-			p.cache[key] = cached
-			p.mu.Unlock()
+			p.cache.set(key, cached)
 			if p.metrics != nil {
 				p.metrics.RecordHyDEL2Hit()
 			}
@@ -88,9 +85,7 @@ func (p *hydePassager) Passage(ctx context.Context, q string) string {
 	}
 
 	// Save both levels.
-	p.mu.Lock()
-	p.cache[key] = passage
-	p.mu.Unlock()
+	p.cache.set(key, passage)
 	if p.store != nil {
 		_ = p.store.SaveHyDE(ctx, p.chat.Model(), q, passage) // best-effort
 	}
