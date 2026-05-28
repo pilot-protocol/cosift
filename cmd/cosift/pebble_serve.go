@@ -1127,7 +1127,7 @@ gather:
 			break gather
 		}
 	}
-	fused := rrfFuse(lists, 60)
+	fused := rrfFuse(lists)
 	if len(fused) > k {
 		fused = fused[:k]
 	}
@@ -1284,7 +1284,7 @@ gather:
 			break gather
 		}
 	}
-	fused := rrfFuse(lists, 60)
+	fused := rrfFuse(lists)
 	if len(fused) > k {
 		fused = fused[:k]
 	}
@@ -3697,7 +3697,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			for i, vh := range vhits {
 				denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
 			}
-			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
+			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits})
 			if len(hits) > fetchK {
 				hits = hits[:fetchK]
 			}
@@ -4021,10 +4021,8 @@ Example output for "go programming language": ["golang concurrent compiled langu
 // fused score; URLs appearing in more lists at higher ranks rise. Returns
 // synthesized Hits ordered by fused score (URL/Title from first encounter,
 // Score = fused RRF score).
-func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
-	if fuseK <= 0 {
-		fuseK = 60
-	}
+func rrfFuse(lists [][]index.Hit) []index.Hit {
+	const fuseK = 60
 	type fused struct {
 		hit   index.Hit
 		score float64
@@ -4419,7 +4417,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 		for i, vh := range denseV {
 			denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
 		}
-		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits}, 60)
+		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits})
 		if len(hits) > fetchK {
 			hits = hits[:fetchK]
 		}
@@ -4450,7 +4448,7 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 			}
 			lists = append(lists, h)
 		}
-		hits := rrfFuse(lists, 60)
+		hits := rrfFuse(lists)
 		if len(hits) > fetchK {
 			hits = hits[:fetchK]
 		}

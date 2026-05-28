@@ -1012,8 +1012,8 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err != nil {
 		return err
 	}
-	sumLen, _ := p.readMetaInt64Locked("sum_doc_len")
-	indexedCount, _ := p.readMetaInt64Locked("indexed_docs")
+	sumLen := p.readMetaInt64Locked("sum_doc_len")
+	indexedCount := p.readMetaInt64Locked("indexed_docs")
 	if hadOld {
 		sumLen -= oldLen
 	} else {
@@ -1887,20 +1887,17 @@ func (p *PebbleStore) readDocLenLocked(docID int64) (int64, bool, error) {
 }
 
 // readMetaInt64Locked fetches an int64 counter under the 'm' family.
-// Missing key returns 0 with no error — counters bootstrap to zero.
-func (p *PebbleStore) readMetaInt64Locked(name string) (int64, bool) {
+// Missing or malformed keys return 0 — counters bootstrap to zero.
+func (p *PebbleStore) readMetaInt64Locked(name string) int64 {
 	val, closer, err := p.db.Get(metaKey(name))
-	if errors.Is(err, pebble.ErrNotFound) {
-		return 0, false
-	}
 	if err != nil {
-		return 0, false
+		return 0
 	}
 	defer closer.Close()
 	if len(val) != 8 {
-		return 0, false
+		return 0
 	}
-	return int64(binary.BigEndian.Uint64(val)), true
+	return int64(binary.BigEndian.Uint64(val))
 }
 
 // CorpusStats returns (sum_doc_len, indexed_docs) in O(1) via the running
@@ -1913,8 +1910,8 @@ func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int6
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	sumLen, _ = p.readMetaInt64Locked("sum_doc_len")
-	count, _ = p.readMetaInt64Locked("indexed_docs")
+	sumLen = p.readMetaInt64Locked("sum_doc_len")
+	count = p.readMetaInt64Locked("indexed_docs")
 	return sumLen, count, nil
 }
 

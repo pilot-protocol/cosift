@@ -71,7 +71,7 @@ func TestRrfFuse(t *testing.T) {
 		{URL: "https://a", Title: "A"},
 		{URL: "https://b", Title: "B"},
 	}
-	got := rrfFuse([][]index.Hit{listA, listB}, 60)
+	got := rrfFuse([][]index.Hit{listA, listB})
 
 	// a should rank first (rank 0 in both lists).
 	if len(got) == 0 || got[0].URL != "https://a" {
@@ -90,13 +90,12 @@ func TestRrfFuse(t *testing.T) {
 		t.Errorf("rrfFuse: top hit should have positive fused score, got %v", got[0].Score)
 	}
 	// Empty input → empty output.
-	if out := rrfFuse(nil, 60); len(out) != 0 {
+	if out := rrfFuse(nil); len(out) != 0 {
 		t.Errorf("rrfFuse(nil): want empty, got %+v", out)
 	}
-	// fuseK<=0 falls back to default (60). Doesn't crash; same ranking.
-	got0 := rrfFuse([][]index.Hit{listA, listB}, 0)
+	got0 := rrfFuse([][]index.Hit{listA, listB})
 	if len(got0) == 0 || got0[0].URL != "https://a" {
-		t.Errorf("rrfFuse(fuseK=0): expected https://a top, got %+v", got0)
+		t.Errorf("rrfFuse: expected https://a top, got %+v", got0)
 	}
 
 	// Iter 378: hybrid-fallback near-miss. /search?retriever=hybrid runs
@@ -104,13 +103,13 @@ func TestRrfFuse(t *testing.T) {
 	// query embeds to a vec with no neighbors), rrfFuse must preserve the
 	// other list's ordering — not crash, not drop everything.
 	emptyDense := [][]index.Hit{listA, {}}
-	gotEmpty := rrfFuse(emptyDense, 60)
+	gotEmpty := rrfFuse(emptyDense)
 	if len(gotEmpty) != 3 || gotEmpty[0].URL != "https://a" || gotEmpty[1].URL != "https://b" || gotEmpty[2].URL != "https://c" {
 		t.Errorf("rrfFuse with one empty list should preserve other's ranking, got %+v", gotEmpty)
 	}
 	// And the dual: empty BM25, dense intact (the URL-mode dense case).
 	emptyBM := [][]index.Hit{{}, listB}
-	gotEmpty2 := rrfFuse(emptyBM, 60)
+	gotEmpty2 := rrfFuse(emptyBM)
 	if len(gotEmpty2) != 2 || gotEmpty2[0].URL != "https://a" || gotEmpty2[1].URL != "https://b" {
 		t.Errorf("rrfFuse with empty BM25 list should preserve dense ranking, got %+v", gotEmpty2)
 	}
@@ -118,7 +117,7 @@ func TestRrfFuse(t *testing.T) {
 	// Single-list input: behaves as a pass-through of the input order. Same
 	// invariant the iter-373 hybrid fallback relies on when only one
 	// retriever fires.
-	single := rrfFuse([][]index.Hit{listA}, 60)
+	single := rrfFuse([][]index.Hit{listA})
 	if len(single) != 3 || single[0].URL != "https://a" || single[2].URL != "https://c" {
 		t.Errorf("rrfFuse single list should preserve order, got %+v", single)
 	}

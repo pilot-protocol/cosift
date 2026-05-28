@@ -2289,7 +2289,7 @@ func (s *Server) expandForResearch(ctx context.Context, q, strategy string) ([]s
 // onRetrieved is invoked for SSE transparency — called with (variant, urls) per
 // retrieval call in planner mode, or once with ("rrf-fused", urls) in paraphrase
 // mode. Pass nil to skip event emission.
-func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string, variants []string, onRetrieved func(variant string, urls []string)) ([]researchPassage, error) {
+func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string, variants []string, onRetrieved func(variant string, urls []string)) []researchPassage {
 	retriever := "bm25"
 	if s.vidx != nil && s.emb != nil {
 		retriever = "hybrid"
@@ -2336,7 +2336,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 			hitLists = append(hitLists, urls)
 		}
 		if len(hitLists) == 0 {
-			return nil, nil
+			return nil
 		}
 		fused := index.RRF(hitLists, cap, 60)
 		if onRetrieved != nil {
@@ -2357,7 +2357,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 				score: 1.0 / float64(rank+1),
 			})
 		}
-		return passages, nil
+		return passages
 	}
 
 	// planner: iterate + dedup-by-URL (original /research behavior).
@@ -2399,7 +2399,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 			break
 		}
 	}
-	return passages, nil
+	return passages
 }
 
 type researchPassage struct {
@@ -2464,11 +2464,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	passages, err := s.gatherResearchPassages(ctx, q, chosenStrategy, variants, nil)
-	if err != nil {
-		writeProblem(w, http.StatusBadGateway, err.Error())
-		return
-	}
+	passages := s.gatherResearchPassages(ctx, q, chosenStrategy, variants, nil)
 	if len(passages) == 0 {
 		writeProblem(w, http.StatusNotFound, "no sources matched any expanded query")
 		return
@@ -2575,13 +2571,9 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 	}
 	emit("plan", map[string]any{"strategy": chosenStrategy, "variants": variants})
 
-	passages, err := s.gatherResearchPassages(ctx, q, chosenStrategy, variants, func(variant string, urls []string) {
+	passages := s.gatherResearchPassages(ctx, q, chosenStrategy, variants, func(variant string, urls []string) {
 		emit("retrieved", map[string]any{"variant": variant, "urls": urls})
 	})
-	if err != nil {
-		bail(err.Error())
-		return
-	}
 	if len(passages) == 0 {
 		bail("no sources matched any expanded query")
 		return

@@ -3302,11 +3302,7 @@ func runBench(ctx context.Context, args []string) error {
 	}
 
 	if *mode == "vector" || *mode == "all" || *mode == "both" {
-		r, err := benchVector(*n, *dim, *queries)
-		if err != nil {
-			return err
-		}
-		emit(r)
+		emit(benchVector(*n, *dim, *queries))
 	}
 	if *mode == "bm25" || *mode == "all" || *mode == "both" {
 		r, err := benchBM25(ctx, *n, *queries)
@@ -3520,7 +3516,7 @@ func printBenchDelta(mode string, a, b *benchResult) {
 	}
 }
 
-func benchVector(n, dim, queries int) (*benchResult, error) {
+func benchVector(n, dim, queries int) *benchResult {
 	rng := newSeededRand()
 	vi := index.NewVectorIndex(dim)
 	for i := 0; i < n; i++ {
@@ -3543,7 +3539,7 @@ func benchVector(n, dim, queries int) (*benchResult, error) {
 		Mode: "vector", N: n, Dim: dim, Queries: queries,
 		P50Micros: p50.Microseconds(), P95Micros: p95.Microseconds(), P99Micros: p99.Microseconds(),
 		QPS: float64(queries) / sumDur(lats).Seconds(),
-	}, nil
+	}
 }
 
 func benchBM25(ctx context.Context, n, queries int) (*benchResult, error) {

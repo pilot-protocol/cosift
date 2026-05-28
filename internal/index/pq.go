@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 )
 
 // PQCodebook holds the M × K × subspaceDim float32 centroid table.
@@ -70,22 +71,18 @@ func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel in
 	}
 	type job struct{ sub int }
 	jobs := make(chan job, M)
-	errCh := make(chan error, M)
+	var wg sync.WaitGroup
 	for w := 0; w < maxParallel; w++ {
+		wg.Add(1)
 		go func(workerSeed int64) {
+			defer wg.Done()
 			rng := rand.New(rand.NewSource(workerSeed))
 			for j := range jobs {
 				subTrain := make([][]float32, len(train))
 				for i, v := range train {
 					subTrain[i] = v[j.sub*subDim : (j.sub+1)*subDim]
 				}
-				centroids, err := kmeansSubspace(subTrain, K, subDim, iters, rng)
-				if err != nil {
-					errCh <- fmt.Errorf("subspace %d: %w", j.sub, err)
-					return
-				}
-				cb.Centroids[j.sub] = centroids
-				errCh <- nil
+				cb.Centroids[j.sub] = kmeansSubspace(subTrain, K, subDim, iters, rng)
 			}
 		}(rngSeed + int64(w))
 	}
@@ -93,11 +90,7 @@ func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel in
 		jobs <- job{sub: sub}
 	}
 	close(jobs)
-	for sub := 0; sub < M; sub++ {
-		if err := <-errCh; err != nil {
-			return nil, err
-		}
-	}
+	wg.Wait()
 	return cb, nil
 }
 
@@ -143,18 +136,14 @@ func TrainPQCodebook(train [][]float32, dim, M, K, iters int, rng *rand.Rand) (*
 			}
 			subTrain[i] = v[sub*subDim : (sub+1)*subDim]
 		}
-		centroids, err := kmeansSubspace(subTrain, K, subDim, iters, rng)
-		if err != nil {
-			return nil, fmt.Errorf("subspace %d k-means: %w", sub, err)
-		}
-		cb.Centroids[sub] = centroids
+		cb.Centroids[sub] = kmeansSubspace(subTrain, K, subDim, iters, rng)
 	}
 	return cb, nil
 }
 
 // kmeansSubspace runs vanilla lloyd's k-means with k-means++ seeding.
 // Returns K centroids each of dim d.
-func kmeansSubspace(data [][]float32, K, d, iters int, rng *rand.Rand) ([][]float32, error) {
+func kmeansSubspace(data [][]float32, K, d, iters int, rng *rand.Rand) [][]float32 {
 	n := len(data)
 	if n < K {
 		// Not enough training data — duplicate to fill, the model will be
@@ -243,7 +232,7 @@ func kmeansSubspace(data [][]float32, K, d, iters int, rng *rand.Rand) ([][]floa
 			}
 		}
 	}
-	return centroids, nil
+	return centroids
 }
 
 // Encode quantizes a single vector against this codebook. Result is M
