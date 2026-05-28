@@ -80,7 +80,7 @@ func TestHNSWSearchEmpty(t *testing.T) {
 	h := NewHNSW(8)
 	q := make([]float32, 8)
 	hits := h.Search(context.Background(), q, 5)
-	if hits != nil && len(hits) != 0 {
+	if len(hits) != 0 {
 		t.Errorf("empty index: want nil/empty, got %+v", hits)
 	}
 }

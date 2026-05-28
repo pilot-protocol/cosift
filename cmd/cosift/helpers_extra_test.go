@@ -225,6 +225,9 @@ func TestPercentiles(t *testing.T) {
 	if p95 != 9*time.Millisecond {
 		t.Errorf("p95: got %v want 9ms", p95)
 	}
+	if p99 != 9*time.Millisecond {
+		t.Errorf("p99: got %v want 9ms", p99)
+	}
 
 	// Unsorted input — function copies + sorts.
 	unsorted := []time.Duration{10, 1, 5, 3, 7, 9, 2, 4, 6, 8}

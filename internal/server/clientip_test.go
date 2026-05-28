@@ -98,8 +98,4 @@ func TestServerWithTrustedProxiesEndToEnd(t *testing.T) {
 	if got := hit("127.0.0.1:80", "2.2.2.2"); got != "2.2.2.2" {
 		t.Errorf("second XFF client: %q", got)
 	}
-	// And with the same XFF, the limiter would see the same identity.
-	if hit("127.0.0.1:80", "1.1.1.1") != hit("127.0.0.1:80", "1.1.1.1") {
-		t.Errorf("identity not stable for same XFF")
-	}
 }

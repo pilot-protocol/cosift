@@ -16,12 +16,6 @@ const urlsetXML = `<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://example.com/c</loc><priority>0.5</priority></url>
 </urlset>`
 
-const indexXML = `<?xml version="1.0" encoding="UTF-8"?>
-<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>%s/sub1.xml</loc></sitemap>
-  <sitemap><loc>%s/sub2.xml</loc></sitemap>
-</sitemapindex>`
-
 func TestSeedSitemapURLSet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")

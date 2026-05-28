@@ -241,11 +241,14 @@ func TestApplyPRFToResearchPassagesGates(t *testing.T) {
 		t.Errorf("absent prf: passages should be unchanged")
 	}
 
-	// <3 passages: no-op (matches iter-159 doc-freq ≥ 2 floor).
+	// <3 passages: no-op (doc-freq ≥ 2 floor).
 	r, _ = http.NewRequest("GET", "http://localhost/?prf=true", nil)
 	got, tag = srv.applyPRFToResearchPassages(context.Background(), r, "q", passages)
 	if tag != "" {
 		t.Errorf("<3 passages: expected empty suffix, got %q", tag)
+	}
+	if len(got) != len(passages) {
+		t.Errorf("<3 passages: passages should be unchanged")
 	}
 }
 

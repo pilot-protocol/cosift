@@ -17,34 +17,9 @@ import (
 	"github.com/pilot-protocol/cosift/internal/server"
 )
 
-// newSearchStubServer returns an httptest server that records the last /search
-// URL and replies with the canned response. Lets the CLI tests verify both the
-// wire-level request shape (filters/flags map correctly) and the output side.
-func newSearchStubServer(t *testing.T, resp server.SearchResponse) (*httptest.Server, *url.URL) {
-	t.Helper()
-	var last *url.URL
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/search" {
-			http.NotFound(w, r)
-			return
-		}
-		u := *r.URL
-		last = &u
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	t.Cleanup(srv.Close)
-	// last is updated by the handler; tests dereference it after runSearchCLI.
-	// Return a pointer-to-pointer dance via closure isn't worth it; tests grab
-	// last from the closure indirectly by reading srv.URL + the handler state.
-	// Instead, expose last via a separate accessor pattern below.
-	_ = last
-	return srv, parseURL(t, srv.URL)
-}
-
-// newSearchStubWithCapture is the same as newSearchStubServer but exposes the
-// captured request URL through a callback rather than a return value, since
-// Go closures over locals work cleanly that way.
+// newSearchStubWithCapture returns an httptest server that records the last
+// /search URL via a closure-backed accessor and replies with the canned
+// response. Lets CLI tests verify both wire-level request shape and output.
 func newSearchStubWithCapture(t *testing.T, resp server.SearchResponse) (*httptest.Server, func() *url.URL) {
 	t.Helper()
 	var captured *url.URL
@@ -60,15 +35,6 @@ func newSearchStubWithCapture(t *testing.T, resp server.SearchResponse) (*httpte
 	}))
 	t.Cleanup(srv.Close)
 	return srv, func() *url.URL { return captured }
-}
-
-func parseURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse %q: %v", raw, err)
-	}
-	return u
 }
 
 // captureSearchStdout mirrors the helper in query_test.go (private to package main).
