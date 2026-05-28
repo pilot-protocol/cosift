@@ -8,9 +8,8 @@
 # Caddy will hit Let's Encrypt's HTTP-01 challenge on :80 within ~30s of restart.
 # Watch progress: sudo journalctl -u caddy -f
 #
-# To roll back to self-signed:
-#   restore the pre-iter-398 Caddyfile (in caddy package's example or this
-#   repo's git history before iter 398).
+# To roll back to self-signed: restore the earlier Caddyfile from git
+# history (caddy's stock example is also a fine starting point).
 
 {
   # ACME contact — set to a real address you control so LE can email expiry

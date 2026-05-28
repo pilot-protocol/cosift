@@ -2,8 +2,8 @@
 #
 #   docker compose up -d
 #
-# The two services share /var/lib/cosift via a named volume. SQLite WAL mode
-# (set in the schema since iter 1) handles concurrent serve-read + refresh-write.
+# The two services share /var/lib/cosift via a named volume. SQLite WAL
+# mode handles concurrent serve-read + refresh-write.
 
 services:
   cosift:

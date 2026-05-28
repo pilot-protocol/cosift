@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real-runner smoke test for cosift. Run before PRs touching the crawler,
-# store, or HTTP handlers. Catches the bug class iter-181 surfaced (WAL
-# multi-writer races) that unit tests against OpenMemory can't reach.
+# store, or HTTP handlers. Catches WAL multi-writer races and similar
+# bug classes that unit tests against OpenMemory can't reach.
 #
 # Cost: ~30-60s (one real crawl + one server start/stop).
 # Network: requires reachable go.dev.
@@ -60,10 +60,10 @@ ok "check-robots returned status line"
 step "crawl $SEED (timeout ${TIMEOUT}s)"
 timeout "$TIMEOUT" "$BIN" crawl "$SEED" 2>&1 | tee "$LOG" >/dev/null || true
 
-# Iter-181 regression check: zero "database is locked" lines.
+# WAL-contention regression check: zero "database is locked" lines.
 LOCK_LINES=$(grep -c "database is locked" "$LOG" || true)
 if [[ "$LOCK_LINES" -ne 0 ]]; then
-  fail "found $LOCK_LINES 'database is locked' lines in crawler log (iter-181 regression?)"
+  fail "found $LOCK_LINES 'database is locked' lines in crawler log"
 fi
 ok "no SQLite lock errors in crawl log"
 

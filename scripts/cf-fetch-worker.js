@@ -1,4 +1,4 @@
-// cosift CF-Worker fetcher add-on (iter 474)
+// cosift CF-Worker fetcher add-on
 //
 // Run this on a Cloudflare Worker (one per region if you want, or just one).
 // cosift's crawler will POST URLs to it; the Worker fetches the target site

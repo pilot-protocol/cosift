@@ -159,12 +159,12 @@
     "/domains": {
       "get": {
         "tags": ["ops"],
-        "summary": "Indexed hosts by doc count (paginated + filterable, iter 457)",
+        "summary": "Indexed hosts by doc count (paginated + filterable)",
         "parameters": [
           {"name": "q", "in": "query", "description": "case-insensitive substring filter on host", "schema": {"type": "string"}},
           {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
           {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500}},
-          {"name": "top", "in": "query", "description": "legacy alias for limit (iter 405)", "schema": {"type": "integer", "minimum": 1, "maximum": 500}}
+          {"name": "top", "in": "query", "description": "legacy alias for limit", "schema": {"type": "integer", "minimum": 1, "maximum": 500}}
         ],
         "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"total": {"type": "integer"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}, "q": {"type": "string"}, "domains": {"type": "array", "items": {"type": "object", "properties": {"host": {"type": "string"}, "count": {"type": "integer"}}}}}}}}}}
       }
@@ -172,7 +172,7 @@
     "/queue": {
       "get": {
         "tags": ["ops"],
-        "summary": "Frontier queue depth + top-N hosts currently queued (iter 457)",
+        "summary": "Frontier queue depth + top-N hosts currently queued",
         "parameters": [
           {"name": "top", "in": "query", "schema": {"type": "integer", "default": 25, "minimum": 1, "maximum": 500}}
         ],
@@ -182,7 +182,7 @@
     "/admin/sitemap-import": {
       "post": {
         "tags": ["ops"],
-        "summary": "Import a sitemap.xml (or sitemap-index, one level deep) into the live frontier (iter 456)",
+        "summary": "Import a sitemap.xml (or sitemap-index, one level deep) into the live frontier",
         "requestBody": {
           "required": true,
           "content": {"application/json": {"schema": {"type": "object", "properties": {"url": {"type": "string", "description": "sitemap URL"}}, "required": ["url"]}}}

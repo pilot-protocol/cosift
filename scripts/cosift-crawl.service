@@ -10,8 +10,8 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu
 Environment=COSIFT_HNSW_CHECKPOINT_SEC=60
-# Run for up to 30 minutes per cycle. iter-399 periodic HNSW checkpoint
-# means we keep all vectors even if SIGTERM cuts us short.
+# Run for up to 30 minutes per cycle. Periodic HNSW checkpoint means we
+# keep all vectors even if SIGTERM cuts us short.
 ExecStart=/home/ubuntu/cosift -config /home/ubuntu/cosift.json crawl -backend pebble -seeds-file /home/ubuntu/seeds.txt -duration 30m
 ExecStartPost=/bin/systemctl start cosift-serve.service
 TimeoutStartSec=2400
