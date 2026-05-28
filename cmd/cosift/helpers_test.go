@@ -24,10 +24,10 @@ func TestNormalizeExpandMode(t *testing.T) {
 		{"true", "hyde"},
 		{"hyde", "hyde"},
 		{"paraphrase", "paraphrase"},
-		{"HYDE", ""},     // case-sensitive
-		{"false", ""},    // not a recognized strategy
-		{"unknown", ""},  // typo
-		{"hybrid", ""},   // SQLite-side retriever value, not an expansion
+		{"HYDE", ""},    // case-sensitive
+		{"false", ""},   // not a recognized strategy
+		{"unknown", ""}, // typo
+		{"hybrid", ""},  // SQLite-side retriever value, not an expansion
 	}
 	for _, c := range cases {
 		got := normalizeExpandMode(c.in)

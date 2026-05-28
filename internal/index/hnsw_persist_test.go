@@ -127,9 +127,9 @@ func TestHNSWNodeEncodingExact(t *testing.T) {
 		},
 		level: 2,
 		neighbors: [][]int{
-			{1, 2, 3, 4, 5},   // layer 0
-			{1, 3, 5},          // layer 1
-			{2, 4},             // layer 2
+			{1, 2, 3, 4, 5}, // layer 0
+			{1, 3, 5},       // layer 1
+			{2, 4},          // layer 2
 		},
 	}
 	blob := encodeHNSWNode(n)

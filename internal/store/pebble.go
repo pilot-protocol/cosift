@@ -1,4 +1,4 @@
-// Pebble-backed document store. Iter 200 — first piece of the path-2 storage
+// Pebble-backed document store. First piece of the path-2 storage
 // rework that lets cosift scale past SQLite's million-row ceiling.
 //
 // Why Pebble: cockroachdb/pebble is a mature pure-Go LSM-tree from
@@ -48,18 +48,18 @@ import (
 type PebbleStore struct {
 	db        *pebble.DB
 	nextID    atomic.Int64
-	mu        sync.Mutex            // serializes the rare URL→ID race during Upsert
-	writeOpts *pebble.WriteOptions  // iter 219: Sync (default) or NoSync (crawl-workload opt-in)
+	mu        sync.Mutex           // serializes the rare URL→ID race during Upsert
+	writeOpts *pebble.WriteOptions // Sync (default) or NoSync (crawl-workload opt-in)
 
-	// Iter 435: Stats() does a full 'd' family iterator scan to count
+	// Stats() does a full 'd' family iterator scan to count
 	// documents. With 120K docs across 870 SSTables that takes ~2.5 s and
 	// dominates /stats latency. Cache the result for a short TTL so the
 	// landing page (polls every ~30 s) hits cached on most page loads.
-	statsCacheMu sync.Mutex
-	statsCacheAt time.Time
+	statsCacheMu  sync.Mutex
+	statsCacheAt  time.Time
 	statsCacheVal Stats
 
-	// Iter 470: round-robin cursor for ClaimFrontier. Previously the
+	// Previously the
 	// iterator always started at the alphabetically-first queued URL,
 	// which starved hosts late in the alphabet (e.g. pilotprotocol.* was
 	// queued 15 min ago and never picked up). Holds the last-claimed
@@ -86,31 +86,32 @@ const (
 	famDocLen  byte = 'l' // 'l' + docID → doc_len (varint)
 	famVector  byte = 'v' // 'v' + 0x01 + uint64-be(nodeID) → hnsw node blob
 	//                       'v' + 0x00 + "meta"           → hnsw graph meta
-	famPQ      byte = 'q' // 'q' + 0x00 + "codebook"       → PQ codebook blob (iter 414)
+	famPQ byte = 'q' // 'q' + 0x00 + "codebook"       → PQ codebook blob
 	//                       'q' + 0x01 + uint64-be(nodeID) → per-node PQ code (M*2 bytes)
 	famDocMeta byte = 'i' // 'i' + uint64-be(docID) → uvarint(urlLen)+url+uvarint(titleLen)+title
-	//                      iter 207: cheap URL+title side-blob (~50 bytes vs ~1KB+ gob)
+	//                      cheap URL+title side-blob (~50 bytes vs ~1KB+ gob)
 	//                      so BM25 hit-resolution skips the full Document decode.
 	famDocTerms byte = 'g' // 'g' + uint64-be(docID) → uvarint(N) + N×uvarint(termID)
-	//                       iter 208: reverse index from docID to its term IDs, so
+	//                       reverse index from docID to its term IDs, so
 	//                       re-indexing the same doc can delete orphaned postings
 	//                       for terms that vanished from the new content.
 	famFrontier byte = 'f' // 'f' + 'u' + url → packed frontier entry
-	//                       iter 209: per-URL frontier row. Status byte +
+	//                       Status byte +
 	//                       depth + priority + enqueued_at + attempts + host
 	//                       + last_error all in one value. Secondary indexes
-	//                       (host-fair claim) land in iter 210.
+	//                       (host-fair claim) land in
 )
 
 // OpenPebble opens (or creates) a Pebble store at path with memory-bounded
-// defaults. Iter 218 — caps the block cache + memtables so cosift fits on
+// defaults. Caps the block cache + memtables so cosift fits on
 // commodity VMs (16 GB RAM was OOM-killed under sustained crawl load
 // because Pebble's defaults are sized for CockroachDB-style servers).
 //
 // Tunable via env vars:
-//   COSIFT_PEBBLE_CACHE_MB     — block cache size in MB (default 128)
-//   COSIFT_PEBBLE_MEMTABLE_MB  — single memtable size in MB (default 32)
-//   COSIFT_PEBBLE_MEMTABLES    — max memtables in memory (default 2)
+//
+//	COSIFT_PEBBLE_CACHE_MB     — block cache size in MB (default 128)
+//	COSIFT_PEBBLE_MEMTABLE_MB  — single memtable size in MB (default 32)
+//	COSIFT_PEBBLE_MEMTABLES    — max memtables in memory (default 2)
 //
 // Total Pebble memory ceiling ≈ cache + memtables × memtable_size, so the
 // defaults pin Pebble at roughly 128 + 2×32 = 192 MB. Real working set
@@ -132,7 +133,7 @@ func OpenPebble(path string) (*PebbleStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pebble.Open(%s): %w", path, err)
 	}
-	// Iter 219: write-sync mode. Sync (default) fsyncs each commit — safe
+	// Sync (default) fsyncs each commit — safe
 	// against VM crash but expensive under sustained write load (the iter-
 	// 218 OOM root cause: batches stacked faster than fsync could drain).
 	// NoSync skips the fsync; durability stays vs PROCESS crash (WAL is
@@ -157,8 +158,8 @@ func OpenPebble(path string) (*PebbleStore, error) {
 		}
 		_ = closer.Close()
 	}
-	// Iter 480c: cross-check against actual max docID in famDoc. The
-	// pre-iter-480c bug clobbered next_doc_id on every UPDATE, so the
+	// The
+	// pre bug clobbered next_doc_id on every UPDATE, so the
 	// stored value can be far lower than the true high-water mark.
 	// Recover by scanning the LAST key in famDoc (Last() is cheap on the
 	// B-tree — no full table scan needed). If max(famDoc.ID) >= stored
@@ -185,7 +186,7 @@ func OpenPebble(path string) (*PebbleStore, error) {
 			_ = maxIt.Close()
 		}
 	}
-	// Iter 472: restore the iter-470 frontier round-robin cursor so a
+	// restore the frontier round-robin cursor so a
 	// restart doesn't re-walk 'a'-'b' from scratch.
 	if cv, ccloser, err := db.Get(metaKey("frontier_cursor")); err == nil {
 		p.frontierCursor = append([]byte(nil), cv...)
@@ -227,7 +228,7 @@ func envInt(name string, defaultV int) int {
 }
 
 // Metrics returns Pebble's built-in metrics — LSM-level breakdown,
-// on-disk size, WAL state, compaction stats. Iter 217 — surfaced via
+// on-disk size, WAL state, compaction stats. Surfaced via
 // `cosift pebble-info` for operator sizing + diagnosis.
 //
 // The returned *pebble.Metrics has a String() that formats a multi-line
@@ -261,7 +262,7 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 		isNew = true
 	}
 	d.ID = id
-	// Iter 480: pipeline-debug trace. Gated by env to keep noise off in prod.
+	// Gated by env to keep noise off in prod.
 	if isNew && os.Getenv("COSIFT_DEBUG_UPSERT") == "1" {
 		fmt.Fprintf(os.Stderr, "upsert-new: id=%d url=%s\n", id, d.URL)
 	}
@@ -282,7 +283,7 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 	if err := batch.Set(urlKey(d.URL), idBuf, nil); err != nil {
 		return 0, err
 	}
-	// Iter 207: cheap (url, title) side-blob so hit-meta lookups skip the
+	// cheap (url, title) side-blob so hit-meta lookups skip the
 	// gob decode of the full Document.
 	if err := batch.Set(docMetaKey(id), packDocMeta(d.URL, d.Title), nil); err != nil {
 		return 0, err
@@ -292,13 +293,9 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 			return 0, err
 		}
 	}
-	// Iter 480c BUGFIX: only update next_doc_id meta when this is a NEW
-	// allocation. Prior code wrote idBuf unconditionally — including on
-	// UPDATEs of older docs — which clobbered next_doc_id to a LOWER value
-	// every time the crawler touched a re-crawl of an old (low-ID) URL. On
-	// the next genuine new URL, nextID.Add(1) would return an ID that
-	// already existed in famDoc; batch.Set(docKey(id), ...) overwrote that
-	// existing doc instead of allocating a fresh slot. Net effect: famDoc
+	// Only update next_doc_id meta on a NEW allocation. Updating it on
+	// re-crawls would clobber it to a LOWER value, so the next genuine new
+	// URL would reuse an existing ID and overwrite that doc. Net effect: famDoc
 	// count stuck forever even as truly-novel URLs were being processed
 	// (they just kept clobbering older entries). This is why the corpus
 	// looked saturated at exactly 300,098.
@@ -314,7 +311,7 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 }
 
 // GetDocMeta returns (URL, title) for docID via the cheap 'i' side blob.
-// ok=false when nothing was indexed for the ID. Iter 207 — avoids the full
+// ok=false when nothing was indexed for the ID. Avoids the full
 // Document gob decode that GetDocByID does.
 func (p *PebbleStore) GetDocMeta(ctx context.Context, docID int64) (url, title string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
@@ -354,7 +351,7 @@ func frontierKey(url string) []byte {
 	return k
 }
 
-// Iter 210: two secondary indexes keyed by host so ClaimFrontier can pick
+// two secondary indexes keyed by host so ClaimFrontier can pick
 // host-fair without an O(N) scan over every queued URL.
 //
 //	'f' + 'q' + host + 0x00 + url → empty   (present iff status='queued')
@@ -403,13 +400,13 @@ const (
 // enqueued_at (varint) + attempts (varint) + host (varint-len + bytes) +
 // last_error (varint-len + bytes).
 type frontierEntry struct {
-	Status      FrontierStatus
-	Depth       int64
-	Priority    float64
-	EnqueuedAt  int64
-	Attempts    int64
-	Host        string
-	LastError   string
+	Status     FrontierStatus
+	Depth      int64
+	Priority   float64
+	EnqueuedAt int64
+	Attempts   int64
+	Host       string
+	LastError  string
 }
 
 func packFrontierEntry(e frontierEntry) []byte {
@@ -581,7 +578,7 @@ func (p *PebbleStore) Stats(ctx context.Context) (Stats, error) {
 	if err := ctx.Err(); err != nil {
 		return Stats{}, err
 	}
-	// Iter 435: 5-second TTL cache. Doc count moves slowly relative to
+	// 5-second TTL cache. Doc count moves slowly relative to
 	// landing-page poll interval; serving slightly stale counts is fine
 	// and saves 2.5 s on each repeat hit.
 	const statsTTL = 5 * time.Second
@@ -749,7 +746,7 @@ func (p *PebbleStore) PutVectorNode(ctx context.Context, nodeID uint64, blob []b
 	return p.db.Set(vectorNodeKey(nodeID), blob, p.writeOpts)
 }
 
-// VectorNodeEntry is one (id, blob) tuple for batched writes. Iter 406.
+// VectorNodeEntry is one (id, blob) tuple for batched writes.
 type VectorNodeEntry struct {
 	ID   uint64
 	Blob []byte
@@ -757,13 +754,13 @@ type VectorNodeEntry struct {
 
 // PutVectorNodesBatch writes many HNSW-node blobs in Pebble batches. Single
 // batch was the original design (one WAL fsync), but Pebble caps a batch at
-// 4 GiB; the iter-501 hnsw-compact full persist of a 7.4M-node graph (~24 GB
+// 4 GiB; the hnsw-compact full persist of a 7.4M-node graph (~24 GB
 // of blob data) panicked with "batch too large: >= 4.0GB". The shutdown
-// final-persist hit the same limit. Iter 501b chunks by bytes to stay well
+// final-persist hit the same limit. chunks by bytes to stay well
 // under the limit and keep memory bounded.
 //
 // Used by index.HNSW.Persist for full snapshots and HNSW.PersistFrom for
-// incremental checkpoints. Iter 406 / 501b.
+// incremental checkpoints. Iterb.
 func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorNodeEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -806,7 +803,7 @@ func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorN
 	return nil
 }
 
-// --- iter 414: Product Quantization storage. ---
+// ---: Product Quantization storage. ---
 //
 // Two key layouts under the 'q' family:
 //   'q' + 0x00 + "codebook"        → codebook blob (M*K*subDim float32 + header)
@@ -859,7 +856,6 @@ type PQCodeEntry struct {
 }
 
 // PutPQCodesBatch writes many per-node PQ codes in a single Pebble batch.
-// Iter 414.
 func (p *PebbleStore) PutPQCodesBatch(ctx context.Context, entries []PQCodeEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -914,7 +910,7 @@ func (p *PebbleStore) IteratePQCodes(ctx context.Context, fn func(nodeID uint64,
 // ClearVectorFamily removes every persisted HNSW key (meta + nodes) in a
 // single DeleteRange op. Used by `cosift hnsw-rebuild` before writing the
 // freshly-reconstructed graph so leftover entries from the old graph
-// can't shadow new ones at lower indices. Iter 428.
+// can't shadow new ones at lower indices.
 func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -926,7 +922,7 @@ func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 
 // ClearPQFamily removes every persisted PQ key (codebook + per-node codes).
 // Used by `cosift hnsw-rebuild` because node indices change during rebuild,
-// invalidating the existing codes. Iter 428.
+// invalidating the existing codes.
 func (p *PebbleStore) ClearPQFamily(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -974,7 +970,7 @@ func (p *PebbleStore) IterateVectorNodes(ctx context.Context, fn func(nodeID uin
 // TermInfo bundles per-term metadata: stable integer ID and document
 // frequency (how many docs contain the term).
 type TermInfo struct {
-	ID     int64
+	ID      int64
 	DocFreq int64
 }
 
@@ -984,7 +980,7 @@ type TermInfo struct {
 // is expected to call this exactly once per doc state).
 //
 // Tokenization happens here, not in the caller, because the Pebble store
-// owns the postings layout. Title tokens contribute the iter-197 title
+// owns the postings layout. Title tokens contribute the title
 // boost (3x TF). doc_len records raw token count for BM25 length norm.
 func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, text string, tokenize func(string) []string, titleBoost int) error {
 	if err := ctx.Err(); err != nil {
@@ -1013,7 +1009,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Iter 207: maintain running (sum_doc_len, indexed_doc_count) counters
+	// maintain running (sum_doc_len, indexed_doc_count) counters
 	// under 'm' so corpusStats is O(1) per query instead of O(N) per query.
 	// On re-index we subtract the OLD doc_len; on first-index we just add.
 	oldLen, hadOld, err := p.readDocLenLocked(docID)
@@ -1047,7 +1043,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
 		return err
 	}
-	// Iter 208: load the previous term-ID set for this docID. On re-index,
+	// On re-index,
 	// terms that no longer appear get their postings deleted so phantom
 	// matches don't leak. New term-ID set is written under 'g' at the end
 	// of the batch.
@@ -1071,7 +1067,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 			info.DocFreq = 1
 		} else if _, alreadyIn := oldSet[info.ID]; !alreadyIn {
 			// Term existed in the corpus but THIS doc didn't have it before.
-			// Iter 208: replaces the iter-201 postingExistsLocked check; we
+			// replaces the postingExistsLocked check; we
 			// now know from oldSet whether the doc had this term.
 			info.DocFreq++
 		}
@@ -1079,7 +1075,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
 			return err
 		}
-		// Iter 207: pack (tf, docLen) into the posting value so the search
+		// pack (tf, docLen) into the posting value so the search
 		// path doesn't need a separate GetDocLen per posting.
 		pvBuf := make([]byte, 16)
 		binary.BigEndian.PutUint64(pvBuf[0:8], uint64(freq))
@@ -1089,7 +1085,7 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		}
 	}
 
-	// Iter 208: delete postings for terms in oldSet \ newSet (vanished from
+	// delete postings for terms in oldSet \ newSet (vanished from
 	// the new content). We don't decrement the term's doc_freq here — that
 	// would require term-string lookup by termID (no reverse index today).
 	// doc_freq becomes a slight over-count for terms that lost docs; IDF
@@ -1115,8 +1111,8 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 }
 
 // PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
-// if the URL already exists in any state, this is a no-op. Iter 209.
-// Iter 210: also writes the 'f'+'q' secondary index for host-fair claim.
+// if the URL already exists in any state, this is a no-op.
+// also writes the 'f'+'q' secondary index for host-fair claim.
 func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1149,15 +1145,15 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 }
 
 // ClaimFrontier picks one queued URL, atomically marks it in_flight, and
-// returns the FrontierItem. ok=false when the queue is empty. Iter 210:
+// returns the FrontierItem. ok=false when the queue is empty.:
 // host-fair via two secondary-index scans — O(distinct in-flight hosts +
 // distinct queued URLs walked until a free host found). At a healthy
 // crawl where most hosts are NOT in-flight, this is effectively O(1).
 //
 // Tradeoff: priority ordering is no longer enforced across hosts. The
-// iter-209 implementation traversed every queued URL to honor strict
-// (priority DESC, enqueued ASC) order; iter 210 trades that for the
-// host-fair scheduling that the iter-190 SQLite-side Claim provides.
+// implementation traversed every queued URL to honor strict
+// (priority DESC, enqueued ASC) order; trades that for the
+// host-fair scheduling that the SQLite-side Claim provides.
 // Within a host's queued URLs Pebble returns them in URL-byte order,
 // which approximates enqueue order for outbound-link discovery.
 func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
@@ -1167,7 +1163,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Step 1: build the set of hosts currently in-flight. Iter 221: wrap in
+	// Step 1: build the set of hosts currently in-flight. wrap in
 	// closure so iIt.Close() runs even if iteration panics (was explicit
 	// Close after the loop; a panic inside leaked the iterator).
 	inflightHosts := make(map[string]struct{}, 32)
@@ -1192,7 +1188,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	}
 
 	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
-	// whose host is NOT in inflightHosts. Iter 470 — start the scan from
+	// whose host is NOT in inflightHosts. Start the scan from
 	// the LAST-CLAIMED key (round-robin), wrapping at the end. Previously
 	// we always started at the first queued URL, so hosts late in the
 	// alphabet (e.g. pilotprotocol.network) could be starved indefinitely
@@ -1241,7 +1237,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	}
 
 	// First sweep: cursor points to the first key of the next host
-	// (set by the previous claim's iter-470 skipKey logic), so a plain
+	// (set by the previous claim's skipKey logic), so a plain
 	// SeekGE lands at the first URL of that next host directly.
 	startFromCursor := func() bool {
 		if len(cursor) > 0 {
@@ -1263,7 +1259,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		pickedURL = fallbackURL
 	}
 
-	// Iter 479: within the picked host's queued bucket, prefer a URL that
+	// within the picked host's queued bucket, prefer a URL that
 	// has NO prior doc record. The naive round-robin always picks the first
 	// alphabetical URL per host, which on a saturated link-graph is almost
 	// always already in famDoc — re-crawl with no doc-count growth. RSS- or
@@ -1302,13 +1298,13 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		}
 	}
 
-	// Iter 470: advance the round-robin cursor PAST the picked host's
+	// advance the round-robin cursor PAST the picked host's
 	// entire URL block. Without this, each claim only advances by one URL,
 	// so hosts with thousands of queued URLs (github.com, en.wikipedia.org)
 	// hog the cursor and hosts later in the alphabet take days to reach.
 	// Cursor = {famFrontier, 'q', host, 0xFF} — lex-greater than any real
 	// URL key for this host (URLs are ASCII), so the next SeekGE lands on
-	// the first URL of the NEXT host. Iter 472: also persist to pebble
+	// the first URL of the NEXT host. also persist to pebble
 	// so a restart resumes where it stopped.
 	var skipKey []byte
 	if pickedHost != "" {
@@ -1345,7 +1341,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
 		return FrontierItem{}, false, err
 	}
-	// Iter 472: persist the cursor in the same atomic batch as the status
+	// persist the cursor in the same atomic batch as the status
 	// transition, so we never desync the state on a crash.
 	if len(skipKey) > 0 {
 		if err := batch.Set(metaKey("frontier_cursor"), skipKey, nil); err != nil {
@@ -1397,7 +1393,7 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 		entry.Attempts++
 		entry.LastError = errMsg
 	}
-	// Iter 210: keep secondary indexes consistent with the primary status.
+	// keep secondary indexes consistent with the primary status.
 	// Done/Error rows are not in any 'f'+q/'f'+i index — only queued and
 	// in_flight have a secondary entry. So a transition out of in_flight
 	// deletes 'f'+'i'; into in_flight adds 'f'+'i'; into queued (recovery)
@@ -1435,7 +1431,7 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 // 64 goroutines fighting for p.mu 64 times each, one caller takes the lock
 // once for the whole batch. Throughput ceiling under contention rises from
 // ~3.4 K docs/min (single-call) to an estimated 15-25 K docs/min for the
-// WET-ingest pipeline. Iter 488.
+// WET-ingest pipeline.
 //
 // Returns parallel slice of assigned IDs (1-1 with input docs). On any
 // error the batch is aborted and no docs are persisted — atomic, like a
@@ -1520,7 +1516,7 @@ func (p *PebbleStore) UpsertDocumentBatch(ctx context.Context, docs []*Document)
 		}
 		_ = isNew
 	}
-	// Iter 480c semantics carry through to batched path: only bump
+	// semantics carry through to batched path: only bump
 	// next_doc_id once per batch, to the max NEW ID we allocated. Avoids
 	// clobbering to a lower value if the batch is all-updates.
 	if maxNewID > 0 {
@@ -1537,9 +1533,9 @@ func (p *PebbleStore) UpsertDocumentBatch(ctx context.Context, docs []*Document)
 }
 
 // IterDocsLite walks famDocMeta ('i' family) and yields each (url, docID).
-// Cheap — uses the iter-207 side blob, skips the full Document gob decode.
+// Cheap — uses the side blob, skips the full Document gob decode.
 // Useful for backfill loops (embed catch-up, lang detection, etc.) that
-// only need the URL and ID to dispatch work. Stops on ctx cancel. Iter 487.
+// only need the URL and ID to dispatch work. Stops on ctx cancel.
 func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url string) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1582,7 +1578,6 @@ func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url
 // are left alone — those represent active or completed work and aren't
 // re-claimable anyway. Use this to drain stale blacklisted hosts that
 // the slower round-robin cursor would take days to consume one-by-one.
-// Iter 477h.
 func (p *PebbleStore) PurgeFrontierByHost(ctx context.Context, host string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -1681,9 +1676,8 @@ func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, erro
 }
 
 // CountQueuedPerHost returns a host → queued-URL-count map for the given
-// hosts. Iter 211 — Pebble parity for iter-195 SQLite primitive. Used by
-// crawler.enqueueLinks to enforce the per-host enqueue cap; one
-// prefix-count per host against the 'f'+'q' secondary index.
+// hosts. Used by crawler.enqueueLinks to enforce the per-host enqueue cap;
+// one prefix-count per host against the 'f'+'q' secondary index.
 //
 // Hosts with zero queued URLs simply don't appear in the result map.
 func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (map[string]int, error) {
@@ -1703,7 +1697,7 @@ func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (m
 		lo[2+len(host)] = 0x00
 		hi := append([]byte{}, lo...)
 		hi[2+len(host)] = 0x01
-		// Iter 221: per-iteration closure so defer it.Close() runs at each
+		// per-iteration closure so defer it.Close() runs at each
 		// host's end, not at the enclosing function's return. Without the
 		// closure a `defer` here would stack iterators until function exit
 		// (Go defers fire on FUNCTION return, not on loop iteration).
@@ -1731,7 +1725,7 @@ func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (m
 
 // RecrawlURL transitions an existing URL back to queued status, regardless
 // of its current state (done / error / even queued). Used by admin
-// /recrawl + cosift crawl -refresh. Iter 211 — Pebble parity for the
+// /recrawl + cosift crawl -refresh. — Pebble parity for the
 // SQLite Store's same-named method.
 //
 // Returns ErrNotFound if the URL was never enqueued.
@@ -1779,7 +1773,7 @@ func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
 		if err := batch.Set(key, packFrontierEntry(entry), nil); err != nil {
 			return err
 		}
-		// Iter 210: rebuild secondary indexes for the transition.
+		// rebuild secondary indexes for the transition.
 		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
 			return err
 		}
@@ -1838,9 +1832,9 @@ func (p *PebbleStore) postingExistsLocked(termID, docID int64) (bool, error) {
 }
 
 // PostingEntry is one (docID, tf, docLen) tuple returned by IteratePostings.
-// Iter 207: docLen moved INSIDE the posting value (was a separate GetDocLen
+// docLen moved INSIDE the posting value (was a separate GetDocLen
 // per posting). At N=10k this saves ~25k Pebble Gets per query, the
-// dominant remaining cost after the iter-207 GetDocMeta + corpusStats fixes.
+// dominant remaining cost after the GetDocMeta + corpusStats fixes.
 type PostingEntry struct {
 	DocID  int64
 	TF     int64
@@ -1874,8 +1868,8 @@ func (p *PebbleStore) IteratePostings(ctx context.Context, termID int64, fn func
 		if err != nil {
 			return err
 		}
-		// Iter 207 format: 16 bytes (tf, docLen). Iter 201 legacy 8-byte tf
-		// is no longer valid; fresh stores after iter-207 commit only.
+		// format: 16 bytes (tf, docLen). legacy 8-byte tf
+		// is no longer valid; fresh stores after commit only.
 		if len(val) != 16 {
 			continue
 		}
@@ -1926,8 +1920,8 @@ func (p *PebbleStore) readMetaInt64Locked(name string) (int64, bool) {
 }
 
 // CorpusStats returns (sum_doc_len, indexed_docs) in O(1) via the running
-// counters maintained by IndexDocument. Iter 207 — replaces the per-query
-// O(N) scan over the 'l' family that the iter-206 bench surfaced as
+// counters maintained by IndexDocument. Replaces the per-query
+// O(N) scan over the 'l' family that the bench surfaced as
 // PebbleBM25.Search's dominant cost.
 func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int64, err error) {
 	if err := ctx.Err(); err != nil {
@@ -1949,7 +1943,7 @@ type DomainCount struct {
 // ListDomains is a paginated + filtered variant of TopDomains. Walks the
 // 'h' family once, counts per host, filters by substring `q` (empty = all),
 // sorts desc by count, returns the slice [offset:offset+limit) plus the
-// total count after filter. Iter 457.
+// total count after filter.
 func (p *PebbleStore) ListDomains(ctx context.Context, q string, offset, limit int) ([]DomainCount, int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
@@ -2007,7 +2001,7 @@ func (p *PebbleStore) ListDomains(ctx context.Context, q string, offset, limit i
 }
 
 // TopQueuedHosts walks the 'f'+'q' index (queued frontier entries) and
-// returns the top-N hosts by queue depth. Iter 457.
+// returns the top-N hosts by queue depth.
 func (p *PebbleStore) TopQueuedHosts(ctx context.Context, topN int) ([]DomainCount, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -2050,7 +2044,7 @@ func (p *PebbleStore) TopQueuedHosts(ctx context.Context, topN int) ([]DomainCou
 // TopDomains prefix-scans the 'h' family (which holds host -> docID
 // mappings, one entry per indexed doc) and returns the top-N hosts by
 // count, sorted desc. Linear in the number of indexed docs but very fast
-// on Pebble (key-only scan, no value decode). Iter 405.
+// on Pebble (key-only scan, no value decode).
 func (p *PebbleStore) TopDomains(ctx context.Context, topN int) ([]DomainCount, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -13,7 +13,6 @@ import (
 // jsonLDFields holds the retrieval-relevant fields extracted from JSON-LD
 // (<script type="application/ld+json"> Schema.org payloads). All fields are
 // best-effort optional — sites use JSON-LD with widely varying completeness.
-// Iter 76.
 type jsonLDFields struct {
 	Name          string
 	Headline      string
@@ -22,7 +21,7 @@ type jsonLDFields struct {
 	AuthorName    string
 	DatePublished string // ISO 8601 string; parsed to time.Time downstream
 	DateModified  string // fallback when DatePublished absent
-	Image         string // URL; first non-empty wins. Iter 155.
+	Image         string // URL; first non-empty wins.
 }
 
 // merge combines two extractions, preferring non-empty values from src. Used
@@ -110,7 +109,7 @@ func walkJSONLDValue(v interface{}, out *jsonLDFields) {
 				}
 			}
 		}
-		// Iter 155 — Image: can be a string URL, an ImageObject with `url`, or
+		// Image: can be a string URL, an ImageObject with `url`, or
 		// an array of either. Take the first non-empty URL string.
 		if out.Image == "" {
 			if im, ok := x["image"]; ok {
@@ -132,7 +131,7 @@ func walkJSONLDValue(v interface{}, out *jsonLDFields) {
 // isFaviconRel reports whether a <link rel="..."> value designates a favicon.
 // The rel attribute can carry multiple tokens (e.g., `rel="shortcut icon"`);
 // any of the recognized tokens qualifies — "icon" alone matches the common
-// "shortcut icon" pattern. Iter 156.
+// "shortcut icon" pattern.
 func isFaviconRel(rel string) bool {
 	if rel == "" {
 		return false
@@ -147,11 +146,12 @@ func isFaviconRel(rel string) bool {
 }
 
 // jsonLDImageURL extracts the first non-empty URL from Schema.org's polymorphic
-// `image` field. Iter 155. Shapes seen in the wild:
+// `image` field. Shapes seen in the wild:
 //   - "https://x.com/img.jpg"             (string)
 //   - {"@type":"ImageObject", "url":"..."} (object with url field)
 //   - ["url1", "url2"]                    (array of strings)
 //   - [{"url":"u1"}, "u2"]                (mixed array — take the first valid)
+//
 // Returns "" when no URL is found.
 func jsonLDImageURL(v interface{}) string {
 	switch x := v.(type) {
@@ -207,21 +207,21 @@ type ParsedDoc struct {
 	// PublishedAt is the document's publication date, extracted from JSON-LD
 	// `datePublished` (preferred) or `dateModified` (fallback). Zero-value
 	// means "unknown" — search filters skip docs with no publication signal
-	// rather than treating them as 1970-01-01. Iter 77.
+	// rather than treating them as 1970-01-01.
 	PublishedAt time.Time
 	// AuthorName extracted from JSON-LD `author.name` (preferred) or `author`
-	// as a bare string. Empty when absent. Iter 150 (parser already extracted
-	// it for the indexer prefix; iter 150 exposes it on ParsedDoc).
+	// as a bare string. Empty when absent. (parser already extracted
+	// it for the indexer prefix; exposes it on ParsedDoc).
 	AuthorName string
 	// Image URL. Preference: og:image > JSON-LD `image` (string or
-	// ImageObject.url). Empty when absent. Iter 155for
-	// SearchHit.image / "doc-card" rendering.
+	// ImageObject.url). Empty when absent. Used for SearchHit.image and
+	// "doc-card" rendering.
 	Image string
 	// Favicon URL extracted from <link rel="icon">, <link rel="shortcut icon">,
 	// or <link rel="apple-touch-icon">. Resolved against the page's base URL,
 	// so relative hrefs (e.g., `/favicon.ico`) become absolute. Empty when no
 	// <link rel="…icon…"> is present — callers can fall back to
-	// `<scheme>://<host>/favicon.ico` themselves if their use case allows. Iter 156.
+	// `<scheme>://<host>/favicon.ico` themselves if their use case allows.
 	Favicon string
 }
 
@@ -254,34 +254,34 @@ var dropTags = map[string]bool{
 // "navigation"; `<div class="vector-feature-language-in-main-menu-disabled">`
 // matches NOTHING (the token is the full hyphenated string).
 var boilerplateClassTokens = map[string]bool{
-	"nav":            true,
-	"navbar":         true,
-	"navigation":     true,
-	"menu":           true,
-	"sidebar":        true,
-	"side-bar":       true,
-	"footer":         true,
-	"site-footer":    true,
-	"header":         true,
-	"site-header":    true,
-	"page-header":    true,
-	"banner":         true,
-	"cookie-banner":  true,
-	"cookie-notice":  true,
-	"ad":             true,
-	"ads":            true,
-	"advert":         true,
-	"advertisement":  true,
-	"promo":          true,
-	"comment":        true,
-	"comments":       true,
-	"share":          true,
-	"social":         true,
-	"social-share":   true,
-	"breadcrumb":     true,
-	"breadcrumbs":    true,
-	"newsletter":     true,
-	"subscribe":      true,
+	"nav":           true,
+	"navbar":        true,
+	"navigation":    true,
+	"menu":          true,
+	"sidebar":       true,
+	"side-bar":      true,
+	"footer":        true,
+	"site-footer":   true,
+	"header":        true,
+	"site-header":   true,
+	"page-header":   true,
+	"banner":        true,
+	"cookie-banner": true,
+	"cookie-notice": true,
+	"ad":            true,
+	"ads":           true,
+	"advert":        true,
+	"advertisement": true,
+	"promo":         true,
+	"comment":       true,
+	"comments":      true,
+	"share":         true,
+	"social":        true,
+	"social-share":  true,
+	"breadcrumb":    true,
+	"breadcrumbs":   true,
+	"newsletter":    true,
+	"subscribe":     true,
 }
 
 // Parse extracts main content from an HTML byte slice.
@@ -291,7 +291,7 @@ var boilerplateClassTokens = map[string]bool{
 // for v0. Targets a recall-leaning extractor — we'd rather keep a noisy paragraph
 // than drop a real one.
 //
-// Iter-75 added meta-tag extraction: OpenGraph (og:title, og:description) and
+// added meta-tag extraction: OpenGraph (og:title, og:description) and
 // Twitter Card + standard <meta name="description"> are read alongside <title>.
 // The richest available title is preferred; description is prepended to the
 // extracted text so the indexer gets the keyword signal.
@@ -311,9 +311,9 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 	// next on empty. og: > twitter: > standard <meta name="description">.
 	var ogTitle, twitterTitle string
 	var ogDesc, twitterDesc, metaDesc string
-	var ogImage string // Iter 155
+	var ogImage string //
 
-	// JSON-LD aggregate (iter 76). Multiple <script type="application/ld+json">
+	// JSON-LD aggregate. Multiple <script type="application/ld+json">
 	// blocks can appear on one page (article + organization + breadcrumb is the
 	// classic trio); merge fills the first non-empty value for each field.
 	var ld jsonLDFields
@@ -334,7 +334,7 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 				out.Title = strings.TrimSpace(nodeText(n))
 				return
 			}
-			// Iter 156: <link rel="icon|shortcut icon|apple-touch-icon" href="...">.
+			// <link rel="icon|shortcut icon|apple-touch-icon" href="...">.
 			// First non-empty wins; preference order is page-order (whatever the
 			// site lists first). Resolved against baseURL so /favicon.ico becomes
 			// absolute. <link> is a leaf — no children to walk.
@@ -377,13 +377,13 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 				case prop == "og:description" && ogDesc == "":
 					ogDesc = content
 				case prop == "og:image" && ogImage == "":
-					ogImage = content // iter 155
+					ogImage = content //
 				case nm == "twitter:title" && twitterTitle == "":
 					twitterTitle = content
 				case nm == "twitter:description" && twitterDesc == "":
 					twitterDesc = content
 				case nm == "twitter:image" && ogImage == "":
-					ogImage = content // iter 155 — fallback when og:image absent
+					ogImage = content // fallback when og:image absent
 				case nm == "description" && metaDesc == "":
 					metaDesc = content
 				}
@@ -392,7 +392,7 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 			if name == "body" {
 				inBody = true
 			}
-			// Iter 76: JSON-LD blocks are <script type="application/ld+json">.
+			// JSON-LD blocks are <script type="application/ld+json">.
 			// We must intercept BEFORE the dropTags["script"] = true check below.
 			if name == "script" {
 				isLD := false
@@ -473,8 +473,8 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 		desc = metaDesc
 	}
 
-	// Build the prefix of extra text signals to prepend to body. iter-75 prepended
-	// just description; iter-76 also prepends JSON-LD keywords and author name
+	// Build the prefix of extra text signals to prepend to body. prepended
+	// just description; also prepends JSON-LD keywords and author name
 	// when present. These are author-curated and surface entities not in body text.
 	var prefix strings.Builder
 	if desc != "" {
@@ -507,11 +507,11 @@ func Parse(body []byte, base string) (*ParsedDoc, error) {
 	} else if t := parseJSONLDTime(ld.DateModified); !t.IsZero() {
 		out.PublishedAt = t
 	}
-	// Iter 150: surface the JSON-LD author.name on ParsedDoc so callers can
+	// surface the JSON-LD author.name on ParsedDoc so callers can
 	// persist it. Parser already extracted into `ld.AuthorName` for its text
 	// prefix at the indexer; that path is unchanged.
 	out.AuthorName = ld.AuthorName
-	// Iter 155: image selection. og:image > twitter:image (collected into the
+	// og:image > twitter:image (collected into the
 	// same `ogImage` var above so we don't need a second priority list) >
 	// JSON-LD `image`. Empty when none extracted.
 	if ogImage != "" {

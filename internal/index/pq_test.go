@@ -11,8 +11,8 @@ import (
 // below a sane threshold. Locks down the iter-413 happy path.
 func TestPQTrainAndEncodeRoundTrip(t *testing.T) {
 	dim := 64
-	M := 8        // 8 subspaces of 8 dims each
-	K := 32       // 32 centroids per subspace — small for speed
+	M := 8  // 8 subspaces of 8 dims each
+	K := 32 // 32 centroids per subspace — small for speed
 	N := 2000
 	rng := rand.New(rand.NewSource(7))
 	train := make([][]float32, N)
@@ -87,9 +87,9 @@ func TestPQDistanceMatchesDirect(t *testing.T) {
 	}
 	// Score 50 candidates by both PQ distance and direct L2.
 	type scored struct {
-		idx       int
-		pqDist    float32
-		directSq  float64
+		idx      int
+		pqDist   float32
+		directSq float64
 	}
 	out := make([]scored, 0, 50)
 	for i := 0; i < 50; i++ {

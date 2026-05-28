@@ -16,10 +16,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -62,7 +62,7 @@ usage:
   cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
   cosift pebble-info -dir D [-json]     dump corpus counters + pebble.Metrics for an offline store (-json = jq-friendly shape, no pebble.Metrics)
   cosift migrate-to-pebble -output D    copy a SQLite cosift data dir into a fresh Pebble store
-  cosift verify [-json] [-server URL]   compare iter-207 counters vs 'l' family scan (non-zero exit on drift; -server routes through HTTP /verify when the writer lock is held)
+  cosift verify [-json] [-server URL]   compare counters vs 'l' family scan (non-zero exit on drift; -server routes through HTTP /verify when the writer lock is held)
   cosift status-file [-target N] [-json]  read crawl-status.json (lock-free; works during a live crawl)
   cosift crawl-status                   richer stats (SQLite-backed; runs against the open store)
   cosift eval [flags]       run the eval set against a chosen retriever
@@ -99,8 +99,8 @@ flags:
 
 var version = "0.0.1-dev"
 
-// chunkerWith is a thin shim around iter-147's index.NewChunkerWith — kept as
-// a local alias to avoid churning the 4 CLI callsites, and so the iter-142/145
+// chunkerWith is a thin shim around's index.NewChunkerWith — kept as
+// a local alias to avoid churning the 4 CLI callsites, and so the Iter
 // "where chunker config gets resolved" path remains discoverable from this file.
 func chunkerWith(size, overlap int) *index.Chunker {
 	return index.NewChunkerWith(size, overlap)
@@ -137,7 +137,7 @@ func main() {
 			log.Fatalf("crawl: %v", err)
 		}
 	case "query":
-		// Iter 89: query text is the FIRST positional arg, then optional
+		// query text is the FIRST positional arg, then optional
 		// flags. Old: `cosift query "text"` (still works). New: `cosift
 		// query "text" -k 20 -json`.
 		if flag.NArg() < 2 {
@@ -147,7 +147,7 @@ func main() {
 			log.Fatalf("query: %v", err)
 		}
 	case "search":
-		// Iter 90: HTTP-via-server search. Same positional+flags pattern as `query`.
+		// HTTP-via-server search. Same positional+flags pattern as `query`.
 		// Distinct from `query` (BM25 local-only); `search` exercises the full
 		// pipeline of a running cosift instance.
 		if flag.NArg() < 2 {
@@ -157,7 +157,7 @@ func main() {
 			log.Fatalf("search: %v", err)
 		}
 	case "research":
-		// Iter 91: HTTP-via-server research. Sibling to `search` but hits the
+		// HTTP-via-server research. Sibling to `search` but hits the
 		// /research endpoint — LLM synthesis over retrieved sources.
 		// Non-streaming for now; SSE could be a follow-up iter.
 		if flag.NArg() < 2 {
@@ -167,9 +167,9 @@ func main() {
 			log.Fatalf("research: %v", err)
 		}
 	case "find-similar":
-		// Iter 92: HTTP-via-server find-similar. URL was positional-required.
-		// Iter 300: relax to accept either positional URL OR -text/-text-file
-		// (iter 298 content-based MLT). Treat first non-flag arg as URL.
+		// HTTP-via-server find-similar. URL was positional-required.
+		// relax to accept either positional URL OR -text/-text-file
+		//. Treat first non-flag arg as URL.
 		fsArgs := flag.Args()[1:]
 		var sourceURL string
 		if len(fsArgs) > 0 && !strings.HasPrefix(fsArgs[0], "-") {
@@ -180,7 +180,7 @@ func main() {
 			log.Fatalf("find-similar: %v", err)
 		}
 	case "contents":
-		// Iter 93: GET /contents (single URL) or POST /contents (batch — multiple
+		// GET /contents (single URL) or POST /contents (batch — multiple
 		// positional URLs OR -file).content fetching from the CLI.
 		// Required-args validation happens inside runContentsCLI after flag
 		// parsing because URLs can come from positional args OR -file.
@@ -188,7 +188,7 @@ func main() {
 			log.Fatalf("contents: %v", err)
 		}
 	case "answer":
-		// Iter 94: HTTP-via-server /answer — single-question LLM answer with
+		// HTTP-via-server /answer — single-question LLM answer with
 		// cited sources. Sibling to `research` but no plan/expansion strategy
 		// surface (just answer the question, k retrieved sources).
 		if flag.NArg() < 2 {
@@ -198,10 +198,10 @@ func main() {
 			log.Fatalf("answer: %v", err)
 		}
 	case "admin":
-		// Iter 99: Admin CLI subcommands — bearer-auth /admin/* endpoints.
-		// Iter 100 added `recrawl` (destructive POST, requires -y).
-		// Iter 111 added `recrawl-domain` (bulk by domain, requires -y or -dry-run).
-		// Iter 121: multi-line help when invoked without a subcommand.
+		// Admin CLI subcommands — bearer-auth /admin/* endpoints.
+		// added `recrawl` (destructive POST, requires -y).
+		// added `recrawl-domain` (bulk by domain, requires -y or -dry-run).
+		// multi-line help when invoked without a subcommand.
 		if flag.NArg() < 2 {
 			fmt.Fprint(os.Stderr, adminUsageError())
 			os.Exit(2)
@@ -258,7 +258,7 @@ func main() {
 			log.Fatalf("outcomes: %v", err)
 		}
 	case "doctor":
-		// Iter 102 extended doctor with optional remote checks via -server / -token.
+		// extended doctor with optional remote checks via -server / -token.
 		if err := runDoctor(ctx, cfg, flag.Args()[1:]); err != nil {
 			os.Exit(1)
 		}
@@ -287,7 +287,7 @@ func main() {
 			log.Fatalf("bench-pq: %v", err)
 		}
 	case "parse-pdf":
-		// Iter 464: subprocess sandbox entry point. Stdin = pdf bytes,
+		// Stdin = pdf bytes,
 		// stdout = JSON {title, text} or {error}. Sets a soft memory
 		// limit so the kernel can kill us via OOM if the ledongthuc/pdf
 		// library starts allocating without bound — parent survives.
@@ -326,7 +326,7 @@ func main() {
 }
 
 // authStatus describes how a configured capability will authenticate to its
-// endpoint, for /doctor output. Iter 392.
+// endpoint, for /doctor output.
 func authStatus(configured bool, key string, urlSet bool) string {
 	switch {
 	case !configured:
@@ -341,13 +341,14 @@ func authStatus(configured bool, key string, urlSet bool) string {
 }
 
 // resolveAPIKey returns the first non-empty API key from a slot-specific env
-// var, falling back to OPENAI_API_KEY / OPENAI. Iter 392/393: lets operators
+// var, falling back to OPENAI_API_KEY / OPENAI. Iter: lets operators
 // using a non-OpenAI embedder or chat endpoint name keys for what they
 // actually are. Empty result is "use anonymously" — valid for local
 // self-hosted endpoints.
 //
 // slot: "embed" → checks COSIFT_EMBED_API_KEY first
-//       "chat"  → checks COSIFT_CHAT_API_KEY first
+//
+//	"chat"  → checks COSIFT_CHAT_API_KEY first
 func resolveAPIKey(slot string) string {
 	var first string
 	switch slot {
@@ -369,15 +370,15 @@ func resolveAPIKey(slot string) string {
 	return ""
 }
 
-// resolveEmbedAPIKey kept for back-compat with the iter-392 call site. New
-// callers should use resolveAPIKey("embed"). Iter 393.
+// resolveEmbedAPIKey kept for back-compat with the call site. New
+// callers should use resolveAPIKey("embed").
 func resolveEmbedAPIKey() string { return resolveAPIKey("embed") }
 
-// hnswPassageWriter bridges the crawler's iter-212 PassageWriter contract to
+// hnswPassageWriter bridges the crawler's PassageWriter contract to
 // an in-memory index.HNSW graph. Each embedded passage looks up the doc's URL
 // and Title (via *PebbleStore.GetDocByID) and is inserted into the graph; the
 // graph is persisted to Pebble's 'v' family in a single Persist() call at the
-// end of the crawl. Iter 391.
+// end of the crawl.
 type hnswPassageWriter struct {
 	ps   *store.PebbleStore
 	hnsw *index.HNSW
@@ -395,7 +396,7 @@ func (w *hnswPassageWriter) UpsertPassage(ctx context.Context, p *store.Passage)
 	return nil
 }
 
-// UpsertPassageBatch (iter 443) writes all passages in a single HNSW lock
+// UpsertPassageBatch writes all passages in a single HNSW lock
 // acquisition — meaningful when a doc has many chunks. Implements the
 // optional crawler.PassageWriterBatch interface; the crawler will call
 // this when present instead of looping UpsertPassage per chunk.
@@ -425,7 +426,6 @@ func (w *hnswPassageWriter) UpsertPassageBatch(ctx context.Context, ps []*store.
 // MarkURLInvalid satisfies the optional crawler.URLInvalidator interface.
 // Lets the crawler reclaim zombie passages (prior generations of chunks for
 // the same URL) before pushing a fresh chunk batch. Returns count zeroed.
-// Iter 477.
 func (w *hnswPassageWriter) MarkURLInvalid(ctx context.Context, url string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -434,7 +434,7 @@ func (w *hnswPassageWriter) MarkURLInvalid(ctx context.Context, url string) (int
 }
 
 func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
-	// Iter 391: hoisted PebbleStore handle so the embedder wiring below can
+	// hoisted PebbleStore handle so the embedder wiring below can
 	// reach it to attach the HNSW bridge after the backend switch.
 	var pebbleStoreForCrawl *store.PebbleStore
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
@@ -442,12 +442,12 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	sitemap := fs.String("sitemap", "", "URL of a sitemap.xml (or sitemap index) to seed from")
 	seedsFile := fs.String("seeds-file", "", "path to a text file with one seed URL per line (blank lines and # comments ignored)")
 	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
-	duration := fs.Duration("duration", 0, "iter 223: stop the crawl cleanly after this much time (0 = run until frontier empty or SIGTERM)")
+	duration := fs.Duration("duration", 0, "stop the crawl cleanly after this much time (0 = run until frontier empty or SIGTERM)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	urls := fs.Args()
-	// Iter 397: -seeds-file lets operators target specific websites in bulk
+	// -seeds-file lets operators target specific websites in bulk
 	// without stuffing dozens of URLs on the command line. Each non-blank,
 	// non-comment line is treated as a seed.
 	if *seedsFile != "" {
@@ -468,7 +468,7 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		return errors.New("crawl: at least one URL, -seeds-file, or -sitemap is required")
 	}
 
-	// Iter 223: bounded crawl via -duration. Wraps the caller's ctx with a
+	// Wraps the caller's ctx with a
 	// timeout; workers see ctx.Err() != nil and exit cleanly. Pebble flushes
 	// on Close (via the deferred ps.Close() below) so durability is preserved.
 	if *duration > 0 {
@@ -488,7 +488,7 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		defer s.Close()
 		c = crawler.New(cfg.Crawler, s)
 	case "pebble":
-		// Iter 213: route through the iter-200..212 Pebble path. The
+		// route through the  Pebble path. The
 		// data dir layout under cfg.DataDir for Pebble: a sibling "pebble"
 		// subdir so SQLite and Pebble stores can coexist during migration.
 		pebbleDir := filepath.Join(cfg.DataDir, "pebble")
@@ -504,11 +504,11 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		return fmt.Errorf("crawl: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}
 
-	// Iter 186 / 213 / 391: auto-wire embedder when configured. For the
-	// Pebble backend, also build and persist an HNSW graph via the iter-391
+	// Iter: auto-wire embedder when configured. For the
+	// Pebble backend, also build and persist an HNSW graph via the
 	// hnswPassageWriter bridge — that's the path /search?retriever=dense
-	// needs and that pre-iter-391 was a documented no-op.
-	// Iter 392: API key is OPTIONAL when cfg.Embeddings.URL points at a
+	// needs and that pre was a documented no-op.
+	// API key is OPTIONAL when cfg.Embeddings.URL points at a
 	// custom endpoint (Ollama / vLLM / TEI / etc — local self-hosted
 	// embedders don't need a Bearer token). Required only when hitting the
 	// default OpenAI endpoint.
@@ -530,7 +530,7 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 			if pebbleStoreForCrawl != nil {
 				h := index.NewHNSW(dim)
 				c = c.WithPassageWriter(&hnswPassageWriter{ps: pebbleStoreForCrawl, hnsw: h})
-				// Iter 399: periodic checkpoint every COSIFT_HNSW_CHECKPOINT_SEC
+				// periodic checkpoint every COSIFT_HNSW_CHECKPOINT_SEC
 				// (default 60s). Without this, a crash / SIGKILL / time-cap
 				// deadline mid-crawl loses all in-memory vectors because Persist
 				// only runs at deferred end-of-crawl. Goroutine exits when
@@ -616,7 +616,7 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 		return errors.New("k must be in [1, 100]")
 	}
 
-	// Iter 216: -backend flag mirrors iter-213 on crawl + stats. Both
+	// -backend flag mirrors on crawl + stats. Both
 	// BM25 implementations expose the same Search(ctx, q, k) signature so
 	// the rest of runQuery is backend-agnostic.
 	type searcher interface {
@@ -638,7 +638,7 @@ func runQuery(ctx context.Context, cfg *config.Config, q string, args []string) 
 			return err
 		}
 		defer ps.Close()
-		// Iter 301: honor COSIFT_BM25_K1 / _B here too. runQuery previously
+		// runQuery previously
 		// always used defaults; with env overrides set, score values diverged
 		// silently from pebble-serve's. Now they line up.
 		pidx := index.NewPebbleBM25(ps)
@@ -690,7 +690,7 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	k := fs.Int("k", 10, "max results")
 	retriever := fs.String("retriever", "", "bm25 | dense | hybrid (server default if empty)")
-	// Iter 385: MMR lambda passthrough for /search.
+	// MMR lambda passthrough for /search.
 	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (needs HNSW + embedder server-side)")
 	rerankFlag := fs.Bool("rerank", false, "wrap retrieval with LLM listwise reranker (server must have it configured)")
 	expand := fs.Bool("expand", false, "LLM paraphrase + RRF fusion (server must have a paraphraser)")
@@ -699,7 +699,7 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	includeDomains := fs.String("include-domains", "", "comma-separated allowlist of result domains")
 	excludeDomains := fs.String("exclude-domains", "", "comma-separated denylist of result domains")
 	sortMode := fs.String("sort", "", "relevance | date_desc | date_asc (server default if empty)")
-	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 96.")
+	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable list")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -799,7 +799,7 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 }
 
 // runResearchCLI hits a running cosift server's /research endpoint over HTTP.
-// Sibling to runSearchCLI (iter 90): same -server / -json affordance, but pulls
+// Sibling to runSearchCLI: same -server / -json affordance, but pulls
 // an LLM-synthesized answer with cited sources rather than a ranked URL list.
 // Non-streaming — the SSE mode (?stream=true) is a separate code path; this
 // returns the same JSON the non-streaming endpoint produces.
@@ -807,7 +807,6 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 // suitable for piping into LLM contexts or markdown viewers. Used by both
 // runResearchCLI and runAnswerCLI via the shared `-format md|markdown` flag.
 // strategy/plan are research-only; pass "" / nil from /answer's callsite.
-// Iter 95.
 func renderAnswerMarkdown(query, strategy string, plan []string, answer string, sources []server.AnswerSource) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", query)
@@ -847,8 +846,8 @@ func renderAnswerMarkdown(query, strategy string, plan []string, answer string, 
 // renderRankedMarkdown formats a ranked-hits response (search, find-similar)
 // as markdown for LLM piping or markdown viewers. `title` is the H1 text —
 // callers pass "Results: <query>" for /search or "Similar to: <url>" for
-// /find_similar. Hit-list shape is the same in both cases. Iter 97 generalized
-// from iter 96's renderSearchMarkdown.
+// /find_similar. Hit-list shape is the same in both cases. generalized
+// from's renderSearchMarkdown.
 func renderRankedMarkdown(title string, hits []server.SearchHit) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", title)
@@ -892,7 +891,7 @@ func renderRankedMarkdown(title string, hits []server.SearchHit) string {
 // for each `event: <name>\ndata: <json>\n\n` block. The handler can return
 // errSSEDone to signal terminal completion (the scanner returns nil), or any
 // other error to abort. Multi-line `data:` lines are concatenated with `\n`
-// per the SSE spec. Iter 109 — extracted from iter-98's consumeResearchSSE so
+// per the SSE spec. Extracted from's consumeResearchSSE so
 // both research and answer CLI consumers share the framing logic.
 func forEachSSEEvent(body io.Reader, handle func(event, data string) error) error {
 	scanner := bufio.NewScanner(body)
@@ -939,19 +938,19 @@ func forEachSSEEvent(body io.Reader, handle func(event, data string) error) erro
 // consumeResearchSSE reads a /research?stream=true response body and renders
 // each event as it arrives. Terminal events: "done" (full response) emits a
 // final newline + Sources section; "error" emits the detail and returns an
-// error. Iter 98 — first streaming CLI in cosift. Refactored in iter 109 to
+// error. First streaming CLI in cosift. Refactored in to
 // use the generic forEachSSEEvent scanner.
 func consumeResearchSSE(body io.Reader, format string) error {
 	useMarkdown := format == "md" || format == "markdown"
 	var answerStarted, sawDone bool
-	// Iter 338: capture pebble-serve's sources event payload so we can render
+	// capture pebble-serve's sources event payload so we can render
 	// the final Sources section when pebble's minimal done event arrives.
 	var pebbleSources []server.AnswerSource
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
 		case "warnings":
-			// Iter 333: pebble-serve (iter 293) emits this event when the
+			// pebble-serve emits this event when the
 			// request had silent no-ops. Surface to stderr like the sync CLI.
 			var w struct {
 				Warnings []string `json:"warnings"`
@@ -965,7 +964,7 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			var p struct {
 				Strategy string   `json:"strategy"`
 				Variants []string `json:"variants"`
-				// Iter 336: pebble-serve uses 'plan' for the sub-query list and
+				// pebble-serve uses 'plan' for the sub-query list and
 				// emits an 'expand' label instead of 'strategy'. Decode both
 				// shapes; fall back to "planner" when only plan is set.
 				Plan   []string `json:"plan"`
@@ -1017,10 +1016,10 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			}
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", s.Sources)
 		case "sources":
-			// Iter 335: pebble-serve emits one 'sources' event after retrieval
+			// pebble-serve emits one 'sources' event after retrieval
 			// that combines what the SQLite server splits across
 			// retrieved+synthesizing. Render the same progress line.
-			// Iter 338: also capture the sources slice so the final 'done'
+			// also capture the sources slice so the final 'done'
 			// event (pebble's is minimal) can still render the Sources block.
 			var s struct {
 				Sources []server.AnswerSource `json:"sources"`
@@ -1046,8 +1045,8 @@ func consumeResearchSSE(body io.Reader, format string) error {
 			}
 			var rr server.ResearchResponse
 			if err := json.Unmarshal([]byte(data), &rr); err != nil || len(rr.Sources) == 0 {
-				// Iter 335/338: pebble's done event has a minimal payload —
-				// fall back to the sources captured from the iter-338 event.
+				// pebble's done event has a minimal payload —
+				// fall back to the sources captured from the event.
 				renderStreamingSources(pebbleSources, useMarkdown)
 				return errSSEDone
 			}
@@ -1056,9 +1055,9 @@ func consumeResearchSSE(body io.Reader, format string) error {
 		case "error":
 			var e struct {
 				Detail string `json:"detail"`
-				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
+				// pebble-serve uses 'error' field instead of 'detail'.
 				Error string `json:"error"`
-				// Iter 337: pebble-serve tags errors with the phase that failed.
+				// pebble-serve tags errors with the phase that failed.
 				Phase string `json:"phase"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
@@ -1078,17 +1077,16 @@ func consumeResearchSSE(body io.Reader, format string) error {
 	}
 	if !sawDone {
 		// Stream ended without a terminal event — flag for operators but
-		// don't error (matches iter-98 behavior).
+		// don't error (matches behavior).
 		fmt.Fprintln(os.Stderr, "(stream ended without `done` event)")
 	}
 	return nil
 }
 
 // renderStreamingSources writes the terminal Sources section for both the
-// research and answer SSE consumers. Format matches the non-stream paths from
-// iter-91 (research) and iter-94 (answer) so operators get consistent output
-// regardless of whether they used -stream. Iter 109.
-// Iter 339/340: position-based ID fallback for source rendering when the
+// research and answer SSE consumers. Format matches the non-stream paths so
+// operators get consistent output regardless of whether they used -stream.
+// position-based ID fallback for source rendering when the
 // server didn't emit an id field (pebble-serve's source payload). SQLite-side
 // servers always emit non-zero IDs, so their output is unchanged.
 func sourceIDOf(i int, s server.AnswerSource) int {
@@ -1140,16 +1138,16 @@ func renderStreamingSources(sources []server.AnswerSource, useMarkdown bool) {
 
 // consumeAnswerSSE reads an /answer?stream=true response and renders events as
 // they arrive. Same event vocabulary as consumeResearchSSE minus the `plan`
-// event (/answer has no expansion phase). Iter 109.
+// event (/answer has no expansion phase).
 func consumeAnswerSSE(body io.Reader, format string) error {
 	useMarkdown := format == "md" || format == "markdown"
 	var answerStarted, sawDone bool
-	var pebbleSources []server.AnswerSource // iter 338
+	var pebbleSources []server.AnswerSource //
 
 	err := forEachSSEEvent(body, func(event, data string) error {
 		switch event {
 		case "warnings":
-			// Iter 333: pebble-serve (iter 293) emits this event when the
+			// pebble-serve emits this event when the
 			// request had silent no-ops. Surface to stderr.
 			var w struct {
 				Warnings []string `json:"warnings"`
@@ -1178,9 +1176,9 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 			}
 			fmt.Printf("[synthesizing answer over %d source(s)]\n\n", s.Sources)
 		case "sources":
-			// Iter 335: pebble-serve emits 'sources' as the combined
+			// pebble-serve emits 'sources' as the combined
 			// retrieved+synthesizing signal. Render the synthesizing line.
-			// Iter 338: capture for the final Sources block.
+			// capture for the final Sources block.
 			var s struct {
 				Sources []server.AnswerSource `json:"sources"`
 			}
@@ -1205,8 +1203,8 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 			}
 			var ar server.AnswerResponse
 			if err := json.Unmarshal([]byte(data), &ar); err != nil || len(ar.Sources) == 0 {
-				// Iter 335/338: tolerate pebble's minimal done payload; fall
-				// back to the sources captured from the iter-338 sources event.
+				// tolerate pebble's minimal done payload; fall
+				// back to the sources captured from the sources event.
 				renderStreamingSources(pebbleSources, useMarkdown)
 				return errSSEDone
 			}
@@ -1215,9 +1213,9 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 		case "error":
 			var e struct {
 				Detail string `json:"detail"`
-				// Iter 335: pebble-serve uses 'error' field instead of 'detail'.
+				// pebble-serve uses 'error' field instead of 'detail'.
 				Error string `json:"error"`
-				// Iter 337: pebble-serve tags errors with the phase that failed.
+				// pebble-serve tags errors with the phase that failed.
 				Phase string `json:"phase"`
 			}
 			_ = json.Unmarshal([]byte(data), &e)
@@ -1243,13 +1241,13 @@ func consumeAnswerSSE(body io.Reader, format string) error {
 
 // errSSEDone signals consumeResearchSSE's outer loop that the terminal "done"
 // event was processed and the read loop should exit cleanly. Sentinel error,
-// not surfaced to the caller. Iter 98.
+// not surfaced to the caller.
 var errSSEDone = errors.New("sse-done")
 
 // validateFormat returns nil if v is one of the accepted output-format values
 // for the synth CLIs (`-format`). "" is rejected — flag.String defaults to ""
 // when the user passes `-format` without a value, and we want that to fail
-// loudly rather than silently behave as text. Iter 95.
+// loudly rather than silently behave as text.
 func validateFormat(v string) error {
 	switch v {
 	case "text", "md", "markdown":
@@ -1265,17 +1263,17 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	defaultServer = strings.Replace(defaultServer, "0.0.0.0", "127.0.0.1", 1)
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	strategy := fs.String("strategy", "", "planner | paraphrase (server default if empty)")
-	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 95.")
-	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE. Iter 98.")
+	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
+	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
-	// Iter 305: expose the iter-241/246/250/257 quality + scope flags on the CLI.
+	// expose the Iter quality + scope flags on the CLI.
 	k := fs.Int("k", 0, "number of sources fed to synth (1-20, server default if 0)")
 	expand := fs.String("expand", "", "retrieval expansion: hyde | paraphrase (empty = no expansion)")
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth")
-	// Iter 369: per-sub-query retriever choice — applies to every sub-query
+	// per-sub-query retriever choice — applies to every sub-query
 	// the planner emits. Server uses bm25 by default if this is empty.
 	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
-	// Iter 385: MMR lambda passthrough for /research.
+	// MMR lambda passthrough for /research.
 	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (needs HNSW + embedder server-side)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
@@ -1407,7 +1405,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 }
 
 // runFindSimilarCLI hits a running cosift server's /find_similar endpoint.
-// Completes the iter-89..iter-92 CLI matrix:
+// Completes the  CLI matrix:
 //   - query        local BM25 only
 //   - search       /search (full retrieval pipeline)
 //   - research     /research (LLM synthesis)
@@ -1418,20 +1416,20 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 	defaultServer = strings.Replace(defaultServer, "0.0.0.0", "127.0.0.1", 1)
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	k := fs.Int("k", 10, "max results")
-	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 97.")
+	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable list")
-	// Iter 300: alternative inputs — feed arbitrary text (or a file of text)
-	// instead of an indexed source URL. Mirrors iter-298 /find_similar text mode.
+	// alternative inputs — feed arbitrary text (or a file of text)
+	// instead of an indexed source URL. Mirrors /find_similar text mode.
 	textInput := fs.String("text", "", "arbitrary text for content-based MLT (no positional URL needed)")
 	textFile := fs.String("text-file", "", "read MLT source text from FILE")
 	textTitle := fs.String("text-title", "", "optional title (×3 boost) when using -text or -text-file")
-	// Iter 306: surface the iter-245 filter + rerank flags on the CLI.
+	// surface the filter + rerank flags on the CLI.
 	rerank := fs.Bool("rerank", false, "rerank neighbors against the MLT query (server must have rerank configured)")
-	// Iter 376: retriever choice — bm25-mlt (default) | dense | hybrid.
+	// retriever choice — bm25-mlt (default) | dense | hybrid.
 	// Dense reads source vector from HNSW for URL-mode; hybrid RRF-fuses
 	// BM25-MLT and dense. Both require COSIFT_LOAD_HNSW=true server-side.
 	retriever := fs.String("retriever", "", "retriever: bm25 (BM25-MLT) | dense | hybrid (server must have HNSW; text-mode dense/hybrid also needs embedder)")
-	// Iter 386: MMR diversification for /find_similar.
+	// MMR diversification for /find_similar.
 	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (URL-mode reuses graph vector — no embedder needed)")
 	since := fs.String("since", "", "ISO date — only neighbors published on or after")
 	until := fs.String("until", "", "ISO date — only neighbors published on or before")
@@ -1470,7 +1468,7 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		v.Set("title", *textTitle)
 	}
 	v.Set("k", strconv.Itoa(*k))
-	// Iter 306: filter + rerank passthroughs.
+	// filter + rerank passthroughs.
 	if *rerank {
 		v.Set("rerank", "true")
 	}
@@ -1496,7 +1494,7 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 		v.Set("q", *qExtra)
 	}
 
-	// Iter 300: switch GET → POST when -text is large (URL params have practical
+	// switch GET → POST when -text is large (URL params have practical
 	// limits ~8 KB). The POST endpoint accepts the same flag set as a JSON body.
 	useMethod := http.MethodGet
 	endpoint := strings.TrimRight(*serverURL, "/") + "/find_similar?" + v.Encode()
@@ -1598,8 +1596,7 @@ func runFindSimilarCLI(ctx context.Context, cfg *config.Config, sourceURL string
 
 // runContentsCLI hits a running cosift server's /contents endpoint.
 // Single URL → GET /contents?url=<url>. Multiple URLs (positional or via
-// -file) → POST /contents with {urls: [...]} body (iter-88 batch API).
-// Iter 93.
+// -file) → POST /contents with {urls: [...]} body.
 func runContentsCLI(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("contents", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -1740,7 +1737,7 @@ func runContentsCLI(ctx context.Context, cfg *config.Config, args []string) erro
 }
 
 // readURLsFromFile parses one URL per line. Blank lines and `#`-prefixed
-// comments are ignored. Used by `cosift contents -file`. Iter 93.
+// comments are ignored. Used by `cosift contents -file`.
 func readURLsFromFile(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1758,9 +1755,9 @@ func readURLsFromFile(path string) ([]string, error) {
 }
 
 // runAnswerCLI hits a running cosift server's /answer endpoint. Sibling to
-// runResearchCLI (iter 91) but no planner/paraphrase strategy surface —
+// runResearchCLI but no planner/paraphrase strategy surface —
 // /answer just retrieves k sources and synthesizes a cited answer. Smaller K
-// cap [1,20] mirrors the server's bound (vs /search's [1,100]). Iter 94.
+// cap [1,20] mirrors the server's bound (vs /search's [1,100]).
 func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []string) error {
 	fs := flag.NewFlagSet("answer", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -1768,15 +1765,15 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	k := fs.Int("k", 5, "number of sources to retrieve (1-20)")
 	expand := fs.Bool("expand", false, "LLM paraphrase + RRF fusion of retrieval inputs (server must have a paraphraser)")
-	format := fs.String("format", "text", "human-output format: text | markdown (or md). Iter 95.")
-	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE. Iter 109.")
+	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
+	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
-	// Iter 304: expose the iter-249/241 quality + scope flags on the CLI.
+	// expose the Iter quality + scope flags on the CLI.
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth (server must have rerank configured)")
-	// Iter 369: expose the iter-365 retriever choice (dense/hybrid). Empty
+	// Empty
 	// passes nothing → server uses its default (bm25).
 	retriever := fs.String("retriever", "", "retriever: bm25 | dense | hybrid (server must have HNSW + embedder for dense/hybrid)")
-	// Iter 385: MMR lambda passthrough. Empty → no diversification.
+	// MMR lambda passthrough. Empty → no diversification.
 	mmr := fs.String("mmr", "", "MMR diversification lambda in [0,1] (0.7 = mostly relevance with some diversity; needs HNSW + embedder server-side)")
 	since := fs.String("since", "", "ISO date — only sources published on or after")
 	until := fs.String("until", "", "ISO date — only sources published on or before")
@@ -1895,10 +1892,10 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 // share bearer-token resolution: -token flag wins, then COSIFT_ADMIN_TOKEN env.
 // Empty token still hits the server (and gets a clear 401) — the CLI doesn't
 // pre-fail because the operator might be running an instance without admin
-// auth enabled (rare, but the failure path is the server's to own). Iter 99.
+// auth enabled (rare, but the failure path is the server's to own).
 // adminUsageError returns the multi-line help message printed when the
 // `cosift admin` parent is invoked without a subcommand. Listed alphabetically
-// by subcommand name so the output is stable across iterations. Iter 121.
+// by subcommand name so the output is stable across iterations.
 //
 // Extracted as a function (rather than a const) so tests can assert on the
 // listing's structure — every admin subcommand must appear here, in the same
@@ -1971,7 +1968,7 @@ func parseAdminCommon(name string, cfg *config.Config, args []string) (adminComm
 
 // adminRequest builds an authenticated request to the given /admin/* path. The
 // Authorization header is omitted when token is empty (server returns 401,
-// which is the right error to surface). Iter 99.
+// which is the right error to surface).
 func adminRequest(ctx context.Context, method, server, path, token string, body io.Reader) (*http.Request, error) {
 	endpoint := strings.TrimRight(server, "/") + path
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
@@ -1985,8 +1982,8 @@ func adminRequest(ctx context.Context, method, server, path, token string, body 
 }
 
 func runAdminStats(ctx context.Context, cfg *config.Config, args []string) error {
-	// Iter 122: inline flag parsing (vs parseAdminCommon) so we can add the
-	// -summary flag. Same shape as iter-100 runAdminRecrawl's flag set —
+	// inline flag parsing (vs parseAdminCommon) so we can add the
+	// -summary flag. Same shape as runAdminRecrawl's flag set —
 	// admin sub-ops with op-specific flags bypass the common helper.
 	fs := flag.NewFlagSet("admin stats", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -2054,7 +2051,7 @@ func runAdminStats(ctx context.Context, cfg *config.Config, args []string) error
 		pct := float64(st.DocsWithPublishedAt) / float64(st.Documents) * 100
 		fmt.Printf("  Docs w/ published_at: %d (%.1f%%)\n", st.DocsWithPublishedAt, pct)
 	}
-	// Iter 171: LLM-cache sizes. Show only when populated — a fresh
+	// LLM-cache sizes. Show only when populated — a fresh
 	// deployment with no LLM cache yet shouldn't bloat the dashboard.
 	if st.Paraphrases > 0 || st.HyDECache > 0 {
 		fmt.Println()
@@ -2169,8 +2166,7 @@ func runAdminConfig(ctx context.Context, cfg *config.Config, args []string) erro
 
 // runAdminRecrawl re-enqueues the given URLs into the crawler frontier. First
 // destructive admin operation — requires `-y` to confirm. URLs come from
-// positional args, `-file`, or both (mirrors iter-93's `contents` CLI pattern).
-// Iter 100.
+// positional args, `-file`, or both (mirrors's `contents` CLI pattern).
 func runAdminRecrawl(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("admin recrawl", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -2251,9 +2247,9 @@ func runAdminRecrawl(ctx context.Context, cfg *config.Config, args []string) err
 }
 
 // runAdminRecrawlDomain bulk-recrawls every doc whose domain matches `pattern`
-// (positional arg). Wraps iter-110's /admin/recrawl-by-domain endpoint. Requires
+// (positional arg). Wraps's /admin/recrawl-by-domain endpoint. Requires
 // `-y` to commit or `-dry-run` to preview the matched count without queuing.
-// If both flags are set, `-dry-run` wins (safer-on-conflict). Iter 111.
+// If both flags are set, `-dry-run` wins (safer-on-conflict).
 func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("admin recrawl-domain", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -2262,8 +2258,8 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 	token := fs.String("token", "", "admin bearer token (defaults to COSIFT_ADMIN_TOKEN env)")
 	confirm := fs.Bool("y", false, "confirm the destructive operation (recrawl every matching URL)")
 	dryRun := fs.Bool("dry-run", false, "enumerate matched URLs without queuing — preview the blast radius")
-	// Iter 124: cap dry-run URL listing to avoid console spam on large matches.
-	// 0 = no list (count only — iter-111 behavior). 20 = default safe cap.
+	// cap dry-run URL listing to avoid console spam on large matches.
+	// 0 = no list (count only — behavior). 20 = default safe cap.
 	// -1 = unlimited (operator explicitly wants the full list).
 	listLimit := fs.Int("limit-list", 20, "in dry-run mode, max URLs to print (0 = count only, -1 = unlimited)")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable summary")
@@ -2327,8 +2323,8 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 	}
 	if effectiveDryRun {
 		fmt.Printf("Dry-run: %d URL(s) match %q. Re-run with -y (not -dry-run) to queue them.\n", rr.Matched, rr.Domain)
-		// Iter 124: render the iter-123 URLs field. -limit-list 0 → count only
-		// (iter-111 behavior, preserved by explicit opt-in). -limit-list -1 →
+		// -limit-list 0 → count only
+		//. -limit-list -1 →
 		// unlimited (operator wants the full list, accepts console spam).
 		// Otherwise: print up to listLimit and append a "... (N more)" suffix.
 		if *listLimit != 0 && len(rr.URLs) > 0 {
@@ -2360,11 +2356,11 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 	return nil
 }
 
-// runAdminReembedCLI triggers a server-side reembed via the iter-112
-// `/admin/reembed` SSE endpoint. Closes the iter 112/113 server-then-CLI arc.
+// runAdminReembedCLI triggers a server-side reembed via the
+// `/admin/reembed` SSE endpoint. Closes the Iter server-then-CLI arc.
 // Requires `-y` to commit (reembed costs LLM credits; same destructive-op
-// guard pattern as iter-100/111). `-drop-old` propagates to the server's
-// `DropPassagesNotModel` step. Iter 113.
+// guard pattern as Iter). `-drop-old` propagates to the server's
+// `DropPassagesNotModel` step.
 func runAdminReembedCLI(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("admin reembed", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -2372,13 +2368,13 @@ func runAdminReembedCLI(ctx context.Context, cfg *config.Config, args []string) 
 	serverURL := fs.String("server", defaultServer, "cosift server URL")
 	token := fs.String("token", "", "admin bearer token (defaults to COSIFT_ADMIN_TOKEN env)")
 	dropOld := fs.Bool("drop-old", false, "also delete passages from other models after re-embedding")
-	// Iter 117: -since restricts reembed to docs published >= DATE. Client-side
+	// -since restricts reembed to docs published >= DATE. Client-side
 	// validation catches malformed dates before the HTTP call (saves a round-trip
 	// for the common typo case).
 	since := fs.String("since", "", "ISO date — only re-embed docs published >= this. Drops undated docs when set")
 	confirm := fs.Bool("y", false, "confirm the operation (reembed re-runs every embedding call; counts as LLM spend)")
-	// Iter 126: -dry-run shows the would-be-processed count without spending
-	// LLM credits. Either -y OR -dry-run is required (iter-111 pattern).
+	// -dry-run shows the would-be-processed count without spending
+	// LLM credits. Either -y OR -dry-run is required.
 	dryRun := fs.Bool("dry-run", false, "preview the count of docs that would be re-embedded, without actually embedding")
 	jsonOut := fs.Bool("json", false, "emit raw SSE response instead of human-readable progress lines")
 	if err := fs.Parse(args); err != nil {
@@ -2389,8 +2385,8 @@ func runAdminReembedCLI(ctx context.Context, cfg *config.Config, args []string) 
 	if _, err := parseExportDate(*since); err != nil {
 		return fmt.Errorf("-since: %w", err)
 	}
-	// Iter 126: dry-run wins when both flags set (safer-on-conflict, matches
-	// iter-111 pattern on /admin/recrawl-by-domain).
+	// dry-run wins when both flags set (safer-on-conflict, matches
+	// pattern on /admin/recrawl-by-domain).
 	effectiveDryRun := *dryRun
 	if !*confirm && !*dryRun {
 		guard := "every doc"
@@ -2450,11 +2446,11 @@ func runAdminReembedCLI(ctx context.Context, cfg *config.Config, args []string) 
 }
 
 // consumeReembedSSE reads /admin/reembed events and renders progress lines.
-// Iter 113 — third SSE consumer in the CLI (after iter-98 research and
-// iter-109 answer), reusing the iter-109 forEachSSEEvent scanner.
+// third SSE consumer in the CLI (after research and
+// answer), reusing the forEachSSEEvent scanner.
 func consumeReembedSSE(body io.Reader) error {
 	var sawDone bool
-	// Iter 126: track the started event's total_docs and target_model so the
+	// track the started event's total_docs and target_model so the
 	// dry-run done-event branch can reference them (the dry-run done payload
 	// reports zeros for processed/passages, but the meaningful count is in started).
 	var startedTotal int
@@ -2495,7 +2491,7 @@ func consumeReembedSSE(body io.Reader) error {
 				return fmt.Errorf("parse done event: %w", err)
 			}
 			if d.DryRun {
-				// Iter 126: dry-run summary — reference the started event's
+				// dry-run summary — reference the started event's
 				// count (the meaningful "would-be-processed" number).
 				fmt.Printf("Dry-run: %d docs would be re-embedded with target=%s. Re-run without -dry-run (or with -y) to actually do it.\n",
 					startedTotal, startedTarget)
@@ -2639,12 +2635,12 @@ func runEval(ctx context.Context, args []string) error {
 	distractorSeed := fs.Int64("distractor-seed", 42, "deterministic seed for distractor generation")
 	distractorMode := fs.String("distractor-mode", "diverse", "diverse (90-word neutral pool) | narrow (single-topic 7-word pool)")
 	embBatch := fs.Int("embed-batch", 256, "embedding batch size — lower for large-dim models (text-embedding-3-large returns malformed JSON at 1000)")
-	chunkSize := fs.Int("chunk-size", 0, "iter-145: passage chunker target words (0 = index.NewChunker default 320); A/B across runs to compare retrieval at different granularities")
-	chunkOverlap := fs.Int("chunk-overlap", 0, "iter-145: passage chunker overlap words (0 = default 64)")
+	chunkSize := fs.Int("chunk-size", 0, "passage chunker target words (0 = index.NewChunker default 320); A/B across runs to compare retrieval at different granularities")
+	chunkOverlap := fs.Int("chunk-overlap", 0, "passage chunker overlap words (0 = default 64)")
 	autoParaphrase := fs.Bool("auto-paraphrase", false, "generate N paraphrases per query via the chat client at eval time + RRF-fuse results")
 	paraphraseN := fs.Int("paraphrase-n", 2, "number of paraphrases per query")
 	paraphraseModel := fs.String("paraphrase-model", "gpt-4o-mini", "chat model for paraphrase generation")
-	mainWeight := fs.Float64("main-weight", 0, "iter-139/140: main-query weight in -auto-paraphrase OR -planner RRF fusion (paraphrases / sub-queries each weight 1.0); 0 = equal-weight (standard RRF); mirrors server-side Defaults.ExpandMainWeight for offline measurement")
+	mainWeight := fs.Float64("main-weight", 0, "Iter: main-query weight in -auto-paraphrase OR -planner RRF fusion (paraphrases / sub-queries each weight 1.0); 0 = equal-weight (standard RRF); mirrors server-side Defaults.ExpandMainWeight for offline measurement")
 	usePlanner := fs.Bool("planner", false, "decompose each query into 2-3 sub-queries via the /research planner prompt + RRF-fuse results (mirror /research retrieval, no synth)")
 	plannerModel := fs.String("planner-model", "gpt-4o-mini", "chat model for the planner decomposition")
 	if err := fs.Parse(args); err != nil {
@@ -2662,11 +2658,11 @@ func runEval(ctx context.Context, args []string) error {
 	// labels still apply because they're declared independently of the index.
 	if *apiURL != "" {
 		ret := &httpAPIRetriever{
-			baseURL: strings.TrimRight(*apiURL, "/"),
-			bearer:  *apiBearer,
+			baseURL:   strings.TrimRight(*apiURL, "/"),
+			bearer:    *apiBearer,
 			retriever: *retriever,
-			rerank: *useRerank,
-			http:   &http.Client{Timeout: 30 * time.Second},
+			rerank:    *useRerank,
+			http:      &http.Client{Timeout: 30 * time.Second},
 		}
 		summary, err := eval.Run(ctx, qs, ret)
 		if err != nil {
@@ -2730,7 +2726,7 @@ func runEval(ctx context.Context, args []string) error {
 		drng := rand.New(rand.NewSource(*distractorSeed))
 		neutralVocab := neutralVocabForDistractors()
 		// Narrow mode: clamp to the first topic group (pottery — 7 words).
-		// Tests the iter-40 hypothesis that smaller-but-more-similar noise
+		// Tests the hypothesis that smaller-but-more-similar noise
 		// is harder for the reranker than larger-but-diverse noise.
 		if *distractorMode == "narrow" {
 			neutralVocab = neutralVocab[:7]
@@ -2937,7 +2933,7 @@ func runServe(ctx context.Context, cfg *config.Config) error {
 		log.Printf("defaults: retriever=%q expand=%v research_strategy=%q research_synth_k=%d expand_main_weight=%v hybrid_dense_weight=%v",
 			cfg.Defaults.Retriever, cfg.Defaults.Expand, cfg.Defaults.ResearchStrategy, cfg.Defaults.ResearchSynthK, cfg.Defaults.ExpandMainWeight, cfg.Defaults.HybridDenseWeight)
 	}
-	// Iter 145: thread chunker config to /admin/reembed handler so re-embed
+	// thread chunker config to /admin/reembed handler so re-embed
 	// produces passages with the same shape as crawl-time indexing.
 	if cfg.Crawler.ChunkSize > 0 || cfg.Crawler.ChunkOverlap > 0 {
 		srv = srv.WithChunker(cfg.Crawler.ChunkSize, cfg.Crawler.ChunkOverlap)
@@ -2984,7 +2980,7 @@ func runServe(ctx context.Context, cfg *config.Config) error {
 				srv = srv.WithChat(chat)
 				log.Printf("/answer enabled with chat model=%s", cfg.Chat.Model)
 				// Auto-enable /search?expand=true via the same chat client.
-				// Iter-45 measured +0.02 nDCG at 10k distractors for $0.004 per run.
+				// measured +0.02 nDCG at 10k distractors for $0.004 per run.
 				srv = srv.WithParaphraser(chat, 2)
 				log.Printf("/search?expand=true enabled (auto-paraphrase via %s)", cfg.Chat.Model)
 			}
@@ -3044,7 +3040,7 @@ func runServe(ctx context.Context, cfg *config.Config) error {
 // progressReporter logs progress for a long-running CLI loop at most once per
 // configured interval. Time-based (vs every-N-iterations) so the cadence is
 // consistent regardless of per-item cost variance. Set interval to 0 to
-// disable. Iter 106 — designed for ingest but generic enough for other loops.
+// disable. Designed for ingest but generic enough for other loops.
 type progressReporter struct {
 	label    string
 	total    int
@@ -3080,8 +3076,8 @@ func (p *progressReporter) maybeLog(current int) {
 
 // loadCorpusJSONL reads a JSONL file (one eval.CorpusDoc per line) into a
 // Corpus. Empty lines are skipped (some tools emit trailing blanks). Pairs
-// with iter-103's `export -format jsonl` to close the round-trip for ML
-// pipelines. Iter 105.
+// with's `export -format jsonl` to close the round-trip for ML
+// pipelines.
 func loadCorpusJSONL(path string) (*eval.Corpus, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -3090,7 +3086,7 @@ func loadCorpusJSONL(path string) (*eval.Corpus, error) {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	// JSONL lines can be large (full doc text); raise the scanner buffer cap
-	// well above the default 64KB. 4MB matches iter-98's SSE parser ceiling.
+	// well above the default 64KB. 4MB matches's SSE parser ceiling.
 	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	c := &eval.Corpus{}
 	lineNum := 0
@@ -3116,17 +3112,17 @@ func runIngest(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	corpusPath := fs.String("corpus", "", "path to corpus file (required)")
 	source := fs.String("source", "ingest", "source tag for documents")
-	// Iter 105: -format selects the loader. Default "auto" infers from file
+	// -format selects the loader. Default "auto" infers from file
 	// extension (.jsonl → jsonl, anything else → json). Explicit override
 	// avoids ambiguity when files have non-standard extensions.
 	format := fs.String("format", "auto", "input format: auto (default — infer from extension) | json | jsonl")
-	// Iter 106: progress reporting. Operators ingesting large corpora need
+	// Operators ingesting large corpora need
 	// some signal that work is happening. 0 disables.
 	progressInterval := fs.Duration("progress", 5*time.Second, "log per-doc/per-passage progress every N (0 disables)")
-	// Iter 149: CLI override for chunker config (mirrors iter-145 on eval/answer-eval).
+	// CLI override for chunker config (mirrors on eval/answer-eval).
 	// 0 → fall through to cfg.Crawler.{ChunkSize,ChunkOverlap}, then to NewChunker defaults.
-	ingestChunkSize := fs.Int("chunk-size", 0, "iter-149: passage chunker target words (0 = use cfg.Crawler.ChunkSize, then NewChunker default 320)")
-	ingestChunkOverlap := fs.Int("chunk-overlap", 0, "iter-149: passage chunker overlap words (0 = use cfg.Crawler.ChunkOverlap, then default 64)")
+	ingestChunkSize := fs.Int("chunk-size", 0, "passage chunker target words (0 = use cfg.Crawler.ChunkSize, then NewChunker default 320)")
+	ingestChunkOverlap := fs.Int("chunk-overlap", 0, "passage chunker overlap words (0 = use cfg.Crawler.ChunkOverlap, then default 64)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -3181,7 +3177,7 @@ func runIngest(ctx context.Context, cfg *config.Config, args []string) error {
 	}
 
 	// Pre-compute chunks for the whole corpus so we can batch-embed in one call.
-	// Iter 149: CLI flag wins over cfg.Crawler.ChunkSize (only when flag is set).
+	// CLI flag wins over cfg.Crawler.ChunkSize (only when flag is set).
 	chunkSize := cfg.Crawler.ChunkSize
 	if *ingestChunkSize > 0 {
 		chunkSize = *ingestChunkSize
@@ -3266,6 +3262,7 @@ func runIngest(ctx context.Context, cfg *config.Config, args []string) error {
 //     p99 > ~200 ms at your target N).
 //   - When BM25 needs Tantivy or another inverted-index lib (when BM25 p50
 //     exceeds a comparable threshold).
+//
 // benchResult holds one mode's bench output. Each field maps to a JSON key
 // when `-json` is set; human-readable output uses the formatHuman method.
 type benchResult struct {
@@ -3334,7 +3331,7 @@ func runBench(ctx context.Context, args []string) error {
 		emit(r)
 	}
 	if *mode == "storage" || *mode == "all" {
-		// Iter 206: SQLite vs Pebble head-to-head. Same N synthetic docs, same
+		// SQLite vs Pebble head-to-head. Same N synthetic docs, same
 		// K queries, two backends. Emit one result per backend; consumers diff
 		// the two lines (or use cosift bench-compare on the saved JSON).
 		sq, err := benchBM25SQLite(ctx, *n, *queries)
@@ -3412,8 +3409,8 @@ func loadBenchReport(path string) (map[string]*benchResult, error) {
 	return out, nil
 }
 
-// runBenchCompare diffs two saved bench reports side-by-side. Mirrors iter-65
-// answer-eval-compare for the bench surface — locks the iter-71 JSON contract
+// runBenchCompare diffs two saved bench reports side-by-side. Mirrors
+// answer-eval-compare for the bench surface — locks the JSON contract
 // as a stable interface tools can rely on.
 //
 // For each mode present in either report, prints the absolute numbers + deltas.
@@ -3501,7 +3498,7 @@ func union(a, b map[string]*benchResult) []string {
 }
 
 // printBenchDelta prints one mode's before/after side-by-side. Format
-// matches iter-65 answer-eval-compare's row style.
+// matches answer-eval-compare's row style.
 func printBenchDelta(mode string, a, b *benchResult) {
 	switch mode {
 	case "vector", "bm25":
@@ -3621,7 +3618,6 @@ func benchBM25(ctx context.Context, n, queries int) (*benchResult, error) {
 
 // benchBM25SQLite is an alias of benchBM25 with an explicit "bm25-sqlite" Mode
 // label so storage-mode output is unambiguous when both backends are emitted.
-// Iter 206.
 func benchBM25SQLite(ctx context.Context, n, queries int) (*benchResult, error) {
 	r, err := benchBM25(ctx, n, queries)
 	if err != nil {
@@ -3634,7 +3630,7 @@ func benchBM25SQLite(ctx context.Context, n, queries int) (*benchResult, error) 
 // benchBM25Pebble mirrors benchBM25 but runs against PebbleStore + PebbleBM25.
 // Deterministic vocab + RNG seed so SQLite and Pebble runs produce comparable
 // numbers (same N docs, same K queries, same query distribution).
-// Iter 206 — empirical validation of the path-2 storage rework.
+// empirical validation of the path-2 storage rework.
 func benchBM25Pebble(ctx context.Context, n, queries int) (*benchResult, error) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("cosift-pebble-bench-%d", time.Now().UnixNano()))
 	ps, err := store.OpenPebble(tmpDir)
@@ -3780,7 +3776,7 @@ func benchCrawl(ctx context.Context, n, perHostDelayMs int) (*benchResult, error
 	}()
 
 	cfg := config.Default().Crawler
-	// iter 71: -per-host-delay propagates from the bench CLI flag. Default 0
+	// -per-host-delay propagates from the bench CLI flag. Default 0
 	// (localhost throughput); set to 100–1000 to measure under realistic politeness.
 	cfg.PerHostDelayMs = perHostDelayMs
 	// Lower concurrency than the default 8 — bench output gets noisy with
@@ -3921,17 +3917,18 @@ func runRefreshDue(ctx context.Context, cfg *config.Config, args []string) error
 
 // runExport writes the local store's documents to a portable corpus.json,
 // shape-compatible with `cosift ingest`. Round-trips cleanly:
-//   cosift export -output corpus.json
-//   cosift -config other.json ingest -corpus corpus.json
+//
+//	cosift export -output corpus.json
+//	cosift -config other.json ingest -corpus corpus.json
 //
 // Documents only — passages (embeddings) aren't exported because the receiver
 // likely uses a different embedding model.
 // runMigrateToPebble copies a SQLite-backed cosift data directory into a
-// fresh Pebble store. Iter 204 — fifth piece of the path-2 storage rework.
+// fresh Pebble store. Fifth piece of the path-2 storage rework.
 //
 // Migrates:
 //   - documents (URL, title, text, metadata) via PebbleStore.UpsertDocument
-//   - BM25 postings (re-tokenized + re-indexed to preserve iter-197 title
+//   - BM25 postings (re-tokenized + re-indexed to preserve title
 //     boost; the SQLite postings table is NOT copied directly because
 //     re-indexing through PebbleBM25 is the same code path that production
 //     uses going forward — eliminates the divergence risk of two
@@ -4011,13 +4008,13 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 	output := fs.String("output", "", "output path (default depends on -format: corpus-export.{json,jsonl,txt,md})")
 	limit := fs.Int("limit", 0, "max docs to export (0 = all, applied AFTER filters)")
-	// Iter 103: -format selects the on-disk shape.
-	//   json (default — eval.Corpus pretty-printed; backward-compatible with iter-1)
+	// -format selects the on-disk shape.
+	//   json (default — eval.Corpus pretty-printed; backward-compatible with)
 	//   jsonl — one {url,title,text} per line; common for ML fine-tuning pipelines
 	//   text  — Title/URL header + body + --- separator; for RAG corpora / grep
 	//   md    — `# Title` + URL line + body + horizontal rule; for LLM prompt piping
 	format := fs.String("format", "json", "output format: json | jsonl | text | md")
-	// Iter 104: filters. All applied client-side after ListDocuments.
+	// All applied client-side after ListDocuments.
 	includeDomains := fs.String("include-domains", "", "comma-separated allowlist of domains (suffix match on dot boundary)")
 	excludeDomains := fs.String("exclude-domains", "", "comma-separated denylist of domains")
 	since := fs.String("since", "", "ISO date — only docs with published_at on or after (drops undated docs)")
@@ -4050,7 +4047,7 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 	}
 	defer s.Close()
 
-	// Iter-1 limit applies AFTER filters now — operators expect "give me 100
+	// limit applies AFTER filters now — operators expect "give me 100
 	// docs from example.com" to mean 100 example.com docs, not 100 docs total
 	// of which some are from example.com. Pass 0 (no limit) to ListDocuments
 	// and apply the limit client-side after filtering.
@@ -4077,7 +4074,7 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 
 	switch *format {
 	case "json":
-		// Iter-1 wire shape: eval.Corpus pretty-printed. Preserved as default.
+		// wire shape: eval.Corpus pretty-printed. Preserved as default.
 		corpus := eval.Corpus{Docs: make([]eval.CorpusDoc, 0, len(docs))}
 		for _, d := range docs {
 			corpus.Docs = append(corpus.Docs, eval.CorpusDoc{URL: d.URL, Title: d.Title, Text: d.Text})
@@ -4096,7 +4093,7 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 			}
 		}
 	case "text":
-		// Title:/URL: headers + blank + body + --- separator. Matches iter-93
+		// Title:/URL: headers + blank + body + --- separator. Matches
 		// `contents -text` batch separator convention (LLMs interpret `---` as
 		// section breaks).
 		for i, d := range docs {
@@ -4130,9 +4127,9 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 	return nil
 }
 
-// parseExportDate accepts YYYY-MM-DD or full RFC3339 (matches the iter-77
+// parseExportDate accepts YYYY-MM-DD or full RFC3339 (matches the
 // /search?since=/?until= conventions). Empty input returns zero time + nil
-// error (no filter). Iter 104.
+// error (no filter).
 func parseExportDate(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -4148,7 +4145,7 @@ func parseExportDate(s string) (time.Time, error) {
 }
 
 // splitDomainCSV parses a comma-separated list of domains into lowercased
-// non-empty entries. Iter 104 (mirrors internal/server's unexported splitCSV).
+// non-empty entries. (mirrors internal/server's unexported splitCSV).
 func splitDomainCSV(s string) []string {
 	if s == "" {
 		return nil
@@ -4164,9 +4161,9 @@ func splitDomainCSV(s string) []string {
 	return out
 }
 
-// matchesDomainPattern is the strict suffix-on-dot-boundary match the iter-79
+// matchesDomainPattern is the strict suffix-on-dot-boundary match the
 // /search filter uses. `example.com` matches `blog.example.com` but NOT
-// `evilexample.com`. Iter 104.
+// `evilexample.com`.
 func matchesDomainPattern(host string, patterns []string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
@@ -4179,7 +4176,7 @@ func matchesDomainPattern(host string, patterns []string) bool {
 
 // hostFromURL extracts the lowercased host without port from a URL. Returns
 // empty string when parsing fails so callers can treat unparseable URLs
-// uniformly (typically: excluded from include-filtered exports). Iter 104.
+// uniformly (typically: excluded from include-filtered exports).
 func hostFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -4188,9 +4185,9 @@ func hostFromURL(rawURL string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-// filterExportDocs applies the iter-104 export filters to a doc slice
+// filterExportDocs applies the export filters to a doc slice
 // in-memory. Returns the filtered slice (in input order — preserves whatever
-// ordering ListDocuments returned). Iter 104.
+// ordering ListDocuments returned).
 func filterExportDocs(docs []*store.Document, include, exclude []string, since, until time.Time) []*store.Document {
 	hasDateFilter := !since.IsZero() || !until.IsZero()
 	hasDomainFilter := len(include) > 0 || len(exclude) > 0
@@ -4200,7 +4197,7 @@ func filterExportDocs(docs []*store.Document, include, exclude []string, since, 
 	out := make([]*store.Document, 0, len(docs))
 	for _, d := range docs {
 		// Date filter: undated docs are excluded when ANY date bound is set
-		// (matches iter-77 /search?since=/?until= semantics).
+		// (matches /search?since=/?until= semantics).
 		if hasDateFilter {
 			if d.PublishedAt.IsZero() {
 				continue
@@ -4226,11 +4223,11 @@ func filterExportDocs(docs []*store.Document, include, exclude []string, since, 
 	return out
 }
 
-// validateExportFormat is the export-side counterpart to iter-95's
+// validateExportFormat is the export-side counterpart to's
 // validateFormat. Different accept-list because export supports json/jsonl
 // (file-shaped) which the synth-output CLIs don't, and synth CLIs support
 // markdown aliases which export doesn't need (single canonical name reduces
-// confusion when picking a file extension). Iter 103.
+// confusion when picking a file extension).
 func validateExportFormat(v string) error {
 	switch v {
 	case "json", "jsonl", "text", "md":
@@ -4242,7 +4239,6 @@ func validateExportFormat(v string) error {
 
 // exportExtension picks a conventional file extension for each export format.
 // Used to derive a default -output path when the operator doesn't specify one.
-// Iter 103.
 func exportExtension(format string) string {
 	switch format {
 	case "jsonl":
@@ -4365,14 +4361,14 @@ func runOutcomes(ctx context.Context, cfg *config.Config, args []string) error {
 //
 // Exit code: 0 if everything is PASS or WARN; 1 if any FAIL.
 // doctorCheck is one row of the doctor report. Promoted from a locally-typed
-// struct so the iter-58 defaults check can be tested without stdout capture.
+// struct so the defaults check can be tested without stdout capture.
 type doctorCheck struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // "PASS" | "WARN" | "FAIL" | "INFO" | "SKIP"
 	Detail string `json:"detail"`
 }
 
-// doctorDefaultsChecks cross-checks the iter-55 defaults block against
+// doctorDefaultsChecks cross-checks the defaults block against
 // configured capabilities. Returns the rows that would be appended to the
 // doctor report. Pure function — no IO, no stdout, no environment reads.
 // hasEmbed/hasChat reflect "is the capability available at all" (config
@@ -4525,7 +4521,7 @@ func siteToHost(s string) (string, error) {
 
 // runCheckRobots reports whether each URL is crawlable under the site's
 // robots.txt, plus any Crawl-delay. Lets operators plan crawls without
-// hand-inspecting the site's robots.txt. Iter 74.
+// hand-inspecting the site's robots.txt.
 //
 // Wraps the existing internal/crawler.Robots so the CLI uses exactly the
 // same enforcement logic the real crawler would. No drift.
@@ -4572,7 +4568,7 @@ func runCheckRobots(ctx context.Context, cfg *config.Config, args []string) erro
 		default:
 			fmt.Printf("robots.txt   %s — status %d (crawler will assume ALLOWED on non-2xx/404)\n", probeURL, resp.StatusCode)
 		}
-		// Iter 131: surface Sitemap: directives from robots.txt. Modern
+		// surface Sitemap: directives from robots.txt. Modern
 		// crawlers auto-discover sitemaps this way; this output lets operators
 		// see what `cosift crawl -sitemap <URL>` could seed from.
 		if sitemaps := r.Sitemaps(ctx, h); len(sitemaps) > 0 {
@@ -4621,10 +4617,10 @@ func uniqueHosts(urls []string) []string {
 }
 
 // runCrawlErrors lists recently-errored frontier URLs with their failure reason.
-// Iter 85 — operator diagnostic for "why are 142 URLs in error state?" without
+// operator diagnostic for "why are 142 URLs in error state?" without
 // requiring SQLite shell access. Pure read-only; no side effects on the index.
 //
-// The error column is iter-85's addition to the frontier schema; pre-iter-85
+// The error column is's addition to the frontier schema; pre
 // errored URLs will have an empty reason.
 func runCrawlErrors(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("crawl-errors", flag.ExitOnError)
@@ -4651,7 +4647,7 @@ func runCrawlErrors(ctx context.Context, cfg *config.Config, args []string) erro
 	for _, e := range errs {
 		reason := e.LastError
 		if reason == "" {
-			reason = "(no reason recorded — entry predates iter 85)"
+			reason = "(no reason recorded — entry predates)"
 		}
 		fmt.Printf("  attempts=%d  %s\n    → %s\n", e.Attempts, e.URL, reason)
 	}
@@ -4659,14 +4655,14 @@ func runCrawlErrors(ctx context.Context, cfg *config.Config, args []string) erro
 }
 
 func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
-	// Iter 102: optional remote checks. When -server is empty, doctor stays
-	// purely local (iter-39 behavior). When -server is set, doctor also pings
+	// When -server is empty, doctor stays
+	// purely local. When -server is set, doctor also pings
 	// the server's /healthz and /stats; if -token is also set (or env), it
 	// validates the token by hitting /admin/config.
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	remoteServer := fs.String("server", "", "remote cosift URL to additionally probe (empty = local checks only)")
 	remoteToken := fs.String("token", "", "admin bearer token for -server admin-endpoint check (defaults to COSIFT_ADMIN_TOKEN env)")
-	// Iter 383: machine-readable output for CI gates. Same checks, same
+	// Same checks, same
 	// non-zero exit on FAIL, just JSON instead of '[PASS] name — detail'.
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text (suitable for jq / CI)")
 	if err := fs.Parse(args); err != nil {
@@ -4697,9 +4693,9 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		add("sqlite open + schema", "PASS", fmt.Sprintf("%d docs, %d terms", st.Documents, st.Terms))
 	}
 
-	// 2b. Pebble open + counters (iter 287). Pebble is optional; "absent" is
+	// 2b. Pebble open + counters. Pebble is optional; "absent" is
 	// not a failure, just a SKIP. When present, verify open + read counters.
-	// Iter 324: the open can fail because pebble-serve / a crawl holds the
+	// the open can fail because pebble-serve / a crawl holds the
 	// single-writer lock — that's a healthy state, not a FAIL. Distinguish
 	// the lock error from real corruption.
 	pebbleDir := filepath.Join(cfg.DataDir, "pebble")
@@ -4714,10 +4710,10 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 	} else {
 		_, n, _ := ps.CorpusStats(ctx)
-		// Iter 382: also report HNSW availability so operators can tell from
+		// also report HNSW availability so operators can tell from
 		// `cosift doctor` whether dense / hybrid retrievers will work without
 		// firing pebble-info or pebble-serve /stats. Cheap — same 20-byte
-		// meta blob read pebble-info already does (iter 360/377).
+		// meta blob read pebble-info already does.
 		meta, hnswOK, _ := index.LoadHNSWMeta(ctx, ps)
 		_ = ps.Close()
 		add("pebble store", "PASS", fmt.Sprintf("%d indexed docs", n))
@@ -4728,14 +4724,14 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 	}
 
-	// 2c. COSIFT_* env vars (iter 296). Lists which path-2 env overrides are
+	// 2c. COSIFT_* env vars. Lists which path-2 env overrides are
 	// set so operators can confirm 'is my override actually live'. Silent
 	// typos previously hid behind 'env unset → keep default' branches.
 	cosiftEnvs := []string{
 		"COSIFT_PEBBLE_CACHE_MB", "COSIFT_PEBBLE_MEMTABLE_MB", "COSIFT_PEBBLE_MEMTABLES", "COSIFT_PEBBLE_SYNC",
 		"COSIFT_BM25_K1", "COSIFT_BM25_B",
 		"COSIFT_HYDE_CACHE_SIZE", "COSIFT_PARA_CACHE_SIZE",
-		"COSIFT_LOAD_HNSW", // iter 362
+		"COSIFT_LOAD_HNSW", //
 	}
 	var setEnvs []string
 	for _, name := range cosiftEnvs {
@@ -4753,7 +4749,7 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 	add("config", "PASS", fmt.Sprintf("addr=%s, data_dir=%s", cfg.Server.Addr, cfg.DataDir))
 
 	// 4. API key env (warn — actually pinging is `cosift eval` territory).
-	// Iter 392: a custom embedder/chat URL (Ollama / vLLM / TEI) doesn't
+	// a custom embedder/chat URL (Ollama / vLLM / TEI) doesn't
 	// need a key; PASS when URL is set even without a key. Hosted defaults
 	// (empty URL) still require a key for the configured capability.
 	embedKey := resolveEmbedAPIKey()
@@ -4799,7 +4795,7 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 		add("admin_token", "WARN", "unset — /admin/* will return 403")
 	}
 
-	// 7. Defaults vs capabilities. The iter-55 defaults block lets operators
+	// 7. Defaults vs capabilities. The defaults block lets operators
 	// pre-configure retrieval behavior, but a default that requires capability
 	// the server isn't configured for (e.g. retriever=hybrid without an
 	// embedder) will silently fail at request time — 400 on every call. Catch
@@ -4808,8 +4804,8 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 	hasChat := cfg.Chat.Model != "" || os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("OPENAI") != ""
 	checks = append(checks, doctorDefaultsChecks(cfg.Defaults, hasEmbed, hasChat)...)
 
-	// 8 (iter 102). Remote checks — only when -server is set. Token resolution
-	// mirrors iter-99 admin CLIs: -token flag wins, then env.
+	// 8. Remote checks — only when -server is set. Token resolution
+	// mirrors admin CLIs: -token flag wins, then env.
 	if *remoteServer != "" {
 		resolvedToken := *remoteToken
 		if resolvedToken == "" {
@@ -4852,7 +4848,7 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 // doctorRemoteChecks probes a remote cosift server: /healthz reachable, /stats
 // returns a sensible shape, and (when token non-empty) /admin/config validates
 // the bearer token. Returns a slice of doctorCheck rows for the main runDoctor
-// loop to render. Iter 102.
+// loop to render.
 func doctorRemoteChecks(ctx context.Context, serverURL, token string) []doctorCheck {
 	var out []doctorCheck
 	base := strings.TrimRight(strings.Replace(serverURL, "0.0.0.0", "127.0.0.1", 1), "/")
@@ -4932,7 +4928,7 @@ func runReembed(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("reembed", flag.ExitOnError)
 	dropOld := fs.Bool("drop-old", false, "after re-embed, delete passages with a different model_id")
 	batchSize := fs.Int("batch", 256, "embeddings per API call (provider-dependent cap)")
-	// Iter 107: time-based progress reporting (shared helper from iter 106).
+	// time-based progress reporting (shared helper from).
 	progressInterval := fs.Duration("progress", 5*time.Second, "log re-embed progress every N (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -4979,11 +4975,11 @@ func runReembed(ctx context.Context, cfg *config.Config, args []string) error {
 		chunk index.Chunk
 	}
 	var (
-		texts    []string
-		refs     []ref
-		total    int
-		flush    func() error
-		written  int
+		texts   []string
+		refs    []ref
+		total   int
+		flush   func() error
+		written int
 	)
 	flush = func() error {
 		if len(texts) == 0 {
@@ -5096,7 +5092,7 @@ func runCompactIndex(ctx context.Context, cfg *config.Config, args []string) err
 // our typical chunk sizes. Returns vectors in the input order.
 //
 // Between batches we sleep 200ms — keeps multi-batch runs under OpenAI's
-// 1M-TPM org limit for text-embedding-3-small, which iter 39 hit at ~50k inputs.
+// 1M-TPM org limit for text-embedding-3-small, which hit at ~50k inputs.
 // Provider rate-limit errors get one bounded retry with the suggested delay.
 func batchEmbed(ctx context.Context, e embed.Embedder, texts []string, batchSize int) ([][]float32, error) {
 	if batchSize <= 0 {
@@ -5162,7 +5158,7 @@ func embedWithRetry(ctx context.Context, e embed.Embedder, texts []string) ([][]
 // a chat client. For each search, asks the LLM for N paraphrases, runs all of
 // them through the inner retriever, RRF-fuses the result lists.
 //
-// Iter-44 measured that hand-written paraphrases recover 0.02 nDCG at 10k
+// measured that hand-written paraphrases recover 0.02 nDCG at 10k
 // distractors. This is the auto-generated version — removes the hand-writing
 // requirement and makes the prescription deployable. Per-query overhead:
 // one extra chat call (~$0.0001 at gpt-4o-mini) + N extra inner-retriever calls.
@@ -5174,7 +5170,7 @@ type paraphraseRetriever struct {
 	inner      eval.Retriever
 	chat       embed.ChatClient
 	n          int
-	mainWeight float64 // Iter 139: 0 = equal-weight RRF (pre-iter-139); >0 = main query gets this weight, paraphrases each 1.0
+	mainWeight float64 // 0 = equal-weight RRF (pre); >0 = main query gets this weight, paraphrases each 1.0
 	cache      map[string][]string
 	mu         sync.Mutex
 }
@@ -5240,8 +5236,8 @@ func (p *paraphraseRetriever) Search(ctx context.Context, q string, k int) ([]st
 		}
 		lists = append(lists, extra)
 	}
-	// Iter 139: weighted RRF when mainWeight > 0. Matches the server expand
-	// path's iter-136 behavior so eval-time measurements use the same fusion
+	// Matches the server expand
+	// path's behavior so eval-time measurements use the same fusion
 	// math as production.
 	var weights []float64
 	if p.mainWeight > 0 {
@@ -5258,15 +5254,15 @@ func (p *paraphraseRetriever) Search(ctx context.Context, q string, k int) ([]st
 // decomposition step: ask the LLM for 2-3 focused sub-queries, run each through
 // the inner retriever, RRF-fuse the results. Mirrors /research minus the synth.
 //
-// This exists so we can measure (iter 52) whether the planner's decomposition
-// already subsumes paraphrase expansion — that claim was asserted in iter 48
+// This exists so we can measure whether the planner's decomposition
+// already subsumes paraphrase expansion — that claim was asserted in
 // when we chose not to add ?expand=true to /research, but never measured.
 const plannerSystemPrompt = `Decompose the user's research question into 2-3 focused sub-queries that, taken together, would cover the answer. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["sub-query 1", "sub-query 2"]`
 
 type plannerRetriever struct {
 	inner      eval.Retriever
 	chat       embed.ChatClient
-	mainWeight float64 // Iter 140: 0 = equal-weight RRF; >0 = main query gets this weight, sub-queries each 1.0
+	mainWeight float64 // 0 = equal-weight RRF; >0 = main query gets this weight, sub-queries each 1.0
 	cache      map[string][]string
 	mu         sync.Mutex
 }
@@ -5328,7 +5324,7 @@ func (p *plannerRetriever) Search(ctx context.Context, q string, k int) ([]strin
 		}
 		lists = append(lists, extra)
 	}
-	// Iter 140: weighted RRF when mainWeight > 0. Same shape as iter-139
+	// Same shape as
 	// paraphraseRetriever; main query gets mainWeight, sub-queries each 1.0.
 	var weights []float64
 	if p.mainWeight > 0 {
@@ -5426,9 +5422,9 @@ func generateDistractorText(rng *rand.Rand, vocab []string, words int) string {
 	return strings.Join(parts, " ")
 }
 
-// runAnswerEval is iter-56's measurement of /research answer quality across
+// runAnswerEval is's measurement of /research answer quality across
 // the two retrieval strategies (planner vs paraphrase). Iters 52-53 measured
-// *retrieval coverage* via nDCG and found paraphrase wins; iter 54 added
+// *retrieval coverage* via nDCG and found paraphrase wins; added
 // ?strategy=paraphrase but kept planner as the default *because we hadn't
 // measured synthesis quality*. This subcommand fills that gap.
 //
@@ -5454,12 +5450,12 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	embModel := fs.String("embed-model", "text-embedding-3-small", "embedding model name")
 	embDim := fs.Int("embed-dim", 1536, "embedding dimensionality")
 	embCacheDir := fs.String("embed-cache", "./eval-embed-cache", "embedding cache dir (set empty to disable)")
-	answerChunkSize := fs.Int("chunk-size", 0, "iter-145: passage chunker target words (0 = default 320)")
-	answerChunkOverlap := fs.Int("chunk-overlap", 0, "iter-145: passage chunker overlap words (0 = default 64)")
+	answerChunkSize := fs.Int("chunk-size", 0, "passage chunker target words (0 = default 320)")
+	answerChunkOverlap := fs.Int("chunk-overlap", 0, "passage chunker overlap words (0 = default 64)")
 	dryRun := fs.Bool("dry-run", false, "build the harness + print the plan, but issue NO LLM calls")
-	useRerank := fs.Bool("rerank", false, "wire the LLM listwise reranker into the in-process server; tests whether rerank cuts the iter-58 grounding=1 cases on single-doc")
+	useRerank := fs.Bool("rerank", false, "wire the LLM listwise reranker into the in-process server; tests whether rerank cuts the grounding=1 cases on single-doc")
 	rerankModel := fs.String("rerank-model", "gpt-4o-mini", "chat model for the reranker (kept default = synth-model so cost stays predictable)")
-	synthK := fs.Int("synth-k", 0, "cap synth-source count via WithDefaults({ResearchSynthK: N}); 0 = preserve built-in default (10). Iter-62 tests whether K=5 trades coverage for grounding on single-doc workloads.")
+	synthK := fs.Int("synth-k", 0, "cap synth-source count via WithDefaults({ResearchSynthK: N}); 0 = preserve built-in default (10). tests whether K=5 trades coverage for grounding on single-doc workloads.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -5558,7 +5554,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		WithVector(vi, emb).
 		WithChat(chat).
 		WithParaphraser(chat, 2).
-		WithLLMLimiter(0, 0) // disable rate limiter — this is an in-process eval, not a public endpoint. Iter 58 caught this when the 10/min default 429'd after 5 queries.
+		WithLLMLimiter(0, 0) // disable rate limiter — this is an in-process eval, not a public endpoint. caught this when the 10/min default 429'd after 5 queries.
 	if *useRerank {
 		rerankChat := chat
 		if *rerankModel != *synthModel {
@@ -5573,12 +5569,12 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	defer httpSrv.Close()
 
 	type strategyReport struct {
-		Strategy      string  `json:"strategy"`
-		Answer        string  `json:"answer"`
-		SourceURLs    []string `json:"source_urls"`
-		Coverage      int     `json:"coverage"`
-		Grounding     int     `json:"grounding"`
-		JudgeComment  string  `json:"judge_comment"`
+		Strategy     string   `json:"strategy"`
+		Answer       string   `json:"answer"`
+		SourceURLs   []string `json:"source_urls"`
+		Coverage     int      `json:"coverage"`
+		Grounding    int      `json:"grounding"`
+		JudgeComment string   `json:"judge_comment"`
 	}
 	type queryReport struct {
 		Query   string           `json:"query"`
@@ -5609,10 +5605,10 @@ func runAnswerEval(ctx context.Context, args []string) error {
 				continue
 			}
 			var rr struct {
-				Query    string `json:"query"`
-				Strategy string `json:"strategy"`
+				Query    string   `json:"query"`
+				Strategy string   `json:"strategy"`
 				Plan     []string `json:"plan"`
-				Answer   string `json:"answer"`
+				Answer   string   `json:"answer"`
 				Sources  []struct {
 					ID    int    `json:"id"`
 					URL   string `json:"url"`
@@ -5648,14 +5644,14 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		all = append(all, qr)
 	}
 
-	// Aggregate. Exported field names matter — iter 57 saved unexported agg
+	// Aggregate. Exported field names matter — saved unexported agg
 	// fields which JSON-marshalled to `{}`. Now the summary in the saved JSON
 	// is actually inspectable by jq.
 	type strategySummary struct {
-		N            int     `json:"n"`
-		MeanCoverage float64 `json:"mean_coverage"`
+		N             int     `json:"n"`
+		MeanCoverage  float64 `json:"mean_coverage"`
 		MeanGrounding float64 `json:"mean_grounding"`
-		Combined     float64 `json:"combined"`
+		Combined      float64 `json:"combined"`
 	}
 	rawAcc := map[string]struct{ cov, grd, n int }{"planner": {}, "paraphrase": {}}
 	for _, q := range all {
@@ -5719,7 +5715,7 @@ type judgeScore struct {
 	Comment   string `json:"comment"`
 }
 
-// judgeSystemPrompt was rewritten in iter 64 after the iter-58 trace revealed
+// judgeSystemPrompt was rewritten in after the trace revealed
 // the prior judge was evaluating the full source LIST relevance instead of the
 // CITED sources' accuracy. That bias deflated grounding scores in proportion
 // to how many tangential sources were in the list (paraphrase: 10, planner: 4-6).
@@ -5738,7 +5734,7 @@ Output ONLY a single JSON object with this exact shape:
 Do not output anything else — no preamble, no code fences, no markdown.`
 
 // citedSourceIDs extracts the integer ids referenced by [N] or [N,M,K] in the
-// answer text. Iter-64 fix for the judge-bias bug — we now pass only the
+// answer text. fix for the judge-bias bug — we now pass only the
 // actually-cited sources to the judge, not the full source list.
 func citedSourceIDs(answer string) map[int]bool {
 	ids := make(map[int]bool)
@@ -5758,7 +5754,7 @@ func citedSourceIDs(answer string) map[int]bool {
 var citationRE = regexp.MustCompile(`\[([0-9, ]+)\]`)
 
 // judgeAnswer asks the judge LLM to score a single (question, answer, sources)
-// triple. Iter-64 pre-filters sources to only those cited in the answer, so
+// triple. pre-filters sources to only those cited in the answer, so
 // the judge can't be confused by uncited tangential material in the list.
 // Returns a judgeScore or an error.
 func judgeAnswer(ctx context.Context, judge embed.ChatClient, question, answer string, sources []struct {
@@ -5825,12 +5821,12 @@ type savedAnswerEvalReport struct {
 		Combined      float64 `json:"combined"`
 	} `json:"summary"`
 	Reports []struct {
-		Query string `json:"query"`
+		Query   string `json:"query"`
 		Reports []struct {
-			Strategy     string  `json:"strategy"`
-			Coverage     int     `json:"coverage"`
-			Grounding    int     `json:"grounding"`
-			JudgeComment string  `json:"judge_comment"`
+			Strategy     string `json:"strategy"`
+			Coverage     int    `json:"coverage"`
+			Grounding    int    `json:"grounding"`
+			JudgeComment string `json:"judge_comment"`
 		} `json:"reports"`
 	} `json:"reports"`
 }
@@ -5844,7 +5840,7 @@ func loadAnswerEvalReport(path string) (*savedAnswerEvalReport, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// Old reports (iter 56) had an empty summary because the agg struct used
+	// Old reports had an empty summary because the agg struct used
 	// unexported fields. Recompute the summary on the fly for those.
 	if r.Summary == nil || len(r.Summary) == 0 || r.Summary["planner"].N == 0 {
 		r.Summary = recomputeSummary(r)
@@ -5998,7 +5994,7 @@ func truncate(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-// Iter 330: peekWarnings extracts the iter-292+ warnings field from a server
+// peekWarnings extracts the warnings field from a server
 // response body without committing to a full typed decode. When the CLI hits
 // pebble-serve, the response carries a warnings[] slice naming silent no-ops
 // (unknown expand, rerank without reranker, malformed include_domains, etc).
@@ -6021,7 +6017,7 @@ func emitWarnings(body []byte) {
 }
 
 func runStats(ctx context.Context, cfg *config.Config, args []string) error {
-	// Iter 213: -backend flag (-backend=pebble reads the Pebble subdir).
+	// -backend flag (-backend=pebble reads the Pebble subdir).
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	backend := fs.String("backend", "sqlite", "storage backend: sqlite (default) | pebble")
 	if err := fs.Parse(args); err != nil {
@@ -6063,11 +6059,11 @@ func runStats(ctx context.Context, cfg *config.Config, args []string) error {
 // counts, frontier breakdown, top hosts by indexed-doc count, recent error
 // classes, and rolling-window doc rates with a 1M-doc ETA. Safe to run
 // concurrently with a live `cosift crawl` — SQLite WAL mode allows readers
-// alongside the writer. Iter 193.
-// runStatusFile reads the iter-224 crawl-status.json (the file the live
+// alongside the writer.
+// runStatusFile reads the crawl-status.json (the file the live
 // crawler writes every 10s) and pretty-prints it. Useful when an operator
 // can't run `cosift stats -backend=pebble` because Pebble's single-writer
-// lock is held by the crawl process. Iter 225.
+// lock is held by the crawl process.
 //
 // Default path: <cfg.DataDir>/crawl-status.json. -file flag overrides.
 func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error {
@@ -6134,13 +6130,13 @@ func runStatusFile(ctx context.Context, cfg *config.Config, args []string) error
 		fmt.Printf("  processed:  %d / %d (%.1f%%)\n",
 			processed, total, float64(processed)/float64(total)*100)
 	}
-	// Iter 270: ?-target N → 'indexed/target (pct)' line for long crawls toward
+	// ?-target N → 'indexed/target (pct)' line for long crawls toward
 	// a known doc-count goal. No-op when target is unset or already met.
-	// Iter 271: ETA from iter-271 started_at + indexed_docs_at_start fields.
+	// ETA from started_at + indexed_docs_at_start fields.
 	// Rate is averaged since the dumper's first poll, not instantaneous.
 	if *target > 0 && d.IndexedDocs > 0 {
 		pct := float64(d.IndexedDocs) / float64(*target) * 100
-		// Iter 303: cap pct display at 100% and append a 'reached' marker when
+		// cap pct display at 100% and append a 'reached' marker when
 		// the crawl has met or exceeded the goal — operators watching a long
 		// crawl see the win line instead of '237.4%' growing confusingly.
 		switch {

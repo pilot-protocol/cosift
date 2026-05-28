@@ -22,9 +22,9 @@ func TestSiteToHost(t *testing.T) {
 		{"docs.example.com", "docs.example.com", false}, // bare host
 		{"example.org", "example.org", false},
 		{"", "", true},
-		{"docs example.com", "", true},          // space → not a hostname
-		{"docs.example.com/path", "", true},     // path without scheme → ambiguous; reject
-		{"://broken-url", "", true},             // unparseable
+		{"docs example.com", "", true},      // space → not a hostname
+		{"docs.example.com/path", "", true}, // path without scheme → ambiguous; reject
+		{"://broken-url", "", true},         // unparseable
 	}
 	for _, c := range cases {
 		got, err := siteToHost(c.in)

@@ -35,10 +35,10 @@ import (
 type openaiMock struct {
 	srv *httptest.Server
 
-	mu              sync.Mutex
-	chatCalls       int
-	embedCalls      int
-	embedCallTexts  [][]string
+	mu               sync.Mutex
+	chatCalls        int
+	embedCalls       int
+	embedCallTexts   [][]string
 	chatRespOverride string
 	embedDim         int
 }

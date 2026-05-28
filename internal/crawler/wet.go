@@ -11,9 +11,9 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"strings"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/index"
@@ -41,7 +41,7 @@ import (
 // 100× the open-web crawl throughput.
 //
 // We don't add a WARC library dep — the format is small enough that a
-// stdlib bufio.Reader is fine. Iter 485.
+// stdlib bufio.Reader is fine.
 
 // WetRecord is one entry in a WET file. Body is the extracted plain text.
 type WetRecord struct {
@@ -58,13 +58,12 @@ type WetRecord struct {
 // the COSIFT_REFETCH_AFTER_HOURS window. Set true for refresh-style
 // imports; false for cold-bulk loads where redundant work is acceptable.
 //
-// `lexicalOnly` (iter 486): when true, skip chunking + embedding entirely.
+// `lexicalOnly`: when true, skip chunking + embedding entirely.
 // Each record gets UpsertDocument + BM25 IndexDocument only — no HNSW
 // nodes are added. Unlocks ~30 K docs/min on this box (vs ~2 K with full
 // embed pipeline) because the bottleneck shifts from per-chunk embedding
 // to just gob-encoding the Document and writing BM25 postings. Pair with
 // /admin/embed-backfill later to fill in dense vectors asynchronously.
-// Iter 485.
 func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexicalOnly bool) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wetURL, nil)
 	if err != nil {
@@ -99,8 +98,8 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 		}
 	}
 
-	// Iter 488b: N parallel writers, each batching M docs per flush.
-	// Multiplies the iter-486b parallelism gain by the iter-488 batched-
+	// N parallel writers, each batching M docs per flush.
+	// Multiplies the parallelism gain by the batched-
 	// upsert gain. With 8 writers × 32-doc batches, only 8 goroutines
 	// contend for p.mu and each one writes 32 docs per acquire.
 	batchSize := 32
@@ -119,13 +118,11 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 	var wg sync.WaitGroup
 	var indexed atomic.Int64
 
-	// Iter 488c REVERT: batched UpsertDocument helped raw upsert throughput
-	// but IndexDocument's per-call locking became the dominant cost when
-	// batching meant fewer concurrent goroutines, so net throughput
-	// regressed vs iter-486b's per-record parallelism. Back to N workers
-	// calling indexWetRecord — gives us the iter-486b 3.4K docs/min ceiling.
-	// UpsertDocumentBatch stays in PebbleStore as a callable API; other
-	// future call sites can use it (e.g. CLI bulk-import). Iter 488c.
+	// Per-record parallelism beats batched UpsertDocument here: batching
+	// reduces concurrent goroutines, and IndexDocument's per-call locking
+	// then dominates. N workers calling indexWetRecord gives the 3.4K
+	// docs/min ceiling. UpsertDocumentBatch stays in PebbleStore for
+	// other call sites (e.g. CLI bulk-import).
 	_ = batchSize
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -255,7 +252,6 @@ func readWetRecord(br *bufio.Reader) (*WetRecord, error) {
 // embeddings per doc. UpsertDocument is the single-lock-acquire hot path;
 // IndexDocument still takes its own lock per doc but those calls are much
 // cheaper (a few keys each) than the gob-encode + Commit of UpsertDocument.
-// Iter 488.
 //
 // Returns count successfully indexed. On batch-level error returns 0 + err.
 func (c *Crawler) indexWetRecordsBatch(ctx context.Context, recs []*WetRecord, lexicalOnly bool) (int, error) {
@@ -372,7 +368,7 @@ func (c *Crawler) indexWetRecordsBatch(ctx context.Context, recs []*WetRecord, l
 // chunk + embed + passage-write. Mirrors the crawler's success-path
 // flow in processClaimed but skips fetch/parse/robots/sitemap discovery —
 // the body is already plain text. When lexicalOnly is true, the chunk +
-// embed + passage-write tail is skipped entirely. Iter 485.
+// embed + passage-write tail is skipped entirely.
 func (c *Crawler) indexWetRecord(ctx context.Context, rec *WetRecord, lexicalOnly bool) error {
 	if rec.URL == "" || len(rec.Body) == 0 {
 		return nil
@@ -461,7 +457,7 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
-// getEnv shadows os.Getenv for compactness at call sites. Iter 485.
+// getEnv shadows os.Getenv for compactness at call sites.
 func getEnv(key string) string {
 	return os.Getenv(key)
 }

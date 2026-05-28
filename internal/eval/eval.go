@@ -35,8 +35,7 @@ type QuerySet struct {
 // Paraphrases (optional): when present, the eval runs the retriever once for
 // the main Text AND once for each paraphrase, then RRF-fuses the result lists.
 // Tests whether query-side rewriting closes retrieval gaps that retriever
-// upgrades couldn't (iter-42 measured: stronger embedder doesn't recover the
-// 10k+ diverse-noise ceiling — query rewriting is the alternative path).
+// upgrades can't.
 type Query struct {
 	Text        string   `json:"text"`
 	Relevant    []string `json:"relevant"`

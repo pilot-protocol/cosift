@@ -1,7 +1,7 @@
 // Package index — HNSW vector index, pure Go, no external deps.
 //
 // Hierarchical Navigable Small World graph (Malkov & Yashunin 2018) for
-// approximate kNN at logarithmic query cost. Sized for the iter-199 rework:
+// approximate kNN at logarithmic query cost. Sized for the rework:
 // the existing VectorIndex (brute-force cosine over the full passage set) is
 // adequate to ~200k passages, then per-query cost grows linearly. HNSW is
 // O(log N) per query with recall ≥95% at standard parameters, so a single
@@ -65,7 +65,7 @@ type HNSW struct {
 	entryPoint int // index into nodes; -1 when empty
 	maxLevel   int // current top layer
 
-	// Iter 416: optional PQ acceleration. When codebook != nil, Search uses
+	// When codebook != nil, Search uses
 	// asymmetric distance against per-node codes instead of the d-dim dot
 	// product. Set via UsePQ() at startup. AddPassage continues to write
 	// raw vectors; new nodes need a subsequent pq-train to get codes.
@@ -74,8 +74,8 @@ type HNSW struct {
 }
 
 type hnswNode struct {
-	vecDoc           // embed: url, title, offset, length, vec (unit-normalized)
-	level     int    // top layer this node participates in
+	vecDoc            // embed: url, title, offset, length, vec (unit-normalized)
+	level     int     // top layer this node participates in
 	neighbors [][]int // per-layer adjacency lists (layer 0 .. level)
 }
 
@@ -95,7 +95,7 @@ func NewHNSW(dim int) *HNSW {
 }
 
 // SetEfSearch overrides the query-time candidate-list size. Bigger values
-// raise recall at proportional cost. Iter 438 — exposed for runtime tuning
+// raise recall at proportional cost. Exposed for runtime tuning
 // (env COSIFT_HNSW_EF_SEARCH) after we observed Recall@10 dropping to ~0.47
 // on a 800K-vector graph that had been grown via AddPassage rather than
 // rebuilt; bumping efSearch from 50 → 200 recovers recall without a
@@ -116,10 +116,10 @@ func (h *HNSW) Len() int {
 	return len(h.nodes)
 }
 
-// UsePQ enables iter-416 asymmetric-distance search. codes is parallel to
+// UsePQ enables asymmetric-distance search. codes is parallel to
 // h.nodes; a nil/empty entry at index i means that node is searched via
 // its raw vec (graceful coexistence during gradual rollouts). Call once
-// at startup after LoadHNSW. Iter 416.
+// at startup after LoadHNSW.
 func (h *HNSW) UsePQ(cb *PQCodebook, codes [][]uint16) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -127,7 +127,7 @@ func (h *HNSW) UsePQ(cb *PQCodebook, codes [][]uint16) {
 	h.codes = codes
 }
 
-// HasPQ reports whether a codebook is wired. Iter 416.
+// HasPQ reports whether a codebook is wired.
 func (h *HNSW) HasPQ() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -135,14 +135,14 @@ func (h *HNSW) HasPQ() bool {
 }
 
 // PQStatus returns an observability snapshot: codebook shape + node-count
-// breakdown. Iter 423/424.
+// breakdown.
 //
-//   NodesTotal     — len(h.nodes), includes zombies from pre-iter-411 corrupt
-//                    persists (vec=nil; can't be searched or encoded).
-//   NodesValid     — nodes with a non-empty vec (the only ones search hits).
-//   NodesWithCode  — nodes with a PQ code of length == codebook.M.
-//                    On a healthy graph: NodesWithCode == NodesValid (100%
-//                    coverage of searchable nodes).
+//	NodesTotal     — len(h.nodes), includes zombies from pre corrupt
+//	                 persists (vec=nil; can't be searched or encoded).
+//	NodesValid     — nodes with a non-empty vec (the only ones search hits).
+//	NodesWithCode  — nodes with a PQ code of length == codebook.M.
+//	                 On a healthy graph: NodesWithCode == NodesValid (100%
+//	                 coverage of searchable nodes).
 type PQStatus struct {
 	Enabled       bool
 	Dim, M, K     int
@@ -163,7 +163,7 @@ func (h *HNSW) PQStatus() PQStatus {
 	}
 	// Walk in a single pass; count valid vecs and codes that are
 	// ATTACHED to those valid vecs (ghost codes on vec-less zombies
-	// don't help anyone search and shouldn't pad coverage). Iter 425.
+	// don't help anyone search and shouldn't pad coverage).
 	for i := range h.nodes {
 		valid := len(h.nodes[i].vec) > 0
 		if valid {
@@ -177,19 +177,19 @@ func (h *HNSW) PQStatus() PQStatus {
 }
 
 // distanceToNode returns a comparable distance from query q to node[idx].
-// Lower = closer in BOTH branches. Iter 416.
+// Lower = closer in BOTH branches.
 //
 //   - PQ branch: float32(PQDistance(table, code, M, K)) — squared-L2 distance
 //     over reconstructed (uncompressed) approximation. For unit-normalized
 //     vectors this is monotonic with cosine distance, so HNSW pruning
 //     thresholds stay coherent.
-//   - Raw branch: -dot(q, h.nodes[idx].vec). Identical to the iter-203
+//   - Raw branch: -dot(q, h.nodes[idx].vec). Identical to the
 //     baseline.
 //
 // pqTable is the M*K-element lookup precomputed once per search via
 // codebook.QueryTable.
 func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
-	// Iter 503b: out-of-range neighbor IDs from corrupt-load state crashed
+	// out-of-range neighbor IDs from corrupt-load state crashed
 	// crawler workers (each AddPassage runs internal greedy descent → search,
 	// which dereferenced a stale neighbor index >= len(h.nodes)). Recovered
 	// at the worker boundary but each event abandoned an in-flight doc.
@@ -197,7 +197,7 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 	if idx < 0 || idx >= len(h.nodes) {
 		return math.MaxFloat64
 	}
-	// Iter 417 fix: PQ branch requires a non-nil pqTable. AddPassage's
+	// fix: PQ branch requires a non-nil pqTable. AddPassage's
 	// internal greedyDescend/searchLayer calls pass nil because graph
 	// construction always uses raw vecs — without this guard, the PQ
 	// branch fires with a nil table and PQDistance panics indexing it.
@@ -205,7 +205,7 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 		return float64(PQDistance(pqTable, h.codes[idx], h.codebook.M, h.codebook.K))
 	}
 	if len(h.nodes[idx].vec) == 0 {
-		return math.MaxFloat64 // skip zombie nodes (iter 411 defensive)
+		return math.MaxFloat64 // skip zombie nodes
 	}
 	return -float64(dot(q, h.nodes[idx].vec))
 }
@@ -214,7 +214,7 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 // returns the top-k passages by cosine similarity, with the same doc-level
 // max-passage aggregation as Search. Independent of PQ — always uses the
 // raw stored vectors. Used by `cosift bench-pq` to compute ground truth
-// against which the approximate search paths are graded. Iter 427.
+// against which the approximate search paths are graded.
 func (h *HNSW) BruteForceTopK(query []float32, k int) []VectorHit {
 	if len(query) != h.dim || k <= 0 {
 		return nil
@@ -271,18 +271,17 @@ func (h *HNSW) BruteForceTopK(query []float32, k int) []VectorHit {
 }
 
 // SampleVectors returns up to n vectors drawn uniformly at random from the
-// graph (without replacement). Used by iter-415 PQ codebook training to
+// graph (without replacement). Used by PQ codebook training to
 // build a representative training set without loading the entire corpus
 // into RAM. Returns fewer than n when the graph has fewer nodes.
-// Iter 415.
 func (h *HNSW) SampleVectors(n int, rngSeed int64) [][]float32 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if len(h.nodes) == 0 {
 		return nil
 	}
-	// Iter 415: filter out zero-value / partial-persisted nodes whose vec
-	// is empty — same defensive guard searchLayer uses (iter 411).
+	// filter out zero-value / partial-persisted nodes whose vec
+	// is empty — same defensive guard searchLayer uses.
 	idxs := make([]int, 0, len(h.nodes))
 	for i := range h.nodes {
 		if len(h.nodes[i].vec) > 0 {
@@ -314,10 +313,10 @@ func (h *HNSW) SampleVectors(n int, rngSeed int64) [][]float32 {
 }
 
 // EncodeMissing fills in PQ codes for nodes whose codes are nil/short
-// against the currently-loaded codebook. Used by the iter-424 backfill
+// against the currently-loaded codebook. Used by the backfill
 // path to bring coverage to 100% without re-training. Returns the IDs and
 // codes that were freshly computed (suitable for PutPQCodesBatch); skips
-// zero-value (vec-less) and already-coded nodes. Iter 424.
+// zero-value (vec-less) and already-coded nodes.
 func (h *HNSW) EncodeMissing() ([]uint64, [][]uint16, error) {
 	h.mu.Lock() // write-lock: we mutate h.codes
 	defer h.mu.Unlock()
@@ -352,7 +351,7 @@ func (h *HNSW) EncodeMissing() ([]uint64, [][]uint16, error) {
 
 // EncodeAll iterates every node in the graph and encodes its vector
 // against the supplied codebook. Returns parallel slices (nodeIDs, codes)
-// suitable for batched persist via PebbleStore.PutPQCodesBatch. Iter 415.
+// suitable for batched persist via PebbleStore.PutPQCodesBatch.
 func (h *HNSW) EncodeAll(cb *PQCodebook) ([]uint64, [][]uint16, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -376,7 +375,7 @@ func (h *HNSW) EncodeAll(cb *PQCodebook) ([]uint64, [][]uint16, error) {
 // first passage whose url matches. Used by /find_similar?retriever=dense to
 // skip the embed RPC — the source doc's vector is already in the graph.
 // Linear scan; for 1M passages this is ~few ms, dominated by cache misses.
-// Returns (nil, false) when the URL has no indexed passage. Iter 371.
+// Returns (nil, false) when the URL has no indexed passage.
 func (h *HNSW) LookupVectorByURL(url string) ([]float32, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -400,7 +399,6 @@ func (h *HNSW) Add(url, title string, vec []float32) {
 // codeFor encodes one vector against the loaded codebook. Caller is the
 // AddPassage hot path. Returns nil if codebook isn't set or encode fails.
 // Caller holds h.mu (write or no lock during init; encode is read-only).
-// Iter 417.
 func (h *HNSW) codeFor(vec []float32) []uint16 {
 	if h.codebook == nil {
 		return nil
@@ -415,10 +413,10 @@ func (h *HNSW) codeFor(vec []float32) []uint16 {
 // MarkURLPassagesInvalid zeros out vec (and pq code, if present) for every
 // node whose url matches. Returns the count zeroed. Dead nodes remain in
 // the graph as link targets so neighbor adjacency lists stay consistent
-// (searchLayer/Search both already skip nodes with empty vec — iter 411
+// (searchLayer/Search both already skip nodes with empty vec —
 // "zombie / partial-persisted" guard). Lets the crawler reclaim recall +
 // memory on re-fetch instead of accumulating generations of stale chunks
-// for the same URL. Iter 477.
+// for the same URL.
 func (h *HNSW) MarkURLPassagesInvalid(url string) int {
 	if url == "" {
 		return 0
@@ -459,7 +457,6 @@ func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) 
 // Reduces lock churn for callers that already have all of a document's
 // passages assembled (the crawler is one such caller). Each input vec
 // is normalized in place; provide caller-owned copies if that matters.
-// Iter 443.
 type PassageInput struct {
 	URL    string
 	Title  string
@@ -487,7 +484,7 @@ func (h *HNSW) AddPassageBatch(items []PassageInput) {
 	if len(prepared) == 0 {
 		return
 	}
-	// Iter 444: cap each lock acquisition at subBatch items. Without this
+	// Without this
 	// a 50-chunk doc holds the write lock for ~250 ms (5 ms × 50 inserts
 	// at 1M-node scale) and search readers stall behind it. Splitting at
 	// 8 keeps the per-acquisition hold under ~50 ms while still saving
@@ -508,7 +505,7 @@ func (h *HNSW) AddPassageBatch(items []PassageInput) {
 
 // addPassageLocked is the unlocked insert body shared by AddPassage and
 // AddPassageBatch. Caller MUST already hold h.mu (write lock). cp must
-// already be a unit-norm float32 vector of length h.dim. Iter 443.
+// already be a unit-norm float32 vector of length h.dim.
 func (h *HNSW) addPassageLocked(url, title string, offset, length int, cp []float32) {
 	level := h.randLevel()
 	newIdx := len(h.nodes)
@@ -517,9 +514,9 @@ func (h *HNSW) addPassageLocked(url, title string, offset, length int, cp []floa
 		level:     level,
 		neighbors: make([][]int, level+1),
 	})
-	// Iter 417: when a codebook is loaded, encode the new vec inline and
+	// when a codebook is loaded, encode the new vec inline and
 	// keep h.codes parallel to h.nodes. The crawl-time PQ checkpoint
-	// (iter 417 in pebble_serve) writes [lastN, len) of these to Pebble.
+	// writes [lastN, len) of these to Pebble.
 	if h.codebook != nil {
 		code := h.codeFor(cp)
 		if cap(h.codes) <= newIdx {
@@ -592,7 +589,7 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	if len(h.nodes) == 0 {
 		return nil
 	}
-	// Iter 416: precompute the PQ asymmetric-distance lookup table once per
+	// precompute the PQ asymmetric-distance lookup table once per
 	// search if codebook is loaded. nil otherwise → raw dot-product path.
 	var pqTable []float32
 	if h.codebook != nil {
@@ -623,7 +620,7 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 	}
 	bestByURL := make(map[string]best, len(cands))
 	for _, c := range cands {
-		// Iter 477: skip zombie nodes (vec invalidated by
+		// skip zombie nodes (vec invalidated by
 		// MarkURLPassagesInvalid). searchLayer's distance computation
 		// against an empty vec returns garbage (-Inf with the dot
 		// branch), and they'd otherwise burn URL slots in the dedup.
@@ -631,7 +628,7 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 			continue
 		}
 		url := h.nodes[c.idx].url
-		// Iter 416: convert c.dist back to a cosine-shaped score for output.
+		// convert c.dist back to a cosine-shaped score for output.
 		// Raw branch stored c.dist = -dot (cos = -dist).
 		// PQ branch stored c.dist = L2² over unit-norm vecs ≈ 2(1-cos), so
 		// cos ≈ 1 - dist/2.
@@ -671,10 +668,10 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 // greedyDescend walks the graph at a single layer toward the query, always
 // stepping to the neighbor closer to the query than the current node.
 // Returns the index of the local minimum found at this layer.
-// Iter 416: pqTable threaded through to enable PQ-distance traversal.
+// pqTable threaded through to enable PQ-distance traversal.
 func (h *HNSW) greedyDescend(q []float32, pqTable []float32, start int, lvl int) int {
 	cur := start
-	// Iter 503b: bounds guard against corrupt-load start indices. distanceToNode
+	// distanceToNode
 	// already returns +Inf for oob, but the subsequent neighbor-list deref
 	// below would still panic. Bail to a sentinel the caller's filtering
 	// already handles.
@@ -684,7 +681,7 @@ func (h *HNSW) greedyDescend(q []float32, pqTable []float32, start int, lvl int)
 	curDist := float32(h.distanceToNode(q, pqTable, cur))
 	for {
 		moved := false
-		// Iter 411: same defensive guard as searchLayer — skip zero-value
+		// same defensive guard as searchLayer — skip zero-value
 		// nodes (corrupt-load gap) instead of panicking.
 		if len(h.nodes[cur].neighbors) == 0 {
 			return cur
@@ -712,7 +709,7 @@ type candEntry struct {
 // searchLayer is the core HNSW search routine. From the given entry points,
 // expands the nearest-first frontier until the top ef candidates are stable.
 // Returns the ef best candidates at this layer, sorted by ascending dist.
-// Iter 416: pqTable enables PQ-distance traversal when set (nil = raw).
+// pqTable enables PQ-distance traversal when set (nil = raw).
 func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef int, lvl int) []candEntry {
 	visited := make(map[int]struct{}, ef*2)
 	// Candidates: min-heap by dist (front-of-queue is the nearest to expand).
@@ -737,11 +734,11 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 			break
 		}
 		// Expand neighbors at this layer.
-		// Iter 411: defensive — a node with len(neighbors)==0 (zero-value
-		// from a failed-incremental-persist gap pre-iter-411 fix) would
+		// defensive — a node with len(neighbors)==0 (zero-value
+		// from a failed-incremental-persist gap pre fix) would
 		// produce nbIdx=-1 and panic. Skip such nodes; their absence from
 		// the graph is harmless beyond reduced recall.
-		// Iter 503b: also guard against an oob nearest.idx — corrupt
+		// also guard against an oob nearest.idx — corrupt
 		// post-compact saves can leave neighbor lists pointing past the
 		// current node slice. Same recovery: skip.
 		if nearest.idx < 0 || nearest.idx >= len(h.nodes) {
@@ -779,7 +776,7 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 // addBackLink wires a back-edge from neighbor to newIdx at the given layer,
 // pruning neighbor's list if it overflows the per-layer cap.
 //
-// Iter 503b: bounds-guard both `neighbor` and any existing entry in the
+// bounds-guard both `neighbor` and any existing entry in the
 // neighbor list. Corrupt-load graphs (post-failed-persist gap) can produce
 // search results that reference node IDs beyond the current node slice;
 // without these guards a single bad index panics the entire crawler worker

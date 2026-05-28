@@ -1,10 +1,10 @@
 // PebbleBM25 is a BM25 search implementation that reads/writes through
 // PebbleStore. Mirrors the SQLite-backed BM25 above (same algorithm: k1=1.2,
 // b=0.75, title-boost at index time, phrase filter at query time, doc-level
-// max-passage aggregation handled by callers) but consumes the iter-201
+// max-passage aggregation handled by callers) but consumes the
 // Pebble postings primitives instead of SQL joins.
 //
-// Iter 202 — third piece of the path-2 rework. The two BM25 implementations
+// The two BM25 implementations
 // coexist; operators pick a backend via config. Behavioral parity is
 // asserted via TestPebbleBM25MatchesSQLite, which runs the same corpus +
 // queries through both and compares hit URLs.
@@ -22,7 +22,7 @@ import (
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.
 type PebbleBM25 struct {
 	store *store.PebbleStore
-	// Iter 279: per-instance BM25 parameters. Default to the package
+	// Default to the package
 	// constants (K1=1.2, B=0.75); operators tuning for a specific corpus
 	// can override via WithBM25Params(). Length normalization (B) is the
 	// knob most likely to want tuning — long-doc corpora often prefer
@@ -50,7 +50,7 @@ func (b *PebbleBM25) WithBM25Params(k1, blen float64) *PebbleBM25 {
 	return b
 }
 
-// K1 returns the currently configured BM25 k1 parameter. Iter 280 — lets
+// K1 returns the currently configured BM25 k1 parameter. Lets
 // operator-visible endpoints surface 'what scoring params is this instance
 // actually using' without grepping env or constants.
 func (b *PebbleBM25) K1() float64 { return b.k1 }
@@ -86,7 +86,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		avgDocLen = 1
 	}
 
-	// Per-doc accumulated BM25 score. Iter 207: docLenCache removed —
+	// Per-doc accumulated BM25 score. docLenCache removed —
 	// doc_len is now inline in each posting value (no per-doc Get).
 	scores := make(map[int64]float64)
 
@@ -102,7 +102,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		idf := math.Log(1.0 + (float64(totalDocs)-float64(info.DocFreq)+0.5)/(float64(info.DocFreq)+0.5))
 
 		err = b.store.IteratePostings(ctx, info.ID, func(p store.PostingEntry) bool {
-			// Iter 207: docLen is inline in the posting value — no separate
+			// docLen is inline in the posting value — no separate
 			// GetDocLen call. Removed ~25k Pebble Gets per query at N=10k.
 			docLen := p.DocLen
 			if docLen <= 0 {
@@ -119,7 +119,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		}
 	}
 
-	// Resolve URL/title for scored docs via the cheap iter-207 'i' side-blob
+	// Resolve URL/title for scored docs via the cheap 'i' side-blob
 	// (single Get + varint decode per doc, no gob). At 10k docs this dropped
 	// PebbleBM25 query latency from p50≈800ms to <p50=80ms — the full-Document
 	// gob decode was 95% of the read cost.
@@ -153,10 +153,10 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	return hits, nil
 }
 
-// corpusStats returns (indexedDocs, avgDocLen). Iter 207 — reads the
+// corpusStats returns (indexedDocs, avgDocLen). Reads the
 // running (sum_doc_len, indexed_docs) counters maintained by
 // PebbleStore.IndexDocument. O(1) per query; replaces the per-query
-// O(N) scan over the 'l' family that the iter-206 bench surfaced as
+// O(N) scan over the 'l' family that the bench surfaced as
 // PebbleBM25.Search's dominant cost.
 func (b *PebbleBM25) corpusStats(ctx context.Context) (int64, float64, error) {
 	sumLen, count, err := b.store.CorpusStats(ctx)

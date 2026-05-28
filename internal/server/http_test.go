@@ -298,9 +298,9 @@ func TestAdminStatsLLMCacheCounts(t *testing.T) {
 
 func TestMMRFromQueryParsing(t *testing.T) {
 	cases := []struct {
-		name   string
-		path   string
-		want   *mmrParams
+		name string
+		path string
+		want *mmrParams
 	}{
 		{"absent → no ctx value", "/?", nil},
 		{"empty value → no ctx value", "/?mmr=", nil},
@@ -391,9 +391,9 @@ func TestFindSimilarWithMMR(t *testing.T) {
 
 	// Seed doc + 3 near-duplicates + 1 orthogonal distinct doc.
 	docs := []struct {
-		url   string
-		text  string
-		vec   []float32
+		url  string
+		text string
+		vec  []float32
 	}{
 		{"https://x/seed", "alpha seed query", []float32{1, 0, 0}},
 		{"https://x/dup1", "Dup1", []float32{0.99, 0.1, 0}},
@@ -548,7 +548,7 @@ func TestCalibrateSourcesBasic(t *testing.T) {
 }
 
 func TestCalibrateSourcesEdgeCases(t *testing.T) {
-	calibrateSources(nil)             // nil-safe
+	calibrateSources(nil)              // nil-safe
 	calibrateSources([]AnswerSource{}) // empty-safe
 	all0 := []AnswerSource{{Score: 0}, {Score: 0}}
 	calibrateSources(all0)
@@ -570,9 +570,9 @@ func TestCalibrateSourcesEdgeCases(t *testing.T) {
 //   - Some docs contain "alpha", some don't, so PRF has something to mine
 //
 // Load-bearing assertions:
-//   1. HTTP 200 — none of the three features 500s on their own or combined
-//   2. trackingEmbedder saw "HYPO::alpha" (HyDE wired); never saw raw "alpha"
-//   3. chat.synthCalls > 0 (synth fired with whatever sources resulted)
+//  1. HTTP 200 — none of the three features 500s on their own or combined
+//  2. trackingEmbedder saw "HYPO::alpha" (HyDE wired); never saw raw "alpha"
+//  3. chat.synthCalls > 0 (synth fired with whatever sources resulted)
 //
 // The "+prf" effect is not behaviorally asserted here — /answer's response
 // shape doesn't surface per-hit source tags. The wiring contract for PRF is
@@ -586,7 +586,10 @@ func TestAnswerTripleCompose(t *testing.T) {
 	// 8 docs: 5 alpha-containing dups (for PRF to mine terms from + BM25
 	// to hit) + 2 noise (alpha-containing too so PRF stays meaningful) +
 	// 1 distinct without alpha but orthogonal vector (MMR's diversity pick).
-	docs := []struct{ url, text string; vec []float32 }{
+	docs := []struct {
+		url, text string
+		vec       []float32
+	}{
 		{"https://x/dup1", "alpha primary content", []float32{1, 0, 0}},
 		{"https://x/dup2", "alpha secondary content", []float32{0.99, 0.14, 0}},
 		{"https://x/dup3", "alpha tertiary content", []float32{0.97, 0.24, 0}},
@@ -677,16 +680,16 @@ func TestAnswerTripleCompose(t *testing.T) {
 // via differential outcome.
 //
 // Test design constraints surfaced while building this:
-//   1. SearchMMR's early-return fires when len(candidates) ≤ requested-k.
-//      Hybrid passes k*2 to runDense; with request k=3, runDense passes
-//      k=6 to SearchMMR. Need >6 candidates in the vector index to make
-//      MMR actually rerank.
-//   2. For the differential to be observable in top-k of the fused result,
-//      noise vectors must be SPREAD so MMR's pure-diversity picks them
-//      out (otherwise MMR clusters dup-likes near dup1).
-//   3. The "distinct" doc must lack BM25 hits (no alpha token) so its
-//      RRF score depends solely on dense rank — making dense rank shifts
-//      observable end-to-end.
+//  1. SearchMMR's early-return fires when len(candidates) ≤ requested-k.
+//     Hybrid passes k*2 to runDense; with request k=3, runDense passes
+//     k=6 to SearchMMR. Need >6 candidates in the vector index to make
+//     MMR actually rerank.
+//  2. For the differential to be observable in top-k of the fused result,
+//     noise vectors must be SPREAD so MMR's pure-diversity picks them
+//     out (otherwise MMR clusters dup-likes near dup1).
+//  3. The "distinct" doc must lack BM25 hits (no alpha token) so its
+//     RRF score depends solely on dense rank — making dense rank shifts
+//     observable end-to-end.
 //
 // 8-doc corpus: 2 alpha-containing dups + 5 spread noise docs (no alpha,
 // no orthogonal) + 1 distinct (orthogonal, no alpha). With MMR lambda=0.0
@@ -702,7 +705,10 @@ func TestSearchMMRAndHybridDenseWeightCompose(t *testing.T) {
 	// noise1..5 + distinct have no "alpha"; BM25 score 0.
 	// noise vectors spread along (cos to dup1) axis so MMR's diversity
 	// picks them (least-similar-to-dup1) AFTER distinct.
-	docs := []struct{ url, text string; vec []float32 }{
+	docs := []struct {
+		url, text string
+		vec       []float32
+	}{
 		{"https://x/dup1", "alpha primary", []float32{1, 0, 0}},
 		{"https://x/dup2", "alpha secondary", []float32{0.99, 0.14, 0}},
 		{"https://x/noise1", "irrelevant a", []float32{0.97, 0.24, 0}},
@@ -806,7 +812,10 @@ func TestSearchHyDEAndMMRCompose(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 
 	idx := index.NewBM25(s)
-	docs := []struct{ url, text string; vec []float32 }{
+	docs := []struct {
+		url, text string
+		vec       []float32
+	}{
 		// HyDE passage embeds to (0, 1, 0) per stubEmbedder. Engineer the
 		// vector corpus so:
 		// - 3 near-dups cluster around (0, 1, 0) — top-relevance for HyDE
@@ -1327,9 +1336,9 @@ func TestSearchCalibrateRoundtrip(t *testing.T) {
 // to assert that the dense sub-call sees ONLY the original query, never the
 // PRF-expanded one.
 type trackingEmbedder struct {
-	dim     int
-	byText  map[string][]float32
-	mu      sync.Mutex
+	dim      int
+	byText   map[string][]float32
+	mu       sync.Mutex
 	embedded []string
 }
 
@@ -1454,8 +1463,8 @@ func TestSearchHyDEViaHandler(t *testing.T) {
 	// stubEmbedder maps "goroutines" (raw query) → keyword-match vector;
 	// "lightweight threads in the runtime" (hypothetical answer) → answer-match vector.
 	emb := &stubEmbedder{dim: 2, byText: map[string][]float32{
-		"goroutines":                          {1, 0},
-		"lightweight threads in the runtime":  {0, 1},
+		"goroutines":                         {1, 0},
+		"lightweight threads in the runtime": {0, 1},
 	}}
 
 	// fakeHyDEChat returns the canned hypothetical passage.
@@ -1702,12 +1711,12 @@ func TestSearchMMRViaHandler(t *testing.T) {
 
 // Iter 157: composability sweep. Exercises 4 hit filters + sort in a single
 // request and verifies the order of operations is stable:
-//   1. retrieval (BM25 here)
-//   2. date filter (iter 77 — since / until)
-//   3. domain filter (iter 79 — include_domains / exclude_domains)
-//   4. sort (iter 78 — date_desc)
-//   5. enrichment + GetDocMetas fetch
-//   6. author filter (iter 153 — consumes the same metas map)
+//  1. retrieval (BM25 here)
+//  2. date filter (iter 77 — since / until)
+//  3. domain filter (iter 79 — include_domains / exclude_domains)
+//  4. sort (iter 78 — date_desc)
+//  5. enrichment + GetDocMetas fetch
+//  6. author filter (iter 153 — consumes the same metas map)
 //
 // Corpus engineered so each filter drops at least one doc, leaving exactly 2
 // surviving hits whose order is sort-determined. If any filter is silently
@@ -2319,7 +2328,7 @@ func TestFindSimilar(t *testing.T) {
 	vi := index.NewVectorIndex(4)
 	vi.Add("https://x/a", "Go programming", []float32{1, 0, 0, 0})
 	vi.Add("https://x/b", "Rust programming", []float32{0.95, 0.05, 0, 0}) // close to A
-	vi.Add("https://x/c", "Cooking pasta", []float32{0, 1, 0, 0})           // far
+	vi.Add("https://x/c", "Cooking pasta", []float32{0, 1, 0, 0})          // far
 
 	emb := &stubEmbedder{dim: 4, byText: map[string][]float32{
 		// /find_similar embeds (title + "\n\n" + text). Make the seed doc's text
@@ -4475,11 +4484,11 @@ func TestAdminStatsDocsWithPublishedAt(t *testing.T) {
 		{},
 	} {
 		_, err := s.UpsertDocument(context.Background(), &store.Document{
-			URL:       fmt.Sprintf("https://x/%d", i),
-			Title:     "T",
-			Text:      "alpha",
-			Source:    "test",
-			FetchedAt: now,
+			URL:         fmt.Sprintf("https://x/%d", i),
+			Title:       "T",
+			Text:        "alpha",
+			Source:      "test",
+			FetchedAt:   now,
 			PublishedAt: pub,
 		})
 		if err != nil {
@@ -4517,7 +4526,7 @@ func TestSplitCSV(t *testing.T) {
 		{"foo.com", []string{"foo.com"}},
 		{"foo.com,bar.com", []string{"foo.com", "bar.com"}},
 		{" foo.com , BAR.com ", []string{"foo.com", "bar.com"}}, // trim + lowercase
-		{",,,foo.com,,", []string{"foo.com"}},                    // drop empties
+		{",,,foo.com,,", []string{"foo.com"}},                   // drop empties
 	}
 	for _, c := range cases {
 		got := splitCSV(c.in)
@@ -4539,15 +4548,15 @@ func TestMatchesAnyDomain(t *testing.T) {
 		patterns []string
 		want     bool
 	}{
-		{"example.com", []string{"example.com"}, true},                       // exact
-		{"blog.example.com", []string{"example.com"}, true},                  // subdomain via suffix
-		{"deep.nested.example.com", []string{"example.com"}, true},           // deeper subdomain
-		{"evilexample.com", []string{"example.com"}, false},                  // not a subdomain — strict boundary
-		{"notexample.com", []string{"example.com"}, false},                   // not a subdomain
-		{"example.com", []string{"other.org", "example.com"}, true},          // matches second pattern
-		{"example.com", []string{"other.org"}, false},                        // no match
-		{"example.com", nil, false},                                          // empty patterns
-		{"EXAMPLE.COM", []string{"example.com"}, true},                       // case-insensitive on host
+		{"example.com", []string{"example.com"}, true},              // exact
+		{"blog.example.com", []string{"example.com"}, true},         // subdomain via suffix
+		{"deep.nested.example.com", []string{"example.com"}, true},  // deeper subdomain
+		{"evilexample.com", []string{"example.com"}, false},         // not a subdomain — strict boundary
+		{"notexample.com", []string{"example.com"}, false},          // not a subdomain
+		{"example.com", []string{"other.org", "example.com"}, true}, // matches second pattern
+		{"example.com", []string{"other.org"}, false},               // no match
+		{"example.com", nil, false},                                 // empty patterns
+		{"EXAMPLE.COM", []string{"example.com"}, true},              // case-insensitive on host
 	}
 	for _, c := range cases {
 		if got := matchesAnyDomain(c.host, c.patterns); got != c.want {

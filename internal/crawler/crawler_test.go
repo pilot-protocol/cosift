@@ -63,10 +63,10 @@ func TestCrawlEmbedsAndPersistsPassage(t *testing.T) {
 	emb := &stubEmbedder{dim: 8}
 
 	cfg := config.Default().Crawler
-	cfg.MaxDepth = 0           // don't follow links
-	cfg.PerHostDelayMs = 0     // fast test
-	cfg.MaxConcurrent = 1      // deterministic
-	cfg.RespectRobots = false  // skip the per-host /robots.txt fetch
+	cfg.MaxDepth = 0          // don't follow links
+	cfg.PerHostDelayMs = 0    // fast test
+	cfg.MaxConcurrent = 1     // deterministic
+	cfg.RespectRobots = false // skip the per-host /robots.txt fetch
 	c := New(cfg, s).WithEmbedder(emb)
 
 	if err := c.Seed(srv.URL); err != nil {
@@ -347,8 +347,8 @@ func TestCrawlChunkSizeOverrideEmitsMorePassages(t *testing.T) {
 		return int(n)
 	}
 
-	defaultN := run(0, 0)       // default chunker (320/64) → 1 chunk on ~200 words
-	smallN := run(50, 10)       // small override → more chunks
+	defaultN := run(0, 0) // default chunker (320/64) → 1 chunk on ~200 words
+	smallN := run(50, 10) // small override → more chunks
 
 	if smallN <= defaultN {
 		t.Errorf("ChunkSize=50 should yield more passages than the default; got default=%d small=%d", defaultN, smallN)

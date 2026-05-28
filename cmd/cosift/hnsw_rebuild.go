@@ -19,12 +19,12 @@ import (
 //
 // Use this against a Pebble dir whose serve has been stopped (Pebble locks
 // the dir exclusively). Pair with /admin/checkpoint to take a consistent
-// snapshot first, run the rebuild against that copy, then swap. Iter 428.
+// snapshot first, run the rebuild against that copy, then swap.
 func runHNSWRebuild(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("hnsw-rebuild", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
 	dryRun := fs.Bool("dry-run", false, "load and report counts without writing changes back")
-	force := fs.Bool("force", false, "rebuild even when zombie count is 0 — useful for restoring graph topology that has degraded as the corpus grew via AddPassage (iter 439)")
+	force := fs.Bool("force", false, "rebuild even when zombie count is 0 — useful for restoring graph topology that has degraded as the corpus grew via AddPassage")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

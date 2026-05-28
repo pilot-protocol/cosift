@@ -162,4 +162,3 @@ func TestDoctorDefaultsMultipleWarns(t *testing.T) {
 		}
 	}
 }
-

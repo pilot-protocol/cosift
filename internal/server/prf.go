@@ -12,19 +12,19 @@ import (
 )
 
 // selectPRFTerms picks the most distinctive terms across a result set for
-// pseudo-relevance feedback (PRF) query expansion. Iter 159.
+// pseudo-relevance feedback (PRF) query expansion.
 //
 // Algorithm (lightweight Rocchio variant, no per-corpus IDF lookup):
-//   1. Tokenize each result's text (reuses index.Tokenize → lowercase +
-//      stopword + len<2 filtering, so the input is already clean).
-//   2. Per-doc DEDUPE — one heavy doc can't dominate the expansion just
-//      because it repeats a term many times.
-//   3. Count documents containing each term across the result set.
-//   4. Filter out terms in the original query (no point re-asking for what
-//      we already asked).
-//   5. Filter out terms appearing in only 1 doc — the floor for "this term
-//      is consistently associated with the topic" rather than a one-off.
-//   6. Sort by document-frequency descending, return top-n.
+//  1. Tokenize each result's text (reuses index.Tokenize → lowercase +
+//     stopword + len<2 filtering, so the input is already clean).
+//  2. Per-doc DEDUPE — one heavy doc can't dominate the expansion just
+//     because it repeats a term many times.
+//  3. Count documents containing each term across the result set.
+//  4. Filter out terms in the original query (no point re-asking for what
+//     we already asked).
+//  5. Filter out terms appearing in only 1 doc — the floor for "this term
+//     is consistently associated with the topic" rather than a one-off.
+//  6. Sort by document-frequency descending, return top-n.
 //
 // This isn't full RM3 (which weights terms by log P(term|relevant) /
 // P(term|background) — needs corpus IDF). It's a faster approximation that
@@ -71,7 +71,7 @@ func selectPRFTerms(texts map[string]string, originalQuery string, n int) []stri
 		}
 		candidates = append(candidates, pair{t, c})
 	}
-	// Sort by count desc, then term asc for deterministic output (so iter-137
+	// Sort by count desc, then term asc for deterministic output (so
 	// flake lesson holds — never compare ranks under map-iteration order).
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].count != candidates[j].count {
@@ -92,8 +92,8 @@ func selectPRFTerms(texts map[string]string, originalQuery string, n int) []stri
 // applyPRFIfRequested mines distinctive terms from `hits`, then re-runs
 // retrieval with the expanded query when ?prf=true is set. Returns the
 // updated hits/spans + a source-tag suffix to append (empty when PRF was
-// skipped or produced no expansion terms). Iter 170 — extracted from
-// /search's iter-159 inline block as the second call site (and counting
+// skipped or produced no expansion terms). Extracted from
+// /search's inline block as the second call site (and counting
 // /answer + streaming /answer as #3 + #4) reuses the same logic.
 //
 // PRF only applies to bm25 and hybrid retrievers. Dense embeddings don't
@@ -158,7 +158,7 @@ func (s *Server) applyPRFIfRequested(ctx context.Context, r *http.Request, retri
 }
 
 // applyPRFToResearchPassages augments a /research passage list with results
-// from a PRF-expanded BM25 search. Iter 172.
+// from a PRF-expanded BM25 search.
 //
 // Design choice (vs per-variant PRF): /research's planner / paraphrase
 // strategies already do N retrievals (one per variant); per-variant PRF
@@ -170,7 +170,7 @@ func (s *Server) applyPRFIfRequested(ctx context.Context, r *http.Request, retri
 // PRF term mining uses the passages' bodies that are ALREADY in memory
 // (gatherResearchPassages fetched them via GetDocByURL) — no extra SQL
 // for the mining step, only for the post-mining BM25 search and the per-URL
-// fetch on new passages. Matches the iter-159 cap heuristics
+// fetch on new passages. Matches the cap heuristics
 // (?prf_terms, ?prf_docs) for consistency.
 //
 // Returns the augmented passage list + a source-tag suffix ("+prf(N)") that
@@ -234,7 +234,7 @@ func (s *Server) applyPRFToResearchPassages(ctx context.Context, r *http.Request
 		if err != nil {
 			continue
 		}
-		// Iter 178: preserve retriever score for AnswerSource.Score downstream.
+		// preserve retriever score for AnswerSource.Score downstream.
 		passages = append(passages, researchPassage{
 			url: doc.URL, title: doc.Title, text: doc.Text, author: doc.Author,
 			score: h.Score,

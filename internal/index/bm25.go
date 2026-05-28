@@ -25,7 +25,7 @@ const (
 	B  = 0.75
 
 	// TitleBoost is the per-occurrence multiplier applied to title tokens at
-	// index time. Iter 197: title text is far more informative per token than
+	// index time. title text is far more informative per token than
 	// body text — modern search systems weight it 2-5x. We boost TF (not
 	// doc_len), so docs with title-matching terms get a higher score without
 	// changing length normalization. 3.0 is the value most IR literature
@@ -50,7 +50,7 @@ type Hit struct {
 	// Snippet is a short window of the document body centered on the earliest
 	// query-term match, populated for top-k hits when text is available.
 	// Empty when computation was skipped (text not indexed, or no terms hit).
-	// Iter 199 — replaces BM25 hits' generic body-prefix excerpt with a
+	// replaces BM25 hits' generic body-prefix excerpt with a
 	// query-aware passage. Dense/hybrid hits keep their existing per-passage
 	// Highlight (computed from the embedded passage span); this fills the
 	// equivalent gap for BM25-only hits.
@@ -65,7 +65,7 @@ func NewBM25(s *store.Store) *BM25 {
 // IndexDocument tokenizes and writes postings for the given doc.
 // Replaces any existing postings for the doc.
 //
-// Iter 197: title tokens get TitleBoost-weighted TF. doc_len keeps the raw
+// doc_len keeps the raw
 // token count, so length normalization remains correct. Net effect: docs
 // with the query term in their title rank above body-only matches.
 func (b *BM25) IndexDocument(ctx context.Context, docID int64, title, text string) error {
@@ -139,7 +139,7 @@ INSERT INTO postings (term_id, doc_id, tf) VALUES (?, ?, ?);`,
 
 // parsePhrases extracts double-quoted substrings from q. Returns the search
 // query (with quote marks stripped — phrase tokens still participate in BM25)
-// and a slice of verbatim phrases to filter the result set by. Iter 198.
+// and a slice of verbatim phrases to filter the result set by.
 //
 //	parsePhrases(`raft "leader election"`)
 //	  → searchQuery="raft  leader election", phrases=["leader election"]
@@ -178,7 +178,7 @@ func parsePhrases(q string) (string, []string) {
 // Search returns the top-k hits for the query string. Supports phrase queries
 // via double quotes: `"machine learning"` requires the phrase to appear
 // verbatim (case-insensitive) in the document text. Multiple phrases are
-// AND-combined. Iter 198.
+// AND-combined.
 func (b *BM25) Search(ctx context.Context, q string, k int) ([]Hit, error) {
 	searchQ, phrases := parsePhrases(q)
 	tokens := Tokenize(searchQ)
@@ -273,7 +273,7 @@ WHERE p.term_id = ?;`
 // chunks to amortize the per-doc SQL round-trip — phrase filters typically
 // keep a high fraction of top-k candidates so chunk size 64 is plenty.
 //
-// Iter 198: enables `?q="exact phrase"` queries without a positional-index
+// enables `?q="exact phrase"` queries without a positional-index
 // schema change. Cost is one batched text fetch on top of BM25 scoring.
 // Tradeoff: docs that match phrases but DIDN'T make the BM25 top set
 // will be missed; in practice this is rare because phrase-bearing terms

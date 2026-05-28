@@ -1,9 +1,9 @@
-// Iter 205 — minimal HTTP server backed by PebbleStore + PebbleBM25.
+// minimal HTTP server backed by PebbleStore + PebbleBM25.
 //
 // Parallel to the SQLite-backed `cosift serve`. Read-only endpoints only:
 // /healthz, /stats, /search, /contents. No crawler, no admin, no /answer
 // or /research yet — those need the SQLite-side server's chat-client +
-// admin-token plumbing, which is the iter-206+ work.
+// admin-token plumbing, which is the work.
 //
 // Purpose: proves the path-2 storage rework works end-to-end through HTTP,
 // and gives a clean benchmark surface against the existing SQLite server.
@@ -27,10 +27,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
-	"runtime"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +51,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	fs := flag.NewFlagSet("pebble-serve", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (required; the SQLite cfg.DataDir is ignored)")
 	addr := fs.String("addr", cfg.Server.Addr, "listen address (defaults to server.addr from cosift.json)")
-	// Iter 402: -crawl-seeds-file lets pebble-serve run an in-process crawler
+	// -crawl-seeds-file lets pebble-serve run an in-process crawler
 	// against the same PebbleStore. Eliminates the writer-lock dance between
 	// cosift-serve and cosift-crawl — search + crawl + index growth all in one
 	// process, one binary, one lock. The crawler runs as a goroutine for the
@@ -74,15 +74,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 	defer ps.Close()
 
-	// Iter 286: log corpus size at startup so operators see whether the
+	// log corpus size at startup so operators see whether the
 	// store opened with the expected doc count (silent open would force them
 	// to curl /stats just to confirm a restart loaded the right data dir).
 	if _, indexedDocs, err := ps.CorpusStats(ctx); err == nil && indexedDocs > 0 {
 		log.Printf("pebble-serve: opened store with %d indexed docs", indexedDocs)
 	}
 
-	// Iter 357/358: peek for persisted HNSW vectors. The iter-358 meta read
-	// is 20 bytes (dim+nodeCount); the iter-357 first-entry probe falls back
+	// The meta read
+	// is 20 bytes (dim+nodeCount); the first-entry probe falls back
 	// when meta is absent but vector entries exist (edge case during a
 	// partial persist). Loading the full graph stays a future-iter concern
 	// — gigabytes of RAM at 10M-vector scale.
@@ -98,10 +98,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			return false
 		})
 	}
-	// Iter 362: optional graph load via COSIFT_LOAD_HNSW=true. Loading is
+	// Loading is
 	// gigabytes of RAM at production scale (10M vectors × 1536 dim ≈ 60GB),
 	// so it's opt-in. When the env var isn't set we just keep the cheap meta
-	// snapshot from iter 358 and operators see has_vectors=true.
+	// snapshot from and operators see has_vectors=true.
 	var hnswGraph *index.HNSW
 	if hasVectors && os.Getenv("COSIFT_LOAD_HNSW") == "true" {
 		g, ok, err := index.LoadHNSW(ctx, ps)
@@ -113,7 +113,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		default:
 			hnswGraph = g
 			log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d", g.Len(), vectorDim)
-			// Iter 438: optional efSearch override. Default 50 from NewHNSW
+			// Default 50 from NewHNSW
 			// underfits big graphs grown via AddPassage; raising to ~200
 			// restored Recall@10 from 0.47 to ~0.85 on the 800K-vector
 			// production corpus without a graph rebuild.
@@ -123,11 +123,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 					log.Printf("pebble-serve: HNSW efSearch override = %d", n)
 				}
 			}
-			// Iter 416: if a PQ codebook + codes exist in this store, wire
+			// if a PQ codebook + codes exist in this store, wire
 			// them so /search uses asymmetric PQ distance (much faster on
 			// large graphs). When absent, search falls back to raw vectors.
 			//
-			// Iter 429: bench-pq exposed that PQ on this dim=768 corpus drops
+			// bench-pq exposed that PQ on this dim=768 corpus drops
 			// Recall@10 from ~0.89 to ~0.60 — the 32× compression has a
 			// recall cost that may exceed the speed benefit. Operators can
 			// keep the codes on disk but disable the runtime path by setting
@@ -141,7 +141,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 					if int(nodeID) >= len(codes) {
 						return true
 					}
-					// Iter 418: codebook-aware decode handles both byte-packed
+					// codebook-aware decode handles both byte-packed
 					// (new, K≤256) and uint16 LE (legacy) blob shapes.
 					code, err := cb.DecodeCodeBlob(blob)
 					if err != nil || len(code) != cb.M {
@@ -172,14 +172,14 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 
-	// Iter 282: configurable HyDE + paraphrase cache caps (defaults 256).
+	// configurable HyDE + paraphrase cache caps (defaults 256).
 	hydeCap := 256
 	if v := os.Getenv("COSIFT_HYDE_CACHE_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			hydeCap = n
 			log.Printf("pebble-serve: HyDE cache size override = %d", n)
 		} else {
-			// Iter 314: surface unparseable env vars as warnings at startup
+			// surface unparseable env vars as warnings at startup
 			// instead of silently keeping defaults. Catches typos like
 			// COSIFT_HYDE_CACHE_SIZE="512m" or negative values.
 			log.Printf("pebble-serve: WARN COSIFT_HYDE_CACHE_SIZE=%q is not a positive integer — using default %d", v, hydeCap)
@@ -195,7 +195,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 	idx := index.NewPebbleBM25(ps)
-	// Iter 279/301: COSIFT_BM25_K1 / COSIFT_BM25_B override per instance.
+	// COSIFT_BM25_K1 / COSIFT_BM25_B override per instance.
 	// Shared with runQuery via applyBM25EnvOverrides so any PebbleBM25 built
 	// from CLI or server honors the same env.
 	o := applyBM25EnvOverrides(idx)
@@ -223,7 +223,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		vectorNodes:  vectorNodes,
 		hnsw:         hnswGraph,
 		started:      time.Now(),
-		// Iter 403: capture doc count at startup so /stats can compute
+		// capture doc count at startup so /stats can compute
 		// per-minute crawl rate without long-term counters.
 		startupDocs: vectorNodes, // placeholder; overwritten below
 	}
@@ -233,7 +233,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	} else {
 		srv.startupDocs = 0
 	}
-	// Iter 408/409: stamp cluster config onto srv early so /search's
+	// stamp cluster config onto srv early so /search's
 	// gateway-mode check fires even on nodes that don't run a crawler.
 	if err := cfg.Cluster.Validate(); err != nil {
 		log.Printf("pebble-serve: cluster config invalid (%v) — running single-node", err)
@@ -248,10 +248,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 				role, cfg.Cluster.MyShardID, cfg.Cluster.NumShards, len(cfg.Cluster.Peers))
 		}
 	}
-	// Iter 240: optional /answer wiring. Uses the same OpenAI-compatible chat
+	// Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
-	// Iter 393: anonymous auth when cfg.Chat.URL is set (self-hosted, no key
+	// anonymous auth when cfg.Chat.URL is set (self-hosted, no key
 	// needed). Required only for hosted defaults (empty URL = api.openai.com).
 	if cfg.Chat.Model != "" {
 		apiKey := resolveAPIKey("chat")
@@ -262,11 +262,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 		log.Printf("pebble-serve: /answer enabled (chat model=%s, auth=%s)", cfg.Chat.Model, auth)
 	}
-	// Iter 363/393: embedder for ?retriever=dense. Same anonymous-when-URL
+	// Same anonymous-when-URL
 	// semantics as chat above.
 	if cfg.Embeddings.Model != "" {
 		apiKey := resolveAPIKey("embed")
-		// Iter 449: when cfg.Embeddings.URLs is set, build one client per
+		// when cfg.Embeddings.URLs is set, build one client per
 		// URL and wrap them in a RoundRobinEmbedder so cosift fans embed
 		// requests across multiple backends. Falls back to single-URL
 		// behavior when URLs is empty.
@@ -279,7 +279,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			clients = append(clients, embed.NewOpenAIClient(apiKey, u, cfg.Embeddings.Model, cfg.Embeddings.Dim))
 		}
 		var base embed.Embedder = embed.NewRoundRobinEmbedder(clients)
-		// Iter 452: optional sha256-keyed disk cache. Both search and
+		// Both search and
 		// crawler embed paths share the cache layer — same text returns
 		// instantly on re-fetch / re-query, no ollama call.
 		cacheNote := ""
@@ -295,7 +295,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: embedder configured (model=%s, dim=%d, auth=%s, backends=%d%s)",
 			cfg.Embeddings.Model, cfg.Embeddings.Dim, auth, len(clients), cacheNote)
 	}
-	// Iter 248: wire rerank.Reranker when cfg.Rerank is configured. Two paths
+	// wire rerank.Reranker when cfg.Rerank is configured. Two paths
 	// (matching the SQLite-side): cfg.Rerank.URL → HTTPReranker (Cohere/Voyage/
 	// Jina/TEI wire shape); otherwise cfg.Chat.Model present → LLMReranker
 	// (RankGPT-style listwise via chat). /search?rerank=true gates the wrapper.
@@ -310,7 +310,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		srv.reranker = rerank.NewHTTPReranker(cfg.Rerank.URL, apiKey, cfg.Rerank.Model)
 		log.Printf("pebble-serve: rerank enabled (http: %s, model=%s)", cfg.Rerank.URL, cfg.Rerank.Model)
 	} else if cfg.Rerank.Enabled && srv.chat != nil {
-		// Iter 477: when cfg.Rerank.Model is set and differs from cfg.Chat.Model,
+		// when cfg.Rerank.Model is set and differs from cfg.Chat.Model,
 		// build a separate chat client for rerank pointing at the same /v1 URL
 		// but with the alternate model. Lets operators dedicate a small/fast
 		// model (e.g. qwen3.5:0.8b) to rerank so it doesn't queue behind chat
@@ -332,7 +332,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	srv.hostBoosts = cfg.Defaults.HostBoosts
 
 	mux := http.NewServeMux()
-	// Iter 394: optional per-IP token-bucket rate limit. Built once from env;
+	// Built once from env;
 	// nil when disabled (COSIFT_RATELIMIT_RPM unset or 0). Wraps every route
 	// below — including /healthz so monitoring hits are budgeted too;
 	// operators wanting unlimited probes should set
@@ -342,15 +342,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: rate limit active (rpm=%.0f burst=%.0f whitelist=%v)", srv.rl.rpm, srv.rl.burst, srv.rl.whitelistList())
 	}
 	wrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(h)) }
-	// Iter 396: landing page at / and OpenAPI 3.1 spec at /openapi.json.
+	// landing page at / and OpenAPI 3.1 spec at /openapi.json.
 	// Both embedded into the binary at build time — operators get a single
 	// self-contained executable, no separate static-asset deployment.
 	mux.HandleFunc("GET /", wrap(srv.handleLanding))
-	// Iter 465: full-page chat UI. Streams /answer or /research SSE
+	// Streams /answer or /research SSE
 	// into a multi-turn conversation view with citation rendering.
 	mux.HandleFunc("GET /chat", wrap(srv.handleChat))
 	mux.HandleFunc("GET /openapi.json", wrap(srv.handleOpenAPI))
-	// Iter 398: Swagger UI bundled into the binary. /docs renders the
+	// Swagger UI bundled into the binary. /docs renders the
 	// interactive spec; /docs/swagger-ui.css and /docs/swagger-ui-bundle.js
 	// serve the dist assets locally so the page works air-gapped (no CDN).
 	mux.HandleFunc("GET /docs", wrap(srv.handleSwaggerUI))
@@ -358,10 +358,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
-	// Iter 457: frontier queue visibility — counts by status + top-N
+	// frontier queue visibility — counts by status + top-N
 	// hosts in queue. Distinct from /domains which is over INDEXED docs.
 	mux.HandleFunc("GET /queue", wrap(srv.handleQueue))
-	// Iter 408: peer ingest endpoint. Single-node deployments still expose
+	// Single-node deployments still expose
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
@@ -376,17 +376,17 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/hnsw-compact", wrap(srv.handleHNSWCompact))
 	mux.HandleFunc("GET /query", wrap(srv.handleQuery))
 	mux.HandleFunc("POST /query", wrap(srv.handleQuery))
-	// Iter 456: import a sitemap.xml (or sitemap-index) and push every
+	// import a sitemap.xml (or sitemap-index) and push every
 	// listed URL into the live frontier.
 	mux.HandleFunc("POST /admin/sitemap-import", wrap(srv.handleSitemapImport))
-	// Iter 415: PQ training admin endpoint. Same auth as crawl-enqueue
+	// PQ training admin endpoint. Same auth as crawl-enqueue
 	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
 	// 224K-vec corpus we have today it takes ~minutes; operator-only.
 	mux.HandleFunc("POST /admin/pq-train", wrap(srv.handlePQTrain))
-	// Iter 424: backfill-only — re-encode every node that doesn't have a
+	// backfill-only — re-encode every node that doesn't have a
 	// code yet against the existing codebook. No retrain. Fast.
 	mux.HandleFunc("POST /admin/pq-encode", wrap(srv.handlePQEncode))
-	// Iter 426: pebble checkpoint endpoint. Creates a hard-linked, consistent
+	// Creates a hard-linked, consistent
 	// snapshot dir that's safe to tar without racing background compactions.
 	mux.HandleFunc("POST /admin/checkpoint", wrap(srv.handleCheckpoint))
 	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
@@ -413,11 +413,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
-	// Iter 427: optional pprof endpoint for runaway-memory diagnosis. Only
+	// Only
 	// listens on loopback so it can never be exposed publicly through the
 	// reverse proxy. Set COSIFT_PPROF_ADDR=127.0.0.1:6060 to enable.
 	if pprofAddr := os.Getenv("COSIFT_PPROF_ADDR"); pprofAddr != "" {
-		// Iter 445: optional mutex / block sampling so the iter-444
+		// optional mutex / block sampling so the
 		// dense-search-latency investigation has data. Off by default
 		// because each sample is a couple-µs overhead per contended
 		// lock event. Set rate ≥1 to enable; 1000 means "sample 1 in
@@ -455,12 +455,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	// Iter 402: in-process crawler. Reuses ps + srv.hnsw + srv.embedder. The
+	// Reuses ps + srv.hnsw + srv.embedder. The
 	// crawler.Crawler uses concurrency from cfg.Crawler.MaxConcurrent. Vectors
 	// land into the SAME HNSW pointer that /search reads from, so freshly
 	// crawled content is searchable as soon as AddPassage returns.
 	// Checkpoint goroutine persists the graph every crawlCheckpoint.
-	// Iter 404: collect a WaitGroup of crawler goroutines so the final
+	// collect a WaitGroup of crawler goroutines so the final
 	// HNSW persist runs BEFORE ps.Close() — fixes a 'pebble: closed' panic.
 	var crawlWG sync.WaitGroup
 	if *crawlSeeds != "" {
@@ -470,7 +470,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	servErr := httpSrv.ListenAndServe()
-	// Iter 404: wait for crawler + checkpoint goroutines to finish their
+	// wait for crawler + checkpoint goroutines to finish their
 	// final persist before the deferred ps.Close() runs. Otherwise Persist
 	// can race ps.Close() and panic.
 	crawlWG.Wait()
@@ -480,7 +480,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	return nil
 }
 
-// startInProcessCrawl wires the iter-402 crawler-inside-serve flow. Bumps
+// startInProcessCrawl wires the crawler-inside-serve flow. Bumps
 // srv.hnsw to a fresh empty graph if none was loaded (so dense retrieval is
 // live as soon as the first passage lands), then runs the crawler in a
 // goroutine for the server's lifetime.
@@ -512,7 +512,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 
 	c := crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
-	// Iter 446: crawler embedder is wrapped in a semaphore-throttled
+	// crawler embedder is wrapped in a semaphore-throttled
 	// wrapper so the bulk crawl can never queue enough requests at
 	// ollama to starve interactive /search?retriever=dense calls.
 	// Default cap = 8 (well under OLLAMA_NUM_PARALLEL=32); operator
@@ -523,7 +523,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 			crawlEmbedCap = n
 		}
 	}
-	// Iter 450: batch crawler embeds via BatchingEmbedder. Coalesces many
+	// Coalesces many
 	// per-doc embed calls into one larger inner.Embed per ~20 ms window
 	// (up to maxBatch=128 texts). Search bypasses the batcher (uses
 	// s.embedder directly) so interactive latency stays sub-100 ms.
@@ -548,7 +548,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		crawlEmbedCap, batchMax, batchWait)
 	c = c.WithEmbedder(crawlEmbedder)
 	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
-	// Iter 408: wire URL routing for clustered mode. Single-node config
+	// Single-node config
 	// (NumShards <= 1) makes route fn a no-op (every URL ownsLocally).
 	// s.cluster was stamped at server-init time so search-only nodes also
 	// see it; we just need the router here.
@@ -567,7 +567,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 	// Expose Seed so /admin/crawl-enqueue can hand off forwarded URLs.
 	s.crawlSeed = c.Seed
-	// Iter 456: expose SeedSitemap so /admin/sitemap-import can push
+	// expose SeedSitemap so /admin/sitemap-import can push
 	// sitemap-discovered URLs into the live frontier.
 	s.crawlSeedSitemap = c.SeedSitemap
 	s.crawlSeedRSS = c.SeedRSS
@@ -587,10 +587,10 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery)
 	s.crawlActive = true
 
-	// Checkpoint goroutine. Iter 406/407: incremental persist via PersistFrom
+	// Checkpoint goroutine. Iter: incremental persist via PersistFrom
 	// — each tick only writes nodes [lastN, n). Shutdown does a full persist
 	// from 0 so any backlinks added to older nodes get refreshed.
-	// Iter 412: seed lastN from the loaded graph so the first checkpoint
+	// seed lastN from the loaded graph so the first checkpoint
 	// after restart only writes NEW nodes (delta during this run), not the
 	// whole graph again — those N nodes are already on disk.
 	wg.Add(1)
@@ -621,7 +621,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 				if n == 0 || n == lastN {
 					continue
 				}
-				// Iter 501: graph can shrink (e.g., /admin/hnsw-compact rewrites
+				// graph can shrink (e.g., /admin/hnsw-compact rewrites
 				// indices and writes a smaller meta). When that happens, lastN
 				// from before the compaction is stale and > n; PersistFrom(lastN)
 				// would be a no-op forever, stranding any new AddPassages until
@@ -636,7 +636,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 					log.Printf("in-serve crawler: HNSW persist (incremental from %d) failed: %v", lastN, err)
 					continue
 				}
-				// Iter 417: alongside HNSW node writes, persist any newly-
+				// alongside HNSW node writes, persist any newly-
 				// encoded PQ codes for nodes [lastN, n). Skipped silently
 				// when no codebook is loaded.
 				pqWritten := 0
@@ -677,56 +677,56 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 // SQLite-side Server struct accumulated a lot of config knobs over many iters;
 // the Pebble surface starts minimal and grows feature-by-feature.
 type pebbleHTTP struct {
-	store      *store.PebbleStore
-	idx        *index.PebbleBM25
-	chat       embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
-	reranker   rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
-	rerankCandK int            // candidates pulled for rerank; default 20
+	store       *store.PebbleStore
+	idx         *index.PebbleBM25
+	chat        embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
+	reranker    rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
+	rerankCandK int              // candidates pulled for rerank; default 20
 
-	// hostBoosts (iter 504) is the operator-configured host-suffix →
+	// hostBoosts is the operator-configured host-suffix →
 	// multiplier map, applied to fused retrieval scores by /query.
 	// Empty / nil = no boosts (fast path).
 	hostBoosts map[string]float64
 
-	// Iter 394: per-IP token-bucket rate limiter. Nil = disabled.
+	// Nil = disabled.
 	rl *rateLimiter
 
-	// Iter 408: clustering. Empty cluster cfg = single-node, no-ops below.
+	// Empty cluster cfg = single-node, no-ops below.
 	cluster config.Cluster
 	// crawlSeed is set after startInProcessCrawl runs so /admin/crawl-enqueue
 	// can hand off forwarded URLs into the in-process frontier. Nil when no
 	// in-serve crawler is wired.
 	crawlSeed func(url string) error
-	// crawlSeedSitemap (iter 456) wraps Crawler.SeedSitemap so the /admin/
+	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)
 	crawlSeedRSS     func(ctx context.Context, url string) (int, error)
 	crawlFetchNow    func(ctx context.Context, url string) error
 	crawlSeedWET     func(ctx context.Context, url string, dedupeFresh, lexicalOnly bool) (int, error)
 
-	// Iter 403: doc count at startup so /stats can report crawl rate
+	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
 	// rate = docs_added / uptime.
 	startupDocs int
-	// crawlActive = true when iter-402 in-serve crawler is running.
+	// crawlActive = true when in-serve crawler is running.
 	crawlActive bool
 
-	// Iter 259: bounded in-memory HyDE cache. /research?expand=true issues a
+	// /research?expand=true issues a
 	// chat call PER sub-query, so a sticky workload (repeated queries, slow
 	// sub-query rephrasings from the planner) hits the chat provider many
 	// times for the same passage. Cap at 256 entries; on overflow drop one
 	// arbitrary entry (Go map iteration order is randomized, good enough).
 	hydeMu       sync.RWMutex
 	hydeCache    map[string]string
-	hydeCacheCap int // iter 282: env-configurable via COSIFT_HYDE_CACHE_SIZE
+	hydeCacheCap int // env-configurable via COSIFT_HYDE_CACHE_SIZE
 
-	// Iter 435: marshalled /stats body cache. PQStatus's lock contended
+	// PQStatus's lock contended
 	// hard with the crawler's AddPassage writers — observed /stats
 	// latency varied 0.2 s to 5.5 s. 5 s TTL keeps the cache effective
 	// for the landing page (polls every ~30 s) without serving very
 	// stale numbers.
 	//
-	// Iter 437: stale-while-revalidate. After TTL, return stale body
+	// After TTL, return stale body
 	// immediately and refresh async; only the first-ever call pays the
 	// cold-cache cost. statsRefreshing is a single-flight guard so we
 	// don't fan out N background refreshes when a burst arrives stale.
@@ -735,73 +735,73 @@ type pebbleHTTP struct {
 	statsBodyAt     time.Time
 	statsRefreshing atomic.Bool
 
-	// Iter 276: bounded paraphrase cache. /research?expand=paraphrase fans
+	// /research?expand=paraphrase fans
 	// out 3 paraphrases × N sub-queries — same hot path as HyDE but each
 	// miss is 3x larger by output volume. Keyed on q only (fixed n=3 today).
 	paraMu       sync.RWMutex
 	paraCache    map[string][]string
-	paraCacheCap int // iter 282: env-configurable via COSIFT_PARA_CACHE_SIZE
+	paraCacheCap int // env-configurable via COSIFT_PARA_CACHE_SIZE
 	paraHits     atomic.Int64
 	paraMisses   atomic.Int64
 
-	// Iter 260: atomic counters surfaced on /metrics so operators can size the
+	// atomic counters surfaced on /metrics so operators can size the
 	// HyDE cache against a real workload — if misses dominate, raise the cap
 	// or move to an L2 store; if hits dominate at a tight working set, the
 	// cap is sufficient and you can mostly forget about it.
 	hydeHits   atomic.Int64
 	hydeMisses atomic.Int64
 
-	// Iter 357: snapshot at startup of whether persisted HNSW vectors exist
+	// snapshot at startup of whether persisted HNSW vectors exist
 	// in the 'v' family. Cheap peek (first-hit short-circuit). Surfaced on
 	// /stats so operators know whether the store is ready for the future
 	// ?retriever=dense path without needing to grep pebble-info.
 	hasVectors bool
-	// Iter 358: when an HNSW meta blob is persisted (the normal case),
+	// when an HNSW meta blob is persisted (the normal case),
 	// surface dim + node count too. Cheap 20-byte read at startup.
 	vectorDim   int
 	vectorNodes int
-	// Iter 362: optional in-memory HNSW graph for dense retrieval. Loaded
+	// Loaded
 	// only when COSIFT_LOAD_HNSW=true at startup (gigabytes RAM at scale).
 	// Nil = graph not loaded; /search?retriever=dense returns a warning.
 	hnsw *index.HNSW
-	// Iter 363: embedder client for query-time vectorization. Required by
+	// Required by
 	// /search?retriever=dense alongside s.hnsw. Built at startup when
 	// cfg.Embeddings.Model is set. Nil → ?retriever=dense warns + falls back.
 	embedder embed.Embedder
 
-	// Iter 263: rerank attempt + failure counters. Rerank failures fall back
+	// Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without
 	// a counter operators can't tell whether their LLM/HTTP reranker is
 	// healthy or quietly broken.
 	rerankAttempts atomic.Int64
 	rerankFailures atomic.Int64
 
-	// Iter 264: chat call attempt + failure counters across HyDE expansion,
+	// chat call attempt + failure counters across HyDE expansion,
 	// /answer synth (sync + SSE), and /research plan + synth (sync + SSE).
 	// A spike in failures (provider 429s, network blips) is the clearest
 	// early signal that synth endpoints are degraded.
 	chatAttempts atomic.Int64
 	chatFailures atomic.Int64
 
-	// Iter 294: count responses that carried at least one warning (iter 292/293).
+	// count responses that carried at least one warning.
 	// Operators alerting on this catch 'a deploy started sending malformed
 	// requests' without having to parse response bodies.
 	warningsEmitted atomic.Int64
 
-	// Iter 267: per-call chat duration sum. /metrics divides this by
-	// chatAttempts to give mean chat latency, separated from the iter-262
+	// /metrics divides this by
+	// chatAttempts to give mean chat latency, separated from the
 	// per-endpoint duration. Diagnoses 'where did the seconds go' on a
 	// slow /research stream: chat-side or retrieval-side?
 	chatDurationNanos atomic.Int64
 
-	// Iter 261/262: per-endpoint request counters + duration sums via a
+	// per-endpoint request counters + duration sums via a
 	// counting middleware wrapping every mux entry. sync.Map keeps the hot
 	// path lock-free; /metrics reads via Range. Path is the label so a
 	// misrouted call (404) doesn't get counted under an existing endpoint.
 	// rate(sum)/rate(count) over the duration sum gives mean latency in PromQL.
 	requestCounts sync.Map // map[string]*endpointMetrics
 
-	started    time.Time
+	started time.Time
 }
 
 type endpointMetrics struct {
@@ -809,14 +809,13 @@ type endpointMetrics struct {
 	sumNanos atomic.Int64
 }
 
-// count is the iter-261/262 request-counting middleware. Bumps a per-path
+// count is the Iter request-counting middleware. Bumps a per-path
 // {count, sumNanos} struct, lazily created on first request to a path. Hot
 // path is sync.Map.Load + two atomic Adds — no contention even under high
 // RPS. Duration is sampled after the handler returns so streaming endpoints
 // account for their full open connection time.
 // rateLimiter is a per-IP token-bucket limiter. Active when
 // COSIFT_RATELIMIT_RPM > 0; nil = disabled. Whitelisted IPs bypass entirely.
-// Iter 394.
 type rateLimiter struct {
 	rpm       float64
 	burst     float64
@@ -832,7 +831,7 @@ type rateLimitBucket struct {
 
 // newRateLimiterFromEnv reads COSIFT_RATELIMIT_RPM / _BURST / _WHITELIST.
 // Returns nil when RPM is unset or non-positive — limiting is off by default
-// so the no-config self-host story stays simple. Iter 394.
+// so the no-config self-host story stays simple.
 func newRateLimiterFromEnv() *rateLimiter {
 	rpmStr := os.Getenv("COSIFT_RATELIMIT_RPM")
 	if rpmStr == "" {
@@ -910,7 +909,7 @@ func stripPort(remoteAddr string) string {
 
 // rateLimit is the HTTP middleware that gates each request through the per-IP
 // limiter. Returns 429 with a JSON problem doc + Retry-After hint when the
-// bucket is empty. No-op when s.rl is nil. Iter 394.
+// bucket is empty. No-op when s.rl is nil.
 //
 // X-Forwarded-For is honored ONLY when the request came from a configured
 // trusted proxy; otherwise clients could spoof their IP by setting the header.
@@ -961,7 +960,7 @@ var swaggerUICSS []byte
 //go:embed assets/swagger/swagger-ui-bundle.js
 var swaggerUIJS []byte
 
-// handleLanding serves the iter-396 self-host dashboard. Only matches exact
+// handleLanding serves the self-host dashboard. Only matches exact
 // "/" — Go 1.22's ServeMux routes sub-paths to the longest match, so this
 // won't accidentally swallow /search etc.
 func (s *pebbleHTTP) handleLanding(w http.ResponseWriter, r *http.Request) {
@@ -974,7 +973,7 @@ func (s *pebbleHTTP) handleLanding(w http.ResponseWriter, r *http.Request) {
 	w.Write(landingHTML)
 }
 
-// handleChat serves the iter-465 multi-turn chat UI. JS calls /answer
+// handleChat serves the multi-turn chat UI. JS calls /answer
 // or /research with stream=true and renders SSE events incrementally.
 func (s *pebbleHTTP) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1014,7 +1013,7 @@ func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-// forwardURLToPeer POSTs a URL to peer's /admin/crawl-enqueue. Iter 408.
+// forwardURLToPeer POSTs a URL to peer's /admin/crawl-enqueue.
 // Designed to be best-effort — caller logs failures, the URL just doesn't get
 // crawled. A future iter can add retry + persistent queue.
 var forwardHTTP = &http.Client{Timeout: 10 * time.Second}
@@ -1046,7 +1045,7 @@ func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
 
 // scatterSearch fans /search out to every peer with the given params,
 // collects per-peer hit lists, RRF-merges them, and returns the merged
-// top-k. Used by /search, /answer, /research gateway modes. Iter 410.
+// top-k. Used by /search, /answer, /research gateway modes.
 // includeText forces text inlining on the scatter so callers that need
 // passages (synth endpoints) get them in one round trip.
 func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeerK int, params url.Values, includeText bool) (hits []searchHit, warns []string, totalCandidates int) {
@@ -1146,7 +1145,7 @@ func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeer
 	return hits, warns, totalCandidates
 }
 
-// handleSearchGateway is the iter-409 scatter-gather entry. It fans out the
+// handleSearchGateway is the scatter-gather entry. It fans out the
 // search to every peer's /search (including its own shard via the peers[]
 // table), each peer over-fetches k*2 candidates locally, gateway RRF-merges
 // the per-peer lists, and returns the top-k. Slow / failing peers are
@@ -1168,7 +1167,7 @@ func (s *pebbleHTTP) handleSearchGateway(w http.ResponseWriter, r *http.Request)
 	if perPeerK < 20 {
 		perPeerK = 20
 	}
-	// Iter 410: delegated to shared scatterSearch helper.
+	// delegated to shared scatterSearch helper.
 	hits, warns, total := s.scatterSearch(r.Context(), q, k, perPeerK, r.URL.Query(), r.URL.Query().Get("include_text") == "true")
 	resp := searchResponse{
 		Query:           q,
@@ -1182,7 +1181,7 @@ func (s *pebbleHTTP) handleSearchGateway(w http.ResponseWriter, r *http.Request)
 }
 
 // numNonEmpty counts non-empty entries in a peer list (peers[i]="" means
-// "skip", typically MyShardID). Iter 410.
+// "skip", typically MyShardID).
 func numNonEmpty(ps []string) int {
 	n := 0
 	for _, p := range ps {
@@ -1195,7 +1194,7 @@ func numNonEmpty(ps []string) int {
 
 // handleFindSimilarGateway scatters /find_similar to every shard. The
 // owning shard (URL-mode) or every shard (text-mode) produces real
-// neighbors; others return empty. Gateway RRF-merges. Iter 425.
+// neighbors; others return empty. Gateway RRF-merges.
 func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	k := 10
@@ -1309,9 +1308,9 @@ func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// handleResearchGateway runs the iter-243 planner on the gateway, scatters
+// handleResearchGateway runs the planner on the gateway, scatters
 // each sub-query to peers (collecting RRF-merged hits with text), then
-// runs a single research synth. Iter 410.
+// runs a single research synth.
 func (s *pebbleHTTP) handleResearchGateway(w http.ResponseWriter, r *http.Request) {
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented, "/research requires cfg.Chat.Model on the gateway")
@@ -1397,14 +1396,14 @@ func (s *pebbleHTTP) handleResearchGateway(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, researchResponse{
 		Query: q, Plan: subs, Answer: answer, Sources: sources,
-		Model:    s.chat.Model(),
+		Model:     s.chat.Model(),
 		Retriever: fmt.Sprintf("gateway:rrf(%d-shard,%d-sub)", numNonEmpty(s.cluster.Peers), len(subs)),
-		Warnings: allWarns, Took: time.Since(start).String(),
+		Warnings:  allWarns, Took: time.Since(start).String(),
 	})
 }
 
 // handleAnswerGateway scatters /search across peers with include_text, runs
-// a SINGLE chat synth on the gateway. Iter 410.
+// a SINGLE chat synth on the gateway.
 func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request) {
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented, "/answer requires cfg.Chat.Model on the gateway")
@@ -1452,7 +1451,7 @@ func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, answerResponse{
 		Query: q, Answer: answer, Sources: sources, Model: s.chat.Model(),
-		Retriever: fmt.Sprintf("gateway:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
+		Retriever:       fmt.Sprintf("gateway:rrf(%d-shard)", numNonEmpty(s.cluster.Peers)-len(warns)),
 		TotalCandidates: total, Warnings: warns, Took: time.Since(start).String(),
 	})
 }
@@ -1460,7 +1459,6 @@ func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request)
 // handlePQEncode backfills PQ codes for every node currently missing one,
 // against the codebook already loaded on this serve. Order-of-magnitude
 // faster than handlePQTrain because it skips k-means; just encode loop.
-// Iter 424.
 func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 	if want := s.cluster.PeerAuthToken; want != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -1524,7 +1522,7 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 // handleCheckpoint creates a Pebble checkpoint (hard-linked, point-in-time)
 // at a server-chosen path under COSIFT_CHECKPOINT_DIR (default /tmp). The
 // returned path is safe to tar — Pebble's compactor cannot mutate hard-linked
-// SSTs. Caller is responsible for deleting the dir after consuming it. Iter 426.
+// SSTs. Caller is responsible for deleting the dir after consuming it.
 func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 	if want := s.cluster.PeerAuthToken; want != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -1553,13 +1551,13 @@ func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 
 // handlePQTrain trains a PQ codebook on a sample of the current HNSW
 // graph, then encodes ALL nodes and persists codes + codebook to Pebble.
-// Synchronous; returns when training completes. Iter 415.
+// Synchronous; returns when training completes.
 type pqTrainReq struct {
-	SampleSize  int `json:"sample_size"`  // default 50000
-	M           int `json:"m"`            // default dim/8 (subspaces of size 8)
-	K           int `json:"k"`            // default 256
-	Iters       int `json:"iters"`        // default 15
-	Parallel    int `json:"parallel"`     // default GOMAXPROCS
+	SampleSize int `json:"sample_size"` // default 50000
+	M          int `json:"m"`           // default dim/8 (subspaces of size 8)
+	K          int `json:"k"`           // default 256
+	Iters      int `json:"iters"`       // default 15
+	Parallel   int `json:"parallel"`    // default GOMAXPROCS
 }
 
 func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
@@ -1634,7 +1632,7 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := make([]store.PQCodeEntry, len(ids))
 	for i := range ids {
-		// Iter 418: K≤256 → byte-packed for 2x disk savings.
+		// K≤256 → byte-packed for 2x disk savings.
 		entries[i] = store.PQCodeEntry{ID: ids[i], Blob: cb.EncodeCodeBlob(codes[i])}
 	}
 	if err := s.store.PutPQCodesBatch(r.Context(), entries); err != nil {
@@ -1660,7 +1658,7 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 
 // handleCrawlEnqueue accepts a single URL forwarded from a peer shard and
 // pushes it onto the local crawler's frontier. Auth via cfg.Cluster.
-// PeerAuthToken Bearer header. Iter 408.
+// PeerAuthToken Bearer header.
 type crawlEnqueueReq struct {
 	URL string `json:"url"`
 }
@@ -1695,7 +1693,7 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 // matches the supplied value. Used to drain blacklisted hosts that the
 // round-robin cursor would take days to chew through one-by-one (the
 // cursor visits each host once per cycle; a 5M-entry host needs 5M
-// cycles to drain, days of cycle time at typical claim rates). Iter 477h.
+// cycles to drain, days of cycle time at typical claim rates).
 type frontierPurgeReq struct {
 	Host string `json:"host"`
 }
@@ -1725,7 +1723,7 @@ func (s *pebbleHTTP) handleFrontierPurgeHost(w http.ResponseWriter, r *http.Requ
 // handleSitemapImport fetches a sitemap.xml (or sitemap-index, one level
 // of recursion) and pushes every <loc> entry to the live frontier. Same
 // auth as crawl-enqueue. Synchronous — returns when all URLs are queued.
-// For very large sitemaps (>50K URLs) the call may take seconds. Iter 456.
+// For very large sitemaps (>50K URLs) the call may take seconds.
 type sitemapImportReq struct {
 	URL string `json:"url"`
 }
@@ -1756,9 +1754,9 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 	}
 	log.Printf("sitemap-import: queued %d URLs from %s in %s", n, req.URL, time.Since(t0).Round(time.Millisecond))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sitemap":  req.URL,
-		"queued":   n,
-		"elapsed":  time.Since(t0).String(),
+		"sitemap": req.URL,
+		"queued":  n,
+		"elapsed": time.Since(t0).String(),
 	})
 }
 
@@ -1766,7 +1764,7 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 // or more URLs, bypassing the persistent frontier entirely. Use this when
 // the round-robin cursor in a large frontier (10M+) would take hours to
 // reach an explicitly-seeded URL — direct fetch + UpsertDocument + chunk +
-// embed all happen in this request. Returns per-URL outcomes. Iter 480.
+// embed all happen in this request. Returns per-URL outcomes.
 type crawlNowReq struct {
 	URLs []string `json:"urls"`
 	URL  string   `json:"url,omitempty"`
@@ -1821,7 +1819,7 @@ func (s *pebbleHTTP) handleCrawlNow(w http.ResponseWriter, r *http.Request) {
 // the same answered/no-info/error verdicts the external 60-Q harness uses,
 // so a regression here predicts a regression in the bigger eval. Hardcoded
 // (no new deps) so any operator can hit /admin/eval-quick and get an
-// answer rate without setting up Python or external test infra. Iter 490.
+// answer rate without setting up Python or external test infra.
 var evalQuickQueries = []string{
 	"what is BM25 ranking function",
 	"what is HNSW algorithm",
@@ -1838,7 +1836,7 @@ var evalQuickQueries = []string{
 // handleEvalQuick runs the 10-query smoke eval against the running cosift
 // and returns answered-rate + per-query verdicts. Each query hits /answer
 // in-process (re-uses the same chat/retrieval stack as a real /answer call),
-// so the rate that comes back matches what users see. Iter 490.
+// so the rate that comes back matches what users see.
 func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 	if want := s.cluster.PeerAuthToken; want != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -1851,7 +1849,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotImplemented, "eval-quick requires cfg.Chat.Model")
 		return
 	}
-	// Iter 500: the server-wide WriteTimeout (60s) was killing this handler
+	// the server-wide WriteTimeout (60s) was killing this handler
 	// before 10 sequential /answer calls finished — connection closed mid-write,
 	// curl saw "empty reply from server" (exit 52). Disable the deadline for
 	// this long-running admin endpoint via ResponseController. Pairs with
@@ -1928,16 +1926,16 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 	}
 	n := len(evalQuickQueries)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"queries":          n,
-		"answered":         answered,
-		"no_info":          noInfo,
-		"empty":            empty,
-		"errors":           errors,
-		"answer_rate_pct":  100 * answered / n,
-		"avg_latency_ms":   totalMs / n,
-		"total_elapsed":    time.Since(t0).String(),
-		"chat_model":       s.chat.Model(),
-		"results":          results,
+		"queries":         n,
+		"answered":        answered,
+		"no_info":         noInfo,
+		"empty":           empty,
+		"errors":          errors,
+		"answer_rate_pct": 100 * answered / n,
+		"avg_latency_ms":  totalMs / n,
+		"total_elapsed":   time.Since(t0).String(),
+		"chat_model":      s.chat.Model(),
+		"results":         results,
 	})
 }
 
@@ -1947,7 +1945,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 // keeps the existing topology among surviving nodes (O(N + edges)), whereas
 // Rebuild re-inserts every node via HNSW search (multiple minutes per million
 // passages). Operators run this when stats.zombie_nodes climbs above ~30% of
-// nodes_total. Iter 501.
+// nodes_total.
 //
 // Synchronous; holds the HNSW write lock during the compact step and the
 // read lock during the persist step. Dense retrieval and AddPassage calls
@@ -1978,11 +1976,11 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	after := s.hnsw.Len()
 
 	resp := map[string]any{
-		"nodes_before":   before,
-		"nodes_after":    after,
-		"removed":        removed,
-		"compact_ms":     compactDur.Milliseconds(),
-		"persisted":      false,
+		"nodes_before": before,
+		"nodes_after":  after,
+		"removed":      removed,
+		"compact_ms":   compactDur.Milliseconds(),
+		"persisted":    false,
 	}
 
 	if removed == 0 || skipPersist {
@@ -2021,7 +2019,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 // responseRecorder captures an http.Handler's output for in-process
-// dispatch. Minimal — only what handleEvalQuick needs. Iter 490.
+// dispatch. Minimal — only what handleEvalQuick needs.
 type responseRecorder struct {
 	hdr  http.Header
 	body bytes.Buffer
@@ -2040,7 +2038,7 @@ func (r *responseRecorder) WriteHeader(c int)           { r.code = c }
 // HNSW vector nodes (lexical-only ingest from WET imports, or any docs
 // indexed before an embedder was wired), and embeds them. Pairs with
 // /admin/wet-import?lexical_only=true so bulk-loaded content gets dense
-// retrieval after the fast lexical pass. Iter 487.
+// retrieval after the fast lexical pass.
 //
 // Body: {"limit": 10000, "workers": 4}
 //   - limit:   cap on docs processed this call (0 = unlimited)
@@ -2048,7 +2046,7 @@ func (r *responseRecorder) WriteHeader(c int)           { r.code = c }
 //
 // Idempotent against concurrent re-runs — re-embedding a doc that
 // already has vectors is a no-op because UpsertPassage just adds more
-// nodes pointing at the same URL (which the iter-477 dedup-by-URL in
+// nodes pointing at the same URL (which the dedup-by-URL in
 // HNSW.Search picks the best of anyway). Cleaner: zombie-reclaim kicks
 // in to invalidate prior, then fresh vectors take over.
 type embedBackfillReq struct {
@@ -2158,7 +2156,6 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 
 // truncateForEmbedLite mirrors the crawler's helper without pulling the
 // crawler package in. Same heuristic: cap by approximate token count.
-// Iter 487.
 func truncateForEmbedLite(s string, tokenCap int) string {
 	// Rough: 1 token ≈ 4 chars for ASCII; cap at 4×tokenCap bytes as a
 	// fast upper bound. Real chunker is at ~320 words = ~1200 tokens, so
@@ -2174,11 +2171,12 @@ func truncateForEmbedLite(s string, tokenCap int) string {
 // everything found. Targets the "I want to index THIS site" operator flow
 // without editing cosift.json + restarting + waiting for the cursor.
 // Discovery order:
-//   1. GET https://<host>/robots.txt — look for `Sitemap:` directives
-//   2. Fallback to canonical /sitemap.xml + /sitemap_index.xml
-//   3. RSS at common paths: /feed, /feed.xml, /rss, /rss.xml, /atom.xml, /feed/atom
+//  1. GET https://<host>/robots.txt — look for `Sitemap:` directives
+//  2. Fallback to canonical /sitemap.xml + /sitemap_index.xml
+//  3. RSS at common paths: /feed, /feed.xml, /rss, /rss.xml, /atom.xml, /feed/atom
+//
 // Each found resource is run through the existing SeedSitemap / SeedRSS
-// primitives. Returns per-resource counts. Iter 492.
+// primitives. Returns per-resource counts.
 type sitePackReq struct {
 	Host string `json:"host"` // e.g. "example.com" or "blog.example.com" — no scheme
 }
@@ -2239,7 +2237,7 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 	// Step 2: if robots.txt gave nothing, try canonical paths.
 	candidateSitemaps := sitemapsFromRobots
 	if len(candidateSitemaps) == 0 {
-		// Iter 493: extended fallback paths. /sitemap.xml is the canonical
+		// /sitemap.xml is the canonical
 		// spec but many CMSes (WordPress, Yoast, Ghost, Hugo themes) ship
 		// at non-canonical paths. Try a small ordered list before giving up.
 		// Stops on first successful fetch — the order matters: /sitemap.xml
@@ -2247,12 +2245,12 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 		// per-content-type splits, then index variants.
 		for _, p := range []string{
 			"/sitemap.xml",
-			"/wp-sitemap.xml",         // WordPress 5.5+
-			"/sitemap_index.xml",      // Yoast SEO
-			"/post-sitemap.xml",       // Yoast posts
-			"/page-sitemap.xml",       // Yoast pages
-			"/sitemap-index.xml",      // some CMSes hyphenate
-			"/sitemap.xml.gz",         // gzipped variant (sitemap.go handles .gz)
+			"/wp-sitemap.xml",    // WordPress 5.5+
+			"/sitemap_index.xml", // Yoast SEO
+			"/post-sitemap.xml",  // Yoast posts
+			"/page-sitemap.xml",  // Yoast pages
+			"/sitemap-index.xml", // some CMSes hyphenate
+			"/sitemap.xml.gz",    // gzipped variant (sitemap.go handles .gz)
 		} {
 			candidateSitemaps = append(candidateSitemaps, base+p)
 		}
@@ -2301,11 +2299,12 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 // takes the first N entries (or skip+take), and runs `/admin/wet-import`
 // against each one in parallel. Lets operators bulk-ingest a release with
 // one call instead of repeatedly POSTing per file. Synchronous — blocks
-// until all N finish, returns total docs indexed. Iter 491.
+// until all N finish, returns total docs indexed.
 //
 // Example body:
-//   {"manifest_url":"https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-51/wet.paths.gz",
-//    "count":4, "skip":0, "concurrency":2, "lexical_only":true}
+//
+//	{"manifest_url":"https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-51/wet.paths.gz",
+//	 "count":4, "skip":0, "concurrency":2, "lexical_only":true}
 type wetImportBulkReq struct {
 	ManifestURL string `json:"manifest_url"`
 	Count       int    `json:"count"`
@@ -2434,7 +2433,7 @@ func (s *pebbleHTTP) handleWETImportBulk(w http.ResponseWriter, r *http.Request)
 // plain text per URL) and runs each record through UpsertDocument + BM25
 // indexing + chunk + embed. Bypasses the fetch-and-parse pipeline entirely
 // because WET bodies are already extracted text — typically 50-100× faster
-// than open-web crawling. Iter 485.
+// than open-web crawling.
 //
 // Example: POST {"url":"https://data.commoncrawl.org/crawl-data/CC-MAIN-2025-09/segments/.../wet/CC-MAIN-...wet.gz"}
 type wetImportReq struct {
@@ -2478,7 +2477,7 @@ func (s *pebbleHTTP) handleWETImport(w http.ResponseWriter, r *http.Request) {
 // handleRSSImport fetches an RSS 2.0 or Atom feed and pushes every <item>/
 // <entry> link to the live frontier. Same auth shape as sitemap-import.
 // Designed to be cron-friendly: idempotent against the frontier (re-seeding
-// the same feed only adds newly-listed items). Iter 478.
+// the same feed only adds newly-listed items).
 type rssImportReq struct {
 	URL string `json:"url"`
 }
@@ -2515,11 +2514,11 @@ func (s *pebbleHTTP) handleRSSImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDomains returns indexed hosts by doc count. Iter 405 / 457.
+// handleDomains returns indexed hosts by doc count. Iter.
 //
 // Query params:
 //   - top:    legacy alias for limit (capped at 500). Preserved for the
-//             iter-405 landing page contract.
+//     landing page contract.
 //   - q:      substring filter (case-insensitive) on the host name.
 //   - offset: pagination offset (default 0).
 //   - limit:  page size (default 50, capped at 500).
@@ -2541,7 +2540,7 @@ func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	// Legacy 'top' alias from iter-405. When set, behaves like limit + no
+	// Legacy 'top' alias from When set, behaves like limit + no
 	// search/offset; lands as the first page.
 	if v := r.URL.Query().Get("top"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
@@ -2564,7 +2563,7 @@ func (s *pebbleHTTP) handleDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQueue surfaces frontier queue depth + top-N hosts currently queued
-// for crawl. Iter 457 — fills the gap left by /domains, which only shows
+// for crawl. Fills the gap left by /domains, which only shows
 // already-indexed hosts.
 func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 	topN := 25
@@ -2584,21 +2583,21 @@ func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"queued":     fs.Queued,
-		"in_flight":  fs.InFlight,
-		"done":       fs.Done,
-		"errored":    fs.Errored,
-		"top_hosts":  hosts,
+		"queued":    fs.Queued,
+		"in_flight": fs.InFlight,
+		"done":      fs.Done,
+		"errored":   fs.Errored,
+		"top_hosts": hosts,
 	})
 }
 
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
-	// Iter 435/437: stale-while-revalidate cache.
+	// stale-while-revalidate cache.
 	//   - Fresh hit (< TTL): return cached, X-Cache: HIT.
 	//   - Stale (have cache, past TTL but under maxStale): return cached,
 	//     X-Cache: STALE, kick a background refresh (single-flight).
 	//   - Very stale (past maxStale): fall through to synchronous compute
-	//     — protects against the iter-437 case where a refresh goroutine
+	//     — protects against the case where a refresh goroutine
 	//     hangs under HNSW lock contention and the cache shows ancient
 	//     values (we saw a startup-time vec=654 served for ~15 min).
 	//   - Cold (no cache): compute synchronously, X-Cache: MISS.
@@ -2653,16 +2652,15 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // buildStatsBody collects every signal /stats surfaces and marshals it.
 // Heavy paths: PebbleStore.Stats (d-family scan, partially counter-cached
-// since iter 435), HNSW.PQStatus (O(N) under h.mu read lock that
+// since), HNSW.PQStatus (O(N) under h.mu read lock that
 // contends with crawler writers). Called by handleStats both
 // synchronously (cold) and from a background goroutine (SWR refresh).
-// Iter 437.
 func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	st, err := s.store.Stats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Iter 238: surface the iter-207 running counters here too so /stats is
+	// surface the running counters here too so /stats is
 	// the one canonical "shape of the index" call instead of "ask /stats for
 	// doc count, then ask /metrics for average length". Both reads are O(1).
 	sumLen, indexedDocs, _ := s.store.CorpusStats(ctx)
@@ -2670,7 +2668,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	if indexedDocs > 0 {
 		avg = float64(sumLen) / float64(indexedDocs)
 	}
-	// Iter 280: surface config knobs that affect retrieval/synth quality so
+	// surface config knobs that affect retrieval/synth quality so
 	// operators can verify env overrides took effect from one endpoint.
 	out := map[string]any{
 		"documents":    st.Documents,
@@ -2689,12 +2687,12 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	}
 	if s.chat != nil {
 		out["chat_model"] = s.chat.Model()
-		// Iter 345: surface the iter-282 cache caps so operators can verify
+		// surface the cache caps so operators can verify
 		// COSIFT_HYDE_CACHE_SIZE / _PARA_CACHE_SIZE overrides took effect.
 		out["hyde_cache_size"] = s.hydeCacheCap
 		out["paraphrase_cache_size"] = s.paraCacheCap
 	}
-	// Iter 454: embed cache hit/miss counters so operators can see how
+	// embed cache hit/miss counters so operators can see how
 	// often re-fetches are skipping ollama. The cache wraps the round-
 	// robin embedder when cfg.Embeddings.CacheDir is set; type-assert
 	// down to extract the counters.
@@ -2712,13 +2710,13 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 			"hit_rate_pct": hitRate,
 		}
 	}
-	// Iter 357/358: signal whether the store has HNSW vectors persisted, and
+	// signal whether the store has HNSW vectors persisted, and
 	// (when meta is available) surface dim + node count.
-	// Iter 422: when the graph is loaded in memory, report s.hnsw.Len()
+	// when the graph is loaded in memory, report s.hnsw.Len()
 	// instead of the startup-cached vectorNodes count — otherwise /stats
 	// shows the corpus frozen in time while the in-serve crawler keeps
 	// growing the graph.
-	// Iter 469: "% of the indexed web" novelty stat. The web is too big to
+	// "% of the indexed web" novelty stat. The web is too big to
 	// give a meaningful number, but Common Crawl's monthly snapshot is
 	// ~3.5 B unique pages — a recognizable reference point. Operators can
 	// override with COSIFT_WEB_DENOMINATOR if they want a different scale
@@ -2740,14 +2738,14 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		out["vector_nodes"] = s.vectorNodes
 		out["vector_dim"] = s.vectorDim
 	}
-	// Iter 362: whether the graph is loaded into memory for dense retrieval.
+	// whether the graph is loaded into memory for dense retrieval.
 	out["hnsw_loaded"] = s.hnsw != nil
-	// Iter 423: PQ status — operator-facing visibility into compression
+	// PQ status — operator-facing visibility into compression
 	// state. Only present when the graph is loaded; nil otherwise.
 	if s.hnsw != nil {
 		pq := s.hnsw.PQStatus()
-		// Iter 424: coverage is over VALID nodes (vec != nil), not raw total —
-		// zombie slots from pre-iter-411 partial persists inflate the total
+		// coverage is over VALID nodes (vec != nil), not raw total —
+		// zombie slots from pre partial persists inflate the total
 		// without being searchable. NodesTotal still surfaced for context.
 		denom := pq.NodesValid
 		if denom == 0 {
@@ -2773,7 +2771,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		}
 		out["pq"] = pqInfo
 	}
-	// Iter 375: which retrievers actually work right now. Clients can read
+	// Clients can read
 	// this once instead of probing ?retriever=dense + parsing the warning.
 	// bm25 always — index is always available. dense/hybrid require a
 	// loaded graph; the embedder lets dense/hybrid handle text-mode and
@@ -2787,7 +2785,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		retrievers = append(retrievers, "dense:find_similar_url_only")
 	}
 	out["retrievers"] = retrievers
-	// Iter 403: crawl-rate surface for the in-serve crawler (iter 402).
+	// crawl-rate surface for the in-serve crawler.
 	// Computes docs added since process start and per-minute rate.
 	if s.crawlActive {
 		uptimeMin := time.Since(s.started).Minutes()
@@ -2806,7 +2804,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// Iter 231: Prometheus-format scrape endpoint. Hand-written plain text
+// Prometheus-format scrape endpoint. Hand-written plain text
 // (no client_golang dep) — exposition format is simple enough that
 // pulling in a dep just to print four gauges isn't justified.
 // Quantities chosen to be O(1) reads (CorpusStats counters + uptime);
@@ -2825,7 +2823,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(s.started).Seconds()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "# HELP cosift_indexed_docs Number of documents passed through IndexDocument (iter-207 counter).\n")
+	fmt.Fprintf(w, "# HELP cosift_indexed_docs Number of documents passed through IndexDocument.\n")
 	fmt.Fprintf(w, "# TYPE cosift_indexed_docs gauge\n")
 	fmt.Fprintf(w, "cosift_indexed_docs %d\n", count)
 	fmt.Fprintf(w, "# HELP cosift_sum_doc_len_total Sum of indexed document lengths in tokens.\n")
@@ -2837,8 +2835,8 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_uptime_seconds Seconds since pebble-serve started.\n")
 	fmt.Fprintf(w, "# TYPE cosift_uptime_seconds counter\n")
 	fmt.Fprintf(w, "cosift_uptime_seconds %.0f\n", uptime)
-	// Iter 403: in-serve crawler progress. crawl_active gauges whether
-	// the iter-402 crawler goroutine is running; docs_added is monotonic
+	// crawl_active gauges whether
+	// the crawler goroutine is running; docs_added is monotonic
 	// since process start; docs_per_minute is the rolling rate.
 	crawlActiveGauge := 0
 	if s.crawlActive {
@@ -2863,7 +2861,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# TYPE cosift_crawl_docs_per_minute gauge\n")
 		fmt.Fprintf(w, "cosift_crawl_docs_per_minute %.2f\n", rate)
 	}
-	// Iter 260: HyDE cache effectiveness. Hits/misses both monotonic so
+	// HyDE cache effectiveness. Hits/misses both monotonic so
 	// Prometheus rate() over these gives cache pressure under load.
 	fmt.Fprintf(w, "# HELP cosift_hyde_cache_hits_total HyDE cache hits (expandQuery served from memory).\n")
 	fmt.Fprintf(w, "# TYPE cosift_hyde_cache_hits_total counter\n")
@@ -2895,7 +2893,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_warnings_emitted_total Responses that carried at least one warning (misconfigured request).\n")
 	fmt.Fprintf(w, "# TYPE cosift_warnings_emitted_total counter\n")
 	fmt.Fprintf(w, "cosift_warnings_emitted_total %d\n", s.warningsEmitted.Load())
-	// Iter 361/422: HNSW vector index shape. Live count when graph is
+	// HNSW vector index shape. Live count when graph is
 	// loaded; startup-cached otherwise.
 	vectorNodesLive := s.vectorNodes
 	if s.hnsw != nil {
@@ -2909,7 +2907,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# TYPE cosift_vector_dim gauge\n")
 		fmt.Fprintf(w, "cosift_vector_dim %d\n", s.vectorDim)
 	}
-	// Iter 261/262: per-endpoint request counters + duration sums. PromQL
+	// PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)
 	// don't share a label with any handled path.
@@ -2926,7 +2924,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Iter 230: HTTP form of `cosift verify`. Same comparison (iter-207 running
+// HTTP form of `cosift verify`. Same comparison (running
 // counters vs authoritative 'l' family scan) on the already-open store, so
 // monitoring can poll without contending for the single-writer lock or
 // shelling into the container. 503 on drift makes this composable with
@@ -2946,13 +2944,13 @@ func (s *pebbleHTTP) handleVerify(w http.ResponseWriter, r *http.Request) {
 	driftSum := counterSum - scanSum
 	ok := driftCount == 0 && driftSum == 0
 	body := map[string]any{
-		"ok":                     ok,
-		"indexed_docs_counter":   counterCount,
-		"indexed_docs_scan":      scanCount,
-		"indexed_docs_drift":     driftCount,
-		"sum_doc_len_counter":    counterSum,
-		"sum_doc_len_scan":       scanSum,
-		"sum_doc_len_drift":      driftSum,
+		"ok":                   ok,
+		"indexed_docs_counter": counterCount,
+		"indexed_docs_scan":    scanCount,
+		"indexed_docs_drift":   driftCount,
+		"sum_doc_len_counter":  counterSum,
+		"sum_doc_len_scan":     scanSum,
+		"sum_doc_len_drift":    driftSum,
 	}
 	status := http.StatusOK
 	if !ok {
@@ -2966,13 +2964,13 @@ func (s *pebbleHTTP) handleVerify(w http.ResponseWriter, r *http.Request) {
 // parity (highlight, excerpt, calibration, paragraph filters) grows as
 // follow-up iters port each one through the Pebble side.
 type searchHit struct {
-	URL          string     `json:"url"`
-	Title        string     `json:"title"`
-	Score        float64    `json:"score"`
-	Excerpt      string     `json:"excerpt,omitempty"`
-	PublishedAt  *time.Time `json:"published_at,omitempty"`
-	Author       string     `json:"author,omitempty"`
-	Text         string     `json:"text,omitempty"`
+	URL         string     `json:"url"`
+	Title       string     `json:"title"`
+	Score       float64    `json:"score"`
+	Excerpt     string     `json:"excerpt,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	Author      string     `json:"author,omitempty"`
+	Text        string     `json:"text,omitempty"`
 }
 
 type searchResponse struct {
@@ -2986,7 +2984,7 @@ type searchResponse struct {
 	Took            string      `json:"took"`
 }
 
-// Iter 277: POST /search with JSON body — for callers whose query lists,
+// POST /search with JSON body — for callers whose query lists,
 // quoted phrases, or filter CSVs are awkward to URL-encode. Decodes into a
 // searchRequest, re-encodes as r.URL.RawQuery, then calls handleSearch so
 // every param the GET form supports works identically here. The hand-off
@@ -3050,15 +3048,15 @@ func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 	s.handleSearch(w, r)
 }
 
-// Iter 278: POST variants of /find_similar, /answer, /research. Same pattern
+// POST variants of /find_similar, /answer, /research. Same pattern
 // as POST /search — re-encode JSON body as URL.Values, hand off to the GET
 // handler. The GET handlers own the param semantics; POST is a wire-level
 // alternative for callers whose payloads don't fit cleanly into a query string.
 
 type findSimilarRequest struct {
 	URL            string `json:"url,omitempty"`
-	Text           string `json:"text,omitempty"`  // iter 298: content-based MLT, no source URL needed
-	Title          string `json:"title,omitempty"` // iter 298: optional title-boost when using text mode
+	Text           string `json:"text,omitempty"`  // content-based MLT, no source URL needed
+	Title          string `json:"title,omitempty"` // optional title-boost when using text mode
 	K              int    `json:"k,omitempty"`
 	Q              string `json:"q,omitempty"`
 	IncludeDomains string `json:"include_domains,omitempty"`
@@ -3182,7 +3180,7 @@ func (s *pebbleHTTP) handleResearchPOST(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
-	// Iter 409: gateway scatter-gather. When this process is in cluster
+	// When this process is in cluster
 	// gateway-mode AND the caller hasn't already set ?cluster_local=1
 	// (which is how the gateway tells peers "just do your local search,
 	// don't fan out again"), fan out to peers and RRF-merge their results.
@@ -3202,9 +3200,9 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
-	// Iter 232: include_domains / exclude_domains — mirrors the
+	// include_domains / exclude_domains — mirrors the
 	// SQLite-side server semantics (CSV, dot-boundary suffix match).
-	// Iter 234: since / until — ISO-date filters on doc.PublishedAt.
+	// since / until — ISO-date filters on doc.PublishedAt.
 	// When any filter is active we over-fetch so the post-filter has
 	// enough candidates to fill k; same brute-force shape SQLite used
 	// before it grew a proper index, fine at pebble-serve's scale.
@@ -3221,7 +3219,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
-	// Iter 248: rerank widens both the fetch and the keep-cap before filtering,
+	// rerank widens both the fetch and the keep-cap before filtering,
 	// so the reranker sees a healthy candidate pool even with restrictive filters.
 	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
 	keepCap := k
@@ -3244,8 +3242,8 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-	// Iter 252/272/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
-	// Iter 363/364/365: retriever dispatch (bm25 / dense / hybrid). Shared
+	// expansion dispatch (bare / HyDE / paraphrase+RRF).
+	// Shared
 	// helper used by /answer + /research so all three get the same matrix.
 	// Reranker still scores against the original q regardless of strategy.
 	expandMode := r.URL.Query().Get("expand")
@@ -3256,19 +3254,19 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Iter 233: enrich each surviving hit with Excerpt + PublishedAt + Author
+	// enrich each surviving hit with Excerpt + PublishedAt + Author
 	// via a single GetDocByURL per hit. Cost: k extra Gets — block-cache hot,
 	// ~ms-scale at the k≤100 we accept. Opt out with ?enrich=false for callers
-	// that only need scoring. The date filter (iter 234) forces a doc fetch
+	// that only need scoring. The date filter forces a doc fetch
 	// even when enrich=false, since PublishedAt lives on the gob.
-	// Iter 237: ?include_text=true inlines doc.Text on each hit so research
+	// ?include_text=true inlines doc.Text on each hit so research
 	// pipelines avoid the N+1 round trip to /contents. Off by default —
 	// payload size grows linearly with k and average doc length.
 	enrich := r.URL.Query().Get("enrich") != "false"
 	if wantRerank {
 		enrich = true // rerank needs per-doc text — overrides enrich opt-out
 	}
-	// Iter 389: time-decay multiplier needs PublishedAt per hit, which lives
+	// time-decay multiplier needs PublishedAt per hit, which lives
 	// behind the enrich flag. Force enrich when decay is requested so the
 	// signal is available downstream.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
@@ -3328,7 +3326,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// Iter 389: time-decay multiplier. Runs BEFORE rerank so the rerank pool
+	// Runs BEFORE rerank so the rerank pool
 	// reflects both quality and recency — when fetchK is over-fetched, the
 	// reranker still sees the freshest-AND-most-relevant top-N. Hits without
 	// PublishedAt are left alone (no signal, no penalty). The pool re-sort
@@ -3349,7 +3347,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Iter 248: rerank now that we have keepCap candidates with text.
+	// rerank now that we have keepCap candidates with text.
 	if wantRerank && len(out) > 1 && len(rerankTexts) == len(out) {
 		cands := make([]rerank.Candidate, len(out))
 		for i := range out {
@@ -3373,7 +3371,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			out = reordered
 		}
 	}
-	// Iter 384: MMR diversification. ?mmr=<lambda> (0..1) reorders the
+	// MMR diversification. ?mmr=<lambda> (0..1) reorders the
 	// candidate pool to balance query relevance against diversity from
 	// previously-selected hits. Requires HNSW (per-hit vectors) and an
 	// embedder when the query vector wasn't already computed by the
@@ -3402,7 +3400,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if len(out) > k {
 		out = out[:k]
 	}
-	// Iter 235: sort=date_desc | date_asc | relevance (default). Applies to
+	// Applies to
 	// the already-collected top-k pool; raise k to widen the pool before
 	// re-sorting if you need more candidates for date ordering.
 	switch r.URL.Query().Get("sort") {
@@ -3411,25 +3409,25 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	case "date_asc":
 		sortHitsByDate(out, true)
 	}
-	// Iter 363/364/366: label centralized in buildRetrieverLabel so /answer
+	// label centralized in buildRetrieverLabel so /answer
 	// and /research report the same vocabulary as /search.
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
-	// Iter 384: mmr suffix when diversification actually fired (HNSW loaded
+	// mmr suffix when diversification actually fired (HNSW loaded
 	// + embedder available). Same conditional as the apply site above —
 	// the label tracks the real pipeline.
 	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && s.hnsw != nil && s.embedder != nil && mmrLambda < 1.0 {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
 	}
-	// Iter 389: decay suffix when time-decay was applied.
+	// decay suffix when time-decay was applied.
 	if decaySet {
 		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	resp := searchResponse{
-		Query:           q,
-		Expand:          normalizeExpandMode(expandMode),
-		Retriever:       retrieverLabel,
-		Hits:            out,
-		// Iter 283: total_candidates = BM25 candidates considered before
+		Query:     q,
+		Expand:    normalizeExpandMode(expandMode),
+		Retriever: retrieverLabel,
+		Hits:      out,
+		// total_candidates = BM25 candidates considered before
 		// filter (capped at fetchK). Operators tuning over-fetch can see
 		// whether their filter is dropping a lot — when out=k but
 		// total_candidates is close to fetchK, the filter is restrictive
@@ -3437,7 +3435,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		TotalCandidates: len(hits),
 		Took:            time.Since(start).String(),
 	}
-	// Iter 265: surface the post-HyDE query when it actually changed, so callers
+	// surface the post-HyDE query when it actually changed, so callers
 	// can debug whether expand=true contributed any extra terms or returned q
 	// unchanged (chat down, empty passage, etc).
 	if effectiveQuery != q {
@@ -3449,7 +3447,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 // sortHitsByDate orders hits by PublishedAt. Hits with no PublishedAt sink to
 // the end regardless of direction — they have no comparable value. asc=true
-// gives oldest-first; asc=false gives newest-first. Iter 235.
+// gives oldest-first; asc=false gives newest-first.
 func sortHitsByDate(hits []searchHit, asc bool) {
 	sort.SliceStable(hits, func(i, j int) bool {
 		ai := hits[i].PublishedAt != nil
@@ -3467,14 +3465,14 @@ func sortHitsByDate(hits []searchHit, asc bool) {
 	})
 }
 
-// Iter 236: BM25-only "more like this". Mirrors EXA's /findSimilar shape but
+// BM25-only "more like this". Mirrors EXA's /findSimilar shape but
 // stays dependency-free: no embeddings required. Algorithm is Lucene's MLT —
 // pick the source doc's top-N terms by tf·idf, build a query from them, run
 // the existing BM25 search, drop the source URL itself. With dense vectors
 // off the table on the Pebble path (HNSW indexing during crawl is the iter
 // follow-up), this is the cheapest credible /find_similar we can ship.
 func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
-	// Iter 425: gateway scatter-gather. /find_similar runs locally with a
+	// /find_similar runs locally with a
 	// known URL+vec, but in a cluster the URL's shard owns its vector and
 	// only one shard has it. We fan-out to all shards anyway: the owning
 	// shard does the real work; others either fall back to text-mode (if
@@ -3484,7 +3482,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	// Iter 298: accept either ?url= (existing behavior) or ?text= (content-
+	// accept either ?url= (existing behavior) or ?text= (content-
 	// based similarity for unindexed drafts). text path skips the source-URL
 	// exclusion since there's no source URL to exclude.
 	rawURL := r.URL.Query().Get("url")
@@ -3560,8 +3558,8 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		topN = len(scored)
 	}
 	if topN == 0 {
-		// Iter 322: previously referenced `decoded` (only in scope in the
-		// url-mode branch) — broken since iter 298's text-mode addition.
+		// previously referenced `decoded` (only in scope in the
+		// url-mode branch) — broken since's text-mode addition.
 		// Use srcURL when present, else echo the bare text/title as the
 		// source identifier so the empty response still tells the caller
 		// what was searched.
@@ -3583,7 +3581,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		terms[i] = scored[i].term
 	}
 	queryStr := strings.Join(terms, " ")
-	// Iter 239: optional ?q= augments the auto-derived MLT query so callers
+	// optional ?q= augments the auto-derived MLT query so callers
 	// can constrain "more like this URL" with an extra concept (e.g.
 	// /find_similar?url=...&q=pricing). Appended verbatim — supports the
 	// same quoted-phrase shape /search accepts.
@@ -3591,7 +3589,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		queryStr = queryStr + " " + extra
 	}
 
-	// Iter 245: scope MLT with the same retrieval filters /search and /answer
+	// scope MLT with the same retrieval filters /search and /answer
 	// accept. 'find pages similar to X but only on docs.example.com' is the
 	// archetype EXA findSimilar shape. Over-fetch enough that the source
 	// exclusion + filter still fills k.
@@ -3609,7 +3607,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	// Iter 251: ?rerank=true closes /find_similar's parity gap with the other
+	// ?rerank=true closes /find_similar's parity gap with the other
 	// retrieval endpoints. The MLT query is auto-derived from the source doc,
 	// so reranking the candidate neighbors against THAT query is exactly what
 	// EXA's findSimilar quality boost is doing under the hood.
@@ -3635,25 +3633,25 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		fetchK = keepCap * 2
 	}
 
-	// Iter 371/373: /find_similar?retriever=dense reuses the source's
+	// /find_similar?retriever=dense reuses the source's
 	// persisted vector (URL-mode) or embeds the user's text (text-mode) and
 	// runs an HNSW cosine search instead of BM25-MLT. ?retriever=hybrid
-	// (iter 373) runs BOTH BM25-MLT and dense, then RRF-fuses — the
+	// runs BOTH BM25-MLT and dense, then RRF-fuses — the
 	// strongest "find similar" signal: lexical precision + semantic recall.
 	//
 	// Requires COSIFT_LOAD_HNSW=true at server start (for the graph);
 	// text-mode additionally needs a configured embedder. URL-mode dense
 	// works without an embedder — the source vector is already in the graph
 	// from indexing. Missing requirements fall through to BM25-MLT;
-	// warningsFor() flags it (iter 372 carves out the URL-mode-no-embedder
+	// warningsFor() flags it (carves out the URL-mode-no-embedder
 	// case so the warning isn't misleading).
 	retrieverParam := r.URL.Query().Get("retriever")
 	useDense := retrieverParam == "dense" && s.hnsw != nil
 	useHybrid := retrieverParam == "hybrid" && s.hnsw != nil
 	var (
-		hits        []index.Hit
-		denseFired  bool
-		bm25Fired   bool
+		hits       []index.Hit
+		denseFired bool
+		bm25Fired  bool
 	)
 	// Helper: fetch the query vector (URL-mode lookup, falling back to
 	// text-mode embed when allowed). Returns ok=false when neither path
@@ -3771,7 +3769,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// Iter 390: time-decay on /find_similar. Same pre-rerank placement as
+	// Same pre-rerank placement as
 	// /search — re-sort cands by adjusted score so rerank sees a freshness-
 	// aware pool. Re-aligns rerankText too via URL→text map.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
@@ -3804,7 +3802,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
-	// Iter 386: MMR diversification on /find_similar. Anchored at the
+	// MMR diversification on /find_similar. Anchored at the
 	// source vector — URL-mode reuses the persisted vec, text-mode embeds
 	// the seed via getQueryVec (defined above for dense/hybrid dispatch).
 	// Without an explicit user query, the source IS the query — this is
@@ -3837,7 +3835,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cands {
 		out = append(out, c.hit)
 	}
-	// Iter 371/373: label tracks which retrievers actually fired.
+	// label tracks which retrievers actually fired.
 	//   bm25-mlt              — default, BM25 only
 	//   dense                 — ?retriever=dense fired (graph + vec found)
 	//   bm25-mlt+dense:rrf    — ?retriever=hybrid, both BM25 and dense fired
@@ -3869,7 +3867,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Iter 240: /answer — synthesis over BM25 retrieval. Mirrors the SQLite-side
+// /answer — synthesis over BM25 retrieval. Mirrors the SQLite-side
 // /answer in spirit (top-k sources → cited synthesis) but stays minimal: no
 // streaming, no rerank, no query expansion. Those land in follow-up iters
 // once this surface is exercised. Returns 501 when no chat model is
@@ -3881,12 +3879,12 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 - Do not invent facts not supported by the sources.
 - Keep the answer focused on what the sources actually say; do not pad.`
 
-// Iter 252: HyDE-style query expansion prompt. Borrowed verbatim from
+// HyDE-style query expansion prompt. Borrowed verbatim from
 // internal/server/hyde.go so the SQLite and Pebble paths produce comparable
 // expansions and operators don't have to learn two prompt shapes.
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
-// doChat wraps ChatClient.Chat with attempt/failure counters. Iter 264.
+// doChat wraps ChatClient.Chat with attempt/failure counters.
 // Takes the client as a parameter so it works for both s.chat and the
 // StreamingChatClient passed into streamResearch/streamAnswer.
 func (s *pebbleHTTP) doChat(ctx context.Context, c embed.ChatClient, msgs []embed.ChatMsg) (string, error) {
@@ -3912,7 +3910,7 @@ func (s *pebbleHTTP) doChatStream(ctx context.Context, c embed.StreamingChatClie
 	return out, err
 }
 
-// doRerank wraps s.reranker.Rerank with attempt/failure counters. Iter 263.
+// doRerank wraps s.reranker.Rerank with attempt/failure counters.
 // Returning the original error unchanged so callers keep their existing
 // silent-fallback behavior; only the operator-side visibility changed.
 func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Candidate) ([]string, error) {
@@ -3924,13 +3922,13 @@ func (s *pebbleHTTP) doRerank(ctx context.Context, q string, cands []rerank.Cand
 	return order, err
 }
 
-// Iter 301: applyBM25EnvOverrides reads COSIFT_BM25_K1 / _B and applies them
+// applyBM25EnvOverrides reads COSIFT_BM25_K1 / _B and applies them
 // to idx. Shared by runPebbleServe and runQuery so both honor the same env.
 // Returns which knobs landed so callers can log selectively.
 type bm25EnvResult struct {
-	k1Set, bSet     bool
-	k1Val, bVal     float64
-	k1Bad, bBad     string // iter 314: non-empty when env was set but unparseable
+	k1Set, bSet bool
+	k1Val, bVal float64
+	k1Bad, bBad string // non-empty when env was set but unparseable
 }
 
 func applyBM25EnvOverrides(idx *index.PebbleBM25) bm25EnvResult {
@@ -3954,13 +3952,13 @@ func applyBM25EnvOverrides(idx *index.PebbleBM25) bm25EnvResult {
 	return out
 }
 
-// Iter 272: paraphraseQuery returns up to n paraphrases of q via the chat
+// paraphraseQuery returns up to n paraphrases of q via the chat
 // client, parses the JSON array shape the SQLite-side paraphraser already
 // uses, and falls back to nil on any failure (no chat client, empty / malformed
 // reply, parse error). Caller decides what to do with an empty list — the
 // downstream RRF strategy treats it as 'no expansion, fall back to single
 // query'. No cache yet — keyed on (q, n) would need a different shape than
-// the iter-259 HyDE cache; revisit when workload justifies.
+// the HyDE cache; revisit when workload justifies.
 func (s *pebbleHTTP) paraphraseQuery(ctx context.Context, q string, n int) []string {
 	if s.chat == nil || n <= 0 {
 		return nil
@@ -4018,7 +4016,7 @@ Example output for "go programming language": ["golang concurrent compiled langu
 	return out
 }
 
-// Iter 272: rrfFuse implements Reciprocal Rank Fusion across N ranked lists.
+// rrfFuse implements Reciprocal Rank Fusion across N ranked lists.
 // k=60 is the standard Cormack et al. constant; tweaking rarely changes top-k
 // ordering meaningfully. Each list contributes 1/(k + rank+1) to a URL's
 // fused score; URLs appearing in more lists at higher ranks rise. Returns
@@ -4055,7 +4053,7 @@ func rrfFuse(lists [][]index.Hit, fuseK int) []index.Hit {
 	return out
 }
 
-// Iter 292: warningsFor surfaces silent no-ops that callers used to have to
+// warningsFor surfaces silent no-ops that callers used to have to
 // derive from absent effective_query / retriever fields. Each warning is one
 // human-readable sentence; consumers programmatically inspect the slice.
 func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
@@ -4064,20 +4062,20 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 		if s.chat == nil {
 			w = append(w, "expand="+mode+" requested but no chat client configured (set cfg.Chat.Model)")
 		} else if normalizeExpandMode(mode) == "" {
-			// Iter 309: unknown expand value used to be silently ignored.
+			// unknown expand value used to be silently ignored.
 			w = append(w, "expand="+mode+" is not a known strategy (try: hyde, paraphrase) — treated as no expansion")
 		}
 	}
 	if r.URL.Query().Get("rerank") == "true" && s.reranker == nil {
 		w = append(w, "rerank=true requested but no reranker configured (set cfg.Rerank.URL or cfg.Rerank.Enabled)")
 	}
-	// Iter 363/364: dense + hybrid retrievers need both a loaded HNSW graph
+	// dense + hybrid retrievers need both a loaded HNSW graph
 	// and an embedder. Missing either falls through to BM25 with a warning.
-	// Iter 372: /find_similar?url=X URL-mode-dense reads the source vector
+	// /find_similar?url=X URL-mode-dense reads the source vector
 	// directly from the graph via LookupVectorByURL — no embed RPC. Skip the
 	// embedder warning in that case (would otherwise be misleading: the
 	// request succeeded without an embedder).
-	// Iter 379: /find_similar falls back to bm25-mlt (not bm25), so the
+	// /find_similar falls back to bm25-mlt (not bm25), so the
 	// warning says so — caller's retriever label matches the warning text.
 	if rv := r.URL.Query().Get("retriever"); rv == "dense" || rv == "hybrid" {
 		isFindSimilar := strings.HasSuffix(r.URL.Path, "/find_similar")
@@ -4093,11 +4091,11 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "retriever="+rv+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to "+fallback)
 		}
 	}
-	// Iter 384: MMR diversification needs HNSW + embedder. Bad values (non-
+	// MMR diversification needs HNSW + embedder. Bad values (non-
 	// float, out of [0,1]) fall through silently — flag them. Missing
 	// requirements also warn.
-	// Iter 386: /find_similar?url=X reuses the source vector from the graph
-	// for the MMR anchor — no embedder needed. Same carve-out as iter 372
+	// /find_similar?url=X reuses the source vector from the graph
+	// for the MMR anchor — no embedder needed. Same carve-out as
 	// for the retriever warning.
 	if raw := r.URL.Query().Get("mmr"); raw != "" {
 		isFindSimilarURLMode := strings.HasSuffix(r.URL.Path, "/find_similar") && r.URL.Query().Get("url") != ""
@@ -4109,14 +4107,14 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "mmr requires an embedder to vectorize the query (set cfg.Embeddings.Model) — diversification skipped")
 		}
 	}
-	// Iter 389: invalid decay half-life flags loudly instead of silently
+	// invalid decay half-life flags loudly instead of silently
 	// being ignored. Empty value is fine (no decay requested).
 	if raw := r.URL.Query().Get("decay"); raw != "" {
 		if _, ok := parseDecayHalfLife(raw); !ok {
 			w = append(w, "decay="+raw+" is not a positive half-life in days (≤ 36500) — time-decay skipped")
 		}
 	}
-	// Iter 310: catch unknown ?sort= values (silently treated as relevance).
+	// catch unknown ?sort= values (silently treated as relevance).
 	if sortVal := r.URL.Query().Get("sort"); sortVal != "" {
 		switch sortVal {
 		case "relevance", "date_desc", "date_asc":
@@ -4125,7 +4123,7 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "sort="+sortVal+" is not a known mode (try: relevance, date_desc, date_asc) — treated as relevance")
 		}
 	}
-	// Iter 311: catch obviously-bad ?k= values that silently fell back to the
+	// catch obviously-bad ?k= values that silently fell back to the
 	// per-endpoint default. Upper-bound clamping varies per endpoint so we
 	// flag only the universally-invalid cases (non-integer, zero, negative).
 	if kVal := r.URL.Query().Get("k"); kVal != "" {
@@ -4133,7 +4131,7 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			w = append(w, "k="+kVal+" is not a positive integer — using server default")
 		}
 	}
-	// Iter 313: catch URL-shaped values in domain filters. Users sometimes
+	// Users sometimes
 	// pass 'https://example.com/foo' when 'example.com' was wanted; the
 	// dot-boundary matcher silently drops every result.
 	for _, key := range []string{"include_domains", "exclude_domains"} {
@@ -4156,7 +4154,7 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 // normalizeExpandMode returns the canonical strategy name for an `expand`
 // param value: "true" → "hyde" (alias), "hyde"/"paraphrase" pass through,
 // anything else → "" (so the response field doesn't echo a value that had
-// no effect). Iter 308.
+// no effect).
 func normalizeExpandMode(raw string) string {
 	switch raw {
 	case "true", "hyde":
@@ -4171,13 +4169,12 @@ func normalizeExpandMode(raw string) string {
 // parseDecayHalfLife parses ?decay= as a positive half-life in days. Returns
 // (halfLife, true) when valid. Empty / non-positive → (0, false) so caller
 // short-circuits. Bounded at 36500 (100 years) to avoid pathological values.
-// Iter 389.
 func parseDecayHalfLife(raw string) (float64, bool) {
 	if raw == "" {
-		// Iter 498: default time-decay on. Half-life from COSIFT_DEFAULT_DECAY_DAYS
+		// Half-life from COSIFT_DEFAULT_DECAY_DAYS
 		// (default 180 days = 6 months). Docs older than 6 months get exponentially
 		// less weight in the score; recent docs surface naturally without keyword
-		// hacks like the iter-497 JS regex. Set the env to 0 to disable globally.
+		// hacks like the JS regex. Set the env to 0 to disable globally.
 		// Explicit ?decay=N still wins.
 		def := 180.0
 		if v := os.Getenv("COSIFT_DEFAULT_DECAY_DAYS"); v != "" {
@@ -4190,7 +4187,7 @@ func parseDecayHalfLife(raw string) (float64, bool) {
 		}
 		return def, true
 	}
-	// Iter 498: explicit decay=0 disables (even if env default is on).
+	// explicit decay=0 disables (even if env default is on).
 	if raw == "0" {
 		return 0, false
 	}
@@ -4206,7 +4203,7 @@ func parseDecayHalfLife(raw string) (float64, bool) {
 
 // decayMultiplier computes the time-decay weight for a single PublishedAt.
 // Half-life H: doc from H days ago → 0.5x, 2H → 0.25x. Missing date or
-// non-positive halfLife → 1.0 (no decay). Iter 389/390.
+// non-positive halfLife → 1.0 (no decay).
 func decayMultiplier(publishedAt *time.Time, now time.Time, halfLifeDays float64) float64 {
 	if halfLifeDays <= 0 || publishedAt == nil || publishedAt.IsZero() {
 		return 1
@@ -4219,7 +4216,6 @@ func decayMultiplier(publishedAt *time.Time, now time.Time, halfLifeDays float64
 }
 
 // applyTimeDecay multiplies each hit's Score by decayMultiplier and resorts.
-// Iter 389.
 func applyTimeDecay(hits []searchHit, halfLifeDays float64, now time.Time) {
 	if halfLifeDays <= 0 || len(hits) == 0 {
 		return
@@ -4232,7 +4228,7 @@ func applyTimeDecay(hits []searchHit, halfLifeDays float64, now time.Time) {
 
 // parseMMRLambda parses ?mmr= as a float in [0, 1]. Returns (lambda, true)
 // when valid. Empty value or out-of-range returns (0, false) so the caller
-// can short-circuit without firing MMR. Iter 384.
+// can short-circuit without firing MMR.
 func parseMMRLambda(raw string) (float64, bool) {
 	if raw == "" {
 		return 0, false
@@ -4250,7 +4246,7 @@ func parseMMRLambda(raw string) (float64, bool) {
 // cosineUnit returns the dot product of two unit-normalized float32 slices.
 // HNSW stores vectors in unit form, so this is equivalent to cosine similarity.
 // Returns 0 on length mismatch — caller is responsible for filtering missing
-// vectors before calling. Iter 384.
+// vectors before calling.
 func cosineUnit(a, b []float32) float32 {
 	if len(a) != len(b) {
 		return 0
@@ -4277,7 +4273,7 @@ func cosineUnit(a, b []float32) float32 {
 // lambda=0 → pure diversity. 0.5–0.7 is a typical starting point.
 //
 // Returns the permutation as a []int; never drops anything. The caller
-// applies it to whatever URL-keyed slice it has. Iter 384/385.
+// applies it to whatever URL-keyed slice it has.
 func mmrOrder(qVec []float32, hitVecs [][]float32, lambda float64) []int {
 	n := len(hitVecs)
 	if n == 0 {
@@ -4324,7 +4320,7 @@ func mmrOrder(qVec []float32, hitVecs [][]float32, lambda float64) []int {
 }
 
 // mmrSelect — thin /search wrapper around mmrOrder that operates on []searchHit
-// directly. Iter 384.
+// directly.
 func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda float64) []searchHit {
 	if len(hits) <= 1 || lambda >= 1.0 {
 		return hits
@@ -4340,7 +4336,7 @@ func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda flo
 // applyMMRPermutation embeds q, looks up per-URL vectors from HNSW, and
 // returns an MMR permutation. Returns nil when MMR can't fire (no graph,
 // no embedder, embed failed, λ≥1, single-element pool). Shared by /answer
-// and /research synth endpoints. Iter 385.
+// and /research synth endpoints.
 func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q string, lambda float64) []int {
 	if s.hnsw == nil || s.embedder == nil || len(urls) <= 1 || lambda >= 1.0 {
 		return nil
@@ -4358,8 +4354,8 @@ func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q s
 	return mmrOrder(vecs[0], hitVecs, lambda)
 }
 
-// Iter 366: buildRetrieverLabel produces the human-readable retriever string
-// surfaced on /search, /answer, /research responses. Mirrors the iter 363/364
+// buildRetrieverLabel produces the human-readable retriever string
+// surfaced on /search, /answer, /research responses. Mirrors the Iter
 // /search inline switch so all three endpoints report the same vocabulary.
 // expansionFired is the post-hoc "did expand=hyde/paraphrase actually run"
 // signal (effectiveQuery != q for /search & /answer; chat-present for
@@ -4390,11 +4386,11 @@ func (s *pebbleHTTP) buildRetrieverLabel(retrieverParam, expandMode string, dens
 	return label
 }
 
-// Iter 365: retrieve dispatches retriever choice (bm25 / dense / hybrid) and
+// retrieve dispatches retriever choice (bm25 / dense / hybrid) and
 // then expansion (bare / HyDE / paraphrase+RRF) for BM25 paths. Shared by
 // /search, /answer, /research so all three endpoints get the same retriever
-// matrix. Dense / hybrid require both the loaded HNSW graph (iter 362) and an
-// embedder (iter 363); missing either falls through to BM25 — warningsFor()
+// matrix. Dense / hybrid require both the loaded HNSW graph and an
+// embedder; missing either falls through to BM25 — warningsFor()
 // surfaces that to the client.
 func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
 	denseReady := s.hnsw != nil && s.embedder != nil
@@ -4434,7 +4430,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 	}
 }
 
-// Iter 274: retrieveWithExpansion dispatches the BM25 call across the three
+// retrieveWithExpansion dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
 // fired (bare path, or expansion no-op'd because chat is down).
@@ -4473,7 +4469,7 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 // expandQuery returns q + " " + a HyDE-generated passage when a chat client is
 // configured. On any error (no chat client, chat call fails, empty passage),
 // returns q unchanged so callers can compose safely without explicit guards.
-// Iter 257; iter 259 added a bounded in-memory cache to skip the chat call on
+// added a bounded in-memory cache to skip the chat call on
 // repeat queries — important for /research?expand=true where the same
 // sub-query rephrasing can fire across many similar research requests.
 func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
@@ -4513,10 +4509,10 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 }
 
 type answerSource struct {
-	// Iter 341: citation ID (1-based). Matches the [N] tokens the synth
+	// Matches the [N] tokens the synth
 	// prompt produces in the answer text. SQLite-side AnswerSource has had
-	// this since iter 84; pebble's was missing, which caused the CLI to
-	// render every source as '[0]' before iter 339/340's i+1 fallback.
+	// this since; pebble's was missing, which caused the CLI to
+	// render every source as '[0]' before Iter's i+1 fallback.
 	ID          int        `json:"id"`
 	URL         string     `json:"url"`
 	Title       string     `json:"title"`
@@ -4527,10 +4523,10 @@ type answerSource struct {
 }
 
 type answerResponse struct {
-	Query           string         `json:"query"`
-	EffectiveQuery  string         `json:"effective_query,omitempty"`
-	Expand          string         `json:"expand,omitempty"`
-	// Iter 366: retriever label — same vocabulary as /search ("bm25",
+	Query          string `json:"query"`
+	EffectiveQuery string `json:"effective_query,omitempty"`
+	Expand         string `json:"expand,omitempty"`
+	// retriever label — same vocabulary as /search ("bm25",
 	// "dense", "bm25+dense:rrf", "+hyde"/"+paraphrase", "+rerank:<name>").
 	Retriever       string         `json:"retriever,omitempty"`
 	Answer          string         `json:"answer"`
@@ -4539,7 +4535,7 @@ type answerResponse struct {
 	Warnings        []string       `json:"warnings,omitempty"`
 	TotalCandidates int            `json:"total_candidates,omitempty"`
 	Took            string         `json:"took"`
-	// Iter 489: when the answer matches a "sources do not contain" pattern,
+	// when the answer matches a "sources do not contain" pattern,
 	// surface a hint URL pointing at /research?strategy=planner. The 60-Q
 	// eval showed multi-hop decomposition rescues ~40% of findability +
 	// factual-lookup misses. Purely additive — clients decide whether to
@@ -4550,7 +4546,6 @@ type answerResponse struct {
 // answerLooksLikeNoInfo returns true when the answer reads as "sources don't
 // cover this" — the canonical /research-escalation trigger. Same phrase set
 // the eval uses; kept in sync so eval results predict escalation rate.
-// Iter 489.
 func answerLooksLikeNoInfo(s string) bool {
 	if len(s) > 800 {
 		// Long answers with one disclaimer line aren't bails — only treat
@@ -4571,7 +4566,7 @@ func answerLooksLikeNoInfo(s string) bool {
 }
 
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
-	// Iter 410: gateway scatter-gather. When clustered + gateway mode +
+	// When clustered + gateway mode +
 	// not already serving as a leaf for someone else, fan-out retrieval
 	// to peers (with include_text), then run a SINGLE synth here.
 	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
@@ -4595,7 +4590,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
-	// Iter 241: /answer respects the same retrieval filters /search does —
+	// /answer respects the same retrieval filters /search does —
 	// scoping research to a domain or date window is the common EXA shape.
 	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
 	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
@@ -4611,7 +4606,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	// Iter 249: ?rerank=true reorders the BM25 top-pool before synth.
+	// ?rerank=true reorders the BM25 top-pool before synth.
 	// Rerank quality > BM25 quality for "which 5 sources answer this question",
 	// so this is the highest-impact iter for /answer beyond getting LLMs hooked
 	// up. Widens the candidate pool to rerankCandK before truncation.
@@ -4636,8 +4631,8 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
-		// Iter 256/273/274: expansion dispatch (bare / HyDE / paraphrase+RRF).
-		// Iter 365: retriever dispatch (bm25 / dense / hybrid) via shared helper.
+	// expansion dispatch (bare / HyDE / paraphrase+RRF).
+	// retriever dispatch (bm25 / dense / hybrid) via shared helper.
 	expandMode := r.URL.Query().Get("expand")
 	retrieverParam := r.URL.Query().Get("retriever")
 	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
@@ -4649,7 +4644,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		src        answerSource
 		excerpt    string
 		rerankText string
-		score      float64 // iter 390: retrieval score, used by time-decay
+		score      float64 // retrieval score, used by time-decay
 	}
 	cands := make([]cand, 0, keepCap)
 	for _, h := range hits {
@@ -4695,7 +4690,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// Iter 390: time-decay re-weights then re-sorts BEFORE rerank, mirroring
+	// time-decay re-weights then re-sorts BEFORE rerank, mirroring
 	// the /search pre-rerank placement so the reranker sees a freshness-
 	// aware pool.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
@@ -4730,7 +4725,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
-	// Iter 385: MMR diversification on /answer — same pattern as /search.
+	// MMR diversification on /answer — same pattern as /search.
 	// Synth quality benefits when the top-k sources cover different
 	// angles instead of being 5 paraphrases of the same paper.
 	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
@@ -4755,13 +4750,13 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
-		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// stamp ID = i+1 so the JSON response matches the [N]
 		// citation tokens we emit in the synth prompt below.
 		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	// Iter 366: same retriever label vocabulary as /search.
+	// same retriever label vocabulary as /search.
 	denseReady := s.hnsw != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
 	if mmrFired {
@@ -4789,7 +4784,7 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
 	}
 
-	// Iter 242: SSE streaming. Opt in via ?stream=true OR
+	// SSE streaming. Opt in via ?stream=true OR
 	// Accept: text/event-stream. Emits three event types:
 	//   sources — once, immediately after retrieval (so the client can render
 	//             links / citations while the LLM is still thinking)
@@ -4814,13 +4809,13 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	resp := answerResponse{
 		Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
 		Answer: answer, Sources: sources,
-		Model:  s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
+		Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 	}
 	if effectiveQuery != q {
 		resp.EffectiveQuery = effectiveQuery
 	}
 	resp.Warnings = s.warningsFor(r)
-	// Iter 489: suggest /research escalation when the model bailed.
+	// suggest /research escalation when the model bailed.
 	if answerLooksLikeNoInfo(answer) {
 		resp.SuggestEscalation = "/research?q=" + url.QueryEscape(q) + "&strategy=planner"
 	}
@@ -4859,7 +4854,7 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 		sse(map[string]any{"type": "error", "error": err.Error()})
 		return
 	}
-	// Iter 489: parallel to the sync path — emit a suggest_escalation event
+	// parallel to the sync path — emit a suggest_escalation event
 	// when the streamed answer reads as a no-info bail. UI can render a
 	// "Try research mode" button after the answer finishes streaming.
 	if answerLooksLikeNoInfo(full) {
@@ -4871,14 +4866,14 @@ func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc emb
 	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
 }
 
-// Iter 243: /research — multi-step retrieval + synthesis. LLM decomposes the
+// /research — multi-step retrieval + synthesis. LLM decomposes the
 // question into 2-3 sub-queries, each sub-query runs BM25, results are deduped
 // by URL keeping the best score, top-k feed a cited synthesis. Mirrors the
 // SQLite-side /research planner strategy. No streaming, no rerank, no
 // paraphrase strategy yet — those follow once this surface is exercised.
 const researchPlanPrompt = `Decompose the user's research question into 2-3 focused sub-queries that, taken together, would cover the answer. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["sub-query 1", "sub-query 2"]`
 
-// queryPlanPrompt is the iter-499 LLM-orchestrator prompt. The model
+// queryPlanPrompt is the LLM-orchestrator prompt. The model
 // analyzes the user's natural-language query, classifies intent, and
 // outputs a structured retrieval plan: expanded queries (3 variations
 // covering different angles), recency window, retriever choice, and
@@ -4913,18 +4908,18 @@ Input: "compare HNSW vs IVF"
 {"intent":"comparison","queries":["HNSW vs IVF approximate nearest neighbor","Hierarchical Navigable Small World versus Inverted File","ANN index tradeoffs HNSW IVF performance"],"since_days":null,"retriever":"hybrid","decay_days":730}`
 
 // queryPlan captures the LLM's structured retrieval plan. Sanitized on
-// parse — out-of-range values clipped to safe defaults. Iter 499.
+// parse — out-of-range values clipped to safe defaults.
 type queryPlan struct {
-	Intent     string   `json:"intent"`
-	Queries    []string `json:"queries"`
-	SinceDays  *int     `json:"since_days"`
-	Retriever  string   `json:"retriever"`
-	DecayDays  *int     `json:"decay_days"`
+	Intent    string   `json:"intent"`
+	Queries   []string `json:"queries"`
+	SinceDays *int     `json:"since_days"`
+	Retriever string   `json:"retriever"`
+	DecayDays *int     `json:"decay_days"`
 }
 
 // parseQueryPlan extracts the planner's JSON output and applies guard-rails.
 // Returns a plan with sane defaults if the LLM produces garbage — never
-// errors at the caller, so /query always succeeds. Iter 499.
+// errors at the caller, so /query always succeeds.
 func parseQueryPlan(raw, original string) queryPlan {
 	defaultPlan := queryPlan{
 		Intent:    "research",
@@ -4967,7 +4962,7 @@ func parseQueryPlan(raw, original string) queryPlan {
 	return p
 }
 
-// handleQuery is the iter-499 LLM-orchestrated search/research endpoint.
+// handleQuery is the LLM-orchestrated search/research endpoint.
 // Flow: (1) LLM planner analyzes intent + emits expanded queries, (2) each
 // expansion runs through /search internals (hybrid + decay), (3) RRF-fuse
 // the per-expansion result lists, (4) optional rerank, (5) synth with
@@ -4978,7 +4973,7 @@ func parseQueryPlan(raw, original string) queryPlan {
 // QUERY EXPANSION not sub-question DECOMPOSITION. The two are different —
 // research splits multi-faceted questions ("compare X and Y" → "X facts",
 // "Y facts", "X vs Y tradeoffs"); query expands a single intent into
-// paraphrases that catch corpus phrasing variation. Iter 499.
+// paraphrases that catch corpus phrasing variation.
 func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented, "/query requires cfg.Chat.Model")
@@ -5004,8 +4999,8 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Step 2: run each expanded query through retrieval, dedupe by URL.
 	type hitInfo struct {
-		hit     index.Hit
-		bestRR  float64 // best reciprocal rank across expansions
+		hit    index.Hit
+		bestRR float64 // best reciprocal rank across expansions
 	}
 	byURL := make(map[string]*hitInfo, 64)
 	fetchK := 30
@@ -5026,7 +5021,7 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 3: sort by fused RRF score with optional per-host boosts. Iter 504.
+	// Step 3: sort by fused RRF score with optional per-host boosts.
 	fused := make([]index.Hit, 0, len(byURL))
 	for _, v := range byURL {
 		h := v.hit
@@ -5120,7 +5115,7 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // truncateForPromptLite caps text by approximate char count for source
-// prompts. Same heuristic the eval-quick path uses. Iter 499.
+// prompts. Same heuristic the eval-quick path uses.
 func truncateForPromptLite(s string, maxChars int) string {
 	if len(s) <= maxChars {
 		return s
@@ -5134,10 +5129,10 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 - Keep the answer focused on what the sources actually say.`
 
 type researchResponse struct {
-	Query           string         `json:"query"`
-	Plan            []string       `json:"plan"`
-	Expand          string         `json:"expand,omitempty"`
-	// Iter 366: retriever label, mirroring /search/answer vocabulary.
+	Query  string   `json:"query"`
+	Plan   []string `json:"plan"`
+	Expand string   `json:"expand,omitempty"`
+	// retriever label, mirroring /search/answer vocabulary.
 	Retriever       string         `json:"retriever,omitempty"`
 	Answer          string         `json:"answer"`
 	Sources         []answerSource `json:"sources"`
@@ -5148,7 +5143,7 @@ type researchResponse struct {
 }
 
 func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
-	// Iter 410: gateway scatter-gather. Planner runs once on gateway,
+	// Planner runs once on gateway,
 	// each sub-query scatters to peers, single synth here.
 	if s.cluster.GatewayMode && s.cluster.IsClustered() && r.URL.Query().Get("cluster_local") != "1" {
 		s.handleResearchGateway(w, r)
@@ -5171,7 +5166,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			k = n
 		}
 	}
-	// Iter 246: same retrieval filters /search/answer/find_similar accept.
+	// same retrieval filters /search/answer/find_similar accept.
 	// Parsed once here so the streaming and sync paths share semantics.
 	filt, err := parseRetrievalFilters(r)
 	if err != nil {
@@ -5179,7 +5174,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	includeText := r.URL.Query().Get("include_text") == "true"
-	// Iter 244: SSE streaming for /research. Same trigger as /answer.
+	// SSE streaming for /research. Same trigger as /answer.
 	// Emits phase-aware events so the UI can render the plan and source list
 	// before the synth call completes — /research often runs 10–30s
 	// (2-3 plan→retrieve→synth chat rounds), so phase visibility matters.
@@ -5216,19 +5211,19 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	if perSub > 40 {
 		perSub = 40
 	}
-	// Iter 257/275: each sub-query goes through retrieveWithExpansion, so
-	// ?expand=hyde gives per-sub-query HyDE (was iter 257's behavior) and
+	// each sub-query goes through retrieveWithExpansion, so
+	// ?expand=hyde gives per-sub-query HyDE (was's behavior) and
 	// ?expand=paraphrase fans out 3 paraphrases × N sub-queries → RRF per
 	// sub-query → merge into best{}. The cross-sub-query merge stays
-	// score-keep-best (not a second RRF) — that's what iter-243 specified.
-	// Iter 365: retriever dispatch (bm25 / dense / hybrid) applies per
+	// score-keep-best (not a second RRF) — that's what specified.
+	// retriever dispatch (bm25 / dense / hybrid) applies per
 	// sub-query — every sub-query runs through the same retriever.
 	expandMode := r.URL.Query().Get("expand")
 	retrieverParam := r.URL.Query().Get("retriever")
 	for _, sq := range subs {
 		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
-			// Iter 302: log the specific sub-query so operators can diagnose
+			// log the specific sub-query so operators can diagnose
 			// 'why was this research thin on sources' — previously silent.
 			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
 			continue
@@ -5244,7 +5239,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		pooled = append(pooled, v)
 	}
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
-	// Iter 250: same rerank wiring as /search and /answer — pool widens to
+	// same rerank wiring as /search and /answer — pool widens to
 	// rerankCandK before materialization, rerank reorders the pool, truncate
 	// to k after rerank so citation numbers track the final order.
 	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
@@ -5264,7 +5259,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		src        answerSource
 		excerpt    string
 		rerankText string
-		score      float64 // iter 390: pooled score, used by time-decay
+		score      float64 // pooled score, used by time-decay
 	}
 	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
@@ -5290,7 +5285,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		}
 		cands = append(cands, c)
 	}
-	// Iter 390: time-decay on /research sync — re-weight pooled cands before
+	// time-decay on /research sync — re-weight pooled cands before
 	// rerank. Sub-queries that hit recent docs bubble up first.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
 	if decaySet && len(cands) > 0 {
@@ -5322,7 +5317,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			cands = reordered
 		}
 	}
-	// Iter 385: MMR diversification on /research sync. /research aggregates
+	// MMR diversification on /research sync. /research aggregates
 	// across sub-queries — duplicate-ish docs accumulate fast. MMR after
 	// rerank, before truncation.
 	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
@@ -5347,13 +5342,13 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
-		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// stamp ID = i+1 so the JSON response matches the [N]
 		// citation tokens we emit in the synth prompt below.
 		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	// Iter 366: retriever label for /research. Sub-queries don't yield a
+	// Sub-queries don't yield a
 	// single effectiveQuery, so "expansion fired" is approximated by intent:
 	// chat is up and expandMode requested it. Matches what warningsFor() uses
 	// to decide whether to flag a silent no-op.
@@ -5387,17 +5382,18 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, researchResponse{
 		Query: q, Plan: subs, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
 		Answer: answer, Sources: sources,
-		Model:  s.chat.Model(), Warnings: s.warningsFor(r),
+		Model: s.chat.Model(), Warnings: s.warningsFor(r),
 		TotalCandidates: len(best), Took: time.Since(start).String(),
 	})
 }
 
 // streamResearch is the SSE form of handleResearch. Event sequence:
-//   plan    — sub-queries returned by the planner
-//   sources — deduped + ranked pool fed to the synthesizer
-//   chunk   — per chat delta during synth
-//   done    — final {"took": "..."}
-//   error   — terminal; either plan, retrieval, or synth failed
+//
+//	plan    — sub-queries returned by the planner
+//	sources — deduped + ranked pool fed to the synthesizer
+//	chunk   — per chat delta during synth
+//	done    — final {"took": "..."}
+//	error   — terminal; either plan, retrieval, or synth failed
 func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, q string, k int, filt retrievalFilters, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -5415,7 +5411,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		flusher.Flush()
 	}
 
-	// Iter 293: surface silent no-ops upfront so SSE clients can render them
+	// surface silent no-ops upfront so SSE clients can render them
 	// while the plan call is still in flight. Fires before plan to give the
 	// fastest visual feedback when a misconfigured request arrives.
 	if warns := s.warningsFor(r); len(warns) > 0 {
@@ -5434,9 +5430,9 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if len(subs) > 5 {
 		subs = subs[:5]
 	}
-	// Iter 257/275: per-sub-query expansion via retrieveWithExpansion.
-	// Iter 365: per-sub-query retriever dispatch (bm25 / dense / hybrid).
-	// Iter 366: read retriever + wantRerank early so the plan event can
+	// per-sub-query expansion via retrieveWithExpansion.
+	// per-sub-query retriever dispatch (bm25 / dense / hybrid).
+	// read retriever + wantRerank early so the plan event can
 	// surface the full retriever label, not just expand.
 	expandMode := r.URL.Query().Get("expand")
 	retrieverParam := r.URL.Query().Get("retriever")
@@ -5444,7 +5440,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	denseReady := s.hnsw != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandMode != "", wantRerank)
 
-	// Iter 284: surface the active expansion strategy on the plan event so
+	// surface the active expansion strategy on the plan event so
 	// UIs can render 'using paraphrase' or 'using HyDE' as soon as the plan
 	// arrives, before per-sub-query expansion fires.
 	planEvent := map[string]any{"type": "plan", "query": q, "plan": subs, "model": sc.Model()}
@@ -5468,7 +5464,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	for _, sq := range subs {
 		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
-			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err) // iter 302
+			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err) //
 			continue
 		}
 		for _, h := range hits {
@@ -5482,10 +5478,10 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		pooled = append(pooled, v)
 	}
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
-	// Iter 250: same rerank wiring as /research sync. Pool widens to
+	// Pool widens to
 	// rerankCandK, rerank reorders, then truncate to k before SSE 'sources'
 	// fires so the client sees the final rank-ordered list. wantRerank was
-	// hoisted to the top of streamResearch in iter 366 for the plan label.
+	// hoisted to the top of streamResearch in for the plan label.
 	keepCap := k
 	if wantRerank {
 		keepCap = s.rerankCandK
@@ -5501,7 +5497,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		src        answerSource
 		excerpt    string
 		rerankText string
-		score      float64 // iter 390
+		score      float64 //
 	}
 	cands := make([]cand, 0, len(pooled))
 	for _, p := range pooled {
@@ -5527,7 +5523,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		}
 		cands = append(cands, c)
 	}
-	// Iter 390: time-decay on /research stream — same placement as sync.
+	// time-decay on /research stream — same placement as sync.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
 	if decaySet && len(cands) > 0 {
 		now := time.Now()
@@ -5559,8 +5555,8 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			cands = reordered
 		}
 	}
-	// Iter 385: MMR diversification on /research stream — same pattern as sync.
-	// Updates retrieverLabel so the iter-366 retriever field on the sources
+	// MMR diversification on /research stream — same pattern as sync.
+	// Updates retrieverLabel so the retriever field on the sources
 	// SSE event reflects what actually fired (planEvent's label, emitted
 	// earlier, says what was requested — usually identical when MMR succeeds).
 	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
@@ -5584,15 +5580,15 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	sources := make([]answerSource, 0, len(cands))
 	var promptSources strings.Builder
 	for i, c := range cands {
-		// Iter 341: stamp ID = i+1 so the JSON response matches the [N]
+		// stamp ID = i+1 so the JSON response matches the [N]
 		// citation tokens we emit in the synth prompt below.
 		c.src.ID = i + 1
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)} // iter 317
+	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)} //
 	if retrieverLabel != "" {
-		srcEvt["retriever"] = retrieverLabel // iter 366/385
+		srcEvt["retriever"] = retrieverLabel // Iter
 	}
 	sse(srcEvt)
 	if len(sources) == 0 {
@@ -5614,7 +5610,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 }
 
 // retrievalFilters bundles the four post-retrieval predicates /search,
-// /answer, /find_similar, and /research all share. Centralized in iter 246
+// /answer, /find_similar, and /research all share. Centralized in
 // so /research's sync + stream paths stay in lockstep.
 type retrievalFilters struct {
 	include    []string
@@ -5723,7 +5719,7 @@ func hostOf(rawURL string) string {
 
 // parseDateBound accepts the same forms as the SQLite-side server: empty
 // (zero time), RFC3339 ("2026-01-15T00:00:00Z"), or a bare date
-// ("2026-01-15", treated as UTC midnight). Iter 234.
+// ("2026-01-15", treated as UTC midnight).
 func parseDateBound(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
@@ -5738,9 +5734,9 @@ func parseDateBound(s string) (time.Time, error) {
 }
 
 // textExcerpt returns a body-prefix excerpt no longer than maxBytes, cut at a
-// word boundary if one is available within the trailing 16 bytes. Iter 233.
+// word boundary if one is available within the trailing 16 bytes.
 // Static prefix (not query-aware) — matches the SQLite-side DocMeta.Excerpt
-// shape; a query-aware passage extractor is the iter-199 path on the index
+// shape; a query-aware passage extractor is the path on the index
 // hot path and lives there, not in the HTTP handler.
 func textExcerpt(text string, maxBytes int) string {
 	if len(text) <= maxBytes {
@@ -5786,7 +5782,7 @@ func (s *pebbleHTTP) handleContents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Iter 254/255: POST /contents — batch URL → document. Up to 100 URLs in
+// POST /contents — batch URL → document. Up to 100 URLs in
 // one round-trip. URLs not in the index emit a {url, found:false, error}
 // stub in the same slot so the caller can correlate positionally. Wire
 // shape (results+took, per-item found+cached+lang) mirrors the SQLite-side
@@ -5854,7 +5850,7 @@ func (s *pebbleHTTP) handleContentsBatch(w http.ResponseWriter, r *http.Request)
 }
 
 // runPebbleInfo prints Pebble's built-in metrics for the store at -dir.
-// Iter 325: openPebbleOrFriendlyErr wraps store.OpenPebble with a more
+// openPebbleOrFriendlyErr wraps store.OpenPebble with a more
 // helpful error message when the underlying failure is lock contention (a
 // pebble-serve / live crawl is holding the single-writer lock). Callers
 // using offline CLI subcommands (pebble-info, verify) hit this when run
@@ -5871,7 +5867,7 @@ func openPebbleOrFriendlyErr(d string) (*store.PebbleStore, error) {
 	return ps, nil
 }
 
-// Iter 331: runVerifyViaServer GETs pebble-serve's /verify endpoint and
+// runVerifyViaServer GETs pebble-serve's /verify endpoint and
 // renders the JSON body in the same shape runVerifyPebble's local path emits.
 // Lets `cosift verify -server URL` work against a running pebble-serve while
 // the writer lock is held by the crawl / serve process.
@@ -5924,9 +5920,8 @@ func runVerifyViaServer(ctx context.Context, serverURL string, asJSON bool) erro
 }
 
 // pebbleInfoJSON shapes the -json output of `cosift pebble-info`. Extracted
-// in iter 381 so the shape can be unit-tested without spawning a subprocess.
-// Mirrors the /stats response (iter 375 retrievers list, iter 358 vector
-// meta) — same jq filters compose against either source.
+// in so the shape can be unit-tested without spawning a subprocess.
+// Mirrors the /stats response — same jq filters compose against either source.
 func pebbleInfoJSON(path string, st store.Stats, sumLen, indexedDocs int64, meta index.HNSWMeta, hnswOK bool) map[string]any {
 	retrievers := []string{"bm25", "bm25-mlt"}
 	if hnswOK {
@@ -5950,13 +5945,13 @@ func pebbleInfoJSON(path string, st store.Stats, sumLen, indexedDocs int64, meta
 	return out
 }
 
-// Iter 217 — operator visibility into LSM levels, WAL state, on-disk
+// operator visibility into LSM levels, WAL state, on-disk
 // size, and compaction queue, surfaced via pebble.Metrics().String().
 func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("pebble-info", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
-	// Iter 380: machine-readable output for tooling / dashboards. Mirrors
-	// the shape /stats returns (iter 375's retrievers list, iter 358's
+	// Mirrors
+	// the shape /stats returns ( retrievers list,'s
 	// vector meta) so the same jq filters compose against either source.
 	asJSON := fs.Bool("json", false, "emit JSON instead of human-readable text (no pebble.Metrics dump)")
 	if err := fs.Parse(args); err != nil {
@@ -5988,7 +5983,7 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 
 	fmt.Printf("PebbleStore: %s\n\n", d)
 	fmt.Printf("  documents:    %d\n", st.Documents)
-	// Iter 285: surface iter-207 counters here too. pebble-info already needs
+	// pebble-info already needs
 	// to read the store; reading them costs O(1) and gives operators 'is this
 	// store healthy' without round-tripping through pebble-serve /stats.
 	if indexedDocs > 0 {
@@ -5996,11 +5991,11 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 		fmt.Printf("  sum_doc_len:  %d\n", sumLen)
 		fmt.Printf("  avg_doc_len:  %.2f\n", float64(sumLen)/float64(indexedDocs))
 	}
-	// Iter 360: when an HNSW meta blob is persisted, surface dim+nodes here
-	// too. Same cheap 20-byte read pebble-serve does at startup (iter 358).
+	// when an HNSW meta blob is persisted, surface dim+nodes here
+	// too. Same cheap 20-byte read pebble-serve does at startup.
 	// Operators running pebble-info to inspect an offline store get the dense
 	// shape without opening pebble-serve.
-	// Iter 377: also print the retrievers this store can power. bm25/bm25-mlt
+	// bm25/bm25-mlt
 	// always. dense/hybrid need the graph (meta present) AND, for non-URL
 	// modes, a runtime embedder — offline we can only check the persisted
 	// shape, so we report 'available with embedder' rather than asserting.
@@ -6025,16 +6020,16 @@ func runPebbleInfo(ctx context.Context, cfg *config.Config, args []string) error
 	return nil
 }
 
-// Iter 228: verify the iter-207 running counters ('m'+indexed_docs,
+// verify the running counters ('m'+indexed_docs,
 // 'm'+sum_doc_len) against an authoritative scan of the 'l' family.
 // Drift would mean a crash or bug left the counter inconsistent —
 // flagged here so it can be re-derived from the scan.
 func runVerifyPebble(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")
-	// Iter 318: machine-readable output for CI integration.
+	// machine-readable output for CI integration.
 	asJSON := fs.Bool("json", false, "emit JSON report instead of human text (suitable for jq / CI)")
-	// Iter 331: -server URL routes the check through a running pebble-serve's
+	// -server URL routes the check through a running pebble-serve's
 	// /verify endpoint instead of opening the store directly. Useful when a
 	// crawl or pebble-serve is holding the writer lock.
 	serverURL := fs.String("server", "", "pebble-serve URL — when set, GETs /verify instead of opening the store")

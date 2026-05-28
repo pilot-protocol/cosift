@@ -22,7 +22,7 @@ import (
 // Why not x/time/rate: we'd need one rate.Limiter per host with manual cleanup.
 // 40 LOC of our own code with the same correctness and a simpler model — no dep.
 //
-// Iter 128: `overrides` map lets operators set per-host delays distinct from
+// `overrides` map lets operators set per-host delays distinct from
 // the default. Strict exact host match (including port if non-default).
 type hostGate struct {
 	mu        sync.Mutex
@@ -41,7 +41,7 @@ func newHostGate(delay time.Duration, overrides map[string]time.Duration) *hostG
 
 // delayFor returns the effective delay for a host: override if present,
 // default otherwise. Safe to call without holding g.mu — overrides is set
-// at construction and not mutated. Iter 128.
+// at construction and not mutated.
 func (g *hostGate) delayFor(host string) time.Duration {
 	if d, ok := g.overrides[host]; ok {
 		return d

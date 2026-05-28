@@ -35,7 +35,6 @@ func NewChunker() *Chunker { return &Chunker{Size: 320, Overlap: 64} }
 // the corresponding argument is strictly positive. Zero/negative inputs fall
 // through to NewChunker's defaults (320/64). Single source of truth for the
 // override-fallback pattern that previously lived inline at 3 callsites
-// (iter 142 crawler, iter 145 server reembed, iter 145 cmd chunkerWith).
 //
 // Use this anywhere chunker parameters might come from config or per-host
 // overrides where 0 means "leave default alone."

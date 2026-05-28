@@ -8,13 +8,13 @@ import (
 
 // IsClustered reports whether the cosift process is participating in a
 // multi-shard cluster. Single-node mode (NumShards=0 or 1) returns false,
-// and all the iter-408 forwarding/fan-out paths short-circuit. Iter 408.
+// and all the forwarding/fan-out paths short-circuit.
 func (c Cluster) IsClustered() bool {
 	return c.NumShards > 1
 }
 
 // ShardOf returns the shard ID that owns a given URL. FNV-32 hashed mod
-// NumShards. Single-node mode always returns 0. Iter 408.
+// NumShards. Single-node mode always returns 0.
 func (c Cluster) ShardOf(url string) int {
 	if !c.IsClustered() {
 		return 0
@@ -26,7 +26,7 @@ func (c Cluster) ShardOf(url string) int {
 
 // OwnsURL reports whether THIS process should crawl + index a given URL.
 // In single-node mode this is always true. In clustered mode, the URL's
-// hash must land on MyShardID. Iter 408.
+// hash must land on MyShardID.
 func (c Cluster) OwnsURL(url string) bool {
 	if !c.IsClustered() {
 		return true
@@ -39,7 +39,6 @@ func (c Cluster) OwnsURL(url string) bool {
 //   - the cluster is single-node (caller should index locally), OR
 //   - the URL's shard is MyShardID (same as above), OR
 //   - the peers slice doesn't have an entry for that shard ID (config bug).
-// Iter 408.
 func (c Cluster) PeerForURL(url string) string {
 	if !c.IsClustered() {
 		return ""
@@ -55,7 +54,7 @@ func (c Cluster) PeerForURL(url string) string {
 }
 
 // Validate checks the cluster config makes sense. Returns nil for the
-// single-node default. Iter 408.
+// single-node default.
 func (c Cluster) Validate() error {
 	if c.NumShards <= 1 && c.MyShardID == 0 && len(c.Peers) == 0 {
 		return nil // single-node default

@@ -1,4 +1,4 @@
-// HNSW persistence to PebbleStore blobs. Iter 203 — fourth piece of the
+// HNSW persistence to PebbleStore blobs. Fourth piece of the
 // path-2 rework. Without persistence, an HNSW index has to be rebuilt from
 // raw embeddings on every process restart; for a 1M-passage corpus that's a
 // minutes-to-hours cost on a single VM. With persistence the index loads in
@@ -6,7 +6,7 @@
 //
 // Format is hand-rolled binary (NOT gob — per-key gob streams add a
 // type-info header per node and don't compose well with Pebble's per-key
-// values). Each node is one Pebble blob under the iter-200 'v' family;
+// values). Each node is one Pebble blob under the 'v' family;
 // graph metadata (entry point, max level, dim, node count) is a single
 // blob under 'v' + 0x00 + "meta".
 //
@@ -61,7 +61,7 @@ func (h *HNSW) Persist(ctx context.Context, ps *store.PebbleStore) error {
 // Caveat: existing nodes whose neighbor lists got new back-pointers since
 // the last persist are NOT rewritten — those edges are lost until the next
 // full-from-zero persist. Acceptable for crawl-time approximations; final
-// shutdown persist always does fromIdx=0. Iter 406.
+// shutdown persist always does fromIdx=0.
 func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx int) error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -72,7 +72,7 @@ func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx i
 		meta := encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, len(h.nodes))
 		return ps.PutVectorMeta(ctx, meta)
 	}
-	// Iter 408: write nodes FIRST, then meta. The earlier order (meta then
+	// The earlier order (meta then
 	// nodes) was unsafe — if the node batch failed, meta would point past
 	// actual data on disk and LoadHNSW would allocate slots for nodes that
 	// never landed, causing 'neighbors[-1]' panics during search.
@@ -103,7 +103,6 @@ func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx i
 
 // HNSWMeta is the small index-shape summary callers want without paying
 // the cost of loading the full graph: vector dimension and node count.
-// Iter 358.
 type HNSWMeta struct {
 	Dim       int
 	NodeCount int
@@ -111,7 +110,7 @@ type HNSWMeta struct {
 
 // LoadHNSWMeta reads just the persisted meta blob (20 bytes) and returns
 // (dim, nodeCount). Cheap — does not iterate the 'v' family node entries.
-// Returns ok=false when no HNSW meta has been persisted yet. Iter 358.
+// Returns ok=false when no HNSW meta has been persisted yet.
 func LoadHNSWMeta(ctx context.Context, ps *store.PebbleStore) (HNSWMeta, bool, error) {
 	blob, ok, err := ps.GetVectorMeta(ctx)
 	if err != nil || !ok {

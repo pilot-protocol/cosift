@@ -50,18 +50,18 @@ type Document struct {
 	// PublishedAt is the document's publication date, extracted from JSON-LD
 	// `datePublished` when present. Zero-value time.Time means "unknown" —
 	// /search?since= and ?until= filters skip docs with zero PublishedAt
-	// rather than treating them as 1970-01-01. Iter 77.
+	// rather than treating them as 1970-01-01.
 	PublishedAt time.Time
 	// Author extracted from JSON-LD `author.name` or `author` (string form) at
 	// parse time. Empty string means "unknown" (most pages don't carry it).
-	// Iter 150 —SearchHit.author.
+	// SearchHit.author.
 	Author string
 	// Image URL extracted from og:image / twitter:image / JSON-LD `image`.
-	// Empty when absent. Iter 155 —SearchHit.image rendering.
+	// Empty when absent. —SearchHit.image rendering.
 	Image string
 	// Favicon URL extracted from <link rel="icon"> (and apple-touch-icon /
 	// mask-icon variants). Resolved to absolute against the page URL. Empty
-	// when absent. Iter 156 —"link-card" rendering.
+	// when absent. —"link-card" rendering.
 	Favicon string
 }
 
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS query_paraphrases (
 );
 CREATE INDEX IF NOT EXISTS idx_paraphrases_lookup ON query_paraphrases(query_hash, model);
 
--- Persistent HyDE (Hypothetical Document Embeddings) passage cache, iter 162.
+-- Persistent HyDE (Hypothetical Document Embeddings) passage cache
 -- Same shape as query_paraphrases — single passage string instead of a JSON
 -- array. Keyed on (query_hash, model) so different chat models (gpt-4o-mini
 -- vs claude-haiku) don't share cache entries, since their hypothetical
@@ -193,7 +193,7 @@ func Open(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Iter 181: SQLite only allows ONE writer at a time. The default Go
+	// SQLite only allows ONE writer at a time. The default Go
 	// database/sql connection pool (unlimited) means N goroutines each grab
 	// their own connection and then queue on SQLite's writer-lock — paying
 	// connection-pool overhead for no parallelism. SetMaxOpenConns(1) forces
@@ -218,7 +218,7 @@ func Open(dataDir string) (*Store, error) {
 
 // OpenMemory returns a store backed by an in-memory SQLite database. Useful
 // for tests that don't need on-disk persistence. Honors the project's
-// "keep disk usage low for tests" directive language. Iter 133.
+// "keep disk usage low for tests" directive language.
 //
 // Implementation note: SQLite's `:memory:` mode is per-connection — each
 // connection gets its own empty DB. To make a single Store usable, we cap the
@@ -257,24 +257,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		{"documents", "last_modified", "TEXT NOT NULL DEFAULT ''"},
 		{"documents", "change_count", "INTEGER NOT NULL DEFAULT 0"},
 		{"documents", "last_changed_at", "INTEGER NOT NULL DEFAULT 0"},
-		// Iter 77: publication date from JSON-LD datePublished. 0 = unknown.
+		// 0 = unknown.
 		{"documents", "published_at", "INTEGER NOT NULL DEFAULT 0"},
-		// Iter 150: JSON-LD author.name. Empty = unknown.
+		// JSON-LD author.name. Empty = unknown.
 		{"documents", "author", "TEXT NOT NULL DEFAULT ''"},
-		// Iter 155: og:image / twitter:image / JSON-LD image URL. Empty = none.
+		// Empty = none.
 		{"documents", "image", "TEXT NOT NULL DEFAULT ''"},
-		// Iter 156: <link rel="icon"> URL (resolved to absolute). Empty = none.
+		// <link rel="icon"> URL (resolved to absolute). Empty = none.
 		{"documents", "favicon", "TEXT NOT NULL DEFAULT ''"},
-		// Iter 85: last error message from a failed crawl attempt. Surfaces in
+		// Surfaces in
 		// `cosift crawl-errors` for operator visibility on why URLs failed.
 		// Empty string means "no error" (queued/in_flight/done items).
 		{"frontier", "last_error", "TEXT NOT NULL DEFAULT ''"},
-		// Iter 190: hostname extracted from URL at enqueue time. Populated by
+		// Populated by
 		// PushFrontier; used by ClaimFrontier for host-fair scheduling so the
 		// worker pool spreads across hosts instead of stacking on a single
 		// fanout-heavy host (cppreference, Wikipedia, ...).
 		{"frontier", "host", "TEXT NOT NULL DEFAULT ''"},
-		// Iter 194: distinguishes the FIRST index time from the LAST fetch
+		// distinguishes the FIRST index time from the LAST fetch
 		// time. fetched_at is bumped on every re-fetch (including
 		// content-hash-deduped idempotent re-fetches); without a separate
 		// "first indexed" column, crawl-status rolling rates double-count
@@ -294,7 +294,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("add %s.%s: %w", m.table, m.column, err)
 		}
 	}
-	// Iter 190: backfill host for any frontier rows missing it (existing data
+	// backfill host for any frontier rows missing it (existing data
 	// dirs predate the column). Cheap one-shot UPDATE using SQLite string fns.
 	// instr/substr extract the host portion between '://' and the next '/'.
 	if _, err := s.db.ExecContext(ctx, `
@@ -307,7 +307,7 @@ END
 WHERE host = '' AND url LIKE '%://%';`); err != nil {
 		return fmt.Errorf("backfill frontier.host: %w", err)
 	}
-	// Iter 194: backfill first_indexed_at from fetched_at for docs that
+	// backfill first_indexed_at from fetched_at for docs that
 	// predate the column. Best approximation — we lost the first-fetch
 	// timestamp for those rows. New rows get the right value via the
 	// INSERT clause in UpsertDocument.
@@ -315,7 +315,7 @@ WHERE host = '' AND url LIKE '%://%';`); err != nil {
 		`UPDATE documents SET first_indexed_at = fetched_at WHERE first_indexed_at = 0;`); err != nil {
 		return fmt.Errorf("backfill documents.first_indexed_at: %w", err)
 	}
-	// Iter 190: index for host-fair claim. EXISTS subquery on in_flight rows
+	// EXISTS subquery on in_flight rows
 	// per host needs this to stay fast as the queue grows to 100k+.
 	if _, err := s.db.ExecContext(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_frontier_host_status ON frontier(host, status);`); err != nil {
@@ -361,7 +361,7 @@ func (s *Store) DB() *sql.DB { return s.db }
 // UpsertDocument inserts a document or updates an existing row by URL.
 // Returns the document ID (existing or newly assigned).
 func (s *Store) UpsertDocument(ctx context.Context, d *Document) (int64, error) {
-	// Iter 194: first_indexed_at is set ONLY on initial INSERT. The ON CONFLICT
+	// The ON CONFLICT
 	// UPDATE clause deliberately omits it so re-fetches don't bump it. This is
 	// what crawl-status' rolling-rate windows rely on to distinguish new
 	// indexed docs from idempotent re-fetches.
@@ -425,8 +425,8 @@ func (s *Store) GetDocByURL(ctx context.Context, url string) (*Document, error) 
 }
 
 // DocMeta is a slimmed-down view of a document carrying only the fields the
-// /search response needs. Iter-82 added Domain + PublishedAt to avoid pulling
-// full document text per hit. Iter-83 added Excerpt — a short prefix of the
+// /search response needs. added Domain + PublishedAt to avoid pulling
+// full document text per hit. added Excerpt — a short prefix of the
 // document body, retrieved server-side via SQL `substr` so we don't pull KB
 // of text just to extract the first few hundred chars.
 type DocMeta struct {
@@ -434,14 +434,14 @@ type DocMeta struct {
 	Domain      string
 	PublishedAt time.Time
 	Excerpt     string // first ~500 chars of body, for /search fallback when no Highlight is available
-	Author      string // JSON-LD author.name; empty when absent. Iter 150.
-	Image       string // og:image / twitter:image / JSON-LD image. Empty when absent. Iter 155.
-	Favicon     string // <link rel="icon"> absolute URL. Empty when absent. Iter 156.
+	Author      string // JSON-LD author.name; empty when absent.
+	Image       string // og:image / twitter:image / JSON-LD image. Empty when absent.
+	Favicon     string // <link rel="icon"> absolute URL. Empty when absent.
 }
 
 // GetDocMetas batched-fetches DocMeta records for the given URLs in one SQL
 // query. Result is keyed by URL; missing URLs are absent from the map (not an
-// error). Used by `/search` (iter 82) to enrich its response with domain +
+// error). Used by `/search` to enrich its response with domain +
 // PublishedAt without N round-trips for a K-result page.
 //
 // SQLite has a default ~999 parameter ceiling per query; we chunk into batches
@@ -461,7 +461,7 @@ func (s *Store) GetDocMetas(ctx context.Context, urls []string) (map[string]DocM
 		chunk := urls[start:end]
 		placeholders := strings.Repeat("?,", len(chunk))
 		placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
-		// Iter-83: substr(text, 1, 500) pulls only the first 500 chars of body
+		// substr(text, 1, 500) pulls only the first 500 chars of body
 		// for use as a /search excerpt fallback. SQLite does the truncation
 		// server-side, so even multi-MB documents transfer only the small slice.
 		query := `SELECT url, COALESCE(domain,''), COALESCE(published_at,0), COALESCE(substr(text, 1, 500), ''), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,'') FROM documents WHERE url IN (` + placeholders + `);`
@@ -495,7 +495,7 @@ func (s *Store) GetDocMetas(ctx context.Context, urls []string) (map[string]DocM
 }
 
 // GetDocTexts batched-fetches the body text of the given URLs, truncated to
-// maxLen chars via SQLite-side substr. Iter 148: powers `/search?include_text=true`
+// maxLen chars via SQLite-side substr. powers `/search?include_text=true`
 // without forcing a /contents round-trip. Same chunking strategy as GetDocMetas
 // to stay under SQLite's 999-parameter ceiling. maxLen ≤ 0 → no truncation;
 // callers should cap maxLen explicitly so a stray ?include_text=true on a
@@ -560,7 +560,7 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 
 // CrawlStatusReport bundles the operator-facing crawl snapshot returned by
 // CrawlStatus. Single read per field, safe to run against a SQLite WAL DB
-// being actively written by a `cosift crawl` process. Iter 193.
+// being actively written by a `cosift crawl` process.
 type CrawlStatusReport struct {
 	Documents        int64
 	Terms            int64
@@ -641,7 +641,7 @@ func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (Cra
 	rows.Close()
 
 	// Top error classes — operators triaging a failing crawl care about which
-	// failure mode is dominant. last_error already lives on frontier (iter 85).
+	// failure mode is dominant. last_error already lives on frontier.
 	rows, err = s.db.QueryContext(ctx,
 		`SELECT last_error, COUNT(*) FROM frontier WHERE status='error' AND last_error!='' GROUP BY last_error ORDER BY 2 DESC LIMIT ?;`,
 		topErrorsN)
@@ -659,7 +659,7 @@ func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (Cra
 	rows.Close()
 
 	// Rolling-window rates: 5, 15, 30 minute windows on documents.first_indexed_at.
-	// Iter 194: switched from fetched_at to first_indexed_at because fetched_at
+	// switched from fetched_at to first_indexed_at because fetched_at
 	// is bumped on every re-fetch (including content-hash-deduped idempotent
 	// re-fetches), which made the "rate" the FETCH rate, not the NEW-DOC rate
 	// that operators want. first_indexed_at is set once on initial INSERT.
@@ -682,7 +682,7 @@ var ErrNotFound = errors.New("not found")
 // Streams via the standard rows interface — fine up to a few million rows.
 // Above that, callers should use cursor-based pagination instead.
 func (s *Store) ListDocuments(ctx context.Context, limit int) ([]*Document, error) {
-	// Iter 104: include published_at so callers can filter by date without an
+	// include published_at so callers can filter by date without an
 	// N+1 lookup. Zero published_at means "no JSON-LD datePublished extracted"
 	// (same convention as Document.PublishedAt elsewhere).
 	q := `SELECT id, url, COALESCE(domain,''), COALESCE(title,''), COALESCE(text,''), COALESCE(lang,''), COALESCE(source,''), COALESCE(quality,0), COALESCE(fetched_at,0), content_sha, COALESCE(etag,''), COALESCE(last_modified,''), COALESCE(change_count,0), COALESCE(last_changed_at,0), COALESCE(published_at,0), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,'') FROM documents ORDER BY id ASC`
@@ -714,7 +714,7 @@ func (s *Store) ListDocuments(ctx context.Context, limit int) ([]*Document, erro
 
 // CountByDomain returns top-N (domain, count) buckets for the admin dashboard.
 // SitemapEntry is one row for /sitemap.xml output: URL + lastmod proxy.
-// Iter 86 added this for the sitemap-output endpoint. LastChangedAt is the
+// added this for the sitemap-output endpoint. LastChangedAt is the
 // best "lastmod" signal cosift has — when the indexed content last changed.
 // Zero value means "never changed since first fetch" (the lastmod is just
 // omitted in that case).
@@ -725,7 +725,7 @@ type SitemapEntry struct {
 
 // ListDocSitemapEntries returns slim (URL, LastChangedAt) records for sitemap
 // output, in deterministic ID order. Caller is responsible for the sitemap-spec
-// 50,000-URL limit; pass `limit=50000`. Iter 86.
+// 50,000-URL limit; pass `limit=50000`.
 func (s *Store) ListDocSitemapEntries(ctx context.Context, limit int) ([]SitemapEntry, error) {
 	q := `SELECT url, COALESCE(last_changed_at,0) FROM documents ORDER BY id ASC`
 	args := []any{}
@@ -776,17 +776,17 @@ func (s *Store) CountByDomain(ctx context.Context, topN int) (map[string]int64, 
 }
 
 // ListURLsByDomain returns every document URL whose domain matches `pattern`
-// using iter-79 suffix-on-dot-boundary semantics: `example.com` matches
+// using suffix-on-dot-boundary semantics: `example.com` matches
 // `example.com` AND `blog.example.com`, but NOT `evilexample.com`.
 // Caller-side filtering would require a full table scan; pushing this into
-// SQL uses the existing idx_documents_domain index. Iter 110.
+// SQL uses the existing idx_documents_domain index.
 func (s *Store) ListURLsByDomain(ctx context.Context, pattern string) ([]string, error) {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	if pattern == "" {
 		return nil, errors.New("domain pattern required")
 	}
 	// `domain = ?` catches the exact match; `domain LIKE '%.' || ?` catches
-	// any subdomain. Together they implement the iter-79 suffix-on-dot-boundary
+	// any subdomain. Together they implement the suffix-on-dot-boundary
 	// rule: bare-host equality OR strict subdomain.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT url FROM documents WHERE domain = ? OR domain LIKE '%.' || ? ORDER BY id ASC;`,
@@ -821,9 +821,9 @@ func (s *Store) CountParaphrases(ctx context.Context) (int64, error) {
 }
 
 // CountDocsWithPublishedAt returns the number of documents that have a known
-// publication date (iter-77 published_at column > 0). Lets operators see how
-// much of their corpus is filterable via /search?since=/?until= (iter 77) or
-// sortable via ?sort=date_desc/date_asc (iter 78). Iter 80.
+// publication date. Lets operators see how
+// much of their corpus is filterable via /search?since=/?until= or
+// sortable via ?sort=date_desc/date_asc.
 func (s *Store) CountDocsWithPublishedAt(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM documents WHERE published_at > 0;`).Scan(&n)
@@ -981,7 +981,7 @@ func paraphraseHash(query string) [32]byte {
 
 // GetHyDE returns the cached HyDE passage for (query, model), or "" if absent.
 // Same normalization as paraphraseHash (lower + trim) so casing variants share
-// an entry. Iter 162.
+// an entry.
 func (s *Store) GetHyDE(ctx context.Context, model, query string) (string, error) {
 	h := paraphraseHash(query)
 	var passage string
@@ -997,7 +997,7 @@ func (s *Store) GetHyDE(ctx context.Context, model, query string) (string, error
 	return passage, nil
 }
 
-// SaveHyDE upserts a (query, model) → passage entry. Iter 162.
+// SaveHyDE upserts a (query, model) → passage entry.
 func (s *Store) SaveHyDE(ctx context.Context, model, query, passage string) error {
 	if passage == "" {
 		return nil
@@ -1015,7 +1015,7 @@ ON CONFLICT(query_hash, model) DO UPDATE SET
 
 // PruneStaleHyDE deletes rows older than maxAge. Drift defense — over time
 // the corpus or the chat model shifts and old passages stop matching well.
-// maxAge=0 is a no-op. Iter 162.
+// maxAge=0 is a no-op.
 func (s *Store) PruneStaleHyDE(ctx context.Context, maxAge time.Duration) (int64, error) {
 	if maxAge <= 0 {
 		return 0, nil
@@ -1030,7 +1030,7 @@ func (s *Store) PruneStaleHyDE(ctx context.Context, maxAge time.Duration) (int64
 }
 
 // CountHyDE returns the number of cached HyDE passages. Useful for the
-// operator dashboard / metrics. Iter 162.
+// operator dashboard / metrics.
 func (s *Store) CountHyDE(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM query_hyde;`).Scan(&n)
@@ -1099,10 +1099,10 @@ type FrontierStats struct {
 }
 
 // CountQueuedPerHost returns a host→queued-count map for the given hosts.
-// Iter 195: used by crawler.enqueueLinks to enforce the per-host cap in a
+// used by crawler.enqueueLinks to enforce the per-host cap in a
 // single SQL query, avoiding N queries per link batch. Hosts with zero queued
 // rows simply don't appear in the result map (callers should treat absent as
-// 0). Backed by the idx_frontier_host_status index (iter 190).
+// 0). Backed by the idx_frontier_host_status index.
 func (s *Store) CountQueuedPerHost(ctx context.Context, hosts []string) (map[string]int, error) {
 	if len(hosts) == 0 {
 		return map[string]int{}, nil
@@ -1173,7 +1173,7 @@ func (s *Store) PushFrontier(ctx context.Context, url string, depth int, priorit
 // ClaimFrontier atomically grabs one queued item, flips it to in_flight, and returns it.
 // Returns ok=false if the queue is empty.
 func (s *Store) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
-	// Iter 181: atomic single-statement claim via UPDATE...RETURNING. Pre-fix,
+	// atomic single-statement claim via UPDATE...RETURNING. Pre-fix,
 	// this was BeginTx → SELECT → UPDATE → COMMIT, which under SQLite WAL with
 	// multiple crawler workers produced "database is locked (517) — SQLITE_BUSY_SNAPSHOT":
 	// the SELECT established a read snapshot, another worker committed an UPDATE,
@@ -1181,10 +1181,10 @@ func (s *Store) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
 	// acquires the write lock for its duration; SQLite's busy_timeout (5s, set
 	// in Open) serializes concurrent claims cleanly without the snapshot race.
 	//
-	// Surfaced by the iter-181 real-crawl integration test (`cosift crawl
+	// Surfaced by the real-crawl integration test (`cosift crawl
 	// https://go.dev/doc/effective_go` with default max_concurrent=8) — unit
 	// tests against a single-goroutine OpenMemory store never hit the race.
-	// Iter 190: host-fair scheduling. Prefer URLs whose host has no in-flight
+	// Prefer URLs whose host has no in-flight
 	// row — keeps the worker pool spread across hosts instead of stacking on a
 	// single fanout-heavy domain (cppreference, Wikipedia, ...) and waiting on
 	// its per-host delay gate. The first ORDER BY term evaluates to 0 when no
@@ -1222,7 +1222,7 @@ func (s *Store) CompleteFrontier(ctx context.Context, url string) error {
 }
 
 // FailFrontier marks an item as errored, incrementing the attempts counter.
-// errMsg is stored in the new (iter-85) last_error column for operator
+// errMsg is stored in the new last_error column for operator
 // visibility via `cosift crawl-errors`. Long messages are truncated at 500
 // chars to bound storage — error strings can be unbounded in pathological
 // cases (e.g. multiline stack traces from upstream libraries).
@@ -1237,7 +1237,7 @@ UPDATE frontier SET status = 'error', attempts = attempts + 1, last_error = ? WH
 }
 
 // FrontierError is one errored frontier entry — used by `cosift crawl-errors`
-// to surface failed URLs with their reason for operator diagnosis. Iter 85.
+// to surface failed URLs with their reason for operator diagnosis.
 type FrontierError struct {
 	URL        string
 	LastError  string
@@ -1247,7 +1247,7 @@ type FrontierError struct {
 
 // ListErroredFrontier returns the most recently enqueued errored URLs, up to
 // `limit`. Each carries the last error message captured by FailFrontier. Used
-// by `cosift crawl-errors` for operator diagnosis. Iter 85.
+// by `cosift crawl-errors` for operator diagnosis.
 func (s *Store) ListErroredFrontier(ctx context.Context, limit int) ([]FrontierError, error) {
 	if limit <= 0 {
 		limit = 50

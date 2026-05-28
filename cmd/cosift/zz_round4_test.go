@@ -61,7 +61,7 @@ type fakePeer struct {
 	id           int
 	searchCalls  atomic.Int64
 	findCalls    atomic.Int64
-	failNext     atomic.Bool // when true, next request returns 500
+	failNext     atomic.Bool  // when true, next request returns 500
 	delayNext    atomic.Int64 // ms to sleep before responding
 	canonicalURL string       // URL prefix this peer owns
 }

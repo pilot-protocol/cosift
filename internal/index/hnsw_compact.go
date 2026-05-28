@@ -12,7 +12,7 @@ package index
 // from a CLI subcommand or admin endpoint) and persist the result.
 //
 // PQ codes are NOT carried over — a fresh codebook should be retrained
-// against the rebuilt graph because node indices change. Iter 428.
+// against the rebuilt graph because node indices change.
 func (h *HNSW) Rebuild() *HNSW {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -48,8 +48,8 @@ func (h *HNSW) Rebuild() *HNSW {
 // Returns the number of zombies removed. Cost: O(N + total_edges). The
 // graph topology among surviving nodes is preserved exactly.
 //
-// Iter 428 — production HNSW had 768K zombie slots (~92% of total) from
-// pre-iter-411 partial persists; bench-pq showed Recall@10 dropping to 74%
+// production HNSW had 768K zombie slots (~92% of total) from
+// pre partial persists; bench-pq showed Recall@10 dropping to 74%
 // even without PQ. Compaction restores the recall the underlying corpus
 // can support.
 func (h *HNSW) Compact() (removed int) {

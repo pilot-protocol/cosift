@@ -69,7 +69,7 @@ func TestPebbleMultipleDocs(t *testing.T) {
 	ids := make([]int64, 5)
 	for i := range ids {
 		d := &Document{
-			URL: "https://example.com/" + string(rune('a'+i)),
+			URL:   "https://example.com/" + string(rune('a'+i)),
 			Title: "T", Text: "x", FetchedAt: time.Now(),
 		}
 		id, err := p.UpsertDocument(ctx, d)
@@ -148,7 +148,7 @@ func TestPebbleStats(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 7; i++ {
 		_, _ = p.UpsertDocument(ctx, &Document{
-			URL: "https://x/" + string(rune('a'+i)),
+			URL:   "https://x/" + string(rune('a'+i)),
 			Title: "t", FetchedAt: time.Now(),
 		})
 	}

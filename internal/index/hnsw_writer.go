@@ -1,13 +1,13 @@
-// Iter 214 — HNSW write bridge for the Pebble-backed crawler path.
+// HNSW write bridge for the Pebble-backed crawler path.
 //
-// The iter-212 PassageWriter interface lets the crawler stream passage
+// The PassageWriter interface lets the crawler stream passage
 // vectors to whatever backend the operator wires. On SQLite, *store.Store
 // satisfies it directly (writes go to the passages table). On Pebble there
 // was no implementation — vector indexing during crawl was silently
 // skipped, which made the Pebble path BM25-only.
 //
 // HNSWWriter bridges the gap: passages flow into an in-memory HNSW graph
-// and get periodically flushed to the iter-200/203 PebbleStore via
+// and get periodically flushed to the Iter PebbleStore via
 // HNSW.Persist. Cheap per-passage cost (one graph insert + one
 // GetDocMeta lookup); the heavy on-disk write is amortized across
 // many inserts.
@@ -23,7 +23,7 @@ import (
 
 // HNSWWriter satisfies the crawler's PassageWriter interface against a
 // PebbleStore + HNSW pair. Passage URLs/titles are resolved from the
-// iter-207 'i' family (cheap, no full Document gob decode).
+// 'i' family (cheap, no full Document gob decode).
 //
 // Persistence is checkpointed every PersistEvery passages. Setting
 // PersistEvery to 0 (the default if you don't configure it) means
@@ -85,7 +85,7 @@ func (w *HNSWWriter) UpsertPassage(ctx context.Context, p *store.Passage) error 
 // MarkURLInvalid zeros out every HNSW node whose url matches. Returns
 // the count zeroed. Lets the crawler tell us "this URL's prior passages
 // are stale" before pushing the new chunk batch. Satisfies the optional
-// crawler.URLInvalidator interface. Iter 477.
+// crawler.URLInvalidator interface.
 func (w *HNSWWriter) MarkURLInvalid(ctx context.Context, url string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

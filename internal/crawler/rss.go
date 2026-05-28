@@ -24,7 +24,7 @@ import (
 // We intentionally do NOT subscribe / poll on a timer. That'd add a goroutine
 // per feed and create another moving part. Operators who want freshness can
 // hit /admin/rss-import on cron (or every cosift restart re-fetches via the
-// seeds-file). Iter 478.
+// seeds-file).
 //
 // What we deliberately ignore:
 //   - <pubDate> / <updated>: useful for "only new since last fetch" semantics,
@@ -70,7 +70,7 @@ type atomLink struct {
 // SeedRSS fetches a feed URL and enqueues every article link it advertises.
 // Returns the count enqueued (after per-link domain/cap filtering). Idempotent
 // against the frontier — re-seeding the same feed pushes only the newly-added
-// items. Iter 478.
+// items.
 func (c *Crawler) SeedRSS(ctx context.Context, feedURL string) (int, error) {
 	urls, err := c.fetchRSS(ctx, feedURL)
 	if err != nil {

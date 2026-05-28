@@ -52,9 +52,9 @@ type OpenAIChatClient struct {
 
 // NewOpenAIChat builds a client. URL empty → public OpenAI.
 //
-// Iter 393: URL is forgiving — accepts either the full endpoint
+// URL is forgiving — accepts either the full endpoint
 // ("/v1/chat/completions") or the base ("/v1") and appends
-// "/chat/completions" when missing. Mirrors iter-392 on the embed client.
+// "/chat/completions" when missing. Mirrors on the embed client.
 func NewOpenAIChat(apiKey, url, model string) *OpenAIChatClient {
 	if url == "" {
 		url = "https://api.openai.com/v1/chat/completions"
@@ -125,7 +125,7 @@ type chatResp struct {
 // models emit before their final answer. cosift's planner parses chat output
 // as JSON and the /answer flow surfaces it verbatim; leaving thinking in would
 // either break the planner or leak internal reasoning into responses. Greedy,
-// dotall, non-nested (R1 doesn't nest). Iter 395.
+// dotall, non-nested (R1 doesn't nest).
 //
 // Operators that WANT to see the reasoning can grep ~/pebble-serve.log — the
 // raw chat call isn't logged today but the streaming SSE path emits chunks
@@ -191,7 +191,7 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	if len(parsed.Choices) == 0 {
 		return "", errors.New("chat: no choices in response")
 	}
-	// Iter 395: R1-distill compatibility — strip <think> blocks.
+	// R1-distill compatibility — strip <think> blocks.
 	return stripThinkingBlocks(parsed.Choices[0].Message.Content), nil
 }
 
@@ -281,7 +281,7 @@ func (c *OpenAIChatClient) ChatStream(ctx context.Context, msgs []ChatMsg, onChu
 	if err := scanner.Err(); err != nil {
 		return stripThinkingBlocks(full.String()), err
 	}
-	// Iter 395: strip <think> on the accumulated content. SSE chunks still
+	// SSE chunks still
 	// stream raw so callers wanting to surface the reasoning ('live thinking
 	// indicator') can; only the final return value is sanitized.
 	return stripThinkingBlocks(full.String()), nil

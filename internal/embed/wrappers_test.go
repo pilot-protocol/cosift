@@ -11,15 +11,15 @@ import (
 
 // fakeEmbedder is a deterministic in-memory Embedder for testing wrappers.
 type fakeEmbedder struct {
-	model    string
-	dim      int
-	calls    atomic.Int64
-	totalIn  atomic.Int64 // total input texts seen across calls
-	err      error
-	delay    time.Duration
-	maxConc  int32  // tracks max concurrency
-	curConc  int32  // current in-flight calls
-	concMu   sync.Mutex
+	model   string
+	dim     int
+	calls   atomic.Int64
+	totalIn atomic.Int64 // total input texts seen across calls
+	err     error
+	delay   time.Duration
+	maxConc int32 // tracks max concurrency
+	curConc int32 // current in-flight calls
+	concMu  sync.Mutex
 }
 
 func (f *fakeEmbedder) Model() string { return f.model }

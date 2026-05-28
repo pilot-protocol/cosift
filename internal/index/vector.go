@@ -123,7 +123,7 @@ func (v *VectorIndex) Search(_ context.Context, query []float32, k int) []Vector
 }
 
 // SearchMMR returns top-k via Maximal Marginal Relevance re-ranking of the
-// top-candPool candidates by cosine. Iter 158 — frontier-grade IR.
+// top-candPool candidates by cosine. Frontier-grade IR.
 //
 // MMR balances relevance (cosine-to-query) with diversity (1 - cosine to
 // already-selected hits). lambda controls the tradeoff:
@@ -243,7 +243,7 @@ func (v *VectorIndex) SearchMMR(ctx context.Context, query []float32, k int, lam
 }
 
 // vecDocKey produces a stable lookup key for a (url, offset, length) triple.
-// Iter 158 — used by SearchMMR to round-trip back to stored embeddings.
+// used by SearchMMR to round-trip back to stored embeddings.
 func vecDocKey(url string, offset, length int) string {
 	return fmt.Sprintf("%s\x00%d\x00%d", url, offset, length)
 }
@@ -371,7 +371,7 @@ func RRFWeighted(lists [][]string, weights []float64, topK int, rrfK float64) []
 // nothing matches. Suffix matching mirrors ExcludeDomains semantics, so
 // "wikipedia.org": 1.5 boosts every subdomain (en., zh., …).
 //
-// Iter 504: keeps the no-host-boost callers on the cheap path — when
+// keeps the no-host-boost callers on the cheap path — when
 // hostBoosts is empty, falls through to RRFWeighted.
 func RRFWithHostBoosts(lists [][]string, weights []float64, hostBoosts map[string]float64, topK int, rrfK float64) []string {
 	if len(hostBoosts) == 0 {

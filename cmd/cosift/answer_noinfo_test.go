@@ -62,4 +62,3 @@ func longAnswerWithDisclaimer() string {
 	}
 	return body
 }
-

@@ -16,7 +16,7 @@ import (
 
 // PDFParseResult is the wire shape between cosift parse-pdf (the child)
 // and ParsePDFSandboxed (the parent). One JSON object on the child's
-// stdout. Iter 464.
+// stdout.
 type PDFParseResult struct {
 	Title string `json:"title,omitempty"`
 	Text  string `json:"text,omitempty"`
@@ -32,7 +32,7 @@ type PDFParseResult struct {
 //
 // Bin is the full path to the running cosift binary; defaults to
 // os.Executable() when empty. Timeout caps total wall-clock; 30 s is a
-// safe default given most legit PDFs parse in <2 s. Iter 464.
+// safe default given most legit PDFs parse in <2 s.
 func ParsePDFSandboxed(ctx context.Context, body []byte, finalURL, bin string, timeout time.Duration) (*ParsedDoc, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("empty pdf body")
@@ -79,7 +79,7 @@ func ParsePDFSandboxed(ctx context.Context, body []byte, finalURL, bin string, t
 
 // ParsePDFChild is the in-process parser invoked by the child cosift
 // process. Same code path as the original ParsePDF but emits a
-// JSON-shaped result on stdout so the parent can read it. Iter 464.
+// JSON-shaped result on stdout so the parent can read it.
 func ParsePDFChild(stdin io.Reader, stdout io.Writer) {
 	body, err := io.ReadAll(io.LimitReader(stdin, 100<<20)) // 100 MiB cap
 	if err != nil {
@@ -98,14 +98,14 @@ func ParsePDFChild(stdin io.Reader, stdout io.Writer) {
 // ParsedDoc shape as the HTML parser. Title is derived from PDF metadata when
 // available, or from the final URL's basename when not.
 //
-// Iter-73 added this so cosift can index PDF-content docs sites (real-world
+// added this so cosift can index PDF-content docs sites (real-world
 // docs corpora are commonly ~30% PDFs). Pure-Go, no cgo, no system deps.
 //
 // Lang is left empty (PDFs don't carry HTML lang attributes). Links are
 // extracted only if the PDF embeds annotation links (rare in text-only PDFs);
 // extracting embedded URL annotations isn't critical for retrieval.
 func ParsePDF(body []byte, finalURL string) (parsed *ParsedDoc, err error) {
-	// Iter 191: the ledongthuc/pdf library uses panic() for non-local error
+	// the ledongthuc/pdf library uses panic() for non-local error
 	// flow on malformed PDFs (observed error: "missing endobj after indirect
 	// object definition"). Without recovery, one bad PDF takes down the entire
 	// `cosift crawl` process — observed in production after ~2200 docs.

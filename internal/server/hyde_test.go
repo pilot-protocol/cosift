@@ -15,13 +15,13 @@ import (
 // purpose. Lets us exercise /research?hyde=true end-to-end without three
 // separate fake chat clients.
 type polyChat struct {
-	planReply    string
-	hydePrefix   string
-	synthReply   string
-	calls        int
-	hydeCalls    int
-	hydeQueries  []string
-	mu           sync.Mutex
+	planReply   string
+	hydePrefix  string
+	synthReply  string
+	calls       int
+	hydeCalls   int
+	hydeQueries []string
+	mu          sync.Mutex
 }
 
 func (p *polyChat) Model() string { return "poly-chat" }

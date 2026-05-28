@@ -164,9 +164,9 @@ func TestAbsHelper(t *testing.T) {
 
 func TestTruncateHelper(t *testing.T) {
 	for _, c := range []struct {
-		in     string
-		max    int
-		want   string
+		in   string
+		max  int
+		want string
 	}{
 		{"abc", 10, "abc"},
 		{"abcde", 5, "abcde"},

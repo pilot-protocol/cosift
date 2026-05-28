@@ -71,7 +71,7 @@ func TestCrawlerEnqueueLinksDropsOverCappedChildren(t *testing.T) {
 	cfg.RespectRobots = false
 	cfg.MaxDepth = 5
 	cfg.PerHostMaxDepth = map[string]int{
-		"strict.example.com": 1, // cap 1: drop anything at depth > 1
+		"strict.example.com": 1,  // cap 1: drop anything at depth > 1
 		"deep.example.com":   10, // cap 10: allow up to depth 10
 	}
 	// IncludeDomains empty → c.allowedDomain accepts everything.

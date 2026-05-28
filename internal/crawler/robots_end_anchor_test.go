@@ -54,9 +54,9 @@ func TestPatternMatchesEndAnchorWithWildcard(t *testing.T) {
 
 		// /api/*/secret$ — middle wildcard + end anchor
 		{"/api/*/secret$", "/api/v1/secret", true},
-		{"/api/*/secret$", "/api/v1/v2/secret", true},     // * is greedy, matches v1/v2
-		{"/api/*/secret$", "/api/v1/secret/foo", false},   // suffix breaks
-		{"/api/*/secret$", "/api/secret", false},          // missing middle segment "/"
+		{"/api/*/secret$", "/api/v1/v2/secret", true},   // * is greedy, matches v1/v2
+		{"/api/*/secret$", "/api/v1/secret/foo", false}, // suffix breaks
+		{"/api/*/secret$", "/api/secret", false},        // missing middle segment "/"
 	}
 	for _, tc := range cases {
 		if got := patternMatches(tc.pattern, tc.path); got != tc.want {
@@ -108,12 +108,12 @@ Disallow: /*.pdf$
 		path    string
 		allowed bool
 	}{
-		{"/admin", false},          // /admin$ disallows exactly /admin
-		{"/admin/foo", true},       // /admin without $ would match; with $, only /admin exactly
-		{"/admin/public/", true},   // explicit Allow (iter-3 longer-prefix wins)
-		{"/file.pdf", false},       // /*.pdf$ disallows
-		{"/file.pdf?dl=1", true},   // query suffix breaks $-anchor
-		{"/file.html", true},       // not a pdf
+		{"/admin", false},        // /admin$ disallows exactly /admin
+		{"/admin/foo", true},     // /admin without $ would match; with $, only /admin exactly
+		{"/admin/public/", true}, // explicit Allow (iter-3 longer-prefix wins)
+		{"/file.pdf", false},     // /*.pdf$ disallows
+		{"/file.pdf?dl=1", true}, // query suffix breaks $-anchor
+		{"/file.html", true},     // not a pdf
 	}
 	for _, tc := range cases {
 		allowed, _ := decideRobots(rules, tc.path, "anybot")

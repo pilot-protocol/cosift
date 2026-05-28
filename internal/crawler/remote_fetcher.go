@@ -19,20 +19,21 @@ import (
 // code is unaware of this — it still calls c.http.Do(req) as before.
 //
 // Wire shape:
-//   request:  POST <RemoteFetcherURL>
-//             Authorization: Bearer <RemoteFetcherToken>
-//             Content-Type:  application/json
-//             body:          {"url": "...", "user_agent": "...", "headers": {...}}
 //
-//   response: 200 OK on success; raw upstream body in the response body.
-//             Special headers:
-//               X-Final-URL     — fully-resolved URL after redirects
-//               X-Origin-Status — upstream HTTP status (e.g. 404, 200, 500)
-//                                 cosift consults this for status; the
-//                                 outer 200 is just "worker reachable"
+//	request:  POST <RemoteFetcherURL>
+//	          Authorization: Bearer <RemoteFetcherToken>
+//	          Content-Type:  application/json
+//	          body:          {"url": "...", "user_agent": "...", "headers": {...}}
+//
+//	response: 200 OK on success; raw upstream body in the response body.
+//	          Special headers:
+//	            X-Final-URL     — fully-resolved URL after redirects
+//	            X-Origin-Status — upstream HTTP status (e.g. 404, 200, 500)
+//	                              cosift consults this for status; the
+//	                              outer 200 is just "worker reachable"
 //
 // Non-GET requests (auth probes, robots.txt fetches, etc.) bypass the
-// worker and go direct via the inner transport. Iter 474.
+// worker and go direct via the inner transport.
 type remoteFetcherTransport struct {
 	inner http.RoundTripper
 	urls  []string // pool — picked round-robin per request
@@ -42,7 +43,7 @@ type remoteFetcherTransport struct {
 	mu  sync.Mutex
 	idx int
 
-	// Iter 484: hosts in this set bypass the CF Worker and fetch direct.
+	// hosts in this set bypass the CF Worker and fetch direct.
 	// Use for known bot-friendly servers where the Worker adds round-trip
 	// latency without unlocking new access (Wikipedia, arxiv, etc. accept
 	// our User-Agent cleanly). Built once at construction time so the
@@ -53,7 +54,6 @@ type remoteFetcherTransport struct {
 // defaultDirectHosts is the seed allow-list for sites that reliably serve
 // machine clients with no rate-limit drama. Operators can override via
 // COSIFT_DIRECT_HOSTS (comma-separated) — empty disables direct-fetch.
-// Iter 484.
 var defaultDirectHosts = []string{
 	"en.wikipedia.org", "commons.wikimedia.org", "en.wiktionary.org",
 	"arxiv.org", "info.arxiv.org", "export.arxiv.org",
@@ -91,7 +91,7 @@ func newRemoteFetcherTransport(workerURLs []string, token string, inner http.Rou
 
 // pickURL returns the next URL in the pool, advancing the round-robin
 // index. Mutex acquisition is cheap (<100ns) versus the network call
-// that follows, so contention here isn't a throughput concern. Iter 483.
+// that follows, so contention here isn't a throughput concern.
 func (t *remoteFetcherTransport) pickURL() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -110,7 +110,7 @@ func (t *remoteFetcherTransport) RoundTrip(req *http.Request) (*http.Response, e
 	if req.Method != http.MethodGet {
 		return t.inner.RoundTrip(req)
 	}
-	// Iter 484: direct-fetch fast path for allow-listed hosts. Skips the
+	// Skips the
 	// CF Worker entirely — fetch goes straight from this box's egress IP.
 	// Used for known bot-friendly servers where the Worker is dead weight.
 	if t.directHosts != nil && req.URL != nil {

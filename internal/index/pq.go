@@ -1,6 +1,6 @@
 // Package index — Product Quantization (PQ) for vector compression.
 //
-// Iter 413: foundation. This file ships the codebook trainer + encoder +
+// This file ships the codebook trainer + encoder +
 // asymmetric distance computation. HNSW integration lands in a follow-up
 // iter; for now PQ is offline (encode a corpus, store codes, query later).
 //
@@ -30,17 +30,17 @@ import (
 // One codebook serves an entire HNSW (or any corpus) — encoded vectors
 // are then stored alongside.
 type PQCodebook struct {
-	Dim       int   // original vector dimension
-	M         int   // number of subspaces (Dim must be divisible by M)
-	K         int   // centroids per subspace (typically 256 → 1 byte/subspace)
-	SubDim    int   // = Dim / M
+	Dim       int           // original vector dimension
+	M         int           // number of subspaces (Dim must be divisible by M)
+	K         int           // centroids per subspace (typically 256 → 1 byte/subspace)
+	SubDim    int           // = Dim / M
 	Centroids [][][]float32 // [M][K][SubDim]
 }
 
-// TrainPQCodebookParallel is the iter-415 parallelization: subspaces run
+// TrainPQCodebookParallel is the parallelization: subspaces run
 // concurrently across maxParallel workers. K-means per subspace is the
 // dominant cost (~70% of train time), so the speedup is near-linear up
-// to GOMAXPROCS. Same return contract as TrainPQCodebook. Iter 415.
+// to GOMAXPROCS. Same return contract as TrainPQCodebook.
 func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel int, rngSeed int64) (*PQCodebook, error) {
 	if len(train) == 0 {
 		return nil, errors.New("empty training set")
@@ -104,7 +104,7 @@ func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel in
 
 // TrainPQCodebook runs lloyd's k-means per subspace to fit a PQ codebook
 // over the given training set. Returns an error if dims are inconsistent
-// or M doesn't divide Dim cleanly. Iter 413.
+// or M doesn't divide Dim cleanly.
 //
 // Notes:
 //   - Sampling: if len(train) is large, callers should sample (~100K vecs
@@ -154,7 +154,7 @@ func TrainPQCodebook(train [][]float32, dim, M, K, iters int, rng *rand.Rand) (*
 }
 
 // kmeansSubspace runs vanilla lloyd's k-means with k-means++ seeding.
-// Returns K centroids each of dim d. Iter 413.
+// Returns K centroids each of dim d.
 func kmeansSubspace(data [][]float32, K, d, iters int, rng *rand.Rand) ([][]float32, error) {
 	n := len(data)
 	if n < K {
@@ -249,7 +249,6 @@ func kmeansSubspace(data [][]float32, K, d, iters int, rng *rand.Rand) ([][]floa
 
 // Encode quantizes a single vector against this codebook. Result is M
 // codes; with K≤256 each code fits in a uint8 byte (caller's choice).
-// Iter 413.
 func (cb *PQCodebook) Encode(vec []float32) ([]uint16, error) {
 	if len(vec) != cb.Dim {
 		return nil, fmt.Errorf("encode: got dim %d, want %d", len(vec), cb.Dim)
@@ -273,7 +272,7 @@ func (cb *PQCodebook) Encode(vec []float32) ([]uint16, error) {
 // QueryTable precomputes the M × K asymmetric-distance lookup table for
 // a query vector. Cost: M*K*subDim multiplies; reused across all candidate
 // scores in a search, so amortizes to nearly zero per candidate.
-// Returns a flat M*K float32 slice indexed as table[sub*K + code]. Iter 413.
+// Returns a flat M*K float32 slice indexed as table[sub*K + code].
 func (cb *PQCodebook) QueryTable(query []float32) ([]float32, error) {
 	if len(query) != cb.Dim {
 		return nil, fmt.Errorf("query: got dim %d, want %d", len(query), cb.Dim)
@@ -289,7 +288,7 @@ func (cb *PQCodebook) QueryTable(query []float32) ([]float32, error) {
 }
 
 // PQDistance computes asymmetric squared distance between a query (via
-// its QueryTable) and an encoded vector. M lookups + M-1 sums. Iter 413.
+// its QueryTable) and an encoded vector. M lookups + M-1 sums.
 func PQDistance(table []float32, code []uint16, M, K int) float32 {
 	var s float32
 	for sub := 0; sub < M; sub++ {

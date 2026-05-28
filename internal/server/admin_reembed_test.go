@@ -292,7 +292,7 @@ func TestAdminReembedSinceMatchesNothing(t *testing.T) {
 // dry-run path doesn't invoke the embedder. Builds on the iter-112 reembed
 // stub (which doesn't track calls) without modifying that fixture.
 type trackingStubEmbedder struct {
-	model     string
+	model      string
 	embedCalls int
 }
 

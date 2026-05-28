@@ -52,7 +52,7 @@ type OpenAIClient struct {
 // NewOpenAIClient constructs a client. Model and dim are required; URL defaults
 // to the public OpenAI endpoint when empty.
 //
-// Iter 392: URL is forgiving — accepts either the full endpoint
+// URL is forgiving — accepts either the full endpoint
 // ("/v1/embeddings") or the base ("/v1") and appends "/embeddings" when
 // missing. Matches what every other OpenAI-compat client expects, so
 // operators pointing at Ollama / vLLM / TEI with `http://host:port/v1` no
@@ -72,7 +72,7 @@ func NewOpenAIClient(apiKey, url, model string, dim int) *OpenAIClient {
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
 				// Go defaults for MaxConnsPerHost (effectively unlimited
-				// via 2 idle by default) — iter 443's bump caused queueing
+				// via 2 idle by default) —'s bump caused queueing
 				// at the embedder under heavy crawler load.
 				ForceAttemptHTTP2:     true,
 				IdleConnTimeout:       90 * time.Second,
@@ -115,7 +115,7 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	if err != nil {
 		return nil, err
 	}
-	// Iter 392: only send Authorization when the caller provided a key.
+	// only send Authorization when the caller provided a key.
 	// Empty-Bearer headers confuse some local servers (e.g. older vLLM).
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -162,13 +162,13 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 // Why: ollama / vLLM serve N small (5-10 text) requests less efficiently
 // than 1 large (50-100 text) request — the per-request HTTP/JSON
 // overhead and the per-batch GPU launch cost amortize across more
-// inputs. Iter 449 saw 994 docs/min with 16 in-flight per-doc embed
+// inputs. saw 994 docs/min with 16 in-flight per-doc embed
 // calls; batching to 64-128 texts per call should give 2-3× more
 // embeddings/sec on the same GPU.
 //
 // Caveat: per-Embed latency rises by up to maxWait (typically 10-30 ms).
 // For the crawler this is invisible. For interactive /search embeds it
-// hurts — wrap the crawler embedder only, not the search one. Iter 450.
+// hurts — wrap the crawler embedder only, not the search one.
 type BatchingEmbedder struct {
 	inner    Embedder
 	maxBatch int
@@ -292,7 +292,6 @@ func (b *BatchingEmbedder) Close() { close(b.stop) }
 // multiple ollama instances each holding their own copy of nomic-embed-
 // text, or multiple vLLM workers. Per-call round-robin via an atomic
 // counter; concurrent calls hit different backends without coordination.
-// Iter 449.
 type RoundRobinEmbedder struct {
 	inners []Embedder
 	next   atomic.Uint64
@@ -325,7 +324,7 @@ func (r *RoundRobinEmbedder) Embed(ctx context.Context, texts []string) ([][]flo
 // same time, queueing N requests at the backend (ollama / vLLM). User
 // /search?retriever=dense embeds then wait behind that backlog. Capping
 // the crawler side keeps backend queue depth bounded so interactive
-// queries find free capacity. Iter 446.
+// queries find free capacity.
 type ThrottledEmbedder struct {
 	inner Embedder
 	sem   chan struct{}
@@ -358,7 +357,7 @@ func (t *ThrottledEmbedder) Embed(ctx context.Context, texts []string) ([][]floa
 type CachedEmbedder struct {
 	inner Embedder
 	dir   string
-	// Iter 454: atomic hit/miss counters for /stats visibility.
+	// atomic hit/miss counters for /stats visibility.
 	hits   atomic.Uint64
 	misses atomic.Uint64
 }

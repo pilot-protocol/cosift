@@ -15,12 +15,12 @@ import (
 // is closer in vector space to answer-shaped docs than the bare query's is.
 //
 // Cost: one chat-completion call per cache MISS (~$0.0001 at gpt-4o-mini,
-// ~500ms latency). Same 2-level cache as the iter-89 paraphraser: L1
+// ~500ms latency). Same 2-level cache as the paraphraser: L1
 // in-memory map → L2 SQLite-persisted (query_hyde table). Cold processes
 // (refresh sidecar, second Cloud Run instance, post-restart server) skip
 // the LLM call on popular queries via the L2 hit.
 //
-// Iter 161 shipped the algorithm; iter 162 adds the cache.
+// shipped the algorithm; adds the cache.
 
 const hydeSystemPrompt = `Write a brief, factual passage (2-4 sentences) that would directly answer the user's question. Output ONLY the passage — no preamble, no commentary, no apology if you're uncertain. If the question is ambiguous, pick the most plausible interpretation and answer that. The passage doesn't need to be true; it needs to be the SHAPE of what a relevant document would say. Embedding this passage and searching by its vector will find documents that look like real answers, even if the user's original query was just a few keywords.`
 
@@ -31,9 +31,9 @@ const hydeL1Max = 10_000
 // hydePassager owns the chat client + 2-level cache.
 type hydePassager struct {
 	chat    embed.ChatClient
-	store   *store.Store       // optional L2; nil = L1-only
-	metrics *Metrics           // optional cache observability
-	cache   *lruCache[string]  // L1 key: model + "\x00" + query
+	store   *store.Store      // optional L2; nil = L1-only
+	metrics *Metrics          // optional cache observability
+	cache   *lruCache[string] // L1 key: model + "\x00" + query
 }
 
 func newHydePassager(chat embed.ChatClient, s *store.Store, m *Metrics) *hydePassager {
@@ -92,15 +92,15 @@ func (p *hydePassager) Passage(ctx context.Context, q string) string {
 	return passage
 }
 
-// hydeQueryKey is the context-value key for the iter-161 HyDE-generated
+// hydeQueryKey is the context-value key for the HyDE-generated
 // passage. Threaded via context so runDense can consult it without a
-// signature change, same pattern as iter-143 hybridDenseWeightKey and
-// iter-158 mmrParamsKey.
+// signature change, same pattern as hybridDenseWeightKey and
+// mmrParamsKey.
 type hydeQueryKey struct{}
 
 // hydeEnabledKey signals "do HyDE on every retrieval against the chat
-// client" — used by /research (iter 165) where each sub-query / paraphrase
-// needs its OWN hypothetical passage. iter-161's hydeQueryKey carries one
-// pre-computed passage; iter-165's enabledKey carries "compute per-variant
-// inside the loop." Cache (iter 162) ensures repeated variants stay cheap.
+// client" — used by /research where each sub-query / paraphrase
+// needs its OWN hypothetical passage.'s hydeQueryKey carries one
+// pre-computed passage;'s enabledKey carries "compute per-variant
+// inside the loop." Cache ensures repeated variants stay cheap.
 type hydeEnabledKey struct{}

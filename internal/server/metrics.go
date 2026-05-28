@@ -48,17 +48,17 @@ type Metrics struct {
 	requests        map[string]int64
 	latency         map[string]*histogram
 	rateLimitDenied int64
-	// Paraphrase cache observability (iter 49). Per-layer counters so the
+	// Paraphrase cache observability. Per-layer counters so the
 	// dashboard can chart hit-rate trends — if L2 hit rate drops, the index
 	// or query mix shifted; if L1 stays high, the workload has repeated queries.
 	paraphraseHitsL1 int64
 	paraphraseHitsL2 int64
 	paraphraseMisses int64
-	// HyDE cache observability (iter 162). Same shape as paraphrase counters.
+	// HyDE cache observability. Same shape as paraphrase counters.
 	hydeHitsL1 int64
 	hydeHitsL2 int64
 	hydeMisses int64
-	// corpus_size gauge (iter 50). Wired by the server in WithCorpusSize().
+	// corpus_size gauge. Wired by the server in WithCorpusSize().
 	// Optional — nil = gauge omitted. Always read at scrape time so it
 	// reflects the actual current state, not a stale snapshot.
 	corpusSize func() (docs, passages, paraphrases int64)
@@ -102,7 +102,7 @@ func (m *Metrics) RecordParaphraseL1Hit() { atomic.AddInt64(&m.paraphraseHitsL1,
 func (m *Metrics) RecordParaphraseL2Hit() { atomic.AddInt64(&m.paraphraseHitsL2, 1) }
 func (m *Metrics) RecordParaphraseMiss()  { atomic.AddInt64(&m.paraphraseMisses, 1) }
 
-// HyDE cache observability — iter 162; mirrors paraphrase counters.
+// HyDE cache observability —; mirrors paraphrase counters.
 func (m *Metrics) RecordHyDEL1Hit() { atomic.AddInt64(&m.hydeHitsL1, 1) }
 func (m *Metrics) RecordHyDEL2Hit() { atomic.AddInt64(&m.hydeHitsL2, 1) }
 func (m *Metrics) RecordHyDEMiss()  { atomic.AddInt64(&m.hydeMisses, 1) }

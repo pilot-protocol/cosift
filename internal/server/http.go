@@ -52,10 +52,10 @@ type Server struct {
 	metrics         *Metrics           // never nil — initialized in New()
 	ipResolver      *clientIPResolver  // nil = direct peer only
 	paraphraser     *paraphraser       // nil disables ?expand=true
-	hyde            *hydePassager      // iter 162: nil disables ?hyde=true. Initialized in WithChat alongside chat.
-	defaults        Defaults           // instance-wide retrieval defaults (iter 55)
-	chunkSize       int                // iter 145: 0 = index.NewChunker() default (320)
-	chunkOverlap    int                // iter 145: 0 = index.NewChunker() default (64)
+	hyde            *hydePassager      // nil disables ?hyde=true. Initialized in WithChat alongside chat.
+	defaults        Defaults           // instance-wide retrieval defaults
+	chunkSize       int                // 0 = index.NewChunker() default (320)
+	chunkOverlap    int                // 0 = index.NewChunker() default (64)
 }
 
 // Defaults are instance-wide retrieval defaults used when a request omits the
@@ -64,7 +64,7 @@ type Server struct {
 // import-free of the rest of the project.
 //
 // Rerank is deliberately NOT a default field: WithReranker already
-// auto-enables rerank when configured (iter 13). To get "rerank off by default"
+// auto-enables rerank when configured. To get "rerank off by default"
 // behavior, callers should pass ?rerank=false explicitly. Adding a Defaults.Rerank
 // boolean would need three-state semantics (unset/on/off) to avoid breaking
 // existing deployments — not worth the API complexity.
@@ -86,19 +86,19 @@ type Defaults struct {
 	HybridDenseWeight float64 `json:"hybrid_dense_weight"`
 }
 
-// hybridDenseWeightKey is the context-value key for the iter-143 per-request
+// hybridDenseWeightKey is the context-value key for the per-request
 // override of Defaults.HybridDenseWeight. Threading via context keeps
 // runSearch's signature unchanged across its 8+ callsites while still letting
 // the handler inject ?hybrid_dense_weight= without touching server state.
 type hybridDenseWeightKey struct{}
 
-// bm25QueryOverrideKey carries the iter-163 hybrid-PRF expanded query so the
+// bm25QueryOverrideKey carries the hybrid-PRF expanded query so the
 // hybrid branch of runSearch uses the EXPANDED query for the BM25 sub-call
-// while keeping the dense sub-call on the original (or iter-161 HyDE) query.
+// while keeping the dense sub-call on the original (or HyDE) query.
 // PRF mines lexical terms; expanding them only helps the lexical retriever.
 type bm25QueryOverrideKey struct{}
 
-// mmrParams carries the iter-158 ?mmr=true&mmr_lambda=N pair through ctx so
+// mmrParams carries the ?mmr=true&mmr_lambda=N pair through ctx so
 // runDense can opt into MMR re-ranking without a signature change.
 type mmrParamsKey struct{}
 type mmrParams struct {
@@ -109,11 +109,11 @@ type mmrParams struct {
 // mmrFromQuery parses ?mmr=true&mmr_lambda=N off a request and returns a ctx
 // with mmrParamsKey set when active. Otherwise returns ctx unchanged. Used
 // by all retrieval-using handlers (/search, /answer, /research, +streaming)
-// so the parsing logic lives in one place — iter-168 extraction at N=5 sites.
+// so the parsing logic lives in one place — extraction at N=5 sites.
 //
 // Capability checking happens downstream: runDense only swaps Search →
 // SearchMMR when the ctx value is present AND retriever is dense/hybrid.
-// BM25-only retrieval silently no-ops MMR (matches the iter-158 contract).
+// BM25-only retrieval silently no-ops MMR (matches the contract).
 func mmrFromQuery(ctx context.Context, r *http.Request) context.Context {
 	if v := r.URL.Query().Get("mmr"); v != "true" && v != "1" {
 		return ctx
@@ -131,6 +131,7 @@ func mmrFromQuery(ctx context.Context, r *http.Request) context.Context {
 // Default per-IP limits:
 //   - /feedback: 60/min  (cheap write to query_outcomes)
 //   - /answer + /research: 10/min  (each call burns LLM tokens)
+//
 // Opt out via WithFeedbackLimiter(0, 0) / WithLLMLimiter(0, 0).
 func New(s *store.Store) *Server {
 	srv := &Server{
@@ -144,7 +145,7 @@ func New(s *store.Store) *Server {
 		// /admin/*: tighter — 30/min/IP is plenty for human ops use
 		// and far below an attacker spam pattern if the token leaks.
 		adminLimiter: newIPLimiter(30, time.Minute),
-		metrics:         NewMetrics(),
+		metrics:      NewMetrics(),
 	}
 	// Wire the corpus-size gauge — read lazily at scrape time so the numbers
 	// stay accurate without polling. Errors fall through to zero (don't break /metrics).
@@ -207,10 +208,10 @@ func (s *Server) WithVector(vi *index.VectorIndex, e embed.Embedder) *Server {
 	return s
 }
 
-// WithChat wires a chat-completion client. Enables /answer and (iter 161/162)
+// WithChat wires a chat-completion client. Enables /answer and
 // the ?hyde=true query expansion. The HyDE passager carries a 2-level cache —
 // L1 in-memory + L2 SQLite — so cold processes skip the LLM call on popular
-// queries via the L2 hit. Same shape as iter-89's paraphraser cache.
+// queries via the L2 hit. Same shape as's paraphraser cache.
 func (s *Server) WithChat(c embed.ChatClient) *Server {
 	s.chat = c
 	s.hyde = newHydePassager(c, s.store, s.metrics)
@@ -224,9 +225,9 @@ func (s *Server) WithFetcher(f FetchFn) *Server {
 	return s
 }
 
-// paraphraser handles query expansion via a chat client. Iter-45 measured
+// paraphraser handles query expansion via a chat client. measured
 // auto-paraphrase recovers 0.02 nDCG at the 10k-diverse-noise ceiling and even
-// nudges 0-distractor pipelines from 0.99 → 1.00. Iter-47 added a SQLite-backed
+// nudges 0-distractor pipelines from 0.99 → 1.00. added a SQLite-backed
 // cache so cold processes (refresh sidecar, second Cloud Run instance,
 // post-restart server) skip the LLM call on popular queries.
 //
@@ -238,9 +239,9 @@ const paraphraserL1Max = 10_000
 type paraphraser struct {
 	chat    embed.ChatClient
 	n       int
-	store   *store.Store          // optional L2; nil = L1-only
-	metrics *Metrics              // optional; nil disables cache observability
-	cache   *lruCache[[]string]   // L1 key: model + "\x00" + query
+	store   *store.Store        // optional L2; nil = L1-only
+	metrics *Metrics            // optional; nil disables cache observability
+	cache   *lruCache[[]string] // L1 key: model + "\x00" + query
 }
 
 func newParaphraser(chat embed.ChatClient, n int, s *store.Store, m *Metrics) *paraphraser {
@@ -327,7 +328,7 @@ func (s *Server) WithParaphraser(chat embed.ChatClient, n int) *Server {
 // pass 0 for the sensible default (max(20, 5*k)).
 // WithChunker overrides the default passage chunker settings used by the
 // dense indexer + /admin/reembed. Values ≤0 fall back to index.NewChunker()
-// defaults (320 words / 64 overlap). Iter 145: lets operators keep reembed
+// defaults (320 words / 64 overlap). lets operators keep reembed
 // passage shapes consistent with cfg.Crawler.ChunkSize-driven crawl indexing.
 func (s *Server) WithChunker(size, overlap int) *Server {
 	if size > 0 {
@@ -525,17 +526,13 @@ type AdminStatsResponse struct {
 	FetcherEnabled bool                `json:"fetcher_enabled"`
 	// DocsWithPublishedAt counts how many documents have a known publication
 	// date — tells operators what fraction of the corpus is filterable via
-	// `/search?since=/?until=` (iter 77) or sortable via `?sort=date_desc`
-	// (iter 78). Iter 80.
+	// `/search?since=/?until=` or sortable via `?sort=date_desc`
 	DocsWithPublishedAt int64 `json:"docs_with_published_at"`
-	// Paraphrases is the count of cached LLM paraphrase entries (iter 47
-	// added the cache; iter 49 added metric counters; iter 171 finally
-	// surfaces the corpus-wide total here). High value → operators have a
-	// repetitive query workload and the cache is paying off.
+	// Paraphrases is the count of cached LLM paraphrase entries. High value
+	// → operators have a repetitive query workload and the cache is paying off.
 	Paraphrases int64 `json:"paraphrases"`
-	// HyDECache is the count of cached HyDE passages (iter 162 added the
-	// cache; iter 171 surfaces the size). Same operator signal as
-	// Paraphrases — repeat queries skip the LLM call.
+	// HyDECache is the count of cached HyDE passages. Same operator signal
+	// as Paraphrases — repeat queries skip the LLM call.
 	HyDECache int64 `json:"hyde_cache"`
 }
 
@@ -553,7 +550,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	passages, _ := s.store.CountPassagesAllModels(r.Context())
 	topDomains, _ := s.store.CountByDomain(r.Context(), 20)
 	docsWithPublishedAt, _ := s.store.CountDocsWithPublishedAt(r.Context())
-	// Iter 171: surface LLM-cache sizes so operators can spot under-warming
+	// surface LLM-cache sizes so operators can spot under-warming
 	// (low count + expected high traffic = cache not picking up repeats) or
 	// drift (count plateaued at a stale value across paraphraser/HyDE model
 	// changes). Best-effort — failure leaves the counter at zero.
@@ -587,8 +584,8 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 
 // AdminConfigResponse reports the running instance's resolved retrieval
 // defaults + capability flags. Lets an operator verify what their cosift has
-// actually loaded without restarting or reading log lines. Iter-55 made
-// defaults configurable; iter-57 makes them inspectable.
+// actually loaded without restarting or reading log lines. made
+// defaults configurable; makes them inspectable.
 type AdminConfigResponse struct {
 	Version      string   `json:"version"`
 	Defaults     Defaults `json:"defaults"`
@@ -705,12 +702,12 @@ func (s *Server) handleAdminRecrawl(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminRecrawlByDomainRequest is the body shape for POST /admin/recrawl-by-domain.
-// Iter 110 — bulk recrawl every doc whose domain matches `domain` (iter-79
-// suffix-on-dot-boundary semantics: `example.com` matches `example.com` AND
-// `*.example.com`, not `evilexample.com`).
+// Bulk-recrawls every doc whose domain matches `domain`. Suffix-on-dot-boundary
+// semantics: `example.com` matches `example.com` AND `*.example.com`, not
+// `evilexample.com`.
 type AdminRecrawlByDomainRequest struct {
 	Domain string `json:"domain"`
-	// DryRun (iter 111) — if true, enumerate matched URLs but skip the actual
+	// DryRun — if true, enumerate matched URLs but skip the actual
 	// RecrawlURL calls. Operator sees the count before committing. `queued`
 	// in the response is 0 for dry-run; `matched` reports the would-be queue size.
 	DryRun bool `json:"dry_run,omitempty"`
@@ -723,7 +720,7 @@ type AdminRecrawlByDomainResponse struct {
 	Queued  int               `json:"queued"`            // URLs successfully re-enqueued (0 when dry_run)
 	DryRun  bool              `json:"dry_run,omitempty"` // echo of the request flag — lets clients distinguish "0 queued because dry-run" from "0 queued because all errored"
 	Errors  map[string]string `json:"errors,omitempty"`  // per-URL enqueue failures
-	// URLs (iter 123) — populated ONLY when dry_run=true. Lets operators
+	// URLs — populated ONLY when dry_run=true. Lets operators
 	// preview "show me WHICH URLs the pattern matches" before committing -y.
 	// In non-dry-run mode, the URLs were queued (or errored) and `urls` would
 	// duplicate `queued` + `errors`; omitempty keeps the non-dry-run response shape small.
@@ -733,9 +730,9 @@ type AdminRecrawlByDomainResponse struct {
 // handleAdminRecrawlByDomain enumerates docs by domain and re-enqueues them
 // into the frontier in one call. The composition operators currently do as
 // `cosift export -include-domains X | jq -r .url | xargs cosift admin recrawl -y`
-// becomes a single endpoint. Iter 110 — pairs with iter-104's export filter.
+// becomes a single endpoint. Pairs with's export filter.
 //
-// Capped at 10000 URLs per call to bound blast radius (matches iter-88's
+// Capped at 10000 URLs per call to bound blast radius (matches's
 // batch-/contents cap pattern). Larger sweeps should be split.
 func (s *Server) handleAdminRecrawlByDomain(w http.ResponseWriter, r *http.Request) {
 	var req AdminRecrawlByDomainRequest
@@ -767,7 +764,7 @@ func (s *Server) handleAdminRecrawlByDomain(w http.ResponseWriter, r *http.Reque
 		Errors:  map[string]string{},
 	}
 	if req.DryRun {
-		// Iter 123: return the matched URLs in dry-run so operators can
+		// return the matched URLs in dry-run so operators can
 		// preview which docs would be re-crawled. Non-dry-run skips this
 		// (URLs were just queued; client doesn't need them echoed back).
 		resp.URLs = urls
@@ -786,20 +783,20 @@ func (s *Server) handleAdminRecrawlByDomain(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// AdminReembedRequest is the body shape for POST /admin/reembed. Iter 112 —
+// AdminReembedRequest is the body shape for POST /admin/reembed. —
 // re-embed every document with the server's currently-configured embedder
 // (s.emb.Model()). Operators who want to swap models do it via cfg restart
 // then trigger this; the new-model passages coexist with old-model passages
-// until `drop_old` is set, matching the iter-39 reembed semantics.
+// until `drop_old` is set, matching the reembed semantics.
 type AdminReembedRequest struct {
 	DropOld bool `json:"drop_old,omitempty"`
-	// Since (iter 116) — when non-empty, restrict reembed to docs with
+	// Since — when non-empty, restrict reembed to docs with
 	// `published_at >= since`. Accepts YYYY-MM-DD or RFC3339, same as the
-	// iter-77 /search?since=. Useful when only recent docs need re-embedding
+	// /search?since=. Useful when only recent docs need re-embedding
 	// (e.g., model swap mid-quarter, skipping older docs to save LLM credits).
 	// Undated docs (zero PublishedAt) are skipped when filter is active.
 	Since string `json:"since,omitempty"`
-	// DryRun (iter 125) — when true, enumerate matched docs via the filter
+	// DryRun — when true, enumerate matched docs via the filter
 	// pipeline but skip the embed loop entirely. `started` event reports the
 	// would-be-processed count; `done` event echoes dry_run:true with
 	// docs_processed:0 + passages_written:0. Lets operators preview an
@@ -810,9 +807,9 @@ type AdminReembedRequest struct {
 // handleAdminReembed re-embeds every document via SSE-streamed progress. Long-
 // running op — synchronous in the request goroutine but emits `progress`
 // events every ~2s so clients see liveness. ctx cancellation (client
-// disconnect) aborts cleanly. Iter 112 — server side of the iter 112/113 arc.
+// disconnect) aborts cleanly. Server side of the Iter arc.
 //
-// Event types (same shape as iter-98/108 streaming pattern):
+// Event types (same shape as Iter streaming pattern):
 //   - "started":  { "total_docs": N, "target_model": "..." }
 //   - "progress": { "docs_processed": N, "passages_written": N }
 //   - "done":     { "docs_processed": N, "passages_written": N, "dropped_old": N, "took": "..." }
@@ -832,9 +829,9 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Iter 116: parse `since` BEFORE opening the SSE stream — a malformed
+	// parse `since` BEFORE opening the SSE stream — a malformed
 	// date should return 400 with a structured error, not an SSE error event
-	// (operators using curl + jq expect the iter-77 /search?since= behavior).
+	// (operators using curl + jq expect the /search?since= behavior).
 	var sinceT time.Time
 	if req.Since != "" {
 		t, err := parseSearchDate(req.Since)
@@ -856,8 +853,8 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 		bail(fmt.Sprintf("list docs: %v", err))
 		return
 	}
-	// Iter 116: in-place filter for since=DATE. Undated docs (zero PublishedAt)
-	// are dropped when the filter is active, matching iter-77 /search?since=
+	// Undated docs (zero PublishedAt)
+	// are dropped when the filter is active, matching /search?since=
 	// semantics. Done before the started event so total_docs reflects what
 	// will actually be processed.
 	if !sinceT.IsZero() {
@@ -875,7 +872,7 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 		"total_docs":   len(docs),
 		"target_model": target,
 	})
-	// Iter 125: dry-run short-circuit. After the started event reports the
+	// After the started event reports the
 	// would-be-processed count, emit done immediately with zeros + dry_run:true.
 	// Skips the embed loop entirely — no LLM credit spend.
 	if req.DryRun {
@@ -898,8 +895,8 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Iter 145 / iter 147: honor server-configured chunker overrides via
-	// iter-147's NewChunkerWith helper. Falls back to NewChunker defaults
+	// / honor server-configured chunker overrides via
+	//'s NewChunkerWith helper. Falls back to NewChunker defaults
 	// (320/64) when both fields are zero.
 	chunker := index.NewChunkerWith(s.chunkSize, s.chunkOverlap)
 	const batchSize = 64
@@ -989,42 +986,42 @@ type SearchHit struct {
 	Score     float64    `json:"score"`
 	Source    string     `json:"source"` // 'bm25' / 'dense' / 'hybrid' / 'pilot' / 'external'
 	Highlight *Highlight `json:"highlight,omitempty"`
-	// Iter 82: enrichment fields surfaced from the indexed document so callers
+	// enrichment fields surfaced from the indexed document so callers
 	// don't have to round-trip /contents per hit. Both fields are
 	// `omitempty`-tagged so unindexed hosts (`Domain`) and undated pages
 	// (`PublishedAt`) emit clean JSON without nulls.
 	Domain      string     `json:"domain,omitempty"`
 	PublishedAt *time.Time `json:"published_at,omitempty"`
-	// Iter 83: short prefix of document body, populated only when Highlight is
+	// short prefix of document body, populated only when Highlight is
 	// absent (BM25-only hits). Gives every hit a preview text without
 	// duplicating the dense/hybrid Highlight payload when both are available.
 	// ~500 chars from the start of the body; callers wanting full text use /contents.
 	Excerpt string `json:"excerpt,omitempty"`
 
-	// Iter 148: full (or truncated) document body, populated only when the
+	// full (or truncated) document body, populated only when the
 	// request passes ?include_text=true.— saves a /contents
 	// round-trip for one-shot research pipelines. Capped by ?max_text=N
 	// (default 5000) so a stray ?include_text=true on a multi-MB corpus
 	// doesn't blow up bandwidth. Omitted from JSON when unset.
 	Text string `json:"text,omitempty"`
 
-	// Iter 150: author extracted from JSON-LD `author.name` at parse time
-	// (iter 76 wrote the parser; iter 150 persists + surfaces).
+	// author extracted from JSON-LD `author.name` at parse time
+	//
 	// for SearchHit.author. Empty when absent (most pages don't carry it).
 	Author string `json:"author,omitempty"`
 
-	// Iter 155: image URL extracted from og:image / twitter:image / JSON-LD
+	// image URL extracted from og:image / twitter:image / JSON-LD
 	// `image`. Empty when absent."doc-card" rendering on the
 	// caller side — no /contents round-trip needed for a search-result card.
 	Image string `json:"image,omitempty"`
 
-	// Iter 156: favicon URL (absolute) extracted from <link rel="icon"> etc.
+	// favicon URL (absolute) extracted from <link rel="icon"> etc.
 	// Empty when the page doesn't declare one — callers can fall back to the
 	// well-known `/favicon.ico` at the host themselves.for
 	// "link-card" rendering.
 	Favicon string `json:"favicon,omitempty"`
 
-	// Iter 164: within-result score normalization. Populated when the request
+	// Populated when the request
 	// passes ?calibrate=true. Computed as `score / max(score across hits)` so
 	// the top hit is always 1.0 and lower-ranked hits express their relative
 	// closeness as a fraction. This is NOT cross-query calibration — the
@@ -1103,7 +1100,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Iter 143: per-request hybrid_dense_weight override propagates via context
+	// per-request hybrid_dense_weight override propagates via context
 	// so runSearch picks it up without a signature change.
 	ctx := r.Context()
 	if v := r.URL.Query().Get("hybrid_dense_weight"); v != "" {
@@ -1111,15 +1108,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			ctx = context.WithValue(ctx, hybridDenseWeightKey{}, parsed)
 		}
 	}
-	// Iter 158: ?mmr=true&mmr_lambda=N for MMR re-ranking on dense / hybrid.
-	// Iter 168: factored into mmrFromQuery so /answer, /research, etc. share
+	// ?mmr=true&mmr_lambda=N for MMR re-ranking on dense / hybrid.
+	// share
 	// the same parsing.
 	ctx = mmrFromQuery(ctx, r)
-	// Iter 161: ?hyde=true generates a hypothetical-answer passage via the
+	// ?hyde=true generates a hypothetical-answer passage via the
 	// chat client and threads it through ctx for runDense to use as the
 	// embedding source. Requires both chat AND embedder configured. Pure
 	// dense / hybrid only — BM25 uses the original query for lexical match.
-	// Iter 162: backed by a 2-level cache (L1 in-memory + L2 SQLite) so
+	// backed by a 2-level cache (L1 in-memory + L2 SQLite) so
 	// cold processes skip the LLM call on popular queries.
 	if v := r.URL.Query().Get("hyde"); v == "true" || v == "1" {
 		if s.hyde == nil {
@@ -1134,7 +1131,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if passage != "" && passage != q {
 			ctx = context.WithValue(ctx, hydeQueryKey{}, passage)
 		}
-		// Iter 174: hydeEnabledKey lets /search's expand block do
+		// hydeEnabledKey lets /search's expand block do
 		// per-paraphrase HyDE generation, same shape as /answer's expandHits.
 		ctx = context.WithValue(ctx, hydeEnabledKey{}, true)
 	}
@@ -1144,8 +1141,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Iter 159/163: pseudo-relevance feedback for bm25 + hybrid retrievers.
-	// Iter 170: factored into applyPRFIfRequested so /answer, /research can
+	// pseudo-relevance feedback for bm25 + hybrid retrievers.
+	// factored into applyPRFIfRequested so /answer, /research can
 	// share the same logic via the enumeration discipline.
 	var prfTag string
 	hits, spans, prfTag = s.applyPRFIfRequested(ctx, r, retriever, q, hits, spans, innerK)
@@ -1158,13 +1155,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		hits = hits[:k]
 		spans = spans[:k]
 	}
-	// Iter 158: tag source when MMR was applied so /search?mmr=true responses
+	// tag source when MMR was applied so /search?mmr=true responses
 	// are self-documenting. (runDense already swapped the algorithm via ctx;
 	// this is the post-hoc tag.)
 	if p, ok := ctx.Value(mmrParamsKey{}).(mmrParams); ok && p.enabled && (retriever == "dense" || retriever == "hybrid") {
 		source += fmt.Sprintf("+mmr(lambda=%.2f)", p.lambda)
 	}
-	// Iter 161: tag source when HyDE was used. Only meaningful for dense/hybrid
+	// Only meaningful for dense/hybrid
 	// (BM25 keeps original q for lexical match).
 	if _, ok := ctx.Value(hydeQueryKey{}).(string); ok && (retriever == "dense" || retriever == "hybrid") {
 		source += "+hyde"
@@ -1175,9 +1172,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if useExpand && len(hits) > 0 {
 		paraphrases := s.paraphraser.generate(ctx, q)
 		if len(paraphrases) > 0 {
-			// Iter 174: per-paraphrase HyDE — same fix as /answer's expandHits.
-			// Pre-iter-174, all paraphrase retrievals shared the main query's
-			// HyDE passage on the dense leg, silently breaking diversification.
+			// per-paraphrase HyDE — same fix as /answer's expandHits. Without
+			// it, all paraphrase retrievals share the main query's HyDE passage
+			// on the dense leg, silently breaking diversification.
 			hydeOn := false
 			if v, ok := ctx.Value(hydeEnabledKey{}).(bool); ok && v {
 				hydeOn = s.hyde != nil && s.vidx != nil && s.emb != nil
@@ -1218,8 +1215,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			// Iter 136: weighted RRF — main list (lists[0]) gets ExpandMainWeight;
-			// paraphrase lists each 1.0. Iter 143: per-request override via
+			// weighted RRF — main list (lists[0]) gets ExpandMainWeight;
+			// paraphrase lists each 1.0. per-request override via
 			// ?expand_main_weight=X; falls back to s.defaults.ExpandMainWeight
 			// when absent. Non-positive → nil weights (equal-weight RRF).
 			emw := s.defaults.ExpandMainWeight
@@ -1259,7 +1256,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			source += "+expand"
 		}
 	}
-	// Iter 77: date filtering via ?since= and ?until= (YYYY-MM-DD or RFC3339).
+	// date filtering via ?since= and ?until= (YYYY-MM-DD or RFC3339).
 	// Docs with zero PublishedAt (unknown — no JSON-LD datePublished) are
 	// skipped when any date filter is active. Loose behavior on filter parse
 	// failure: error 400 so callers see the typo, don't silently drop the filter.
@@ -1278,7 +1275,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		source += "+date-filter"
 	}
 
-	// Iter 79: domain filtering.suffix-match semantics — suffix-match so "example.com"
+	// domain filtering.suffix-match semantics — suffix-match so "example.com"
 	// matches "blog.example.com" too. Comma-separated host lists.
 	include := splitCSV(r.URL.Query().Get("include_domains"))
 	exclude := splitCSV(r.URL.Query().Get("exclude_domains"))
@@ -1287,7 +1284,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		source += "+domain-filter"
 	}
 
-	// Iter 78: ?sort= controls result ordering. Default is relevance (the
+	// ?sort= controls result ordering. Default is relevance (the
 	// retriever's native scoring); date_desc and date_asc sort by PublishedAt.
 	// Bad values → 400 so typos surface immediately.
 	sortMode := r.URL.Query().Get("sort")
@@ -1300,7 +1297,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		source += "+sort=" + sortMode
 	}
 
-	// Iter 82: enrich the response with Domain + PublishedAt per hit so callers
+	// enrich the response with Domain + PublishedAt per hit so callers
 	// don't have to round-trip /contents. Batched single-SQL lookup.
 	urls := make([]string, 0, len(hits))
 	for _, h := range hits {
@@ -1308,10 +1305,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	metas, _ := s.store.GetDocMetas(r.Context(), urls) // best-effort: empty map on error
 
-	// Iter 153: ?author= / ?exclude_author= filters. Case-insensitive substring
-	// match against documents.author (iter 150). Reuses the metas map from
-	// enrichment so no extra SQL round-trip. Applied AFTER iter-79 domain and
-	// iter-77 date filters; sort runs BEFORE this so a date-desc + author filter
+	// ?author= / ?exclude_author= filters. Case-insensitive substring
+	// match against documents.author. Reuses the metas map from
+	// enrichment so no extra SQL round-trip. Applied AFTER domain and
+	// date filters; sort runs BEFORE this so a date-desc + author filter
 	// still returns the most recent matching author.
 	authorInclude := splitCSV(r.URL.Query().Get("author"))
 	authorExclude := splitCSV(r.URL.Query().Get("exclude_author"))
@@ -1320,7 +1317,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		source += "+author-filter"
 	}
 
-	// Iter 148: ?include_text=true populates SearchHit.Text inline.
+	// ?include_text=true populates SearchHit.Text inline.
 	// ?max_text=N caps each hit's text (default 5000) so a stray include_text
 	// can't balloon the response. Skip the SQL entirely when not requested.
 	var texts map[string]string
@@ -1349,17 +1346,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				p := m.PublishedAt
 				hit.PublishedAt = &p
 			}
-			// Iter 83: Excerpt is a fallback for hits without a Highlight.
+			// Excerpt is a fallback for hits without a Highlight.
 			// When dense/hybrid retrieval gives a precision-aligned passage
 			// span, the Highlight is more useful than the body prefix.
 			if hit.Highlight == nil && m.Excerpt != "" {
 				hit.Excerpt = m.Excerpt
 			}
-			// Iter 150.
 			hit.Author = m.Author
-			// Iter 155.
 			hit.Image = m.Image
-			// Iter 156.
 			hit.Favicon = m.Favicon
 		}
 		if t, ok := texts[h.URL]; ok {
@@ -1368,7 +1362,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		resp.Hits = append(resp.Hits, hit)
 	}
 
-	// Iter 164: within-result score normalization. Opt-in via ?calibrate=true.
+	// Opt-in via ?calibrate=true.
 	// Divides each hit's score by the max score in the response so the top
 	// hit gets 1.0 and lower-ranked hits express relative closeness as a
 	// fraction. Skips when max ≤ 0 (defensive — shouldn't happen in practice).
@@ -1382,7 +1376,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 // calibrateHits populates SearchHit.ScoreCalibrated as the fraction of the
-// max raw score in the slice. Iter 164.
+// max raw score in the slice.
 func calibrateHits(hits []SearchHit) {
 	if len(hits) == 0 {
 		return
@@ -1402,8 +1396,8 @@ func calibrateHits(hits []SearchHit) {
 }
 
 // calibrateSources populates AnswerSource.ScoreCalibrated for /answer +
-// /research responses. Same shape as iter-164's calibrateHits — top source
-// = 1.0; others = Score / max(Score). Iter 178. Helper-extracted at N=2
+// /research responses. Same shape as's calibrateHits — top source
+// = 1.0; others = Score / max(Score). Helper-extracted at N=2
 // callsites for AnswerSource; SearchHit's calibrateHits stays separate
 // because the types differ (helper extraction across types would need
 // generics or interface — overkill for 2 callsites of 10 lines).
@@ -1446,7 +1440,7 @@ func parseSearchDate(s string) (time.Time, error) {
 // [since, until] range. Documents with zero PublishedAt (unknown publication
 // date — no JSON-LD datePublished was extracted) are skipped when any filter
 // is active. The hits + spans slices are filtered in lockstep so highlights
-// stay aligned to the right hit. Iter 77.
+// stay aligned to the right hit.
 func (s *Server) filterByPublishedAt(ctx context.Context, hits []index.Hit, spans []denseSpan, since, until time.Time) ([]index.Hit, []denseSpan) {
 	if len(hits) == 0 {
 		return hits, spans
@@ -1473,7 +1467,7 @@ func (s *Server) filterByPublishedAt(ctx context.Context, hits []index.Hit, span
 }
 
 // splitCSV parses a comma-separated query parameter into a list of trimmed,
-// non-empty, lowercase entries. Used by the iter-79 domain filter for
+// non-empty, lowercase entries. Used by the domain filter for
 // `?include_domains=foo.com,bar.com` style inputs.
 func splitCSV(s string) []string {
 	if s == "" {
@@ -1507,7 +1501,7 @@ func matchesAnyDomain(host string, patterns []string) bool {
 // list (when non-empty) OR matches the exclude list. Case-insensitive substring
 // matching — JSON-LD authors come in many forms ("Jane Doe", "By Jane Doe",
 // "Doe, Jane") so substring is friendlier than exact match for the common
-// case. Iter 153. Composes with iter-150's Author field.
+// case. Composes with Author field.
 //
 // metas is the same map produced by store.GetDocMetas for enrichment — passed
 // in so callers can reuse the batched fetch instead of forcing an N+1 lookup.
@@ -1568,7 +1562,7 @@ func filterByAuthor(hits []index.Hit, spans []denseSpan, metas map[string]store.
 
 // filterByDomain drops hits whose host isn't in the include list (when non-empty)
 // OR is in the exclude list. Both lists use suffix matching on dot boundary.
-// Iter 79. Pure function (no store lookups needed — URLs are in hits already).
+// Pure function (no store lookups needed — URLs are in hits already).
 func filterByDomain(hits []index.Hit, spans []denseSpan, include, exclude []string) ([]index.Hit, []denseSpan) {
 	if len(hits) == 0 {
 		return hits, spans
@@ -1599,7 +1593,7 @@ func filterByDomain(hits []index.Hit, spans []denseSpan, include, exclude []stri
 // PublishedAt go to the END regardless of direction — they're un-dated so they
 // have no place in a chronological ordering, but we keep them in the result
 // list as a fallback section. Hits + spans are kept in lockstep so highlights
-// stay aligned. Iter 78.
+// stay aligned.
 func (s *Server) sortByPublishedAt(ctx context.Context, hits []index.Hit, spans []denseSpan, desc bool) ([]index.Hit, []denseSpan) {
 	if len(hits) <= 1 {
 		return hits, spans
@@ -1670,13 +1664,10 @@ func (s *Server) expandHits(ctx context.Context, q, retriever string, k int, hit
 	if len(paraphrases) == 0 {
 		return hits
 	}
-	// Iter 174: per-paraphrase HyDE. Pre-iter-174, all paraphrase retrievals
-	// inherited ctx with hydeQueryKey set to HyDE(q) — the original query's
-	// passage. That silently broke expand's diversification (each dense leg
-	// used the same HyDE vector). Now each paraphrase generates its own
-	// HyDE passage via the iter-162 cache, then runSearch sees a per-call
-	// ctx with the right passage. Matches iter-165's /research per-variant
-	// pattern.
+	// Each paraphrase generates its own HyDE passage via the cache, then
+	// runSearch sees a per-call ctx with the right passage. Without this,
+	// all paraphrase retrievals share the main query's HyDE vector and
+	// expand's diversification breaks silently.
 	hydeOn := false
 	if v, ok := ctx.Value(hydeEnabledKey{}).(bool); ok && v {
 		hydeOn = s.hyde != nil && s.vidx != nil && s.emb != nil
@@ -1821,7 +1812,7 @@ func (s *Server) runSearch(ctx context.Context, retriever, q string, k int) ([]i
 		hits, spans, err := s.runDense(ctx, q, k)
 		return hits, spans, "dense", err
 	case "hybrid":
-		// Iter 163: hybrid PRF expands the BM25 sub-query only — dense still
+		// hybrid PRF expands the BM25 sub-query only — dense still
 		// works at the embedding level and would not benefit from lexical
 		// expansion. The handler sets bm25QueryOverrideKey when PRF is active.
 		bmQ := q
@@ -1851,8 +1842,8 @@ func (s *Server) runSearch(ctx context.Context, retriever, q string, k int) ([]i
 				titleByURL[h.URL] = h.Title
 			}
 		}
-		// Iter 138: weighted RRF for the hybrid retriever. BM25 list keeps
-		// weight 1.0; dense list gets HybridDenseWeight. Iter 143: per-request
+		// BM25 list keeps
+		// weight 1.0; dense list gets HybridDenseWeight. per-request
 		// override via context value (set in the handler from
 		// ?hybrid_dense_weight=). Non-positive → nil weights (equal-weight RRF).
 		hdw := s.defaults.HybridDenseWeight
@@ -1882,7 +1873,7 @@ func (s *Server) runSearch(ctx context.Context, retriever, q string, k int) ([]i
 // emit them without re-scanning. Highlights with Length=0 mean "no span info"
 // (an Add-style doc-level vector, not a chunk).
 func (s *Server) runDense(ctx context.Context, q string, k int) ([]index.Hit, []denseSpan, error) {
-	// Iter 161: if a HyDE-generated passage is in ctx, embed THAT instead of
+	// if a HyDE-generated passage is in ctx, embed THAT instead of
 	// the raw query. Hybrid retrieval calls runDense for the dense leg only;
 	// BM25 still sees the original q upstream. Transparent to /find_similar
 	// because /find_similar bypasses runDense (works off a stored embedding).
@@ -1894,7 +1885,7 @@ func (s *Server) runDense(ctx context.Context, q string, k int) ([]index.Hit, []
 	if err != nil {
 		return nil, nil, fmt.Errorf("embed query: %w", err)
 	}
-	// Iter 158: ?mmr=true → swap Search for SearchMMR. candPool=0 → algorithm's
+	// ?mmr=true → swap Search for SearchMMR. candPool=0 → algorithm's
 	// 5*k/50 default. Both routes return VectorHit so the rest of the function
 	// is unchanged.
 	var vh []index.VectorHit
@@ -1916,14 +1907,14 @@ type denseSpan struct{ Offset, Length int }
 
 // StatsResponse is the on-the-wire shape of /stats.
 type StatsResponse struct {
-	Documents int64                `json:"documents"`
-	Terms     int64                `json:"terms"`
-	Frontier  store.FrontierStats  `json:"frontier"`
+	Documents int64               `json:"documents"`
+	Terms     int64               `json:"terms"`
+	Frontier  store.FrontierStats `json:"frontier"`
 }
 
 // handleSitemap emits a standards-compliant sitemap.xml of the indexed corpus.
 // Spec: https://www.sitemaps.org/protocol.html — `<urlset>` root, per-URL
-// `<loc>` + optional `<lastmod>`. Iter 86.
+// `<loc>` + optional `<lastmod>`.
 //
 // Caps at 50,000 URLs per the sitemap spec's per-file limit. Larger corpora
 // would need a sitemap-index file (a future iter — yagni for now).
@@ -1954,8 +1945,8 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	_, _ = bw.WriteString(`</urlset>` + "\n")
 }
 
-// handleRobotsTxt emits a standards-compliant robots.txt. Iter 87 — pairs with
-// iter-86's /sitemap.xml so external crawlers can discover the sitemap via the
+// handleRobotsTxt emits a standards-compliant robots.txt. Pairs with
+// 's /sitemap.xml so external crawlers can discover the sitemap via the
 // robots.txt Sitemap directive (the canonical discovery mechanism for sitemaps
 // that aren't manually submitted to a search console).
 //
@@ -1972,7 +1963,7 @@ func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	// X-Forwarded-Proto handling deliberately omitted in iter 87 — most crawlers
+	// X-Forwarded-Proto handling deliberately omitted in — most crawlers
 	// follow redirects, so even an http:// sitemap URL works on a https-proxied
 	// deployment. Operators wanting absolute https in the body can run cosift
 	// directly on TLS or set the URL via a future config knob if demand emerges.
@@ -2070,10 +2061,10 @@ func (s *Server) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, fmt.Sprintf("embed: %v", err))
 		return
 	}
-	// Iter 167: ?mmr=true on /find_similar — diversity re-rank for the kNN
+	// ?mmr=true on /find_similar — diversity re-rank for the kNN
 	// result set. /find_similar's natural failure mode is returning N
 	// near-duplicates of the seed (cosine-close docs cluster); MMR surfaces
-	// alternative-but-related material. Same algorithm as iter-158 on
+	// alternative-but-related material. Same algorithm as on
 	// /search. Source tag changes to "dense+mmr(lambda=N.NN)" so the
 	// response self-documents.
 	useMMR := false
@@ -2148,14 +2139,14 @@ func (s *Server) handleContents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ContentsBatchRequest is the JSON body for POST /contents (iter 88).
+// ContentsBatchRequest is the JSON body for POST /contents.
 type ContentsBatchRequest struct {
 	URLs []string `json:"urls"`
 }
 
-// ContentsBatchResponse pairs each input URL with its outcome. Iter 88 — lets
+// ContentsBatchResponse pairs each input URL with its outcome. Lets
 // LLM agents fetch many documents in one round-trip instead of N. Mirrors
-//'s batch /contents APIs.
+// 's batch /contents APIs.
 //
 // Missing URLs (not in the index AND no on-demand fetch configured) surface
 // as `{url, found: false}` instead of erroring the whole request — partial
@@ -2180,7 +2171,7 @@ type ContentsBatchItem struct {
 // handleContentsBatch fetches contents for multiple URLs in one call. Per-URL
 // behavior matches handleContents (cache-first, optional on-demand fetch).
 // Returns 200 with per-URL outcomes — never errors the whole batch over one
-// missing URL. Iter 88.
+// missing URL.
 func (s *Server) handleContentsBatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req ContentsBatchRequest
@@ -2292,7 +2283,7 @@ func (s *Server) expandForResearch(ctx context.Context, q, strategy string) ([]s
 // gatherResearchPassages runs retrieval over the expanded variants and returns
 // the deduped, capped passage list used for synthesis.
 //   - planner: iterate variants, top-3 each, dedup by URL, cap at 10 (preserves
-//     iter-7 behavior).
+//     behavior).
 //   - paraphrase: RRF-fuse top-10 of (q ⊕ variants) into a single ranked URL list,
 //     truncate to 10 (matches the iters 46/52/53 measurement methodology).
 //
@@ -2305,7 +2296,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 		retriever = "hybrid"
 	}
 	// cap controls how many sources reach the synth LLM. Defaults.ResearchSynthK
-	// lets operators trade coverage for grounding per-deployment — iter-62
+	// lets operators trade coverage for grounding per-deployment —
 	// measured that lower K reduces the noise-citation failure mode at the
 	// cost of a small coverage delta on multi-faceted workloads.
 	cap := 10
@@ -2313,8 +2304,8 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 		cap = s.defaults.ResearchSynthK
 	}
 
-	// Iter 165: when ?hyde=true is propagated via hydeEnabledKey, every
-	// variant gets its OWN hypothetical-answer passage. The iter-162 cache
+	// when ?hyde=true is propagated via hydeEnabledKey, every
+	// variant gets its OWN hypothetical-answer passage. The cache
 	// makes repeated sub-queries free.
 	hydeOn := false
 	if v, ok := ctx.Value(hydeEnabledKey{}).(bool); ok && v {
@@ -2358,7 +2349,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 			if err != nil {
 				continue
 			}
-			// Iter 178: rank-derived score for paraphrase strategy. RRF
+			// RRF
 			// returns positions; convert to a relative score with the
 			// standard 1/(rank+1) formula so AnswerSource.Score is non-zero
 			// and ordering is preserved.
@@ -2392,7 +2383,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 			if err != nil {
 				continue
 			}
-			// Iter 178: preserve the retriever score on the passage so
+			// preserve the retriever score on the passage so
 			// AnswerSource.Score can carry it through to the response.
 			passages = append(passages, researchPassage{
 				url: doc.URL, title: doc.Title, text: doc.Text, author: doc.Author,
@@ -2414,7 +2405,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 
 type researchPassage struct {
 	url, title, text, author string
-	score                    float64 // iter 178: carried from retrieval hits for AnswerSource.Score
+	score                    float64 // carried from retrieval hits for AnswerSource.Score
 }
 
 func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
@@ -2433,7 +2424,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		strategy = s.defaults.ResearchStrategy
 	}
 
-	// Iter 165: ?hyde=true → each sub-query gets its own HyDE passage at
+	// ?hyde=true → each sub-query gets its own HyDE passage at
 	// retrieval time. Requires both chat AND embedder configured.
 	ctx := r.Context()
 	if v := r.URL.Query().Get("hyde"); v == "true" || v == "1" {
@@ -2447,7 +2438,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx = context.WithValue(ctx, hydeEnabledKey{}, true)
 	}
-	// Iter 168: ?mmr=true propagates through every retrieval call in
+	// ?mmr=true propagates through every retrieval call in
 	// gatherResearchPassages (planner + paraphrase loops both consult ctx
 	// downstream via runSearch → runDense).
 	ctx = mmrFromQuery(ctx, r)
@@ -2483,7 +2474,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "no sources matched any expanded query")
 		return
 	}
-	// Iter 172: ?prf=true on /research — augment the passage list with one
+	// ?prf=true on /research — augment the passage list with one
 	// extra BM25 retrieval over the term-expanded query. The +prf(N) suffix
 	// goes on the Strategy field so the response self-documents.
 	var prfTag string
@@ -2498,7 +2489,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		if len(text) > perDocChars {
 			text = text[:perDocChars] + "…"
 		}
-		// Iter 154: include Author when present so synth can attribute claims
+		// include Author when present so synth can attribute claims
 		// ("according to Jane Doe writing in <title>"). Skipped when absent —
 		// most pages don't carry JSON-LD authors and a "Author: " line with
 		// empty value confuses the LLM into hallucinating attribution.
@@ -2525,7 +2516,7 @@ func (s *Server) handleResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Iter 178: opt-in source-score normalization (mirrors iter-164's
+	// opt-in source-score normalization (mirrors's
 	// /search ?calibrate=true). Top source = 1.0; others as fractions.
 	if v := r.URL.Query().Get("calibrate"); v == "true" || v == "1" {
 		calibrateSources(sources)
@@ -2560,7 +2551,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 		return
 	}
 
-	// Iter 165: ?hyde=true also applies to streaming /research. Same checks as
+	// ?hyde=true also applies to streaming /research. Same checks as
 	// non-streaming path; on success, set hydeEnabledKey for the variant loop
 	// in gatherResearchPassages.
 	ctx := r.Context()
@@ -2575,7 +2566,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 		}
 		ctx = context.WithValue(ctx, hydeEnabledKey{}, true)
 	}
-	// Iter 168: ?mmr=true on streaming /research.
+	// ?mmr=true on streaming /research.
 	ctx = mmrFromQuery(ctx, r)
 
 	variants, chosenStrategy, err := s.expandForResearch(ctx, q, strategy)
@@ -2596,7 +2587,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 		bail("no sources matched any expanded query")
 		return
 	}
-	// Iter 172: post-fusion PRF augment for streaming /research too. Emits
+	// Emits
 	// a "prf" event with the augmentation tag so the client can show it.
 	var prfTag string
 	passages, prfTag = s.applyPRFToResearchPassages(ctx, r, q, passages)
@@ -2615,7 +2606,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 		if len(text) > perDocChars {
 			text = text[:perDocChars] + "…"
 		}
-		// Iter 154: include Author when present so synth can attribute claims
+		// include Author when present so synth can attribute claims
 		// ("according to Jane Doe writing in <title>"). Skipped when absent —
 		// most pages don't carry JSON-LD authors and a "Author: " line with
 		// empty value confuses the LLM into hallucinating attribution.
@@ -2639,7 +2630,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 	}
 
 	// Stream the synthesis token-by-token when the chat client supports it —
-	// closes the streaming UX gap from iter 16. Falls back to a single Chat
+	// closes the streaming UX gap from Falls back to a single Chat
 	// call for clients that don't implement StreamingChatClient.
 	var answer string
 	if sc, ok := s.chat.(embed.StreamingChatClient); ok {
@@ -2659,7 +2650,7 @@ func (s *Server) streamResearch(w http.ResponseWriter, r *http.Request, q, strat
 		}
 		answer = full
 	}
-	// Iter 178: stream variant honors ?calibrate=true too.
+	// stream variant honors ?calibrate=true too.
 	if v := r.URL.Query().Get("calibrate"); v == "true" || v == "1" {
 		calibrateSources(sources)
 	}
@@ -2700,41 +2691,40 @@ func parseSubQueries(raw, fallback string) []string {
 // AnswerResponse is /answer's wire shape. Sources are ordered by retrieval rank;
 // citation IDs in `answer` reference Source.ID.
 type AnswerResponse struct {
-	Query    string         `json:"query"`
-	Answer   string         `json:"answer"`
-	Sources  []AnswerSource `json:"sources"`
-	Took     string         `json:"took"`
-	Calibrated bool         `json:"calibrated"`
+	Query      string         `json:"query"`
+	Answer     string         `json:"answer"`
+	Sources    []AnswerSource `json:"sources"`
+	Took       string         `json:"took"`
+	Calibrated bool           `json:"calibrated"`
 }
 
 type AnswerSource struct {
 	ID    int    `json:"id"`
 	URL   string `json:"url"`
 	Title string `json:"title"`
-	// Iter 84: enrichment fields surfaced from the index. Mirrors iter-82/83
+	// Mirrors Iter
 	// SearchHit additions so /research callers see the same metadata shape
 	// /search callers do. All omitempty — undated docs and empty domains
 	// emit clean JSON without nulls or empty strings.
 	Domain      string     `json:"domain,omitempty"`
 	PublishedAt *time.Time `json:"published_at,omitempty"`
 	Excerpt     string     `json:"excerpt,omitempty"`
-	// Iter 178: retrieval score per source. Raw retriever score (BM25 sum,
+	// Raw retriever score (BM25 sum,
 	// cosine, RRF reciprocal, or cross-encoder depending on retriever),
 	// preserved from the underlying SearchHit. Operators building "show top
 	// citation by confidence" UIs can rank by this. Omitempty — older clients
 	// that don't expect the field never see it.
 	Score float64 `json:"score,omitempty"`
-	// Iter 178: within-response normalized score when ?calibrate=true is set
+	// within-response normalized score when ?calibrate=true is set
 	// on /answer or /research. Top source = 1.0; others = Score / max(Score).
-	// Mirrors iter-164's /search behavior. Empty (omitempty) otherwise.
+	// Mirrors's /search behavior. Empty (omitempty) otherwise.
 	ScoreCalibrated float64 `json:"score_calibrated,omitempty"`
 }
 
 // enrichSources populates Domain/PublishedAt/Excerpt on the given sources
 // via a single batched store lookup. Mirrors the /search enrichment pattern
-// (iter-82/83). Best-effort: on SQL error, sources are returned with their
+// . Best-effort: on SQL error, sources are returned with their
 // existing fields only — no 500 just because the enrichment lookup failed.
-// Iter 84.
 func (s *Server) enrichSources(ctx context.Context, sources []AnswerSource) {
 	if len(sources) == 0 {
 		return
@@ -2788,7 +2778,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 		k = n
 	}
-	// Iter 108: SSE streaming. Mirrors /research stream detection — opt in
+	// SSE streaming. Mirrors /research stream detection — opt in
 	// via ?stream=true or Accept: text/event-stream. Routed to streamAnswer,
 	// which emits retrieved/synthesizing/answer_chunk/done/error events.
 	wantStream := r.URL.Query().Get("stream") == "true" ||
@@ -2799,7 +2789,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	// /answer inherits ?expand=true from /search (default off). When enabled
 	// and a paraphraser is configured, the LLM's input sources come from the
-	// fused main+paraphrase retrieval — measurably +0.02 nDCG at scale per iter 46.
+	// fused main+paraphrase retrieval — measurably +0.02 nDCG at scale per
 	// Instance default applies when query param is absent.
 	useExpand := s.defaults.Expand
 	if v := r.URL.Query().Get("expand"); v != "" {
@@ -2810,11 +2800,11 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Iter 166: ?hyde=true on /answer. iter-161 shipped HyDE for /search but
+	// ?hyde=true on /answer. shipped HyDE for /search but
 	// /answer's handler never parsed the query param — runSearch alone won't
-	// set the passage in ctx. Same shape as iter-161's /search wiring +
-	// iter-165's /research wiring.
-	// Iter 174: also set hydeEnabledKey so expandHits knows to do per-paraphrase
+	// set the passage in ctx. Same shape as's /search wiring +
+	//'s /research wiring.
+	// also set hydeEnabledKey so expandHits knows to do per-paraphrase
 	// HyDE generation (otherwise paraphrase retrievals reuse HyDE-of-q for
 	// their dense leg, silently breaking expand's diversification).
 	ctx := r.Context()
@@ -2833,7 +2823,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx = context.WithValue(ctx, hydeEnabledKey{}, true)
 	}
-	// Iter 168: ?mmr=true on /answer. Same shape as iter-158's /search wiring;
+	// ?mmr=true on /answer. Same shape as's /search wiring;
 	// no capability check — runDense / runSearch decide whether to actually
 	// fire MMR based on retriever (dense/hybrid only). BM25-only retrievers
 	// silently no-op the param.
@@ -2848,7 +2838,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, fmt.Sprintf("retrieval: %v", err))
 		return
 	}
-	// Iter 170: PRF runs BEFORE expand so the paraphrase fusion sees the
+	// PRF runs BEFORE expand so the paraphrase fusion sees the
 	// term-expanded candidate set. Source-tag suffix is discarded — /answer
 	// doesn't surface per-hit source tags in its response shape.
 	hits, _, _ = s.applyPRFIfRequested(ctx, r, retriever, q, hits, nil, k)
@@ -2870,7 +2860,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		if len(text) > perDocChars {
 			text = text[:perDocChars] + "…"
 		}
-		// Iter 154: include Author when present (same shape as /research synth).
+		// include Author when present (same shape as /research synth).
 		if doc.Author != "" {
 			fmt.Fprintf(&sb, "[%d] Title: %s\nAuthor: %s\nURL: %s\nContent: %s\n\n", i+1, doc.Title, doc.Author, doc.URL, text)
 		} else {
@@ -2894,7 +2884,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Iter 178: ?calibrate=true on /answer mirrors iter-164's /search.
+	// ?calibrate=true on /answer mirrors's /search.
 	if v := r.URL.Query().Get("calibrate"); v == "true" || v == "1" {
 		calibrateSources(sources)
 	}
@@ -2910,10 +2900,10 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 
 // streamAnswer is /answer's SSE variant. Same retrieval + synthesis as the
 // non-streaming path, but emits events along the way so clients see progress.
-// Iter 108 — completes thestreaming surface that iter 98 started
+// completes thestreaming surface that started
 // with /research.
 //
-// Event types (matches the /research events from iter 16 for client reuse):
+// Event types (matches the /research events from for client reuse):
 //   - "retrieved":    { "urls": [...] }                 (one event; /answer has no per-variant retrieval)
 //   - "synthesizing": { "sources": N }
 //   - "answer_chunk": { "text": "..." }                 (when chat client supports streaming)
@@ -2945,9 +2935,9 @@ func (s *Server) streamAnswer(w http.ResponseWriter, r *http.Request, q string, 
 		return
 	}
 
-	// Iter 166: ?hyde=true also applies to streaming /answer. Same checks as
+	// ?hyde=true also applies to streaming /answer. Same checks as
 	// the non-streaming path.
-	// Iter 174: same hydeEnabledKey wiring so expandHits does per-paraphrase
+	// same hydeEnabledKey wiring so expandHits does per-paraphrase
 	// HyDE for streaming too.
 	ctx := r.Context()
 	if v := r.URL.Query().Get("hyde"); v == "true" || v == "1" {
@@ -2965,7 +2955,7 @@ func (s *Server) streamAnswer(w http.ResponseWriter, r *http.Request, q string, 
 		}
 		ctx = context.WithValue(ctx, hydeEnabledKey{}, true)
 	}
-	// Iter 168: ?mmr=true on streaming /answer.
+	// ?mmr=true on streaming /answer.
 	ctx = mmrFromQuery(ctx, r)
 
 	hits, _, _, err := s.runSearch(ctx, retriever, q, k)
@@ -2973,7 +2963,7 @@ func (s *Server) streamAnswer(w http.ResponseWriter, r *http.Request, q string, 
 		bail(fmt.Sprintf("retrieval: %v", err))
 		return
 	}
-	// Iter 170: PRF for streaming /answer — same shape as non-streaming.
+	// PRF for streaming /answer — same shape as non-streaming.
 	hits, _, _ = s.applyPRFIfRequested(ctx, r, retriever, q, hits, nil, k)
 	if useExpand && len(hits) > 0 {
 		hits = s.expandHits(ctx, q, retriever, k, hits)
@@ -2997,7 +2987,7 @@ func (s *Server) streamAnswer(w http.ResponseWriter, r *http.Request, q string, 
 		if len(text) > perDocChars {
 			text = text[:perDocChars] + "…"
 		}
-		// Iter 154: include Author when present (same shape as /research + /answer).
+		// include Author when present (same shape as /research + /answer).
 		if doc.Author != "" {
 			fmt.Fprintf(&sb, "[%d] Title: %s\nAuthor: %s\nURL: %s\nContent: %s\n\n", i+1, doc.Title, doc.Author, doc.URL, text)
 		} else {
@@ -3038,7 +3028,7 @@ func (s *Server) streamAnswer(w http.ResponseWriter, r *http.Request, q string, 
 		answer = full
 	}
 
-	// Iter 178: ?calibrate=true on streaming /answer.
+	// ?calibrate=true on streaming /answer.
 	if v := r.URL.Query().Get("calibrate"); v == "true" || v == "1" {
 		calibrateSources(sources)
 	}
@@ -3077,10 +3067,10 @@ func writeProblem(w http.ResponseWriter, status int, detail string) {
 //     sseHandler has already written a 500 problem response and the caller should
 //     just return
 //
-// Iter 114 — extracted from iter-16/98 streamResearch, iter-108 streamAnswer,
-// and iter-112 handleAdminReembed which all wrote the same ~18-line boilerplate.
+// extracted from Iter streamResearch, streamAnswer,
+// and handleAdminReembed which all wrote the same ~18-line boilerplate.
 // Three callsites is where the duplication starts costing more than the
-// abstraction (matches the iter-109 client-side extraction's threshold).
+// abstraction (matches the client-side extraction's threshold).
 func sseHandler(w http.ResponseWriter) (emit func(event string, data any), bail func(detail string), ok bool) {
 	flusher, hasFlusher := w.(http.Flusher)
 	if !hasFlusher {

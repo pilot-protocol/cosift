@@ -47,13 +47,13 @@ type Config struct {
 	// identical to today. Set NumShards>1 + MyShardID + Peers to participate
 	// in a multi-machine cluster. The crawler routes URLs by hash to the
 	// owning shard (forwarding to peers via POST /admin/crawl-enqueue), and
-	// /search fans out to peers and RRF-merges. Iter 408.
+	// /search fans out to peers and RRF-merges.
 	Cluster Cluster `json:"cluster"`
 }
 
-// Cluster controls the iter-408 horizontal-scaling shape. All fields are
+// Cluster controls the horizontal-scaling shape. All fields are
 // optional. The defaults run as a single-node cluster of size 1, identical
-// to pre-iter-408 behavior — no code path diverges until NumShards>1.
+// to pre behavior — no code path diverges until NumShards>1.
 type Cluster struct {
 	// NumShards is the total number of shards the cluster maintains. Each
 	// URL maps to a shard via fnv32(url) % NumShards. Default 1 = single
@@ -111,7 +111,7 @@ type Crawler struct {
 	// PerHostDelay between requests to the same host (ms).
 	PerHostDelayMs int `json:"per_host_delay_ms"`
 
-	// PerHostOverrides (iter 128) maps host (exact match, including port if
+	// PerHostOverrides maps host (exact match, including port if
 	// non-default) to a delay-ms override. Lets operators crawl slow servers
 	// politely while pushing fast servers quickly. Hosts NOT in the map use
 	// PerHostDelayMs. Example:
@@ -121,7 +121,7 @@ type Crawler struct {
 	// MaxBodyBytes caps the response size. Bigger pages get truncated.
 	MaxBodyBytes int64 `json:"max_body_bytes"`
 
-	// PerHostMaxBodyBytes (iter 130) maps host (exact match) to a body-size
+	// PerHostMaxBodyBytes maps host (exact match) to a body-size
 	// override. Useful when archiving large PDFs from one host (e.g.,
 	// papers.example.com: 50 MB) but keeping small blog posts modest on
 	// another. Hosts NOT in the map use MaxBodyBytes. Override can exceed
@@ -132,7 +132,7 @@ type Crawler struct {
 	// MaxDepth from each seed (0 = seeds only, no expansion).
 	MaxDepth int `json:"max_depth"`
 
-	// PerHostMaxDepth (iter 129) maps host (exact match) to a depth override.
+	// PerHostMaxDepth maps host (exact match) to a depth override.
 	// Lets operators crawl their own site deeply (e.g., docs.example.com: 10)
 	// while limiting outbound links to a shallow depth (default 1 or 2).
 	// Hosts NOT in the map use MaxDepth. The override is the FULL cap for that
@@ -146,7 +146,7 @@ type Crawler struct {
 	// ExcludeDomains is a blocklist.
 	ExcludeDomains []string `json:"exclude_domains"`
 
-	// ExcludeURLPatterns (iter 503) drops URLs whose full string contains
+	// ExcludeURLPatterns drops URLs whose full string contains
 	// any listed substring. Finer-grained than ExcludeDomains — lets an
 	// operator ban "bandcamp.com/album/" while still allowing the
 	// "bandcamp.com/blog" path on the same host. Substring match (not
@@ -160,14 +160,14 @@ type Crawler struct {
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
 
-	// AutoSitemap (iter 461) — when true, the crawler fires a
+	// AutoSitemap — when true, the crawler fires a
 	// fire-and-forget /sitemap.xml fetch the first time it sees a host.
 	// Compounds URL discovery: every new host typically brings hundreds-
 	// to-thousands of URLs in one batch. Each host is probed at most
 	// once per process lifetime (in-memory cache). Default false.
 	AutoSitemap bool `json:"auto_sitemap,omitempty"`
 
-	// RemoteFetcherURL (iter 474) — optional Cloudflare-Worker (or any
+	// RemoteFetcherURL — optional Cloudflare-Worker (or any
 	// HTTP service speaking the same shape) that fetches URLs on behalf
 	// of the crawler. When set, cosift's HTTP transport is wrapped so
 	// every outbound GET becomes a POST to this URL with {url, ...}
@@ -180,7 +180,7 @@ type Crawler struct {
 	RemoteFetcherURL   string `json:"remote_fetcher_url,omitempty"`
 	RemoteFetcherToken string `json:"remote_fetcher_token,omitempty"`
 
-	// RemoteFetcherURLs (iter 483) — optional pool of Worker URLs. When
+	// RemoteFetcherURLs — optional pool of Worker URLs. When
 	// set (non-empty), the crawler round-robins outbound fetches across
 	// the pool instead of hammering a single Worker. Each Worker on
 	// Cloudflare's free tier handles 100K req/day; spreading load across
@@ -191,7 +191,7 @@ type Crawler struct {
 	// Falls back to RemoteFetcherURL when this is empty.
 	RemoteFetcherURLs []string `json:"remote_fetcher_urls,omitempty"`
 
-	// Proxies (iter 443) — optional list of HTTP proxy URLs (e.g.
+	// Proxies — optional list of HTTP proxy URLs (e.g.
 	//   "http://user:pass@proxy.example.com:8080"
 	//   "socks5://proxy.local:1080"
 	// Per-request a proxy is picked at random; empty list = direct
@@ -201,14 +201,14 @@ type Crawler struct {
 	// is stdlib-adjacent).
 	Proxies []string `json:"proxies,omitempty"`
 
-	// StatusFile (iter 224) — when non-empty, the crawler writes a JSON
+	// StatusFile — when non-empty, the crawler writes a JSON
 	// snapshot of frontier counts to this path every 10s. Operators reading
 	// the file (cat / watch / jq) don't contend with the Pebble single-
 	// writer lock that blocks `cosift stats -backend=pebble` mid-crawl.
 	// Empty string disables; recommended value: <data_dir>/crawl-status.json
 	StatusFile string `json:"status_file,omitempty"`
 
-	// MaxURLsPerHost (iter 195) caps how many URLs from any single host can be
+	// MaxURLsPerHost caps how many URLs from any single host can be
 	// queued in the frontier at once. New outbound-link enqueues for a host
 	// already at the cap are silently skipped; the cap is checked against
 	// frontier.host count for status='queued'.
@@ -221,11 +221,11 @@ type Crawler struct {
 	// fetching same-host duplicates that all redirect to canonical doc URLs
 	// already in the index (fetched_at bumps, no new docs).
 	//
-	// Zero / unset = no cap (pre-iter-195 behavior). Recommended starting
+	// Zero / unset = no cap (pre behavior). Recommended starting
 	// value: 1000 for general crawls; 100-200 for tight target-site crawls.
 	MaxURLsPerHost int `json:"max_urls_per_host,omitempty"`
 
-	// ChunkSize and ChunkOverlap (iter 142) control passage windowing for the
+	// ChunkSize and ChunkOverlap control passage windowing for the
 	// dense indexer during crawl. ChunkSize is the target word count per chunk
 	// (~0.6 BPE tokens/word for English → 320 words ≈ 512 tokens). ChunkOverlap
 	// is the shared word count between consecutive chunks; helps recall on
@@ -238,7 +238,7 @@ type Crawler struct {
 	ChunkSize    int `json:"chunk_size,omitempty"`
 	ChunkOverlap int `json:"chunk_overlap,omitempty"`
 
-	// PerHostChunkSize / PerHostChunkOverlap (iter 146) map host (exact match,
+	// PerHostChunkSize / PerHostChunkOverlap map host (exact match,
 	// matched against the originally-requested URL's host — redirects don't
 	// inherit) to a per-host chunker override. Lets operators chunk PDF-heavy
 	// hosts (papers.example.com) at 512/128 while keeping social-feed hosts
@@ -250,7 +250,7 @@ type Crawler struct {
 	PerHostChunkSize    map[string]int `json:"per_host_chunk_size,omitempty"`
 	PerHostChunkOverlap map[string]int `json:"per_host_chunk_overlap,omitempty"`
 
-	// MinTextLen (iter 502) drops parsed pages whose extracted text falls
+	// MinTextLen drops parsed pages whose extracted text falls
 	// below this many characters before they reach the index. Aggregator
 	// pages (commerce listings, sitemap stubs, "page not found", footer-
 	// only auto-discovered URLs) routinely parse to <200 chars of real
@@ -258,7 +258,7 @@ type Crawler struct {
 	// dominate retrieval cost while shadowing higher-quality long-form
 	// pages in BM25 IDF.
 	//
-	// Zero / unset = keep every non-empty parse (pre-iter-502 behavior).
+	// Zero / unset = keep every non-empty parse (pre behavior).
 	// Recommended starting value: 200 for general crawls; raise to 500
 	// or 1000 for research/news corpora where short pages are almost
 	// always navigation cruft.
@@ -280,7 +280,7 @@ type Embeddings struct {
 	// URL of an OpenAI-compatible embeddings endpoint, or empty to disable.
 	URL string `json:"url"`
 
-	// URLs (iter 449) — optional list of backend endpoints for fan-out.
+	// URLs — optional list of backend endpoints for fan-out.
 	// When non-empty takes precedence over URL: cosift round-robins
 	// embed requests across the entries. Use for multi-replica ollama /
 	// vLLM deployments where one model copy can't saturate the GPU.
@@ -292,7 +292,7 @@ type Embeddings struct {
 	// Dim of the model output (must match the index).
 	Dim int `json:"dim"`
 
-	// CacheDir (iter 452) — optional directory for a SHA256-keyed disk
+	// CacheDir — optional directory for a SHA256-keyed disk
 	// cache. Same text → instant cache hit, no ollama call. Useful when
 	// the crawler re-fetches existing URLs (content_hash unchanged) or
 	// when /search receives the same query repeatedly. Empty = disabled.
@@ -347,27 +347,27 @@ type Defaults struct {
 	ResearchStrategy string `json:"research_strategy"`
 
 	// ResearchSynthK caps how many sources /research passes to the synthesis
-	// LLM. Defaults to 10 (preserves iter-7 behavior). Lower values reduce
+	// LLM. Defaults to 10 (preserves behavior). Lower values reduce
 	// the chance of the synth LLM citing tangentially-relevant noise sources
-	// that the retrieval pulled in at positions 6-10 — iter-58 measured this
+	// that the retrieval pulled in at positions 6-10 — measured this
 	// failure mode in 16/38 (42%) paraphrase queries on the single-doc corpus.
-	// Iter-62 measured that K=5 trades a small coverage delta for a larger
+	// measured that K=5 trades a small coverage delta for a larger
 	// grounding gain on single-doc workloads; multi-faceted workloads may
 	// prefer the historic K=10 for fuller multi-doc coverage.
 	// Zero = use the built-in default (10). Range: positive integers.
 	ResearchSynthK int `json:"research_synth_k"`
 
 	// ExpandMainWeight scales the main (non-paraphrased) query's contribution
-	// in the iter-46 expand-path RRF fusion. Paraphrase lists keep weight 1.0.
+	// in the expand-path RRF fusion. Paraphrase lists keep weight 1.0.
 	// >1.0 trusts the original query more than LLM paraphrases (typical when
 	// the corpus is well-aligned with the user's vocabulary); <1.0 trusts
 	// paraphrases more (rare; useful when queries are short / under-specified
 	// and the LLM reliably broadens them).
 	//
 	// Zero / unset → 1.0 (equal weight = standard RRF behavior, unchanged
-	// from pre-iter-136). Non-positive values fall back to 1.0 — defensive
+	// from pre). Non-positive values fall back to 1.0 — defensive
 	// default so a typo can't silently drop the main retriever (same
-	// safer-on-conflict pattern as iter-126).
+	// safer-on-conflict pattern as).
 	//
 	// Tuning is operator-specific: measure with the eval gate on your own
 	// corpus before pinning to anything other than 1.0.
@@ -380,7 +380,7 @@ type Defaults struct {
 	// queries where embedding models often blur exact-match precision).
 	//
 	// Zero / non-positive → 1.0 (equal weight = standard RRF, unchanged from
-	// pre-iter-138). OpenSearch/ Vespa / Elastic all expose this knob;
+	// pre). OpenSearch/ Vespa / Elastic all expose this knob;
 	// cosift now matches.
 	//
 	// Tune via the eval gate on your corpus — there is no universal answer.
@@ -388,7 +388,7 @@ type Defaults struct {
 	// AND hybrid are active.
 	HybridDenseWeight float64 `json:"hybrid_dense_weight"`
 
-	// HostBoosts (iter 504) is a host-suffix → score multiplier map applied
+	// HostBoosts is a host-suffix → score multiplier map applied
 	// to fused retrieval scores. Operators upweight authoritative sources
 	// (e.g. "wikipedia.org": 1.5, "arxiv.org": 1.5, "nih.gov": 1.4) or
 	// downweight long-tail aggregators ("bandcamp.com": 0.4, "itch.io":

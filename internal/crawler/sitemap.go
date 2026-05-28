@@ -37,13 +37,13 @@ type sitemapURLT struct {
 }
 
 type sitemapIndex struct {
-	XMLName  xml.Name           `xml:"sitemapindex"`
-	Sitemaps []sitemapURLT      `xml:"sitemap"`
+	XMLName  xml.Name      `xml:"sitemapindex"`
+	Sitemaps []sitemapURLT `xml:"sitemap"`
 }
 
 // SeedSitemap fetches a sitemap, parses out URLs, and pushes each to the
 // persistent frontier at depth 0. Sitemap indices are followed up to two
-// levels deep — iter 494: news sites (theguardian, NYT, BBC etc.) commonly
+// levels deep — news sites (theguardian, NYT, BBC etc.) commonly
 // publish a master /sitemap.xml that points at a sitemap-index of monthly
 // indexes that each point at daily sitemaps. One-level recursion missed
 // 99%+ of their URLs. Two levels covers the standard "index → sub-index →
@@ -57,7 +57,7 @@ type sitemapIndex struct {
 //
 // Returns the number of URLs enqueued.
 func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, error) {
-	// Iter 496: stream URLs into the frontier via callback instead of
+	// stream URLs into the frontier via callback instead of
 	// materializing the full URL list. The prior approach accumulated
 	// every URL across the entire recursive sitemap-index walk into a
 	// single `all` slice, which for a multi-million-URL wired.com-style
@@ -96,7 +96,7 @@ func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining i
 		return nil, err
 	}
 
-	// Iter 459: gzip support. Go's net/http auto-decompresses responses
+	// Go's net/http auto-decompresses responses
 	// with Content-Encoding: gzip, but sitemap.xml.gz URLs typically arrive
 	// with Content-Encoding: identity (or absent) and the gzip framing is
 	// part of the BODY. Detect via either the URL extension or magic bytes.
@@ -114,7 +114,7 @@ func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining i
 		body = decompressed
 	}
 
-	// Iter 496 wrapper kept for any non-streaming callers; new internal
+	// wrapper kept for any non-streaming callers; new internal
 	// fetchSitemapStream is the leak-free path. Callers prefer streaming.
 	_ = body
 	_ = depthRemaining
@@ -126,7 +126,7 @@ func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining i
 // to depthRemaining levels. Bounded heap: per-call working set is one
 // sitemap's parsed token stream + transient locBuf string. URLs aren't
 // accumulated; they flow straight to the emit callback (typically
-// c.Seed which writes to the persistent frontier). Iter 496.
+// c.Seed which writes to the persistent frontier).
 func (c *Crawler) fetchSitemapStream(ctx context.Context, url string, depthRemaining int, emit func(string)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -196,7 +196,7 @@ func (c *Crawler) fetchSitemapStream(ctx context.Context, url string, depthRemai
 
 // streamSitemapEmit decodes the sitemap XML token-by-token and pushes
 // each <loc> string through emit. Used by both urlset (emits article
-// URLs) and sitemapindex (emits child sitemap URLs). Iter 496.
+// URLs) and sitemapindex (emits child sitemap URLs).
 func streamSitemapEmit(body []byte, itemTag string, emit func(string)) error {
 	dec := xml.NewDecoder(bytes.NewReader(body))
 	var inItem, inLoc bool

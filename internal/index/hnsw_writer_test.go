@@ -80,8 +80,8 @@ func TestHNSWWriterAutoFlushOnThreshold(t *testing.T) {
 	// Three docs to write three passages for.
 	for i := 1; i <= 3; i++ {
 		_, err := ps.UpsertDocument(ctx, &store.Document{
-			URL:   "https://x/" + string(rune('a'+i-1)),
-			Title: "doc",
+			URL:       "https://x/" + string(rune('a'+i-1)),
+			Title:     "doc",
 			FetchedAt: time.Now(),
 		})
 		if err != nil {

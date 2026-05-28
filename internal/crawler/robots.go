@@ -23,7 +23,7 @@ type robotsGroup struct {
 type robotsRules struct {
 	groups    []robotsGroup
 	fetchedAt time.Time
-	// sitemaps (iter 131) are URLs from the `Sitemap:` directive in robots.txt.
+	// sitemaps are URLs from the `Sitemap:` directive in robots.txt.
 	// Group-independent per the sitemaps.org spec (separate from per-UA groups).
 	// Modern crawlers commonly auto-discover sitemap URLs this way; exposing
 	// them via Robots.Sitemaps() lets operators inspect what they'd find before
@@ -39,8 +39,8 @@ type robotsRules struct {
 //   - Cache TTL: 24h per host.
 //   - We follow the REP (Robots Exclusion Protocol) draft semantics: longest UA
 //     prefix wins; for path rules, Allow with a longer pattern beats Disallow.
-//   - Supported directives: User-agent, Disallow, Allow, Crawl-delay, Sitemap (iter 131).
-//   - Pattern wildcards: '*' supported; '$' end-anchor supported (iter 132).
+//   - Supported directives: User-agent, Disallow, Allow, Crawl-delay, Sitemap.
+//   - Pattern wildcards: '*' supported; '$' end-anchor supported.
 type Robots struct {
 	mu     sync.RWMutex
 	cache  map[string]*robotsRules
@@ -89,7 +89,7 @@ func (r *Robots) Allowed(ctx context.Context, rawURL string) (bool, time.Duratio
 
 // Sitemaps returns the URLs from the host's robots.txt Sitemap: directives.
 // Returns nil if the host has no robots.txt or no Sitemap entries.
-// Iter 131 — modern-crawler parity (Googlebot/Bingbot auto-discover sitemaps
+// modern-crawler parity (Googlebot/Bingbot auto-discover sitemaps
 // from robots.txt; cosift now exposes the same data).
 //
 // `hostURL` only needs scheme + host (e.g., "https://example.com"). Subsequent
@@ -199,7 +199,7 @@ func parseRobots(body string) *robotsRules {
 				current.crawlDelay = time.Duration(d) * time.Second
 			}
 		case "sitemap":
-			// Iter 131: Sitemap directive is group-independent per the
+			// Sitemap directive is group-independent per the
 			// sitemaps.org spec. Attaches to rules, not to current group.
 			// Modern crawlers auto-discover sitemap URLs from robots.txt.
 			expectingUA = false
@@ -268,13 +268,14 @@ func longestMatch(patterns []string, path string) int {
 
 // patternMatches implements REP wildcard matching anchored at the path start.
 // Supports `*` (zero-or-more) anywhere in the pattern, and `$` end-anchor at
-// the very end (iter 132). Examples:
-//   "/admin"     prefix-matches any URL starting with /admin (incl. /admin/foo)
-//   "/admin$"    matches ONLY /admin (not /admin/foo) — iter 132
-//   "/*.pdf$"    matches any URL ending with .pdf — iter 132
-//   "/private/*" matches /private/anything (existing behavior)
+// the very end. Examples:
+//
+//	"/admin"     prefix-matches any URL starting with /admin (incl. /admin/foo)
+//	"/admin$"    matches ONLY /admin (not /admin/foo) —
+//	"/*.pdf$"    matches any URL ending with .pdf —
+//	"/private/*" matches /private/anything (existing behavior)
 func patternMatches(pattern, path string) bool {
-	// Iter 132: detect trailing `$` end-anchor and strip it before matching.
+	// detect trailing `$` end-anchor and strip it before matching.
 	endAnchored := strings.HasSuffix(pattern, "$")
 	if endAnchored {
 		pattern = pattern[:len(pattern)-1]

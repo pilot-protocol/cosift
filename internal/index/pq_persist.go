@@ -1,4 +1,4 @@
-// PQ persistence — codebook + per-vector code blobs. Iter 414.
+// PQ persistence — codebook + per-vector code blobs.
 //
 // Format (codebook):
 //
@@ -14,7 +14,7 @@
 //	[M]uint16  little-endian (2*M bytes total)
 //
 // Codebook lives at 'q' + 0x00 + "codebook"; codes live at
-// 'q' + 0x01 + uint64-be(nodeID). See store/pebble.go iter-414 comment.
+// 'q' + 0x01 + uint64-be(nodeID). See store/pebble.go comment.
 package index
 
 import (
@@ -29,7 +29,7 @@ import (
 
 const pqCodebookMagic = "PQB1"
 
-// EncodePQCodebook serializes a PQCodebook to the iter-414 format.
+// EncodePQCodebook serializes a PQCodebook to the format.
 func EncodePQCodebook(cb *PQCodebook) []byte {
 	header := 4 + 4*4
 	body := cb.M * cb.K * cb.SubDim * 4
@@ -52,7 +52,7 @@ func EncodePQCodebook(cb *PQCodebook) []byte {
 }
 
 // DecodePQCodebook restores a PQCodebook from a blob written by
-// EncodePQCodebook. Iter 414.
+// EncodePQCodebook.
 func DecodePQCodebook(buf []byte) (*PQCodebook, error) {
 	if len(buf) < 20 || string(buf[0:4]) != pqCodebookMagic {
 		return nil, errors.New("pq codebook: bad magic / too short")
@@ -87,9 +87,9 @@ func DecodePQCodebook(buf []byte) (*PQCodebook, error) {
 	return cb, nil
 }
 
-// EncodePQCode packs an []uint16 of length M into 2*M bytes LE. Iter 414
+// EncodePQCode packs an []uint16 of length M into 2*M bytes LE.
 // kept this for legacy / large-K (>256) cases. New callers should prefer
-// PQCodebook.EncodeCodeBlob which byte-packs when K ≤ 256 (iter 418).
+// PQCodebook.EncodeCodeBlob which byte-packs when K ≤ 256.
 func EncodePQCode(code []uint16) []byte {
 	out := make([]byte, 2*len(code))
 	for i, c := range code {
@@ -98,7 +98,7 @@ func EncodePQCode(code []uint16) []byte {
 	return out
 }
 
-// DecodePQCode unpacks the inverse — uint16 LE form only. Iter 418
+// DecodePQCode unpacks the inverse — uint16 LE form only.
 // callers should prefer PQCodebook.DecodeCodeBlob, which auto-detects
 // uint8 vs uint16 blob shapes for backward compat.
 func DecodePQCode(buf []byte) ([]uint16, error) {
@@ -113,7 +113,7 @@ func DecodePQCode(buf []byte) ([]uint16, error) {
 }
 
 // EncodeCodeBlob serializes one code respecting K: ≤256 → byte-packed
-// (M bytes), >256 → uint16 LE (2*M bytes). Iter 418.
+// (M bytes), >256 → uint16 LE (2*M bytes).
 func (cb *PQCodebook) EncodeCodeBlob(code []uint16) []byte {
 	if cb.K <= 256 {
 		out := make([]byte, len(code))
@@ -127,7 +127,7 @@ func (cb *PQCodebook) EncodeCodeBlob(code []uint16) []byte {
 
 // DecodeCodeBlob auto-detects the shape: blob length M = byte-packed,
 // 2*M = uint16 LE. Lets a v0.1 corpus (uint16) be read by a v0.2 binary
-// (byte) silently. Iter 418.
+// (byte) silently.
 func (cb *PQCodebook) DecodeCodeBlob(blob []byte) ([]uint16, error) {
 	switch len(blob) {
 	case cb.M:
@@ -143,15 +143,15 @@ func (cb *PQCodebook) DecodeCodeBlob(blob []byte) ([]uint16, error) {
 	}
 }
 
-// PersistPQCodebook writes the codebook to Pebble. Iter 414.
+// PersistPQCodebook writes the codebook to Pebble.
 func (cb *PQCodebook) Persist(ctx context.Context, ps *store.PebbleStore) error {
 	return ps.PutPQCodebook(ctx, EncodePQCodebook(cb))
 }
 
 // PersistPQCodesFrom writes h.codes[fromIdx:] to the Pebble 'q' family in
-// a single batch. Mirrors the iter-406 incremental HNSW persist pattern —
+// a single batch. Mirrors the incremental HNSW persist pattern —
 // the crawl-time checkpoint loop calls this with the running lastN to
-// avoid re-writing already-persisted codes. Iter 417.
+// avoid re-writing already-persisted codes.
 //
 // Skips entries where h.codes[i] is nil/short (no code yet, e.g. AddPassage
 // fired before the codebook was loaded). Caller can re-run pq-train later
@@ -170,7 +170,7 @@ func (h *HNSW) PersistPQCodesFrom(ctx context.Context, ps *store.PebbleStore, fr
 		if len(h.codes[i]) != h.codebook.M {
 			continue
 		}
-		// Iter 418: K≤256 path packs as 1 byte/sub (96 B vs 192 B at M=96).
+		// K≤256 path packs as 1 byte/sub (96 B vs 192 B at M=96).
 		entries = append(entries, store.PQCodeEntry{
 			ID:   uint64(i),
 			Blob: h.codebook.EncodeCodeBlob(h.codes[i]),

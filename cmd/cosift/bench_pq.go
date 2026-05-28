@@ -18,7 +18,6 @@ import (
 // search path (which uses PQ when a codebook is loaded), and reports the
 // resulting Recall@k + latency. Lets operators measure whether the approx
 // search path is still frontier-grade after corpus growth or PQ retraining.
-// Iter 427.
 func runBenchPQ(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("bench-pq", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (defaults to <cfg.DataDir>/pebble)")

@@ -59,7 +59,7 @@ const dashboardHTML = `<!doctype html>
     html += '<div class="card"><h2>documents</h2><div class="v">' + d.documents.toLocaleString() + '</div></div>';
     html += '<div class="card"><h2>terms</h2><div class="v">' + d.terms.toLocaleString() + '</div></div>';
     html += '<div class="card"><h2>passages</h2><div class="v">' + d.passages.toLocaleString() + '</div></div>';
-    // Iter 81: surface the iter-80 docs_with_published_at field. Show as both
+    // Show as both
     // raw count and percent — the percent is what operators actually need to
     // gauge "how much of my corpus is date-filterable."
     if (typeof d.docs_with_published_at === 'number' && d.documents > 0) {
@@ -71,7 +71,7 @@ const dashboardHTML = `<!doctype html>
     html += '<div class="card"><h2>frontier · in_flight</h2><div class="v">' + d.frontier.InFlight.toLocaleString() + '</div></div>';
     html += '<div class="card"><h2>frontier · done</h2><div class="v">' + d.frontier.Done.toLocaleString() + '</div></div>';
     html += '<div class="card"><h2>frontier · errored</h2><div class="v">' + d.frontier.Errored.toLocaleString() + '</div></div>';
-    // Iter 180: surface iter-171 LLM-cache sizes. Both cards hidden when
+    // Both cards hidden when
     // count is 0 — fresh deployments with no LLM activity shouldn't see
     // empty cells. Matches the CLI's "=== LLM caches ===" hide-when-empty
     // behavior.

@@ -23,9 +23,9 @@ func TestClusterSingleNodeDefault(t *testing.T) {
 
 func TestClusterRouting(t *testing.T) {
 	c := Cluster{
-		NumShards:  4,
-		MyShardID:  1,
-		Peers:      []string{"box0:7777", "box1:7777", "box2:7777", "box3:7777"},
+		NumShards: 4,
+		MyShardID: 1,
+		Peers:     []string{"box0:7777", "box1:7777", "box2:7777", "box3:7777"},
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)

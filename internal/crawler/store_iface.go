@@ -1,5 +1,5 @@
-// Iter 212 — backend interfaces for the crawler so it can run against
-// either *store.Store (SQLite, the production path through iter 211) or
+// backend interfaces for the crawler so it can run against
+// either *store.Store (SQLite, the production path through) or
 // *store.PebbleStore (the path-2 rework target).
 //
 // Each Pebble equivalent of an SQLite method already exists with a
@@ -50,7 +50,7 @@ type LexicalIndexer interface {
 //
 // When non-nil on a Crawler, the embedding-enabled crawl path persists
 // passage vectors via this interface. When nil, dense indexing during
-// crawl is skipped silently (BM25 still works). Iter 212 — keeps the
+// crawl is skipped silently (BM25 still works). Keeps the
 // SQLite + Pebble paths cleanly separated without a stub no-op.
 type PassageWriter interface {
 	UpsertPassage(ctx context.Context, p *store.Passage) error
@@ -58,7 +58,7 @@ type PassageWriter interface {
 
 // PassageWriterBatch is an optional optimization: callers (the crawler)
 // with all of a doc's chunks already in memory can hand them over in one
-// call so the underlying writer can take the HNSW lock once. Iter 443.
+// call so the underlying writer can take the HNSW lock once.
 type PassageWriterBatch interface {
 	UpsertPassageBatch(ctx context.Context, ps []*store.Passage) error
 }
@@ -72,7 +72,6 @@ type PassageWriterBatch interface {
 // writer to mark all prior passages for a URL as invalid (vec=nil) right
 // before the new chunk batch is inserted. Returns the count zeroed.
 // Optional: writers without invalidation support are skipped silently.
-// Iter 477.
 type URLInvalidator interface {
 	MarkURLInvalid(ctx context.Context, url string) (int, error)
 }

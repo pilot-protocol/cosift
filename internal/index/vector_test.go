@@ -82,9 +82,9 @@ func TestVectorIndexDedupesByURL(t *testing.T) {
 	// direction. Vectors are normalized internally, so we need *direction*
 	// differences (not just magnitude) to get distinct cosines.
 	vi := NewVectorIndex(3)
-	vi.AddPassage("https://example/a", "A", 0, 100, []float32{1, 0.5, 0})    // cos ≈ 0.894
-	vi.AddPassage("https://example/a", "A", 100, 100, []float32{1, 0, 0})    // cos = 1.0  ← best
-	vi.AddPassage("https://example/a", "A", 200, 100, []float32{1, 0.3, 0})  // cos ≈ 0.958
+	vi.AddPassage("https://example/a", "A", 0, 100, []float32{1, 0.5, 0})   // cos ≈ 0.894
+	vi.AddPassage("https://example/a", "A", 100, 100, []float32{1, 0, 0})   // cos = 1.0  ← best
+	vi.AddPassage("https://example/a", "A", 200, 100, []float32{1, 0.3, 0}) // cos ≈ 0.958
 	vi.AddPassage("https://example/b", "B", 0, 50, []float32{0, 1, 0})
 
 	hits := vi.Search(context.Background(), []float32{1, 0, 0}, 10)
@@ -279,8 +279,8 @@ func TestRRFWeightedNilWeightsFallsBackToEqual(t *testing.T) {
 
 func TestHostBoostFor(t *testing.T) {
 	boosts := map[string]float64{
-		"wikipedia.org": 1.5,
-		"example.com":   1.2,
+		"wikipedia.org":     1.5,
+		"example.com":       1.2,
 		"blogs.example.com": 0.5, // longest-match-wins overrides example.com=1.2
 	}
 	cases := []struct {
@@ -289,11 +289,11 @@ func TestHostBoostFor(t *testing.T) {
 	}{
 		{"https://en.wikipedia.org/wiki/Foo", 1.5},
 		{"https://example.com/article", 1.2},
-		{"https://blogs.example.com/post", 0.5},     // suffix-specific override wins
-		{"https://random.example.org/x", 1.0},        // not in map
-		{"not-a-url", 1.0},                            // no scheme
-		{"https://EXAMPLE.com/up", 1.2},               // case-insensitive
-		{"https://example.com:8080/path", 1.2},        // port stripped
+		{"https://blogs.example.com/post", 0.5}, // suffix-specific override wins
+		{"https://random.example.org/x", 1.0},   // not in map
+		{"not-a-url", 1.0},                      // no scheme
+		{"https://EXAMPLE.com/up", 1.2},         // case-insensitive
+		{"https://example.com:8080/path", 1.2},  // port stripped
 	}
 	for _, tc := range cases {
 		got := HostBoostFor(tc.url, boosts)

@@ -46,7 +46,7 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/pdf")
-	// Iter 141: no manual Accept-Encoding — see crawler.go for full rationale.
+	// no manual Accept-Encoding — see crawler.go for full rationale.
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -66,7 +66,7 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 		return nil, err
 	}
 	finalURL := resp.Request.URL.String()
-	// Iter 73: dispatch parser by content-type. HTML default; PDF when ct contains "pdf".
+	// HTML default; PDF when ct contains "pdf".
 	var parsed *ParsedDoc
 	if strings.Contains(ct, "pdf") {
 		parsed, err = ParsePDF(body, finalURL)

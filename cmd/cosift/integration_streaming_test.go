@@ -128,7 +128,7 @@ func TestE2EResearchStreaming(t *testing.T) {
 	// the wire-format check with the chunking behavior.
 	for _, want := range []string{
 		"Strategy: planner",
-		"[retrieved ",  // any number of retrieved events from variant fan-out
+		"[retrieved ", // any number of retrieved events from variant fan-out
 		"[synthesizing answer over",
 		"Sources:",
 		"https://x/go",
