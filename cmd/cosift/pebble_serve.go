@@ -558,7 +558,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 				}
 				return false, cfg.Cluster.PeerForURL(url)
 			},
-			func(url, peerAddr string) error { return s.forwardURLToPeer(url, peerAddr) },
+			s.forwardURLToPeer,
 		)
 		log.Printf("in-serve crawler: cluster mode (shard=%d/%d, peers=%d)",
 			cfg.Cluster.MyShardID, cfg.Cluster.NumShards, len(cfg.Cluster.Peers))
@@ -574,7 +574,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
-			if err := s.forwardURLToPeer(u, cfg.Cluster.PeerForURL(u)); err != nil {
+			if err := s.forwardURLToPeer(ctx, u, cfg.Cluster.PeerForURL(u)); err != nil {
 				log.Printf("in-serve crawler: forward initial seed %s: %v", u, err)
 			}
 			continue
@@ -1015,7 +1015,7 @@ func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // caller logs failures and the URL is dropped — no retry or persistent queue.
 var forwardHTTP = &http.Client{Timeout: 10 * time.Second}
 
-func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
+func (s *pebbleHTTP) forwardURLToPeer(ctx context.Context, rawURL, peerAddr string) error {
 	body, _ := json.Marshal(crawlEnqueueReq{URL: rawURL})
 	// peerAddr is host:port; assume http inside the cluster (mTLS / VPN
 	// would be a wrapper concern). Switch to https://... if peers expose TLS.
@@ -1023,7 +1023,10 @@ func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
 	if strings.HasPrefix(peerAddr, "http://") || strings.HasPrefix(peerAddr, "https://") {
 		endpoint = strings.TrimRight(peerAddr, "/") + "/admin/crawl-enqueue"
 	}
-	req, _ := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if t := s.cluster.PeerAuthToken; t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)

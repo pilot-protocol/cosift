@@ -71,9 +71,9 @@ func NewOpenAIClient(apiKey, url, model string, dim int) *OpenAIClient {
 		http: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				// Go defaults for MaxConnsPerHost (effectively unlimited
-				// via 2 idle by default) —'s bump caused queueing
-				// at the embedder under heavy crawler load.
+				// Go's default of 2 idle conns per host queues under crawler
+				// load. Defaults below (MaxConnsPerHost unset = unlimited)
+				// plus the long IdleConnTimeout keep connections warm.
 				ForceAttemptHTTP2:     true,
 				IdleConnTimeout:       90 * time.Second,
 				ResponseHeaderTimeout: 45 * time.Second,

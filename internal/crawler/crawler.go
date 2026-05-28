@@ -281,7 +281,7 @@ type RouteFn func(canonURL string) (ownsLocally bool, peerAddr string)
 // ForwardFn is the function the crawler calls when a discovered URL belongs
 // to another shard. Implementation lives outside the crawler package (in
 // pebble_serve.go) so the crawler stays HTTP-client-free.
-type ForwardFn func(canonURL, peerAddr string) error
+type ForwardFn func(ctx context.Context, canonURL, peerAddr string) error
 
 // WithRouter wires sharding-aware URL routing. When nil (default), every
 // URL is owned locally — preserves the single-node code path.
@@ -994,7 +994,7 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 		if c.route != nil {
 			owns, peer := c.route(cand.canon)
 			if !owns && peer != "" && c.forward != nil {
-				if err := c.forward(cand.canon, peer); err != nil {
+				if err := c.forward(ctx, cand.canon, peer); err != nil {
 					log.Printf("crawler: forward %s to peer %s: %v", cand.canon, peer, err)
 				}
 				continue

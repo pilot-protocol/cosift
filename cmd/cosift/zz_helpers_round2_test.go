@@ -654,7 +654,7 @@ func TestForwardURLToPeerHappy(t *testing.T) {
 	// httptest URL is http://host:port — caller passes host:port.
 	peer := strings.TrimPrefix(srv.URL, "http://")
 	s := &pebbleHTTP{}
-	if err := s.forwardURLToPeer("https://example.com", peer); err != nil {
+	if err := s.forwardURLToPeer(context.Background(), "https://example.com", peer); err != nil {
 		t.Errorf("forwardURLToPeer: %v", err)
 	}
 	if !strings.Contains(string(gotBody), "example.com") {
@@ -669,7 +669,7 @@ func TestForwardURLToPeerNon2xx(t *testing.T) {
 	defer srv.Close()
 	peer := strings.TrimPrefix(srv.URL, "http://")
 	s := &pebbleHTTP{}
-	if err := s.forwardURLToPeer("https://example.com", peer); err == nil {
+	if err := s.forwardURLToPeer(context.Background(), "https://example.com", peer); err == nil {
 		t.Error("expected error on 5xx")
 	}
 }
@@ -682,7 +682,7 @@ func TestForwardURLToPeerHTTPPrefix(t *testing.T) {
 	s := &pebbleHTTP{}
 	// Pass full URL (with http:// scheme + trailing slash) — exercises the
 	// alternate branch.
-	if err := s.forwardURLToPeer("https://example.com", srv.URL+"/"); err != nil {
+	if err := s.forwardURLToPeer(context.Background(), "https://example.com", srv.URL+"/"); err != nil {
 		t.Errorf("forwardURLToPeer (with prefix): %v", err)
 	}
 }

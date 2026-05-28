@@ -851,9 +851,9 @@ func renderAnswerMarkdown(query, strategy string, plan []string, answer string, 
 
 // renderRankedMarkdown formats a ranked-hits response (search, find-similar)
 // as markdown for LLM piping or markdown viewers. `title` is the H1 text —
-// callers pass "Results: <query>" for /search or "Similar to: <url>" for
-// /find_similar. Hit-list shape is the same in both cases. generalized
-// from's renderSearchMarkdown.
+// renderRankedMarkdown renders a ranked hit list as markdown. Callers
+// pass "Results: <query>" for /search or "Similar to: <url>" for
+// /find_similar; the hit-list shape is the same in both cases.
 func renderRankedMarkdown(title string, hits []server.SearchHit) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", title)
