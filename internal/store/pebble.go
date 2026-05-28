@@ -67,6 +67,13 @@ type PebbleStore struct {
 	// where the previous one stopped, wrapping at the end.
 	frontierCursorMu sync.Mutex
 	frontierCursor   []byte
+
+	// PILOT-190: pebble.DB.Close() panics if called twice. Wrap teardown
+	// in sync.Once so repeated Close() calls (e.g. from layered cleanups
+	// or signal handlers) are idempotent. closeErr caches the first
+	// Close result so every caller sees the same outcome.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 const (
@@ -188,7 +195,16 @@ func OpenPebble(path string) (*PebbleStore, error) {
 }
 
 // Close flushes and closes the underlying Pebble DB.
-func (p *PebbleStore) Close() error { return p.db.Close() }
+//
+// Idempotent: pebble.DB.Close() panics if called twice (PILOT-190), so
+// the teardown is wrapped in sync.Once. Subsequent calls are no-ops and
+// return the same error as the first call.
+func (p *PebbleStore) Close() error {
+	p.closeOnce.Do(func() {
+		p.closeErr = p.db.Close()
+	})
+	return p.closeErr
+}
 
 // Checkpoint creates a consistent, point-in-time snapshot of the DB at destDir
 // via hard-links to live SSTs. Cheap (no data copy) and safe to tar afterwards

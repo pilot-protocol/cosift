@@ -661,3 +661,32 @@ func TestPebbleRecrawlURL(t *testing.T) {
 		t.Errorf("missing URL: want ErrNotFound, got %v", err)
 	}
 }
+
+// TestPebbleStore_CloseIsIdempotent — regression for PILOT-190.
+// pebble.DB.Close() panics if called twice. PebbleStore wraps it in
+// sync.Once so repeated Close() calls are safe and return the same
+// error. Opens a store, calls Close() three times, asserts no panic
+// and that every call returns the same value as the first.
+func TestPebbleStore_CloseIsIdempotent(t *testing.T) {
+	// Skip newPebbleStore — its t.Cleanup() would also call Close()
+	// and we want to control invocation count explicitly.
+	dir := filepath.Join(t.TempDir(), "pebble")
+	p, err := OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Close() panicked on repeated invocation: %v", r)
+		}
+	}()
+
+	first := p.Close()
+	for i := 2; i <= 3; i++ {
+		got := p.Close()
+		if got != first {
+			t.Fatalf("Close() call #%d returned %v; want %v (cached first result)", i, got, first)
+		}
+	}
+}
