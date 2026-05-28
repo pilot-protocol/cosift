@@ -232,7 +232,7 @@ func (c *Crawler) maybeAutoSitemap(ctx context.Context, u *url.URL) {
 			return
 		}
 		if n > 0 {
-			log.Printf("auto-sitemap %s: enqueued %d URLs", host, n)
+			log.Printf("auto-sitemap %q: enqueued %d URLs", host, n)
 		}
 	}()
 }

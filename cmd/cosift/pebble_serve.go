@@ -440,7 +440,20 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		go func() {
 			log.Printf("pebble-serve: pprof listening on %s", pprofAddr)
-			if err := http.ListenAndServe(pprofAddr, pprofMux); err != nil {
+			// Bare ListenAndServe uses zero-value Server with no timeouts —
+			// a slow-reader on the pprof port can pin goroutines indefinitely.
+			// WriteTimeout is generous because CPU profile and trace endpoints
+			// stream for 30s+ by design.
+			srv := &http.Server{
+				Addr:              pprofAddr,
+				Handler:           pprofMux,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      5 * time.Minute,
+				IdleTimeout:       120 * time.Second,
+				MaxHeaderBytes:    1 << 20,
+			}
+			if err := srv.ListenAndServe(); err != nil {
 				log.Printf("pebble-serve: pprof exited: %v", err)
 			}
 		}()
@@ -1544,7 +1557,7 @@ func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	elapsed := time.Since(t0)
-	log.Printf("checkpoint: created %s in %s", dest, elapsed)
+	log.Printf("checkpoint: created %q in %s", dest, elapsed)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":    dest,
 		"elapsed": elapsed.String(),

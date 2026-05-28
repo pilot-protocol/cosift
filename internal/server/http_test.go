@@ -274,7 +274,10 @@ func TestAdminStatsLLMCacheCounts(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/stats", nil)
 	req.Header.Set("Authorization", "Bearer tok")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: %d", resp.StatusCode)
@@ -1517,7 +1520,10 @@ func TestSearchHyDERequiresChat(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/search?q=anything&hyde=true")
+	resp, err := http.Get(httpSrv.URL + "/search?q=anything&hyde=true")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Errorf("hyde without chat: got %d want 400", resp.StatusCode)
@@ -1535,7 +1541,10 @@ func TestSearchHyDERequiresEmbedder(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/search?q=anything&hyde=true")
+	resp, err := http.Get(httpSrv.URL + "/search?q=anything&hyde=true")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Errorf("hyde without embedder: got %d want 400", resp.StatusCode)
@@ -2103,7 +2112,10 @@ func TestAdminConfigSurfacesWeightKnobs(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/config", nil)
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: %d", resp.StatusCode)
@@ -2663,7 +2675,10 @@ func TestAdminConfigResearchSynthK(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/config", nil)
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	var cr AdminConfigResponse
 	_ = json.NewDecoder(resp.Body).Decode(&cr)
@@ -2685,7 +2700,10 @@ func TestAdminConfigZeroDefaults(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/config", nil)
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
@@ -3218,7 +3236,10 @@ func TestResearchStreamingEmitsAnswerChunks(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/research?q=widgets&stream=true")
+	resp, err := http.Get(httpSrv.URL + "/research?q=widgets&stream=true")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -3382,7 +3403,10 @@ func TestResearchStrategyUnknown(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/research?q=anything&strategy=bogus")
+	resp, err := http.Get(httpSrv.URL + "/research?q=anything&strategy=bogus")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 on unknown strategy", resp.StatusCode)
@@ -3502,7 +3526,10 @@ func TestDefaultsRetriever(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/search?q=alpha")
+	resp, err := http.Get(httpSrv.URL + "/search?q=alpha")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("status: got %d want 200", resp.StatusCode)
@@ -3724,7 +3751,10 @@ func TestSearchSortByDate(t *testing.T) {
 	defer httpSrv.Close()
 
 	getURLs := func(query string) []string {
-		resp, _ := http.Get(httpSrv.URL + "/search?" + query)
+		resp, err := http.Get(httpSrv.URL + "/search?" + query)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
 		defer resp.Body.Close()
 		var sr SearchResponse
 		_ = json.NewDecoder(resp.Body).Decode(&sr)
@@ -3808,7 +3838,10 @@ func TestSearchSortByDateWithFilter(t *testing.T) {
 	defer httpSrv.Close()
 
 	// since=2024-01-01 + sort=date_asc → only 2024 + 2025, oldest first
-	resp, _ := http.Get(httpSrv.URL + "/search?q=alpha&k=10&since=2024-01-01&sort=date_asc")
+	resp, err := http.Get(httpSrv.URL + "/search?q=alpha&k=10&since=2024-01-01&sort=date_asc")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	var sr SearchResponse
 	_ = json.NewDecoder(resp.Body).Decode(&sr)
@@ -3846,7 +3879,10 @@ func TestSearchDomainFilter(t *testing.T) {
 	defer httpSrv.Close()
 
 	getURLs := func(query string) []string {
-		resp, _ := http.Get(httpSrv.URL + "/search?" + query)
+		resp, err := http.Get(httpSrv.URL + "/search?" + query)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
 		defer resp.Body.Close()
 		var sr SearchResponse
 		_ = json.NewDecoder(resp.Body).Decode(&sr)
@@ -3926,7 +3962,10 @@ func TestSearchHitEnrichmentFields(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/search?q=alpha&k=10")
+	resp, err := http.Get(httpSrv.URL + "/search?q=alpha&k=10")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	var sr SearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
@@ -3985,7 +4024,10 @@ func TestSearchHitExcerptFallback(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/search?q=goroutines&k=1")
+	resp, err := http.Get(httpSrv.URL + "/search?q=goroutines&k=1")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	var sr SearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
@@ -4079,7 +4121,10 @@ func TestResearchSourcesEnrichedJSONShape(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/research?q=alpha")
+	resp, err := http.Get(httpSrv.URL + "/research?q=alpha")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	// Read raw JSON body so we can grep for absent fields.
 	raw, _ := io.ReadAll(resp.Body)
@@ -4202,7 +4247,10 @@ func TestContentsBatchEmpty(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(`{"urls":[]}`))
+	resp, err := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(`{"urls":[]}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("empty urls: got %d want 400", resp.StatusCode)
@@ -4217,7 +4265,10 @@ func TestContentsBatchMalformedJSON(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(`{ this isn't json }`))
+	resp, err := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(`{ this isn't json }`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("malformed json: got %d want 400", resp.StatusCode)
@@ -4237,7 +4288,10 @@ func TestContentsBatchOverLimit(t *testing.T) {
 		urls[i] = fmt.Sprintf("https://x/%d", i)
 	}
 	body, _ := json.Marshal(map[string][]string{"urls": urls})
-	resp, _ := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(string(body)))
+	resp, err := http.Post(httpSrv.URL+"/contents", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("over-limit batch: got %d want 400", resp.StatusCode)
@@ -4257,7 +4311,10 @@ func TestContentsBatchGETStillWorks(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/contents?url=https://x/single")
+	resp, err := http.Get(httpSrv.URL + "/contents?url=https://x/single")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("status: %d", resp.StatusCode)
@@ -4399,7 +4456,10 @@ func TestSitemapWithDocs(t *testing.T) {
 	srv := New(s)
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
-	resp, _ := http.Get(httpSrv.URL + "/sitemap.xml")
+	resp, err := http.Get(httpSrv.URL + "/sitemap.xml")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	bs := string(body)
@@ -4516,7 +4576,10 @@ func TestAdminStatsDocsWithPublishedAt(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/stats", nil)
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 
 	var as AdminStatsResponse
@@ -4595,7 +4658,10 @@ func TestSearchDomainFilterExactHostMatch(t *testing.T) {
 	defer httpSrv.Close()
 
 	// Bare host match (exact equality, no subdomain).
-	resp, _ := http.Get(httpSrv.URL + "/search?q=alpha&include_domains=example.com")
+	resp, err := http.Get(httpSrv.URL + "/search?q=alpha&include_domains=example.com")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	var sr SearchResponse
 	_ = json.NewDecoder(resp.Body).Decode(&sr)

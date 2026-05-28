@@ -4472,7 +4472,9 @@ func runInit(cfgPath string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(cfgPath, buf, 0o644); err != nil {
+	// cosift.json carries Server.AdminToken and may be the sink for
+	// LoadDotEnv-sourced secrets (OPENAI_API_KEY, etc.). Owner-only.
+	if err := os.WriteFile(cfgPath, buf, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", cfgPath, err)
 	}
 
@@ -4675,7 +4677,9 @@ func runDoctor(ctx context.Context, cfg *config.Config, args []string) error {
 
 	// 1. Data dir writable.
 	probe := filepath.Join(cfg.DataDir, ".doctor.probe")
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+	// Match store.Open's 0o700 — MkdirAll's perm only applies to NEW dirs,
+	// but doctor running first must not silently leave a looser mode behind.
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		add("data_dir writable", "FAIL", fmt.Sprintf("mkdir %s: %v", cfg.DataDir, err))
 	} else if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
 		add("data_dir writable", "FAIL", fmt.Sprintf("write %s: %v", probe, err))

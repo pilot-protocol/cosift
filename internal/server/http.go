@@ -3098,7 +3098,8 @@ func (s *Server) logMiddleware(h http.Handler) http.Handler {
 		if s.metrics != nil {
 			s.metrics.RecordRequest(r.URL.Path, d)
 		}
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, d)
+		// %q on URL.Path escapes CR/LF so a crafted request can't inject log lines.
+		log.Printf("%s %q %d %s", r.Method, r.URL.Path, rec.status, d)
 	})
 }
 

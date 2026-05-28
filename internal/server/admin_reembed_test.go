@@ -65,7 +65,10 @@ func TestAdminReembedRequiresEmbedder(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer k")
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Errorf("want 400 without embedder, got %d", resp.StatusCode)
@@ -78,7 +81,10 @@ func TestAdminReembedRequiresAuth(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Post(httpSrv.URL+"/admin/reembed", "application/json", strings.NewReader("{}"))
+	resp, err := http.Post(httpSrv.URL+"/admin/reembed", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		t.Errorf("want 401/403 without bearer, got %d", resp.StatusCode)
@@ -128,7 +134,10 @@ func TestAdminReembedSmallCorpus(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -176,7 +185,10 @@ func TestAdminReembedDropOld(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"drop_old":true}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -200,7 +212,10 @@ func TestAdminReembedBadInput(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed", strings.NewReader("not json"))
 	req.Header.Set("Authorization", "Bearer k")
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Errorf("malformed body should 400; got %d", resp.StatusCode)
@@ -248,7 +263,10 @@ func TestAdminReembedSinceFiltersOlderDocs(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"since":"2026-01-01"}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -272,7 +290,10 @@ func TestAdminReembedSinceMatchesNothing(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"since":"2030-01-01"}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -319,7 +340,10 @@ func TestAdminReembedDryRunSkipsEmbedLoop(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"dry_run":true}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -356,7 +380,10 @@ func TestAdminReembedDryRunComposesWithSince(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"dry_run":true,"since":"2026-01-01"}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -382,7 +409,10 @@ func TestAdminReembedSinceMalformed(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed",
 		strings.NewReader(`{"since":"yesterday"}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Errorf("malformed since should 400; got %d", resp.StatusCode)
@@ -402,7 +432,10 @@ func TestAdminReembedEmptyBodyOK(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed", nil)
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("empty body should be OK; got %d", resp.StatusCode)
@@ -419,7 +452,10 @@ func TestAdminReembedHonorsWithChunker(t *testing.T) {
 		defer httpSrv.Close()
 		req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/reembed", strings.NewReader(`{"drop_old":true}`))
 		req.Header.Set("Authorization", "Bearer k")
-		resp, _ := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		// passages_written shows up in the done event JSON.
@@ -432,8 +468,7 @@ func TestAdminReembedHonorsWithChunker(t *testing.T) {
 		rest := bs[idx+len(`"passages_written":`):]
 		end := strings.IndexAny(rest, ",}\n")
 		var n int
-		_, err := fmt.Sscanf(rest[:end], "%d", &n)
-		if err != nil {
+		if _, err := fmt.Sscanf(rest[:end], "%d", &n); err != nil {
 			t.Fatalf("parse passages_written: %v (raw=%s)", err, rest[:end])
 		}
 		return n

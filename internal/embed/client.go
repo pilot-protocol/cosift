@@ -389,7 +389,8 @@ func (c *CachedEmbedder) Misses() uint64 { return c.misses.Load() }
 // Pass an empty dir to disable persistence (handy for tests).
 func NewCachedEmbedder(inner Embedder, dir string) *CachedEmbedder {
 	if dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		// Process-private embedding cache. Owner-only.
+		_ = os.MkdirAll(dir, 0o700)
 	}
 	return &CachedEmbedder{inner: inner, dir: dir}
 }

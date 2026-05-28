@@ -95,7 +95,10 @@ func TestAnswerStreamingEmitsChunks(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/answer?q=widgets&stream=true")
+	resp, err := http.Get(httpSrv.URL + "/answer?q=widgets&stream=true")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)
@@ -145,7 +148,10 @@ func TestAnswerStreamingNoSourcesError(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 
-	resp, _ := http.Get(httpSrv.URL + "/answer?q=nothing&stream=true")
+	resp, err := http.Get(httpSrv.URL + "/answer?q=nothing&stream=true")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	out := string(body)

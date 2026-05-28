@@ -185,7 +185,9 @@ CREATE INDEX IF NOT EXISTS idx_hyde_lookup ON query_hyde(query_hash, model);
 // Open initializes (or opens) a store rooted at dataDir. Idempotent: safe to
 // call against an existing DB. Applies any pending schema migrations.
 func Open(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	// Data dir holds cosift.db (full corpus + posting tables + frontier)
+	// and sibling cosift.json with Server.AdminToken. Owner-only.
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
 	}
 	dbPath := filepath.Join(dataDir, "cosift.db")

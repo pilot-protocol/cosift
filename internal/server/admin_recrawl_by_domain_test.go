@@ -80,7 +80,10 @@ func TestAdminRecrawlByDomainRequiresAuth(t *testing.T) {
 
 	// No Authorization header → 401.
 	body := strings.NewReader(`{"domain":"example.com"}`)
-	resp, _ := http.Post(httpSrv.URL+"/admin/recrawl-by-domain", "application/json", body)
+	resp, err := http.Post(httpSrv.URL+"/admin/recrawl-by-domain", "application/json", body)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		t.Errorf("want 401/403, got %d", resp.StatusCode)
@@ -209,7 +212,10 @@ func TestAdminRecrawlByDomainNonDryRunOmitsURLs(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/recrawl-by-domain", body)
 	req.Header.Set("Authorization", "Bearer k")
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	rawBody, _ := io.ReadAll(resp.Body)
 
@@ -239,7 +245,10 @@ func TestAdminRecrawlByDomainUnknownReturns200Empty(t *testing.T) {
 	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/recrawl-by-domain",
 		strings.NewReader(`{"domain":"nonexistent.io"}`))
 	req.Header.Set("Authorization", "Bearer k")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("want 200, got %d", resp.StatusCode)
