@@ -58,6 +58,8 @@ type Hit struct {
 	SnippetOffset int
 }
 
+// NewBM25 returns a BM25 index backed by the SQLite store. Parameters
+// k1=1.2 and b=0.75 are used for scoring.
 func NewBM25(s *store.Store) *BM25 {
 	return &BM25{store: s}
 }

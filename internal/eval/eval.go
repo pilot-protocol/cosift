@@ -47,6 +47,8 @@ type Corpus struct {
 	Docs []CorpusDoc `json:"docs"`
 }
 
+// CorpusDoc is one document in a fixture corpus: a URL, a title, and the
+// full body text. JSON-encoded on disk.
 type CorpusDoc struct {
 	URL   string `json:"url"`
 	Title string `json:"title"`

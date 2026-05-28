@@ -67,6 +67,7 @@ func (r *LLMReranker) WithPerDocChars(n int) *LLMReranker {
 	return r
 }
 
+// Name reports "llm:<model>" for metrics and admin endpoints.
 func (r *LLMReranker) Name() string { return "llm:" + r.chat.Model() }
 
 // Rerank sends the listwise prompt and parses the returned indices.

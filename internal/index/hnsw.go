@@ -151,6 +151,8 @@ type PQStatus struct {
 	NodesTotal    int
 }
 
+// PQStatus reports the PQ codebook's shape and how many nodes have valid
+// vectors / encoded codes. Snapshots state under RLock.
 func (h *HNSW) PQStatus() PQStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -453,10 +455,8 @@ func (h *HNSW) AddPassage(url, title string, offset, length int, vec []float32) 
 	h.addPassageLocked(url, title, offset, length, cp)
 }
 
-// AddPassageBatch inserts N passages under a single lock acquisition.
-// Reduces lock churn for callers that already have all of a document's
-// passages assembled (the crawler is one such caller). Each input vec
-// is normalized in place; provide caller-owned copies if that matters.
+// PassageInput is one row supplied to AddPassageBatch. Vec is normalized
+// in place; provide a caller-owned copy if that matters.
 type PassageInput struct {
 	URL    string
 	Title  string
@@ -465,6 +465,9 @@ type PassageInput struct {
 	Vec    []float32
 }
 
+// AddPassageBatch inserts many passages under one write lock. Cheaper than
+// N AddPassage calls because the layer-sampling RNG + graph linking happen
+// without the lock churn of per-call Lock/Unlock pairs.
 func (h *HNSW) AddPassageBatch(items []PassageInput) {
 	if len(items) == 0 {
 		return

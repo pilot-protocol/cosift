@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // register the pure-Go sqlite driver as "sqlite"
 )
 
 // Store is the persistent layer. Safe for concurrent use.
@@ -571,21 +571,27 @@ type CrawlStatusReport struct {
 	RateWindows      []RateWindow
 }
 
+// FrontierStatusCount tallies how many frontier rows sit in a given status.
 type FrontierStatusCount struct {
 	Status string
 	Count  int64
 }
 
+// HostDocCount is (host, doc count) for cosift-crawl-status host rollups.
 type HostDocCount struct {
 	Host  string
 	Count int64
 }
 
+// ErrorClassCount groups frontier rows by their last_error string for
+// triage in cosift-crawl-status.
 type ErrorClassCount struct {
 	LastError string
 	Count     int64
 }
 
+// RateWindow is the doc-ingest rate over a fixed window: WindowSec long,
+// Count docs with fetched_at >= now - WindowSec.
 type RateWindow struct {
 	WindowSec int   // 300, 900, 1800 — match cosift crawl-status default windows
 	Count     int64 // docs with fetched_at >= now - WindowSec
@@ -712,12 +718,10 @@ func (s *Store) ListDocuments(ctx context.Context, limit int) ([]*Document, erro
 	return out, rows.Err()
 }
 
-// CountByDomain returns top-N (domain, count) buckets for the admin dashboard.
 // SitemapEntry is one row for /sitemap.xml output: URL + lastmod proxy.
-// added this for the sitemap-output endpoint. LastChangedAt is the
-// best "lastmod" signal cosift has — when the indexed content last changed.
-// Zero value means "never changed since first fetch" (the lastmod is just
-// omitted in that case).
+// LastChangedAt is the best "lastmod" signal cosift has — when the indexed
+// content last changed. Zero value means "never changed since first fetch"
+// and the lastmod is omitted.
 type SitemapEntry struct {
 	URL           string
 	LastChangedAt time.Time
@@ -753,6 +757,8 @@ func (s *Store) ListDocSitemapEntries(ctx context.Context, limit int) ([]Sitemap
 	return out, rows.Err()
 }
 
+// CountByDomain returns the top-N hosts in the corpus ranked by document
+// count. Pass topN ≤ 0 for the default (20).
 func (s *Store) CountByDomain(ctx context.Context, topN int) (map[string]int64, error) {
 	if topN <= 0 {
 		topN = 20

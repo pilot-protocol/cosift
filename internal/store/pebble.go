@@ -383,8 +383,13 @@ func frontierStatusIndexHost(key []byte) string {
 }
 
 // FrontierStatus is the lifecycle position of a frontier URL.
+// FrontierStatus is the one-byte lifecycle tag stored at the head of every
+// frontier entry. The four states form a strict progression: Queued → InFlight
+// → Done | Error.
 type FrontierStatus byte
 
+// Frontier lifecycle states. Stored as a single byte at the head of the
+// frontier entry value for cheap prefix-scan filtering.
 const (
 	FrontierStatusQueued   FrontierStatus = 'q'
 	FrontierStatusInFlight FrontierStatus = 'i'
@@ -718,6 +723,8 @@ func (p *PebbleStore) PutVectorMeta(ctx context.Context, blob []byte) error {
 	return p.db.Set(vectorMetaKey(), blob, p.writeOpts)
 }
 
+// GetVectorMeta returns the persisted HNSW meta blob, or ok=false when no
+// vector index has been persisted yet.
 func (p *PebbleStore) GetVectorMeta(ctx context.Context) ([]byte, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err

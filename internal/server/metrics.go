@@ -74,6 +74,8 @@ func (m *Metrics) WithCorpusSize(fn func() (docs, passages, paraphrases int64)) 
 // metrics.go signature stays readable even as we add gauge fields.
 func paraphraseRows(n int64) int64 { return n }
 
+// NewMetrics constructs a zero-state Metrics collector. Safe to use
+// concurrently.
 func NewMetrics() *Metrics {
 	return &Metrics{
 		requests: make(map[string]int64),
@@ -97,15 +99,23 @@ func (m *Metrics) RecordRequest(path string, d time.Duration) {
 // RecordRateLimit is called when the per-IP limiter rejects a request.
 func (m *Metrics) RecordRateLimit() { atomic.AddInt64(&m.rateLimitDenied, 1) }
 
-// Paraphrase cache observability — three layers, distinct counters.
+// RecordParaphraseL1Hit increments the in-process paraphrase cache hit counter.
 func (m *Metrics) RecordParaphraseL1Hit() { atomic.AddInt64(&m.paraphraseHitsL1, 1) }
-func (m *Metrics) RecordParaphraseL2Hit() { atomic.AddInt64(&m.paraphraseHitsL2, 1) }
-func (m *Metrics) RecordParaphraseMiss()  { atomic.AddInt64(&m.paraphraseMisses, 1) }
 
-// HyDE cache observability —; mirrors paraphrase counters.
+// RecordParaphraseL2Hit increments the persistent paraphrase cache hit counter.
+func (m *Metrics) RecordParaphraseL2Hit() { atomic.AddInt64(&m.paraphraseHitsL2, 1) }
+
+// RecordParaphraseMiss increments the paraphrase cache miss counter (LLM was called).
+func (m *Metrics) RecordParaphraseMiss() { atomic.AddInt64(&m.paraphraseMisses, 1) }
+
+// RecordHyDEL1Hit increments the in-process HyDE cache hit counter.
 func (m *Metrics) RecordHyDEL1Hit() { atomic.AddInt64(&m.hydeHitsL1, 1) }
+
+// RecordHyDEL2Hit increments the persistent HyDE cache hit counter.
 func (m *Metrics) RecordHyDEL2Hit() { atomic.AddInt64(&m.hydeHitsL2, 1) }
-func (m *Metrics) RecordHyDEMiss()  { atomic.AddInt64(&m.hydeMisses, 1) }
+
+// RecordHyDEMiss increments the HyDE cache miss counter (LLM was called).
+func (m *Metrics) RecordHyDEMiss() { atomic.AddInt64(&m.hydeMisses, 1) }
 
 // WritePrometheus emits the standard text format. Sorted output so a diff
 // between scrapes is deterministic.

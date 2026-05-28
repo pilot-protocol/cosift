@@ -323,13 +323,9 @@ func (s *Server) WithParaphraser(chat embed.ChatClient, n int) *Server {
 	return s
 }
 
-// WithReranker enables /search?rerank=true (and makes it the default).
-// candidateK is how many candidates the inner retriever produces before reranking;
-// pass 0 for the sensible default (max(20, 5*k)).
 // WithChunker overrides the default passage chunker settings used by the
-// dense indexer + /admin/reembed. Values ≤0 fall back to index.NewChunker()
-// defaults (320 words / 64 overlap). lets operators keep reembed
-// passage shapes consistent with cfg.Crawler.ChunkSize-driven crawl indexing.
+// dense indexer and /admin/reembed. Values ≤ 0 fall back to NewChunker()
+// defaults (320 words / 64 overlap).
 func (s *Server) WithChunker(size, overlap int) *Server {
 	if size > 0 {
 		s.chunkSize = size
@@ -340,6 +336,8 @@ func (s *Server) WithChunker(size, overlap int) *Server {
 	return s
 }
 
+// WithReranker installs a listwise reranker and the candidate-pool size
+// to draw from before rerank. Returns the server for chained construction.
 func (s *Server) WithReranker(r rerank.Reranker, candidateK int) *Server {
 	s.reranker = r
 	s.rerankCandK = candidateK
@@ -980,6 +978,9 @@ type SearchResponse struct {
 	Meta  map[string]any `json:"meta,omitempty"`
 }
 
+// SearchHit is one result row in /search responses: URL, title, fused score,
+// retriever source label, optional snippet highlight, and enrichment fields
+// surfaced from the indexed document.
 type SearchHit struct {
 	URL       string     `json:"url"`
 	Title     string     `json:"title"`
@@ -2156,6 +2157,8 @@ type ContentsBatchResponse struct {
 	Took    string              `json:"took"`
 }
 
+// ContentsBatchItem is one entry in a /contents batch response.
+// Found=false indicates the URL is not indexed; remaining fields are zero.
 type ContentsBatchItem struct {
 	URL       string    `json:"url"`
 	Found     bool      `json:"found"`
@@ -2689,6 +2692,8 @@ type AnswerResponse struct {
 	Calibrated bool           `json:"calibrated"`
 }
 
+// AnswerSource is one citation row attached to an /answer response,
+// carrying the source ID, URL, title, and the per-source retriever score.
 type AnswerSource struct {
 	ID    int    `json:"id"`
 	URL   string `json:"url"`

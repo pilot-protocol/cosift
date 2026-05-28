@@ -87,6 +87,7 @@ type Cluster struct {
 	PeerAuthToken string `json:"peer_auth_token"`
 }
 
+// Server holds HTTP server settings (listen address, admin auth, proxy trust).
 type Server struct {
 	Addr string `json:"addr"`
 	// AdminToken protects /admin/* endpoints with a Bearer token. Empty disables
@@ -101,6 +102,8 @@ type Server struct {
 	TrustedProxies []string `json:"trusted_proxies"`
 }
 
+// Crawler holds the politeness, concurrency, and discovery settings used
+// when fetching pages and expanding the frontier.
 type Crawler struct {
 	// UserAgent sent on every request. Include a contact path.
 	UserAgent string `json:"user_agent"`
@@ -265,6 +268,8 @@ type Crawler struct {
 	MinTextLen int `json:"min_text_len,omitempty"`
 }
 
+// Federation configures upstream search backends used as no-key
+// fallbacks when the local corpus is empty or partial.
 type Federation struct {
 	// DuckDuckGoHTML enables the no-key DDG HTML proxy fallback for /search.
 	DuckDuckGoHTML bool `json:"duckduckgo_html"`
@@ -276,6 +281,8 @@ type Federation struct {
 	Pilot bool `json:"pilot"`
 }
 
+// Embeddings configures the dense-vector backend: model, dimension,
+// and one or more OpenAI-compatible endpoints to fan out across.
 type Embeddings struct {
 	// URL of an OpenAI-compatible embeddings endpoint, or empty to disable.
 	URL string `json:"url"`

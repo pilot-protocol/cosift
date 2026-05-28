@@ -82,8 +82,11 @@ func NewOpenAIClient(apiKey, url, model string, dim int) *OpenAIClient {
 	}
 }
 
+// Model returns the embedding model name (e.g. "text-embedding-3-small").
 func (c *OpenAIClient) Model() string { return c.model }
-func (c *OpenAIClient) Dim() int      { return c.dim }
+
+// Dim returns the embedding vector dimension.
+func (c *OpenAIClient) Dim() int { return c.dim }
 
 type openAIReq struct {
 	Model string   `json:"model"`
@@ -211,9 +214,15 @@ func NewBatchingEmbedder(inner Embedder, maxBatch int, maxWait time.Duration) *B
 	return b
 }
 
+// Model returns the underlying embedder's model name.
 func (b *BatchingEmbedder) Model() string { return b.inner.Model() }
-func (b *BatchingEmbedder) Dim() int      { return b.inner.Dim() }
 
+// Dim returns the underlying embedder's vector dimension.
+func (b *BatchingEmbedder) Dim() int { return b.inner.Dim() }
+
+// Embed coalesces concurrent calls into batches of up to maxBatch texts
+// (or maxWait elapsed) before issuing one inner.Embed call. Returns
+// vectors in the same order as texts.
 func (b *BatchingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -308,9 +317,14 @@ func NewRoundRobinEmbedder(inners []Embedder) Embedder {
 	return &RoundRobinEmbedder{inners: inners}
 }
 
+// Model returns the model name of inners[0]; all backends must agree on
+// model + dim for round-robin to be meaningful.
 func (r *RoundRobinEmbedder) Model() string { return r.inners[0].Model() }
-func (r *RoundRobinEmbedder) Dim() int      { return r.inners[0].Dim() }
 
+// Dim returns the vector dimension of inners[0].
+func (r *RoundRobinEmbedder) Dim() int { return r.inners[0].Dim() }
+
+// Embed rotates the next inner embedder atomically and delegates to it.
 func (r *RoundRobinEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	idx := int(r.next.Add(1)-1) % len(r.inners)
 	return r.inners[idx].Embed(ctx, texts)
@@ -338,9 +352,14 @@ func NewThrottledEmbedder(inner Embedder, maxInFlight int) Embedder {
 	return &ThrottledEmbedder{inner: inner, sem: make(chan struct{}, maxInFlight)}
 }
 
+// Model returns the underlying embedder's model name.
 func (t *ThrottledEmbedder) Model() string { return t.inner.Model() }
-func (t *ThrottledEmbedder) Dim() int      { return t.inner.Dim() }
 
+// Dim returns the underlying embedder's vector dimension.
+func (t *ThrottledEmbedder) Dim() int { return t.inner.Dim() }
+
+// Embed blocks on the semaphore (or ctx cancel) before delegating; bounds
+// concurrent in-flight inner.Embed calls to maxInFlight.
 func (t *ThrottledEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	select {
 	case t.sem <- struct{}{}:
@@ -375,9 +394,14 @@ func NewCachedEmbedder(inner Embedder, dir string) *CachedEmbedder {
 	return &CachedEmbedder{inner: inner, dir: dir}
 }
 
+// Model returns the underlying embedder's model name.
 func (c *CachedEmbedder) Model() string { return c.inner.Model() }
-func (c *CachedEmbedder) Dim() int      { return c.inner.Dim() }
 
+// Dim returns the underlying embedder's vector dimension.
+func (c *CachedEmbedder) Dim() int { return c.inner.Dim() }
+
+// Embed serves cached vectors from disk where available and routes the rest
+// to inner. Misses are written to the cache on success.
 func (c *CachedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	miss := make([]int, 0, len(texts))

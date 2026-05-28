@@ -144,7 +144,7 @@ func (cb *PQCodebook) DecodeCodeBlob(blob []byte) ([]uint16, error) {
 	}
 }
 
-// PersistPQCodebook writes the codebook to Pebble.
+// Persist writes the codebook to Pebble under the canonical key.
 func (cb *PQCodebook) Persist(ctx context.Context, ps *store.PebbleStore) error {
 	return ps.PutPQCodebook(ctx, EncodePQCodebook(cb))
 }

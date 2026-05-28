@@ -76,6 +76,7 @@ func NewOpenAIChat(apiKey, url, model string) *OpenAIChatClient {
 	}
 }
 
+// Model returns the chat model name (e.g. "gpt-4o-mini").
 func (c *OpenAIChatClient) Model() string { return c.model }
 
 type chatReq struct {

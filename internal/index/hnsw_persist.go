@@ -124,6 +124,10 @@ func LoadHNSWMeta(ctx context.Context, ps *store.PebbleStore) (HNSWMeta, bool, e
 	return HNSWMeta{Dim: m.dim, NodeCount: m.nodeCount}, true, nil
 }
 
+// LoadHNSW reconstructs an HNSW graph from a PebbleStore. Returns
+// (nil, false, nil) when no persisted index exists — callers should
+// build a fresh one in that case. Errors are reserved for actual decode
+// failures or storage I/O problems.
 func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	metaBlob, ok, err := ps.GetVectorMeta(ctx)
 	if err != nil {

@@ -51,6 +51,8 @@ func NewHTTPReranker(url, apiKey, model string) *HTTPReranker {
 	}
 }
 
+// Name reports "http:<model>" (or "http:rerank" when no model is set) for
+// metrics and admin endpoints.
 func (r *HTTPReranker) Name() string {
 	if r.ModelID != "" {
 		return "http:" + r.ModelID
