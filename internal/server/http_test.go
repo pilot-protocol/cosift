@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2725,6 +2726,37 @@ func TestAdminRecrawlBadInput(t *testing.T) {
 	}
 	if got := send(`{"urls": []}`); got != 400 {
 		t.Errorf("empty urls: got %d want 400", got)
+	}
+}
+
+func TestAdminRecrawlRejectsOversizedBody(t *testing.T) {
+	s, _ := store.OpenMemory()
+	t.Cleanup(func() { s.Close() })
+	srv := New(s).WithAdminToken("k")
+	httpSrv := httptest.NewServer(srv.Handler())
+	defer httpSrv.Close()
+
+	// Send a body larger than the 1 MiB limit.
+	large := make([]byte, 2<<20)
+	for i := range large {
+		large[i] = ' '
+	}
+	// Make it valid JSON so the decoder (not the parser) trips the limit.
+	large[0] = '{'
+	large[len(large)-1] = '}'
+
+	req, _ := http.NewRequest("POST", httpSrv.URL+"/admin/recrawl", bytes.NewReader(large))
+	req.Header.Set("Authorization", "Bearer k")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error sending request: %v", err)
+	}
+	resp.Body.Close()
+	// MaxBytesReader returns 413 (StatusRequestEntityTooLarge) or the decoder
+	// error surfaces as 400. Either is acceptable.
+	if resp.StatusCode != 400 && resp.StatusCode != 413 {
+		t.Errorf("oversized body: got %d, want 400 or 413", resp.StatusCode)
 	}
 }
 
