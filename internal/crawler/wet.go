@@ -88,8 +88,6 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 	defer zr.Close()
 
 	br := bufio.NewReaderSize(zr, 64<<10)
-	t0 := time.Now()
-	_ = t0
 
 	var freshWindow time.Duration
 	if v := getEnv("COSIFT_REFETCH_AFTER_HOURS"); v != "" {
@@ -98,10 +96,6 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 		}
 	}
 
-	// N parallel writers, each batching M docs per flush.
-	// Multiplies the parallelism gain by the batched-
-	// upsert gain. With 8 writers × 32-doc batches, only 8 goroutines
-	// contend for p.mu and each one writes 32 docs per acquire.
 	batchSize := 32
 	if v := getEnv("COSIFT_WET_BATCH_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -118,12 +112,6 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 	var wg sync.WaitGroup
 	var indexed atomic.Int64
 
-	// Per-record parallelism beats batched UpsertDocument here: batching
-	// reduces concurrent goroutines, and IndexDocument's per-call locking
-	// then dominates. N workers calling indexWetRecord gives the 3.4K
-	// docs/min ceiling. UpsertDocumentBatch stays in PebbleStore for
-	// other call sites (e.g. CLI bulk-import).
-	_ = batchSize
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -245,123 +233,6 @@ func readWetRecord(br *bufio.Reader) (*WetRecord, error) {
 		URL:  headers["WARC-Target-URI"],
 		Body: body,
 	}, nil
-}
-
-// indexWetRecordsBatch upserts N WET records in a single pebble batch
-// via UpsertDocumentBatch, then writes BM25 postings + (optionally)
-// embeddings per doc. UpsertDocument is the single-lock-acquire hot path;
-// IndexDocument still takes its own lock per doc but those calls are much
-// cheaper (a few keys each) than the gob-encode + Commit of UpsertDocument.
-//
-// Returns count successfully indexed. On batch-level error returns 0 + err.
-func (c *Crawler) indexWetRecordsBatch(ctx context.Context, recs []*WetRecord, lexicalOnly bool) (int, error) {
-	if len(recs) == 0 {
-		return 0, nil
-	}
-	// Build the doc list, dropping records that fail allowedDomain or
-	// the URL-parse check. Mirrors indexWetRecord's filtering.
-	type item struct {
-		rec   *WetRecord
-		doc   *store.Document
-		title string
-		text  string
-		host  string
-	}
-	items := make([]item, 0, len(recs))
-	docs := make([]*store.Document, 0, len(recs))
-	for _, rec := range recs {
-		u, err := url.Parse(rec.URL)
-		if err != nil {
-			continue
-		}
-		if !c.allowedDomain(rec.URL) {
-			continue
-		}
-		text := string(rec.Body)
-		title := firstNonEmptyLine(text)
-		if len(title) > 200 {
-			title = title[:200]
-		}
-		sha := sha256.Sum256(rec.Body)
-		doc := &store.Document{
-			URL:        rec.URL,
-			Domain:     u.Host,
-			Title:      title,
-			Text:       text,
-			Source:     "wet-import",
-			Quality:    0.6,
-			FetchedAt:  time.Now(),
-			ContentSHA: sha[:],
-		}
-		items = append(items, item{rec: rec, doc: doc, title: title, text: text, host: u.Host})
-		docs = append(docs, doc)
-	}
-	if len(docs) == 0 {
-		return 0, nil
-	}
-	// Cast to the concrete batched path. The interface doesn't expose this
-	// yet, so we type-assert — failure means SQLite backend or older Pebble
-	// store, in which case we fall back to the per-doc path.
-	type batchUpserter interface {
-		UpsertDocumentBatch(ctx context.Context, docs []*store.Document) ([]int64, error)
-	}
-	var ids []int64
-	if bu, ok := c.store.(batchUpserter); ok {
-		out, err := bu.UpsertDocumentBatch(ctx, docs)
-		if err != nil {
-			return 0, err
-		}
-		ids = out
-	} else {
-		ids = make([]int64, len(docs))
-		for i, d := range docs {
-			id, err := c.store.UpsertDocument(ctx, d)
-			if err != nil {
-				continue
-			}
-			ids[i] = id
-		}
-	}
-	// BM25 + (optional) embed per doc. BM25 takes its own lock per call
-	// but each call is cheap relative to the upsert it follows.
-	indexed := 0
-	for i, it := range items {
-		id := ids[i]
-		if id == 0 {
-			continue
-		}
-		if err := c.idx.IndexDocument(ctx, id, it.title, it.text); err != nil {
-			continue
-		}
-		indexed++
-		if lexicalOnly || c.embedder == nil || c.passageWriter == nil {
-			continue
-		}
-		// Dense path — chunk, embed, store passages. Same as indexWetRecord's
-		// tail but inlined to avoid the type-assertion overhead per record.
-		chunker := index.NewChunkerWith(c.chunkSizeFor(it.host), c.chunkOverlapFor(it.host))
-		chunks := chunker.Chunk(it.text)
-		if len(chunks) == 0 {
-			continue
-		}
-		const tokenCap = 1500
-		texts := make([]string, len(chunks))
-		for j, ch := range chunks {
-			texts[j] = truncateForEmbed(ch.Text, tokenCap)
-		}
-		vecs, embErr := c.embedder.Embed(ctx, texts)
-		if embErr != nil || len(vecs) != len(chunks) {
-			continue
-		}
-		if inv, ok := c.passageWriter.(URLInvalidator); ok && getEnv("COSIFT_ZOMBIE_RECLAIM") == "1" {
-			_, _ = inv.MarkURLInvalid(ctx, it.rec.URL)
-		}
-		for j, ch := range chunks {
-			p := &store.Passage{DocID: id, Offset: ch.Offset, Length: ch.Length, Model: c.embedder.Model(), Embedding: vecs[j]}
-			_ = c.passageWriter.UpsertPassage(ctx, p)
-		}
-	}
-	return indexed, nil
 }
 
 // indexWetRecord runs one WET record through UpsertDocument + BM25 +

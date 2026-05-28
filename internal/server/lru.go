@@ -86,10 +86,3 @@ func (c *lruCache[V]) set(key string, value V) {
 		delete(c.items, oldest.Value.(*lruEntry[V]).key)
 	}
 }
-
-// len returns the current number of entries.
-func (c *lruCache[V]) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.evictList.Len()
-}

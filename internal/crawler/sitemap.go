@@ -27,20 +27,6 @@ import (
 //     general text retrieval.
 //   - .txt sitemaps (one URL per line). Trivial to add; defer until we see one.
 
-type sitemapURLSet struct {
-	XMLName xml.Name      `xml:"urlset"`
-	URLs    []sitemapURLT `xml:"url"`
-}
-
-type sitemapURLT struct {
-	Loc string `xml:"loc"`
-}
-
-type sitemapIndex struct {
-	XMLName  xml.Name      `xml:"sitemapindex"`
-	Sitemaps []sitemapURLT `xml:"sitemap"`
-}
-
 // SeedSitemap fetches a sitemap, parses out URLs, and pushes each to the
 // persistent frontier at depth 0. Sitemap indices are followed up to two
 // levels deep — news sites (theguardian, NYT, BBC etc.) commonly
@@ -71,54 +57,6 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 		}
 	})
 	return n, err
-}
-
-// fetchSitemap returns flat URL list. depthRemaining controls index recursion.
-func (c *Crawler) fetchSitemap(ctx context.Context, url string, depthRemaining int) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", c.cfg.UserAgent)
-	req.Header.Set("Accept", "application/xml, text/xml")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("sitemap http %d", resp.StatusCode)
-	}
-	// Cap at 50 MB. Real sitemaps are usually <10 MB (the spec limit before split).
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-	if err != nil {
-		return nil, err
-	}
-
-	// Go's net/http auto-decompresses responses
-	// with Content-Encoding: gzip, but sitemap.xml.gz URLs typically arrive
-	// with Content-Encoding: identity (or absent) and the gzip framing is
-	// part of the BODY. Detect via either the URL extension or magic bytes.
-	if strings.HasSuffix(strings.ToLower(url), ".gz") ||
-		(len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b) {
-		zr, zerr := gzip.NewReader(bytes.NewReader(body))
-		if zerr != nil {
-			return nil, fmt.Errorf("sitemap gunzip: %w", zerr)
-		}
-		decompressed, derr := io.ReadAll(io.LimitReader(zr, 200<<20))
-		_ = zr.Close()
-		if derr != nil {
-			return nil, fmt.Errorf("sitemap gunzip read: %w", derr)
-		}
-		body = decompressed
-	}
-
-	// wrapper kept for any non-streaming callers; new internal
-	// fetchSitemapStream is the leak-free path. Callers prefer streaming.
-	_ = body
-	_ = depthRemaining
-	return nil, fmt.Errorf("fetchSitemap deprecated, use fetchSitemapStream")
 }
 
 // fetchSitemapStream pulls a sitemap (urlset or sitemapindex), pushes

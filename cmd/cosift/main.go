@@ -159,7 +159,6 @@ func main() {
 	case "research":
 		// HTTP-via-server research. Sibling to `search` but hits the
 		// /research endpoint — LLM synthesis over retrieved sources.
-		// Non-streaming for now; SSE could be a follow-up iter.
 		if flag.NArg() < 2 {
 			log.Fatal("research: text required (usage: cosift research <text> [-server URL] [-strategy planner|paraphrase] [-json])")
 		}
@@ -5504,13 +5503,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		emb = embed.NewCachedEmbedder(oai, *embCacheDir)
 	}
 	chunker := chunkerWith(*answerChunkSize, *answerChunkOverlap)
-
-	type passageRef struct {
-		docIdx int
-		chunk  index.Chunk
-	}
 	var allTexts []string
-	var refs []passageRef
 	for _, d := range corpus.Docs {
 		id, err := st.UpsertDocument(ctx, &store.Document{
 			URL: d.URL, Title: d.Title, Text: d.Text, Source: "answer-eval", FetchedAt: time.Now(),
@@ -5524,7 +5517,6 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		text := d.Title + "\n\n" + d.Text
 		for _, c := range chunker.Chunk(text) {
 			allTexts = append(allTexts, c.Text)
-			refs = append(refs, passageRef{docIdx: len(corpus.Docs) - 1, chunk: c})
 		}
 	}
 	fmt.Printf("embedding %d passages across %d docs...\n", len(allTexts), len(corpus.Docs))
@@ -5533,8 +5525,6 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		return fmt.Errorf("embed: %w", err)
 	}
 	vi := index.NewVectorIndex(*embDim)
-	// Iterate corpus.Docs again to get the right doc for each chunk — refs is
-	// only used to remember chunk offset/length per passage.
 	idx := 0
 	for _, d := range corpus.Docs {
 		text := d.Title + "\n\n" + d.Text
@@ -5842,7 +5832,7 @@ func loadAnswerEvalReport(path string) (*savedAnswerEvalReport, error) {
 	}
 	// Old reports had an empty summary because the agg struct used
 	// unexported fields. Recompute the summary on the fly for those.
-	if r.Summary == nil || len(r.Summary) == 0 || r.Summary["planner"].N == 0 {
+	if len(r.Summary) == 0 || r.Summary["planner"].N == 0 {
 		r.Summary = recomputeSummary(r)
 	}
 	return &r, nil

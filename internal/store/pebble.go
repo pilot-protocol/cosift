@@ -1,17 +1,13 @@
-// Pebble-backed document store. First piece of the path-2 storage
-// rework that lets cosift scale past SQLite's million-row ceiling.
+// Pebble-backed document store — scales past SQLite's million-row ceiling.
 //
-// Why Pebble: cockroachdb/pebble is a mature pure-Go LSM-tree from
-// CockroachDB. Block-level compression, mmap reads, batch writes, native
-// prefix scans. At million-doc scale it sustains roughly 100k writes/sec on
-// commodity hardware vs SQLite WAL's ~10k cap; reads scale similarly via
-// block cache. No cgo, embedded, single-process — same operational shape
-// as SQLite but with a higher-throughput hot path.
+// cockroachdb/pebble is a mature pure-Go LSM-tree from CockroachDB.
+// Block-level compression, mmap reads, batch writes, native prefix scans.
+// At million-doc scale it sustains roughly 100k writes/sec on commodity
+// hardware vs SQLite WAL's ~10k cap; reads scale similarly via block cache.
+// No cgo, embedded, single-process — same operational shape as SQLite but
+// with a higher-throughput hot path.
 //
-// This package does NOT replace the SQLite Store. Both coexist for now;
-// operators choose via config. Migration tooling (copy SQLite → Pebble)
-// lands in a follow-up iter; for now PebbleStore is the destination format
-// for new deployments and exists in parallel.
+// Coexists with the SQLite Store; operators choose via config.
 //
 // Schema (all keys prefixed with a one-byte family tag):
 //
@@ -1817,18 +1813,6 @@ func (p *PebbleStore) getTermInfoLocked(term string) (TermInfo, bool, error) {
 	}
 	defer closer.Close()
 	return unpackTermInfo(val)
-}
-
-func (p *PebbleStore) postingExistsLocked(termID, docID int64) (bool, error) {
-	_, closer, err := p.db.Get(postingKey(termID, docID))
-	if errors.Is(err, pebble.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	_ = closer.Close()
-	return true, nil
 }
 
 // PostingEntry is one (docID, tf, docLen) tuple returned by IteratePostings.

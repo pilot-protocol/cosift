@@ -1,8 +1,7 @@
 // Package index — Product Quantization (PQ) for vector compression.
 //
-// This file ships the codebook trainer + encoder +
-// asymmetric distance computation. HNSW integration lands in a follow-up
-// iter; for now PQ is offline (encode a corpus, store codes, query later).
+// Codebook trainer + encoder + asymmetric distance computation. PQ is
+// offline: encode a corpus, store codes, query later.
 //
 // Idea: split each d-dimensional vector into M equal subspaces (length
 // d/M each). Per subspace, run k-means to find K centroids. Each vector
@@ -52,7 +51,7 @@ func TrainPQCodebookParallel(train [][]float32, dim, M, K, iters, maxParallel in
 		return nil, fmt.Errorf("dim %d not divisible by M %d", dim, M)
 	}
 	if K > 65536 {
-		return nil, errors.New("K must fit in uint16 (≤ 65536) for storage layout")
+		return nil, errors.New("k must fit in uint16 (≤ 65536) for storage layout")
 	}
 	subDim := dim / M
 	if iters <= 0 {
@@ -124,7 +123,7 @@ func TrainPQCodebook(train [][]float32, dim, M, K, iters int, rng *rand.Rand) (*
 		return nil, fmt.Errorf("dim %d not divisible by M %d", dim, M)
 	}
 	if K > 65536 {
-		return nil, errors.New("K must fit in uint16 (≤ 65536) for storage layout")
+		return nil, errors.New("k must fit in uint16 (≤ 65536) for storage layout")
 	}
 	subDim := dim / M
 	if rng == nil {

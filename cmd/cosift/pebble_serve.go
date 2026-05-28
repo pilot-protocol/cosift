@@ -81,11 +81,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: opened store with %d indexed docs", indexedDocs)
 	}
 
-	// The meta read
-	// is 20 bytes (dim+nodeCount); the first-entry probe falls back
-	// when meta is absent but vector entries exist (edge case during a
-	// partial persist). Loading the full graph stays a future-iter concern
-	// — gigabytes of RAM at 10M-vector scale.
+	// Meta is 20 bytes (dim+nodeCount); first-entry probe is the fallback
+	// when meta is absent but vector entries exist (partial persist).
+	// We never load the full graph here — gigabytes of RAM at 10M-vector scale.
 	hasVectors := false
 	var vectorDim, vectorNodes int
 	if meta, ok, err := index.LoadHNSWMeta(ctx, ps); err == nil && ok {
@@ -1013,9 +1011,8 @@ func (s *pebbleHTTP) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-// forwardURLToPeer POSTs a URL to peer's /admin/crawl-enqueue.
-// Designed to be best-effort — caller logs failures, the URL just doesn't get
-// crawled. A future iter can add retry + persistent queue.
+// forwardURLToPeer POSTs a URL to peer's /admin/crawl-enqueue. Best-effort:
+// caller logs failures and the URL is dropped — no retry or persistent queue.
 var forwardHTTP = &http.Client{Timeout: 10 * time.Second}
 
 func (s *pebbleHTTP) forwardURLToPeer(rawURL, peerAddr string) error {
@@ -1105,6 +1102,7 @@ func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeer
 	}
 	lists := [][]index.Hit{}
 	hitFull := map[string]searchHit{}
+gather:
 	for i := 0; i < len(s.cluster.Peers); i++ {
 		if s.cluster.Peers[i] == "" {
 			continue
@@ -1126,7 +1124,7 @@ func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeer
 			lists = append(lists, peerList)
 		case <-ctx.Done():
 			warns = append(warns, "client context cancelled before all peers responded")
-			break
+			break gather
 		}
 	}
 	fused := rrfFuse(lists, 60)
@@ -1261,6 +1259,7 @@ func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Req
 	hitFull := map[string]searchHit{}
 	warns := []string{}
 	total := 0
+gather:
 	for i := 0; i < len(s.cluster.Peers); i++ {
 		if s.cluster.Peers[i] == "" {
 			continue
@@ -1282,7 +1281,7 @@ func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Req
 			lists = append(lists, peerList)
 		case <-r.Context().Done():
 			warns = append(warns, "client context cancelled")
-			break
+			break gather
 		}
 	}
 	fused := rrfFuse(lists, 60)
@@ -4606,10 +4605,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	// ?rerank=true reorders the BM25 top-pool before synth.
-	// Rerank quality > BM25 quality for "which 5 sources answer this question",
-	// so this is the highest-impact iter for /answer beyond getting LLMs hooked
-	// up. Widens the candidate pool to rerankCandK before truncation.
+	// ?rerank=true reorders the BM25 top-pool before synth. Rerank quality
+	// beats BM25 for "which 5 sources answer this question" — widens the
+	// candidate pool to rerankCandK before truncation.
 	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
 	keepCap := k
 	if wantRerank {

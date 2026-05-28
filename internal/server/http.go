@@ -1917,8 +1917,7 @@ type StatsResponse struct {
 // `<loc>` + optional `<lastmod>`.
 //
 // Caps at 50,000 URLs per the sitemap spec's per-file limit. Larger corpora
-// would need a sitemap-index file (a future iter — yagni for now).
-// Content-Type: application/xml so browsers and crawlers parse correctly.
+// would need a sitemap-index file.
 func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.ListDocSitemapEntries(r.Context(), 50000)
 	if err != nil {

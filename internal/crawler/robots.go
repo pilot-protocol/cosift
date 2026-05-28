@@ -330,5 +330,5 @@ func patternMatches(pattern, path string) bool {
 	if lastSeg == "" {
 		return true
 	}
-	return strings.Index(path[idx:], lastSeg) >= 0
+	return strings.Contains(path[idx:], lastSeg)
 }
