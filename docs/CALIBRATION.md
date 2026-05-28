@@ -2,14 +2,14 @@
 
 **Status:** deferred (no scaffolding shipped). Cosift's `/answer` and
 `/research` responses carry a `"calibrated": false` field that has been
-unconditionally false since iter 7. This document explains why that's
+unconditionally false . This document explains why that's
 honest and what changes the day it can flip to `true`.
 
 **Decision point:** the calibration model can't be fit until a deployment
 accumulates roughly 10k outcomes with both classes (useful=true and
 useful=false) in the `query_outcomes` table. No known deployment has that
-volume as of iter 173. Until one does, scaffolding for the model would be
-abstraction over hypothetical future code — a pattern iter-127
+volume as . Until one does, scaffolding for the model would be
+abstraction over hypothetical future code — a pattern
 CONTRIBUTING.md explicitly warns against.
 
 ---
@@ -42,9 +42,8 @@ Content-Type: application/json
 {"query":"raft consensus","url":"https://x/distributed","score":0.87,"useful":true,"source":"thumbs"}
 ```
 
-The handler appends a row to the `query_outcomes` table (existing since
-iter 14). Today nothing reads this data; iter-87 just established the
-pipe. The schema:
+The handler appends a row to the `query_outcomes` table. Today nothing
+reads this data; just established the pipe. The schema:
 
 | Column      | Type    | What it carries                       |
 |-------------|---------|---------------------------------------|
@@ -124,7 +123,7 @@ Two reasons, both honest:
    of traffic to accumulate 10k useful/not-useful pairs. Shipping
    scaffolding before any deployment can use it ships dead code.
 
-2. **Within-response normalization (iter 164) covers most cases.**
+2. **Within-response normalization covers most cases.**
    Operators asking "is hit X significantly better than hit Y in THIS
    response" get a clean answer from `score_calibrated`. The remaining
    gap is operators asking "is response A globally better than response
@@ -156,8 +155,8 @@ Any of those reopens the iter.
 
 - `Calibrated:false` on `/answer` and `/research` responses — honest, not
   a placeholder
-- `score_calibrated` populated by `?calibrate=true` per iter 164 — the
-  within-response signal that's actually useful
+- `score_calibrated` populated by `?calibrate=true` — the within-response
+  signal that's actually useful
 - `query_outcomes` table accumulates via `/feedback` — data keeps flowing
   for the eventual fit
 - `cosift outcomes -format csv` for offline analysis — operators can

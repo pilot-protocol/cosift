@@ -36,7 +36,7 @@ curl http://127.0.0.1:7777/healthz
 
 ## `GET /stats`
 
-One canonical "shape of the index" call. O(1) — reads the iter-207 running counters.
+One canonical "shape of the index" call. O(1) — reads the running counters.
 
 ```bash
 curl http://127.0.0.1:7777/stats
@@ -73,7 +73,7 @@ curl http://127.0.0.1:7777/metrics
 
 ## `GET /verify`
 
-Counter-drift check: compares the iter-207 counters to an authoritative scan of the `'l'` family. Returns 503 with drift fields when they disagree, so it composes into k8s liveness probes.
+Counter-drift check: compares the counters to an authoritative scan of the `'l'` family. Returns 503 with drift fields when they disagree, so it composes into k8s liveness probes.
 
 ```bash
 curl http://127.0.0.1:7777/verify

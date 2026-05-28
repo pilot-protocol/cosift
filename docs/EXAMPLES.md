@@ -288,7 +288,7 @@ cosift answer "what is raft consensus" -stream -rerank
 # Research with paraphrase fan-out
 cosift research "compare raft and paxos" -expand paraphrase -rerank -stream
 
-# Hybrid retrieval — applies to search / answer / research / find-similar (iter 369, 376)
+# Hybrid retrieval — applies to search / answer / research / find-similar
 cosift search       "raft consensus"        -retriever hybrid -rerank
 cosift answer       "what is raft consensus" -retriever hybrid -rerank -stream
 cosift research     "compare raft and paxos" -retriever hybrid -expand paraphrase -stream

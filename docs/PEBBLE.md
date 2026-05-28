@@ -2,7 +2,7 @@
 
 The Pebble (pure-Go LSM-tree) storage backend is cosift's path-to-scale beyond SQLite's effective million-row ceiling. It coexists with the SQLite store; both implement the same operator-visible API surface (`cosift crawl --backend=…`, `cosift stats --backend=…`, `cosift query --backend=…`). This document is a one-page reference for what's there and how to operate it.
 
-> **Status (as of iter 327):** `cosift pebble-serve` mirrors the full `cosift serve` API surface — `/search`, `/find_similar` (URL or arbitrary text), `/answer` and `/research` (sync + SSE), `/contents` (single + batch), plus `/healthz` / `/stats` / `/metrics` / `/verify`. All retrieval/synth endpoints compose `include_domains` / `exclude_domains` / `since` / `until` filters with optional `rerank=true` and `expand=hyde|paraphrase`. Observability covers per-endpoint count + duration, HyDE/paraphrase cache hits, rerank/chat attempts + failures + duration, and warnings emission. Cross-references: [API.md](API.md) for the HTTP surface, [TUNING.md](TUNING.md) for knob choices, [EXAMPLES.md](EXAMPLES.md) for curl + CLI recipes.
+> **Status (as :** `cosift pebble-serve` mirrors the full `cosift serve` API surface — `/search`, `/find_similar` (URL or arbitrary text), `/answer` and `/research` (sync + SSE), `/contents` (single + batch), plus `/healthz` / `/stats` / `/metrics` / `/verify`. All retrieval/synth endpoints compose `include_domains` / `exclude_domains` / `since` / `until` filters with optional `rerank=true` and `expand=hyde|paraphrase`. Observability covers per-endpoint count + duration, HyDE/paraphrase cache hits, rerank/chat attempts + failures + duration, and warnings emission. Cross-references: [API.md](API.md) for the HTTP surface, [TUNING.md](TUNING.md) for knob choices, [EXAMPLES.md](EXAMPLES.md) for curl + CLI recipes.
 
 ## When to pick Pebble vs SQLite
 
@@ -34,30 +34,30 @@ The two backends have parity for BM25 search quality (`TestPebbleBM25MatchesSQLi
                                                    sum_doc_len, indexed_docs)
 ```
 
-Family-tag prefix bytes keep families disjoint for prefix scans. Big-endian IDs give natural ascending iteration order. Counter values in `'m'` enable O(1) corpus stats (iter 207, 226).
+Family-tag prefix bytes keep families disjoint for prefix scans. Big-endian IDs give natural ascending iteration order. Counter values in `'m'` enable O(1) corpus stats.
 
 ## Hot path: what runs where
 
-**`IndexDocument(docID, title, text)`** (iter 201, 208):
-1. Tokenize title (×3 boost, iter 197) + body
+**`IndexDocument(docID, title, text)`**:
+1. Tokenize title (×3 boost) + body
 2. Load `'g'` for docID — set of old termIDs from previous index of this doc
 3. For each token: GetTermInfo(`'t'+term`), bump doc_freq if new for this doc, write `'p'+termID+docID` (16 bytes: tf + docLen)
-4. For old termIDs not in new set: DELETE `'p'+oldTermID+docID` (iter 208 — orphan postings cleanup)
+4. For old termIDs not in new set: DELETE `'p'+oldTermID+docID`
 5. Write new `'g'`, updated `'l'`, batch-commit
-6. Maintain `'m'+sum_doc_len` and `'m'+indexed_docs` running counters (iter 207)
+6. Maintain `'m'+sum_doc_len` and `'m'+indexed_docs` running counters
 
-**`PebbleBM25.Search(q, k)`** (iter 202, 207):
+**`PebbleBM25.Search(q, k)`**:
 1. `corpusStats()` → O(1) read of running counters
 2. For each unique query token: GetTermInfo → IteratePostings (prefix scan) — sum BM25 scores into a doc-id map
-3. For each scored doc: GetDocMeta(`'i'+docID`) — cheap URL+title (iter 207 side-blob, NOT a full Document gob decode)
-4. Phrase filter against doc.Text if `q` has quoted phrases (iter 198)
+3. For each scored doc: GetDocMeta(`'i'+docID`) — cheap URL+title
+4. Phrase filter against doc.Text if `q` has quoted phrases
 5. Sort, top-k
 
-**`ClaimFrontier()`** (iter 209, 210, 221):
+**`ClaimFrontier()`**:
 1. Prefix-scan `'f'+'i'` to collect in-flight host set
 2. Prefix-scan `'f'+'q'` for the first URL whose host is NOT in the in-flight set (host-fair)
 3. Atomic batch: read primary, transition status → in_flight, swap `'f'+'q'` → `'f'+'i'`
-4. Iterators closed via `defer` in closures (iter 221 — fixes leak under panic)
+4. Iterators closed via `defer` in closures
 
 ## Operating the Pebble backend
 
@@ -70,9 +70,9 @@ cosift crawl --backend=pebble \
 ```
 
 Useful flags:
-- `--duration 30m` — bounded run (iter 223); workers exit cleanly when ctx times out
+- `--duration 30m` — bounded run; workers exit cleanly when ctx times out
 - `cfg.Crawler.MaxConcurrent` (cosift.json) — start at 8 on a 16 GB VM
-- `cfg.Crawler.StatusFile` — path to crawl-status.json (iter 224); operators read with `cosift status-file` (iter 225)
+- `cfg.Crawler.StatusFile` — path to crawl-status.json; operators read with `cosift status-file`
 
 ### Environment knobs
 
@@ -80,11 +80,11 @@ Useful flags:
 COSIFT_PEBBLE_CACHE_MB=128     # default; lower for tight VMs
 COSIFT_PEBBLE_MEMTABLE_MB=32   # default; per-memtable budget
 COSIFT_PEBBLE_MEMTABLES=2      # default; max in-memory tables
-COSIFT_PEBBLE_SYNC=false       # opt-in: skip fsync per commit (iter 219)
-COSIFT_BM25_K1=1.2             # BM25 term-frequency saturation (iter 279)
-COSIFT_BM25_B=0.75             # BM25 length normalization (iter 279)
-COSIFT_HYDE_CACHE_SIZE=256     # expandQuery passage cache (iter 282)
-COSIFT_PARA_CACHE_SIZE=256     # paraphraseQuery cache (iter 282)
+COSIFT_PEBBLE_SYNC=false       # opt-in: skip fsync per commit
+COSIFT_BM25_K1=1.2             # BM25 term-frequency saturation
+COSIFT_BM25_B=0.75             # BM25 length normalization
+COSIFT_HYDE_CACHE_SIZE=256     # expandQuery passage cache
+COSIFT_PARA_CACHE_SIZE=256     # paraphraseQuery cache
 ```
 
 `COSIFT_PEBBLE_SYNC=false` is the single biggest crawler-throughput win on commodity disks. Tradeoff: WAL writes survive process crash but not VM crash. Crawler resumes cleanly from frontier on next start, so the loss window is bounded.
@@ -93,17 +93,17 @@ COSIFT_PARA_CACHE_SIZE=256     # paraphraseQuery cache (iter 282)
 
 Pebble locks the data dir for single-writer access — `cosift stats --backend=pebble` from a sidecar process fails while the crawler runs. Two options:
 
-**Option A — status file** (iter 224, 225):
+**Option A — status file**:
 ```bash
 # Set cfg.Crawler.StatusFile in cosift.json
 # Then read without taking the lock:
 watch -n 5 cosift -config cosift.json status-file
 
-# Machine-readable form (iter 229) — feeds jq / Prometheus exporters:
+# Machine-readable form — feeds jq / Prometheus exporters:
 cosift status-file -json | jq '.indexed_docs, .age_seconds'
 ```
 
-**Option B — pebble-info** (iter 217, only after crawler exits):
+**Option B — pebble-info**:
 ```bash
 cosift pebble-info -dir /var/lib/cosift/data/pebble
 ```
@@ -111,7 +111,7 @@ cosift pebble-info -dir /var/lib/cosift/data/pebble
 ### Migration
 
 ```bash
-# SQLite → Pebble (iter 204)
+# SQLite → Pebble
 cosift migrate-to-pebble -output /var/lib/cosift/data/pebble
 
 # Migrate runs through PebbleBM25.IndexDocument — same code path used
@@ -136,9 +136,9 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 | Setting | Outcome |
 |---|---|
 | `max_concurrent: 16`, default Pebble cache, Sync mode | OOM-killed at 15.9 GB RSS in ~5 min |
-| `max_concurrent: 4`, iter-218 cache caps, Sync mode | OOM-killed at 15.9 GB RSS in ~2 min |
-| `max_concurrent: 4-8`, NoSync mode (iter 219) | Stable; ran several minutes without OOM |
-| `max_concurrent: 8`, NoSync, iter-220 panic recovery, iter-221 defers | Recommended starting config for 16 GB |
+| `max_concurrent: 4`, cache caps, Sync mode | OOM-killed at 15.9 GB RSS in ~2 min |
+| `max_concurrent: 4-8`, NoSync mode | Stable; ran several minutes without OOM |
+| `max_concurrent: 8`, NoSync, panic recovery, defers | Recommended starting config for 16 GB |
 
 **Recommendations:**
 - **16 GB VM**: `max_concurrent: 8`, `COSIFT_PEBBLE_SYNC=false`, `COSIFT_PEBBLE_CACHE_MB=128`
@@ -151,176 +151,7 @@ This session's empirical data (e2-standard-4, 16 GB RAM, 750 GB pd-balanced):
 
 | Gap | Workaround |
 |---|---|
-| Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` (iter 224/225) or curl `/stats` on a running pebble-serve |
-| HNSW vector indexing during crawl isn't auto-wired | Compose manually: `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` — iter-214 bridge exists; default crawl path is BM25-only |
-| Doc-freq isn't decremented on iter-208 orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise. Counter-drift is still detectable via `cosift verify` / GET `/verify` (iter 228/230) |
+| Pebble single-writer lock blocks reads while crawling | Use `cosift status-file` or curl `/stats` on a running pebble-serve |
+| HNSW vector indexing during crawl isn't auto-wired | Compose manually: `crawler.WithPassageWriter(index.NewHNSWWriter(hnsw, ps, persistEvery))` — bridge exists; default crawl path is BM25-only |
+| Doc-freq isn't decremented on orphan posting cleanup | IDF accuracy shifts by sub-rounding-noise; acceptable until proven otherwise. Counter-drift is still detectable via `cosift verify` / GET `/verify` |
 
-## Iter map (path-2 rework)
-
-```
-iter 199 — HNSW vector index (pure Go, no deps)
-iter 200 — Pebble doc store (UpsertDocument, GetDocByURL)
-iter 201 — Postings + terms + doc_len families
-iter 202 — PebbleBM25 read path
-iter 203 — HNSW persistence to 'v' family
-iter 204 — Migration tool: SQLite → Pebble
-iter 205 — cosift pebble-serve (minimal HTTP)
-iter 206 — Storage bench (SQLite vs Pebble)
-iter 207 — Perf: corpusStats O(1), 'i' family, inline doc_len
-iter 208 — Orphan posting cleanup on re-index
-iter 209 — Frontier MVP (Push/Claim/Complete/Fail/Stats)
-iter 210 — Host-fair claim via secondary indexes
-iter 211 — CountQueuedPerHost + RecrawlURL
-iter 212 — Crawler backend interfaces (CrawlerStore, PassageWriter)
-iter 213 — `cosift crawl --backend=pebble`
-iter 214 — HNSWWriter bridge
-iter 215 — README Pebble section
-iter 216 — `cosift query --backend=pebble`
-iter 217 — `cosift pebble-info` (Pebble Metrics surface)
-iter 218 — Memory caps (Pebble cache + memtables)
-iter 219 — COSIFT_PEBBLE_SYNC=false
-iter 220 — Per-worker panic recovery + stack trace
-iter 221 — Iterator-leak defers in ClaimFrontier + CountQueuedPerHost
-iter 222 — README resource-sizing notes
-iter 223 — `cosift crawl -duration` for bounded runs
-iter 224 — status.json crawler dump
-iter 225 — `cosift status-file` reader
-iter 226 — status.json carries indexed_docs + avg_doc_len
-iter 228 — `cosift verify` (counter-drift detection)
-iter 229 — `cosift status-file -json` (Prometheus / jq output)
-iter 230 — pebble-serve `/verify` endpoint (HTTP counter-drift check)
-iter 231 — pebble-serve `/metrics` (Prometheus exposition, no client dep)
-iter 232 — pebble-serve `/search` include_domains / exclude_domains
-iter 233 — pebble-serve `/search` hit enrichment (excerpt, published_at, author)
-iter 234 — pebble-serve `/search` since / until date filters
-iter 235 — pebble-serve `/search` sort=date_desc / date_asc
-iter 236 — pebble-serve `/find_similar` (BM25 more-like-this, no embeddings)
-iter 237 — pebble-serve `/search?include_text=true` (inline full text, no N+1)
-iter 238 — pebble-serve `/stats` includes indexed_docs / sum_doc_len / avg_doc_len
-iter 239 — pebble-serve `/find_similar?q=` augments the auto-derived MLT query
-iter 240 — pebble-serve `/answer` (BM25 retrieval + OpenAI-compatible chat synth)
-iter 241 — pebble-serve `/answer` honors include_domains / exclude_domains / since / until
-iter 242 — pebble-serve `/answer?stream=true` (SSE: sources → chunk → done)
-iter 243 — pebble-serve `/research` (planner: decompose → retrieve → dedupe → synth)
-iter 244 — pebble-serve `/research?stream=true` (SSE: plan → sources → chunk → done)
-iter 245 — pebble-serve `/find_similar` honors include_domains / exclude_domains / since / until
-iter 246 — pebble-serve `/research` honors retrieval filters (sync + SSE); shared `retrievalFilters` helper
-iter 247 — pebble-serve include_text=true now uniform across /search /find_similar /answer /research
-iter 248 — pebble-serve `/search?rerank=true` (HTTP Cohere/Voyage/Jina/TEI, or LLM listwise)
-iter 249 — pebble-serve `/answer?rerank=true` (rerank pool feeds synth; citation numbers track final order)
-iter 250 — pebble-serve `/research?rerank=true` (sync + SSE; SSE 'sources' fires after rerank)
-iter 251 — pebble-serve `/find_similar?rerank=true` (full rerank coverage across retrieval endpoints)
-iter 252 — pebble-serve `/search?expand=true` (HyDE-style query expansion; reranker still scores against original q)
-iter 253 — README updated to reflect full pebble-serve endpoint set + capabilities
-iter 254 — pebble-serve `POST /contents` (batch URL → document; up to 100 per request)
-iter 255 — pebble-serve `POST /contents` wire shape aligned with SQLite (results+took, found, cached, lang)
-iter 256 — pebble-serve `/answer?expand=true` (HyDE expansion on the retrieval step)
-iter 257 — pebble-serve `/research?expand=true` (per-sub-query HyDE) + shared `expandQuery` helper
-iter 258 — pebble-serve /search + /answer migrated to the shared expandQuery helper
-iter 259 — pebble-serve bounded in-memory HyDE cache (256 entries, drop-arbitrary on overflow)
-iter 260 — pebble-serve `/metrics` exposes cosift_hyde_cache_hits_total / misses_total
-iter 261 — pebble-serve `/metrics` exposes cosift_requests_total{endpoint="…"} via counting middleware
-iter 262 — pebble-serve `/metrics` adds cosift_request_duration_seconds_sum (mean latency via PromQL)
-iter 263 — pebble-serve `/metrics` adds cosift_rerank_attempts_total / _failures_total
-iter 264 — pebble-serve `/metrics` adds cosift_chat_attempts_total / _failures_total (all 7 sites)
-iter 265 — pebble-serve `/search` response includes `effective_query` when HyDE expand actually fired
-iter 266 — pebble-serve `/answer` response includes `effective_query` (omitempty) on both paths
-iter 267 — pebble-serve `/metrics` adds cosift_chat_duration_seconds_sum (mean chat latency via PromQL)
-iter 268 — docs/API.md: operator reference for the full pebble-serve endpoint surface
-iter 269 — README links to docs/PEBBLE.md + docs/API.md from the Pebble section
-iter 270 — `cosift status-file -target N` shows progress toward a doc-count goal
-iter 271 — `cosift status-file -target N` adds ETA (status.json carries started_at + indexed_docs_at_start)
-iter 272 — pebble-serve `/search?expand=paraphrase` (paraphrase + RRF fusion)
-iter 273 — pebble-serve `/answer?expand=paraphrase` (same shape; fused top-fetchK feeds synth)
-iter 274 — pebble-serve extract `retrieveWithExpansion` helper (DRY across /search and /answer)
-iter 275 — pebble-serve /research uses retrieveWithExpansion per sub-query (?expand=paraphrase now applies)
-iter 276 — pebble-serve bounded paraphrase cache + hit/miss counters on /metrics
-iter 277 — pebble-serve `POST /search` (JSON body re-encoded as URL.Values, hands off to GET handler)
-iter 278 — pebble-serve POST coverage for /find_similar, /answer, /research (same pattern)
-iter 279 — PebbleBM25 per-instance k1/b + COSIFT_BM25_K1 / COSIFT_BM25_B env overrides
-iter 280 — pebble-serve `/stats` surfaces bm25_k1, bm25_b, reranker name, chat_model
-iter 281 — docs/TUNING.md: operator's compass for when each knob actually moves quality
-iter 282 — COSIFT_HYDE_CACHE_SIZE / COSIFT_PARA_CACHE_SIZE env overrides for cache caps
-iter 283 — /search + /find_similar surface `total_candidates` (BM25 pool size before filter)
-iter 284 — /research SSE plan event includes `expand` field (so UI knows strategy upfront)
-iter 285 — `cosift pebble-info` surfaces indexed_docs / sum_doc_len / avg_doc_len
-iter 286 — pebble-serve startup logs indexed_docs + cache-size overrides when set
-iter 287 — `cosift doctor` adds a 'pebble store' check (PASS/SKIP/FAIL on open + counters)
-iter 288 — /research sync response carries `expand` (parity with iter-284 SSE plan event)
-iter 289 — /answer response carries `expand` (parity with /research, both paths)
-iter 290 — /search response carries `expand` (uniform across all retrieval-driven endpoints)
-iter 291 — docs/TUNING.md adds 'Pitfalls / non-obvious behavior' section (9 gotchas documented)
-iter 292 — `warnings[]` field on /search /find_similar /answer /research responses (silent-no-op surface)
-iter 293 — `warnings` event on /answer + /research SSE paths (parity with sync responses)
-iter 294 — `cosift_warnings_emitted_total` on /metrics (alert on rate of misconfigured requests)
-iter 295 — docs/EXAMPLES.md: ready-to-paste curl recipes for search/answer/research/ops
-iter 296 — `cosift doctor` reports active COSIFT_* env vars so operators see overrides in one place
-iter 297 — PEBBLE.md known-limitations table updated to reflect post-iter-292 state
-iter 298 — `/find_similar` accepts `text` (+ optional `title`) for content-based MLT — no source URL required
-iter 299 — docs/API.md + docs/EXAMPLES.md cover the iter-298 content-based MLT flow
-iter 300 — `cosift find-similar` CLI accepts -text / -text-file / -text-title (POST when text > 4 KB)
-iter 301 — `cosift query --backend=pebble` honors COSIFT_BM25_K1 / _B (shared helper with pebble-serve)
-iter 302 — /research logs per-sub-query BM25 failures (was silent continue on both paths)
-iter 303 — `status-file -target N` displays `100%, reached` when goal is met instead of growing past 100
-iter 304 — `cosift answer` CLI gains -rerank, -since, -until, -include-domains, -exclude-domains
-iter 305 — `cosift research` CLI gains -k, -expand, -rerank, -since, -until, -include-domains, -exclude-domains
-iter 306 — `cosift find-similar` CLI gains -rerank, -q, -since, -until, -include-domains, -exclude-domains
-iter 307 — docs/EXAMPLES.md adds a 'CLI shortcuts' section so headless users see the cosift-* equivalents
-iter 308 — `expand` response field normalizes to canonical name ('true'→'hyde', unknown→'')
-iter 309 — `warnings` now flags unknown `expand` values (was silently ignored)
-iter 310 — `warnings` flags unknown `sort` values too (silent-treat-as-relevance closed)
-iter 311 — `warnings` flags obviously-bad `k` values (non-integer / ≤0) — silent default-fallback closed
-iter 312 — docs/EXAMPLES.md gains a 'Debug a misconfigured request' recipe using the warnings field
-iter 313 — `warnings` flags URL-shaped entries in include/exclude_domains (silent zero-match closed)
-iter 314 — pebble-serve startup WARNs on unparseable COSIFT_* env vars (silent default-fallback closed)
-iter 315 — docs/TUNING.md pitfalls section updated to point at the iter-292+ warnings field as the primary diagnostic
-iter 316 — /answer + /research responses carry `total_candidates` (parity with iter-283 /search)
-iter 317 — /answer + /research SSE `sources` events also carry `total_candidates` (sync↔stream parity)
-iter 318 — `cosift verify -json` for CI integration (matches GET /verify body shape)
-iter 319 — docs/API.md SSE event-sequence docs reflect iter-284/292/317 fields (warnings, expand, total_candidates)
-iter 320 — `cosift` usage string lists doctor + pebble-serve/info, verify, status-file, migrate-to-pebble
-iter 321 — README Quick start mentions the Pebble path (crawl --backend + pebble-serve) so new self-hosters don't miss it
-iter 322 — fix: /find_similar topN==0 branch referenced out-of-scope `decoded` (broken since iter 298)
-iter 323 — `make check` target: compile + vet + offline unit tests (~10s, catches iter-322-class breakage)
-iter 324 — `cosift doctor` distinguishes Pebble writer-lock contention (INFO) from real corruption (FAIL)
-iter 325 — `cosift pebble-info` + `cosift verify` print a friendly hint on lock contention (point at HTTP endpoints)
-iter 326 — `cosift crawl --backend=pebble`, `cosift query`, `cosift stats`, `cosift migrate-to-pebble` use the iter-325 helper
-iter 327 — `make check` includes `cmd/cosift/...` tests (~24s; httptest-based, no live network)
-iter 328 — PEBBLE.md lead with a status paragraph + cross-doc links so first-time readers land oriented
-iter 329 — README mentions `make check` alongside `make smoke` so contributors know about the offline sweep
-iter 330 — `cosift search/research/find-similar/answer` CLIs print server-side warnings to stderr
-iter 331 — `cosift verify -server URL` routes through the HTTP /verify endpoint (works while writer lock is held)
-iter 332 — usage string + EXAMPLES.md document the iter-331 `verify -server` mode
-iter 333 — CLI SSE consumers handle pebble-serve's `warnings` event (surfaces silent no-ops on streamed answer/research)
-iter 334 — wire: rename pebble SSE `chunk{delta}` → `answer_chunk{text}` so `cosift answer/research -stream` against pebble-serve renders text
-iter 335 — CLI SSE consumers handle pebble's `sources` event + tolerate pebble's minimal `done` payload + pebble's `error{error:...}` field shape
-iter 336 — CLI SSE `plan` handler accepts pebble's `{plan, expand}` shape alongside SQLite's `{strategy, variants}`
-iter 337 — CLI SSE `error` event surfaces pebble's `phase` tag in the error message
-iter 338 — CLI SSE consumers capture pebble's `sources` event for the final Sources block (pebble's `done` is minimal)
-iter 339 — renderStreamingSources uses i+1 fallback when ID==0 (pebble sources lack a citation id field)
-iter 340 — sync research/answer CLI renderers + markdown renderer also use the iter-339 sourceIDOf helper
-iter 341 — pebble-serve answerSource emits `id` (1-based citation N) so the CLI fallback is now defense-in-depth
-iter 342 — TestPebbleServeEndToEnd asserts /find_similar text mode + /verify (closes the iter-322 regression class)
-iter 343 — TestPebbleServeEndToEnd also asserts POST /search + /metrics shape (regression coverage)
-iter 344 — TestPebbleServeEndToEnd asserts warnings array emits on `?sort=newest` (covers iter-292/310 machinery)
-iter 345 — /stats surfaces hyde_cache_size + paraphrase_cache_size (verify iter-282 env overrides landed)
-iter 346 — TestPebbleServeEndToEnd asserts /stats carries bm25_k1 + bm25_b (regression guard on iter 279/280)
-iter 347 — TestPebbleServeEndToEnd asserts /search?include_text=true inlines doc text on hits (iter 237/247 regression guard)
-iter 348 — TestPebbleServeEndToEnd exercises POST /contents batch (iter 254/255 wire shape now under test)
-iter 349 — TestPebbleServeEndToEnd exercises `?include_domains=` filter (iter 232 dot-boundary matcher under test)
-iter 350 — TestPebbleServeEndToEnd asserts /search emits total_candidates > 0 (iter 283 regression guard)
-iter 351 — TestPebbleServeEndToEnd asserts /find_similar URL mode excludes the source URL (iter 236/245 guard)
-iter 352 — TestPebbleServeEndToEnd asserts /search retriever label == 'bm25' on bare query (iter 234/248/252 guard)
-iter 353 — helpers_test.go: unit tests for normalizeExpandMode (iter 308), sourceIDOf (iter 339/340), peekWarnings (iter 330)
-iter 354 — helpers_test.go: rrfFuse contract test (iter 272 — paraphrase strategy's fusion math)
-iter 355 — helpers_test.go: parseSubQueries (iter 243) + iter-354 tie-flakiness fix on the rrfFuse fixture
-iter 356 — TestPebbleServeEndToEnd asserts `?expand=true` normalizes to 'hyde' and fires no-chat warning (iters 252/292/308)
-iter 357 — pebble-serve peeks 'v' family at startup; logs + surfaces `has_vectors` on /stats (first concrete HNSW-direction step)
-iter 358 — new `index.LoadHNSWMeta` (cheap 20-byte read); /stats surfaces vector_nodes + vector_dim when meta is persisted
-iter 359 — TestLoadHNSWMeta locks down the iter-358 meta-only roundtrip (empty store → ok=false; persisted → exact dim+count)
-iter 360 — `cosift pebble-info` surfaces vector_nodes + vector_dim (offline store inspection now sees the dense shape)
-iter 361 — /metrics emits cosift_vector_nodes + cosift_vector_dim gauges when HNSW meta is present
-iter 362 — COSIFT_LOAD_HNSW=true opts into in-memory HNSW graph load at startup; /stats surfaces `hnsw_loaded`
-iter 363 — `/search?retriever=dense` wires the embedder + iter-362 graph end-to-end (warns + falls back when missing pieces)
-iter 364 — `/search?retriever=hybrid` runs BM25 + dense in parallel, RRF-fuses; label `bm25+dense:rrf`
-```

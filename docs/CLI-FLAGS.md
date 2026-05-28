@@ -1,7 +1,7 @@
 # CLI flag design — why `-json`, `-format`, and `-text` aren't unified
 
 **Status:** design closed. Output-mode rationalization was considered through
-iters 102-114 (14 priorities lists in a row) and formally closed in iter 115.
+iters 102-114 (14 priorities lists in a row) and formally closed .
 This document explains why the current design is correct, so future contributors
 don't re-open the same question.
 
@@ -42,7 +42,7 @@ that look related but don't compose:
 - `-format text` (default) + `-json` → raw JSON output
 - `-format json` (new) + `-json` → ??? (both already-set bools? error? precedence?)
 
-Both unifications are footguns. iter-103 caught this when adding `-format json`
+Both unifications are footguns. caught this when adding `-format json`
 to export:
 
 > "The synth CLIs already have `-json` as a separate flag, so accepting `json`
@@ -96,7 +96,7 @@ Three scenarios that would warrant re-opening this design:
    to something like cobra/spf13 with subcommand grouping and flag inheritance,
    the cost of restructuring drops and the unification becomes cheaper.
 
-None of these conditions are met as of iter 115. The current design has
+None of these conditions are met as . The current design has
 shipped successfully across 16 commands and 14 iters of operator-facing
 work without confusion in practice.
 
@@ -122,5 +122,5 @@ The current design has a clear semantic — `-format` is for rendering,
 metadata-stripping axis. Three flags carve three orthogonal axes. Unifying
 into one flag would conflate axes and ship a footgun.
 
-**Closed in iter 115. Reopen if any of the three conditions in "What would
+**Closed . Reopen if any of the three conditions in "What would
 change the calculus" comes true.**
