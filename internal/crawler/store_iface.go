@@ -4,6 +4,7 @@
 //
 // Each Pebble equivalent of an SQLite method already exists with a
 // matching signature; this file just names the contract.
+
 package crawler
 
 import (

@@ -2298,9 +2298,9 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 	// lets operators trade coverage for grounding per-deployment —
 	// measured that lower K reduces the noise-citation failure mode at the
 	// cost of a small coverage delta on multi-faceted workloads.
-	cap := 10
+	limit := 10
 	if s.defaults.ResearchSynthK > 0 {
-		cap = s.defaults.ResearchSynthK
+		limit = s.defaults.ResearchSynthK
 	}
 
 	// when ?hyde=true is propagated via hydeEnabledKey, every
@@ -2325,7 +2325,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 		all := append([]string{q}, variants...)
 		hitLists := make([][]string, 0, len(all))
 		for _, v := range all {
-			hits, _, _, err := s.runSearch(searchCtx(v), retriever, v, cap)
+			hits, _, _, err := s.runSearch(searchCtx(v), retriever, v, limit)
 			if err != nil {
 				continue
 			}
@@ -2338,7 +2338,7 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 		if len(hitLists) == 0 {
 			return nil
 		}
-		fused := index.RRF(hitLists, cap, 60)
+		fused := index.RRF(hitLists, limit, 60)
 		if onRetrieved != nil {
 			onRetrieved("rrf-fused", fused)
 		}
@@ -2388,14 +2388,14 @@ func (s *Server) gatherResearchPassages(ctx context.Context, q, strategy string,
 				url: doc.URL, title: doc.Title, text: doc.Text, author: doc.Author,
 				score: h.Score,
 			})
-			if len(passages) >= cap {
+			if len(passages) >= limit {
 				break
 			}
 		}
 		if onRetrieved != nil {
 			onRetrieved(sq, urls)
 		}
-		if len(passages) >= cap {
+		if len(passages) >= limit {
 			break
 		}
 	}

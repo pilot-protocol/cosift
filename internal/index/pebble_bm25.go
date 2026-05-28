@@ -8,6 +8,7 @@
 // coexist; operators pick a backend via config. Behavioral parity is
 // asserted via TestPebbleBM25MatchesSQLite, which runs the same corpus +
 // queries through both and compares hit URLs.
+
 package index
 
 import (

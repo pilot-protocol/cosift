@@ -11,6 +11,7 @@
 // HNSW.Persist. Cheap per-passage cost (one graph insert + one
 // GetDocMeta lookup); the heavy on-disk write is amortized across
 // many inserts.
+
 package index
 
 import (

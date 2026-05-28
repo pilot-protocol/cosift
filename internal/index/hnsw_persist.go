@@ -32,6 +32,7 @@
 //	maxLevel    int32
 //	entryPoint  int32
 //	nodeCount   int32
+
 package index
 
 import (

@@ -2327,14 +2327,14 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 		// unlimited (operator wants the full list, accepts console spam).
 		// Otherwise: print up to listLimit and append a "... (N more)" suffix.
 		if *listLimit != 0 && len(rr.URLs) > 0 {
-			max := *listLimit
-			if max < 0 || max > len(rr.URLs) {
-				max = len(rr.URLs)
+			n := *listLimit
+			if n < 0 || n > len(rr.URLs) {
+				n = len(rr.URLs)
 			}
-			for _, u := range rr.URLs[:max] {
+			for _, u := range rr.URLs[:n] {
 				fmt.Printf("  %s\n", u)
 			}
-			if remaining := len(rr.URLs) - max; remaining > 0 {
+			if remaining := len(rr.URLs) - n; remaining > 0 {
 				fmt.Printf("  ... (%d more — use -limit-list -1 to see all)\n", remaining)
 			}
 		}
@@ -5973,11 +5973,11 @@ func abs(n int) int {
 	return n
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	return s[:max-1] + "…"
+	return s[:n-1] + "…"
 }
 
 // peekWarnings extracts the warnings field from a server

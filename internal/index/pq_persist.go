@@ -15,6 +15,7 @@
 //
 // Codebook lives at 'q' + 0x00 + "codebook"; codes live at
 // 'q' + 0x01 + uint64-be(nodeID). See store/pebble.go comment.
+
 package index
 
 import (

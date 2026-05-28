@@ -18,6 +18,7 @@
 //
 // Big-endian IDs give natural ascending order for prefix scans. Family-tag
 // prefix bytes keep families disjoint so a scan over 'd' won't touch 'u' rows.
+
 package store
 
 import (

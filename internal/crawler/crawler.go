@@ -943,9 +943,9 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 	// accounting as we enqueue. The accounting needs to track BOTH the count
 	// already in the queue AND additions made in this batch — otherwise a
 	// 300-link page with 280 github links would push all 280 past the cap.
-	cap := c.cfg.MaxURLsPerHost
+	hostCap := c.cfg.MaxURLsPerHost
 	var queuedPerHost map[string]int
-	if cap > 0 {
+	if hostCap > 0 {
 		hostList := make([]string, 0, len(hosts))
 		for h := range hosts {
 			hostList = append(hostList, h)
@@ -980,7 +980,7 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 	}
 
 	for _, cand := range candidates {
-		if cap > 0 && queuedPerHost[cand.host] >= cap {
+		if hostCap > 0 && queuedPerHost[cand.host] >= hostCap {
 			continue
 		}
 		if preferNew {
@@ -1002,7 +1002,7 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 		}
 		// PushFrontier is INSERT OR IGNORE — dedup is at the persistent layer.
 		_ = c.store.PushFrontier(ctx, cand.canon, depth, 0.5)
-		if cap > 0 {
+		if hostCap > 0 {
 			queuedPerHost[cand.host]++
 		}
 	}
@@ -1155,7 +1155,7 @@ func truncateForEmbed(text string, maxTokens int) string {
 	var lastSpaceByte = -1
 	for i, r := range text {
 		if r > 0x7F {
-			tokens += 1
+			tokens++
 		} else {
 			tokens += 0.35
 		}

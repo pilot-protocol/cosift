@@ -8,6 +8,7 @@
 //
 // We pre-normalize stored vectors so cosine reduces to dot-product (one mul per
 // dim instead of two muls + a sqrt). Same accuracy, ~2× faster scan.
+
 package index
 
 import (

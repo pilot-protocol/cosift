@@ -211,17 +211,17 @@ func (s *Server) applyPRFToResearchPassages(ctx context.Context, r *http.Request
 		return passages, ""
 	}
 	expandedQ := q + " " + strings.Join(expansion, " ")
-	// One BM25 retrieval over the expansion. cap reuses /research's
-	// ResearchSynthK limit so the augmented list doesn't exceed synth cap.
-	cap := 10
+	// One BM25 retrieval over the expansion. limit reuses /research's
+	// ResearchSynthK so the augmented list doesn't exceed synth cap.
+	limit := 10
 	if s.defaults.ResearchSynthK > 0 {
-		cap = s.defaults.ResearchSynthK
+		limit = s.defaults.ResearchSynthK
 	}
-	hits, _, _, err := s.runSearch(ctx, "bm25", expandedQ, cap)
+	hits, _, _, err := s.runSearch(ctx, "bm25", expandedQ, limit)
 	if err != nil {
 		return passages, ""
 	}
-	seen := make(map[string]bool, len(passages)+cap)
+	seen := make(map[string]bool, len(passages)+limit)
 	for _, p := range passages {
 		seen[p.url] = true
 	}
@@ -239,7 +239,7 @@ func (s *Server) applyPRFToResearchPassages(ctx context.Context, r *http.Request
 			url: doc.URL, title: doc.Title, text: doc.Text, author: doc.Author,
 			score: h.Score,
 		})
-		if len(passages) >= cap {
+		if len(passages) >= limit {
 			break
 		}
 	}

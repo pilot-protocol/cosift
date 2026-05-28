@@ -252,11 +252,9 @@ func (b *BatchingEmbedder) drain() {
 			case j := <-b.queue:
 				// Skip the timer reset — once we start a batch we want to
 				// fire on the original deadline so latency stays bounded.
-				if len(texts)+len(j.texts) > b.maxBatch && len(jobs) > 0 {
-					// Putting this job back would deadlock. Just send it
-					// in this batch even though we overshoot maxBatch
-					// slightly — preferable to a stuck waiter.
-				}
+				// We let the batch overshoot maxBatch rather than push the
+				// job back onto the queue: re-queueing under contention
+				// would deadlock waiters.
 				jobs = append(jobs, j)
 				texts = append(texts, j.texts...)
 			case <-timer.C:
@@ -330,14 +328,14 @@ type ThrottledEmbedder struct {
 	sem   chan struct{}
 }
 
-// NewThrottledEmbedder wraps inner with a semaphore of size max. Embeds
-// block on Acquire when max are already in flight. Pass max ≤ 0 to
-// disable the cap (returns inner unwrapped).
-func NewThrottledEmbedder(inner Embedder, max int) Embedder {
-	if max <= 0 {
+// NewThrottledEmbedder wraps inner with a semaphore of size maxInFlight.
+// Embeds block on Acquire when maxInFlight are already running. Pass ≤ 0
+// to disable the cap (returns inner unwrapped).
+func NewThrottledEmbedder(inner Embedder, maxInFlight int) Embedder {
+	if maxInFlight <= 0 {
 		return inner
 	}
-	return &ThrottledEmbedder{inner: inner, sem: make(chan struct{}, max)}
+	return &ThrottledEmbedder{inner: inner, sem: make(chan struct{}, maxInFlight)}
 }
 
 func (t *ThrottledEmbedder) Model() string { return t.inner.Model() }
