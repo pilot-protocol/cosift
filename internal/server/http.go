@@ -497,7 +497,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req FeedbackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -683,7 +683,7 @@ type AdminRecrawlResponse struct {
 // next pass. This split keeps the API endpoint stateless and quick.
 func (s *Server) handleAdminRecrawl(w http.ResponseWriter, r *http.Request) {
 	var req AdminRecrawlRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -744,7 +744,7 @@ type AdminRecrawlByDomainResponse struct {
 // batch-/contents cap pattern). Larger sweeps should be split.
 func (s *Server) handleAdminRecrawlByDomain(w http.ResponseWriter, r *http.Request) {
 	var req AdminRecrawlByDomainRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -831,7 +831,7 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 	}
 	var req AdminReembedRequest
 	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
@@ -2189,7 +2189,7 @@ type ContentsBatchItem struct {
 func (s *Server) handleContentsBatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req ContentsBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
@@ -3152,6 +3152,7 @@ func ListenAndServe(ctx context.Context, addr string, h http.Handler) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
