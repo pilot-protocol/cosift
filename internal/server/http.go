@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
@@ -232,41 +231,39 @@ func (s *Server) WithFetcher(f FetchFn) *Server {
 // post-restart server) skip the LLM call on popular queries.
 //
 // Lookup order: in-memory L1 → store L2 → LLM. Save order: LLM → store + L1.
+// paraphraserL1Max is the hard cap on the in-memory L1 paraphrase cache.
+// Beyond this, LRU eviction kicks in to prevent unbounded memory growth.
+const paraphraserL1Max = 10_000
+
 type paraphraser struct {
 	chat    embed.ChatClient
 	n       int
-	store   *store.Store // optional L2; nil = L1-only
-	metrics *Metrics     // optional; nil disables cache observability
-	mu      sync.Mutex
-	cache   map[string][]string // L1 key: model + "\x00" + query
+	store   *store.Store          // optional L2; nil = L1-only
+	metrics *Metrics              // optional; nil disables cache observability
+	cache   *lruCache[[]string]   // L1 key: model + "\x00" + query
 }
 
 func newParaphraser(chat embed.ChatClient, n int, s *store.Store, m *Metrics) *paraphraser {
 	if n <= 0 {
 		n = 2
 	}
-	return &paraphraser{chat: chat, n: n, store: s, metrics: m, cache: make(map[string][]string)}
+	return &paraphraser{chat: chat, n: n, store: s, metrics: m, cache: newLRU[[]string](paraphraserL1Max, 0)}
 }
 
 // generate returns N paraphrases, with the L1+L2 cache pattern above.
 func (p *paraphraser) generate(ctx context.Context, q string) []string {
 	key := p.chat.Model() + "\x00" + q
-	p.mu.Lock()
-	if cached, ok := p.cache[key]; ok {
-		p.mu.Unlock()
+	if cached, ok := p.cache.get(key); ok {
 		if p.metrics != nil {
 			p.metrics.RecordParaphraseL1Hit()
 		}
 		return cached
 	}
-	p.mu.Unlock()
 
 	// L2: SQLite-persisted cache.
 	if p.store != nil {
 		if cached, err := p.store.GetParaphrases(ctx, p.chat.Model(), q); err == nil && len(cached) > 0 {
-			p.mu.Lock()
-			p.cache[key] = cached
-			p.mu.Unlock()
+			p.cache.set(key, cached)
 			if p.metrics != nil {
 				p.metrics.RecordParaphraseL2Hit()
 			}
@@ -307,9 +304,7 @@ Example output for "go programming language": ["golang concurrent compiled langu
 	if len(arr) > p.n {
 		arr = arr[:p.n]
 	}
-	p.mu.Lock()
-	p.cache[key] = arr
-	p.mu.Unlock()
+	p.cache.set(key, arr)
 	if p.store != nil {
 		_ = p.store.SaveParaphrases(ctx, p.chat.Model(), q, arr) // best-effort
 	}
