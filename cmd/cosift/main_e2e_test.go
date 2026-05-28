@@ -2,7 +2,7 @@
 //
 // Builds cosift into a temp dir, runs `cosift serve` as a subprocess on an
 // OS-allocated free port, hits /health + /stats over TCP, sends SIGTERM,
-// confirms clean exit. Catches the class of bug iter 34 found in production
+// confirms clean exit. Catches the class of bug found in production
 // (binary didn't honor PORT) — that bug passed every httptest unit test
 // because httptest never goes through the binary's bind path.
 package main
@@ -71,7 +71,7 @@ func TestBinaryEndToEnd(t *testing.T) {
 	}
 
 	// 2. Launch on a free port with a temp data dir. PORT exercises the
-	//    12-factor env override from iter 34 (the bug that prompted this test).
+	//    12-factor env override from (the bug that prompted this test).
 	port := freePort(t)
 	dataDir := filepath.Join(tmp, "data")
 	cmd := exec.Command(bin, "serve")
@@ -92,7 +92,7 @@ func TestBinaryEndToEnd(t *testing.T) {
 
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// 3. Wait for readiness via /health (the iter-35 alias). 5s deadline is
+	// 3. Wait for readiness via /health (the alias). 5s deadline is
 	//    generous on a fresh boot; the binary needs to do SQLite open + schema migration.
 	if err := waitReady(url, time.Now().Add(5*time.Second)); err != nil {
 		out, _ := io.ReadAll(stderr)
@@ -142,7 +142,7 @@ func TestBinaryEndToEnd(t *testing.T) {
 // TestQuickstartE2E exercises the full onboarding pipeline through the real
 // binary: `cosift init -site URL` → `cosift crawl URL` → `cosift query "text"`.
 //
-// Catches regressions at the seam between iter-67 init (writing
+// Catches regressions at the seam between init (writing
 // include_domains) and the crawler's domain enforcement. Unit tests cover each
 // piece in isolation, but the join wasn't tested before this iter.
 func TestQuickstartE2E(t *testing.T) {
@@ -254,8 +254,8 @@ func TestQuickstartE2E(t *testing.T) {
 	}
 }
 
-// TestCrawlAutoWiresEmbedderFromConfig — iter 186 regression test for the gap
-// surfaced by the iter-185 real-runner verification: `cosift crawl` wasn't
+// TestCrawlAutoWiresEmbedderFromConfig — regression test for the gap
+// surfaced by the real-runner verification: `cosift crawl` wasn't
 // calling WithEmbedder even when cosift.json declared embeddings.model, so the
 // vector index stayed empty. This test stubs the OpenAI embeddings endpoint
 // with httptest and asserts the binary's crawl subprocess POSTs to it.

@@ -141,7 +141,7 @@ func TestAdminRecrawlDomainDryRun(t *testing.T) {
 }
 
 func TestAdminRecrawlDomainDryRunListsURLsUnderCap(t *testing.T) {
-	// Iter 124: dry-run prints the URL list when iter-123 server returned it.
+	// dry-run prints the URL list when server returned it.
 	// Small list (3 URLs) under the default -limit-list cap (20) → all printed,
 	// no "... more" suffix.
 	urls := []string{"https://example.com/a", "https://blog.example.com/b", "https://example.com/c"}
@@ -168,9 +168,9 @@ func TestAdminRecrawlDomainDryRunListsURLsUnderCap(t *testing.T) {
 	if strings.Contains(out, "more") {
 		t.Errorf("3 URLs under cap shouldn't show suffix: %q", out)
 	}
-	// Existing iter-111 summary still present.
+	// Existing summary still present.
 	if !strings.Contains(out, "Dry-run: 3 URL(s) match") {
-		t.Errorf("missing iter-111 summary line: %q", out)
+		t.Errorf("missing summary line: %q", out)
 	}
 }
 
@@ -235,7 +235,7 @@ func TestAdminRecrawlDomainDryRunUnlimitedList(t *testing.T) {
 }
 
 func TestAdminRecrawlDomainDryRunCountOnly(t *testing.T) {
-	// -limit-list 0 → preserve iter-111 count-only behavior.
+	// -limit-list 0 → preserve count-only behavior.
 	urls := []string{"https://example.com/a", "https://example.com/b"}
 	resp := server.AdminRecrawlByDomainResponse{
 		Domain: "example.com", Matched: 2, DryRun: true, URLs: urls,

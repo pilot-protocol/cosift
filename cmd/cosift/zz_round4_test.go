@@ -358,7 +358,7 @@ func TestHandleAnswerGatewayNoHits(t *testing.T) {
 
 func TestHandleResearchGatewayHappy(t *testing.T) {
 	mock := openaiTestServer(t)
-	// Make the planner return a parseable sub-query JSON so the iter-243
+	// Make the planner return a parseable sub-query JSON so the
 	// planner path is exercised.
 	mock.SetChatResponse(`["consensus algorithm","leader election"]`)
 	cluster := newFakeCluster(t, 2)
@@ -1042,12 +1042,12 @@ func TestRunAnswerEvalCompareMissingNew(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runEval against a fake /search API endpoint — covers the iter-104 -api
+// runEval against a fake /search API endpoint — covers the -api
 // short-circuit and the httpAPIRetriever Search path.
 // ---------------------------------------------------------------------------
 
 func TestRunEvalViaAPI(t *testing.T) {
-	// Fake server speaks the iter-104 wire: GET /search?q=... &k=...
+	// Fake server speaks the wire: GET /search?q=... &k=...
 	// returns {"hits":[{url, title, score}, ...]}.
 	mu := sync.Mutex{}
 	seen := 0
@@ -1552,7 +1552,7 @@ func TestApplyBM25EnvOverridesNegative(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// hnswPassageWriter — direct unit tests on the iter-391 bridge type used to
+// hnswPassageWriter — direct unit tests on the bridge type used to
 // hand crawler passages to an in-memory HNSW.
 // ---------------------------------------------------------------------------
 

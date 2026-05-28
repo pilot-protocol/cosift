@@ -8,7 +8,7 @@ import (
 )
 
 // nonFlusher wraps a ResponseWriter but does NOT implement http.Flusher.
-// Used to exercise the iter-114 sseHandler "ok=false" fallback path.
+// Used to exercise the sseHandler "ok=false" fallback path.
 type nonFlusher struct {
 	http.ResponseWriter
 }

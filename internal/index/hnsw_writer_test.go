@@ -9,7 +9,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-// TestHNSWWriterBridgesPassagesIntoGraph — iter 214. The PassageWriter
+// TestHNSWWriterBridgesPassagesIntoGraph — The PassageWriter
 // satisfies the crawler interface and routes incoming passages into the
 // HNSW graph + the PebbleStore.
 func TestHNSWWriterBridgesPassagesIntoGraph(t *testing.T) {

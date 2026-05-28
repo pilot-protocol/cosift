@@ -130,10 +130,10 @@ func TestReindexReplacesPostings(t *testing.T) {
 	}
 }
 
-// TestBM25TitleBoostLiftsTitleMatches — iter 197. A document with the query
+// TestBM25TitleBoostLiftsTitleMatches — A document with the query
 // term in its TITLE should rank above a document with the same term in only
 // the BODY, even when the body-match doc has the term repeated many times.
-// Locks in the iter-197 title-boost ordering invariant.
+// Locks in the title-boost ordering invariant.
 func TestBM25TitleBoostLiftsTitleMatches(t *testing.T) {
 	s := newTestStore(t)
 	idx := NewBM25(s)
@@ -141,9 +141,8 @@ func TestBM25TitleBoostLiftsTitleMatches(t *testing.T) {
 
 	// Doc A: query term in title (single occurrence).
 	// Doc B: query term once in body only.
-	// Pre-iter-197: tf was 1 each → ordering near-random (depends on doc_len
-	// normalization tiebreak). Post-iter-197: A's title-tf = TitleBoost (3),
-	// B's body-tf = 1, so A must rank decisively above B.
+	// With title boost, A's title-tf = TitleBoost (3), B's body-tf = 1,
+	// so A must rank decisively above B.
 	//
 	// Note: this is a simple "title-boost" lift, not full BM25F. A doc with
 	// the term repeated MANY times in the body (e.g. tf>5) can still outrank
@@ -185,7 +184,7 @@ func TestBM25TitleBoostLiftsTitleMatches(t *testing.T) {
 	}
 }
 
-// TestBM25PhraseQuery — iter 198. Quoted phrases must require verbatim
+// TestBM25PhraseQuery — Quoted phrases must require verbatim
 // adjacency. A doc with "hello world" should match `"hello world"`; a doc
 // with "hello there world" must NOT (the words exist but aren't adjacent).
 func TestBM25PhraseQuery(t *testing.T) {
@@ -278,7 +277,7 @@ func TestBM25PhraseAndTermMixed(t *testing.T) {
 	}
 }
 
-// TestParsePhrases — locks in the quote parser. Iter 198.
+// TestParsePhrases — locks in the quote parser.
 func TestParsePhrases(t *testing.T) {
 	cases := []struct {
 		in       string

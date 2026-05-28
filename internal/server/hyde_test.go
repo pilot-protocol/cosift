@@ -11,7 +11,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-// Iter 165 — polymorphic chat stub that switches reply on the system prompt
+// polymorphic chat stub that switches reply on the system prompt
 // purpose. Lets us exercise /research?hyde=true end-to-end without three
 // separate fake chat clients.
 type polyChat struct {
@@ -50,7 +50,7 @@ func (p *polyChat) Chat(_ context.Context, msgs []embed.ChatMsg) (string, error)
 	}
 }
 
-// Iter 162 — hydePassager tests.
+// hydePassager tests.
 
 // fakeHyDEChat is a minimal embed.ChatClient that returns whatever reply is
 // configured. calls counts invocations so we can assert cache behaviour.

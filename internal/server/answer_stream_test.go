@@ -17,7 +17,7 @@ import (
 // /answer always has sources to synthesize from.
 func seedAnswerStreamStore(t *testing.T) *store.Store {
 	t.Helper()
-	// Iter 134: OpenMemory.
+	// OpenMemory.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -163,7 +163,7 @@ func TestAnswerStreamingNoSourcesError(t *testing.T) {
 
 func TestAnswerStreamingNonStreamPathStillWorks(t *testing.T) {
 	// Regression check: /answer without ?stream=true / Accept SSE returns the
-	// iter-94 JSON response, byte-for-byte compatible with existing clients.
+	// JSON response, byte-for-byte compatible with existing clients.
 	s := seedAnswerStreamStore(t)
 	chat := &scriptedChat{replies: []string{"Widgets are useful [1]."}}
 	srv := New(s).WithChat(chat)

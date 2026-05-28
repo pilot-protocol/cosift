@@ -106,11 +106,11 @@ func TestLoadAnswerEvalReport(t *testing.T) {
 	}
 }
 
-// Old reports (iter 56) had an empty {} summary. Loader must reconstruct.
+// Old reports had an empty {} summary. Loader must reconstruct.
 func TestLoadAnswerEvalRecomputeSummary(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "old.json")
-	// Write a report manually with no summary block (mimicking iter-56).
+	// Write a report manually with no summary block (mimicking).
 	doc := map[string]any{
 		"synth_model": "old",
 		"judge_model": "old",

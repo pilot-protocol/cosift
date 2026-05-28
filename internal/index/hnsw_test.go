@@ -12,7 +12,7 @@ import (
 // approximate kNN; on a small synthetic corpus where brute-force is cheap,
 // it must return results that overlap heavily with the exact top-k.
 //
-// Iter 199 — locks in the recall floor for the new HNSW implementation.
+// locks in the recall floor for the new HNSW implementation.
 // At standard params (M=16, efConstruction=200, efSearch=50), recall@10
 // against ground truth should be ≥0.9 on random vectors; we set the gate
 // at 0.85 to tolerate occasional run-to-run variance from the random
@@ -86,7 +86,7 @@ func TestHNSWSearchEmpty(t *testing.T) {
 }
 
 // TestHNSWSearchSingle — index with exactly one vector returns it.
-// TestHNSWLookupVectorByURL locks down iter 371: /find_similar?retriever=dense
+// TestHNSWLookupVectorByURL locks down: /find_similar?retriever=dense
 // reads the source's persisted vector by URL so it can skip the embed RPC.
 // Must return a unit-normalized vector (HNSW stores normalized passages),
 // must NOT alias the graph's internal slice, and must report not-found.
@@ -160,7 +160,7 @@ func TestHNSWDedupByURL(t *testing.T) {
 // TestHNSWMarkURLPassagesInvalid — zombie reclaim: prior generations of a
 // re-crawled URL's passages must be zeroed (vec=nil) so they fall through
 // the "len(vec)==0" guard in Search/searchLayer. Other URLs' nodes must
-// not be touched. Iter 477.
+// not be touched.
 func TestHNSWMarkURLPassagesInvalid(t *testing.T) {
 	h := NewHNSW(4)
 	// Old generation of https://reused — 2 passages with different vecs.

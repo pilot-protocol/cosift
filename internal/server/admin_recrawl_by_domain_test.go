@@ -15,7 +15,7 @@ import (
 
 func seedRecrawlByDomainStore(t *testing.T) *store.Store {
 	t.Helper()
-	// Iter 134: OpenMemory.
+	// OpenMemory.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -112,7 +112,7 @@ func TestAdminRecrawlByDomainBadInput(t *testing.T) {
 }
 
 func TestAdminRecrawlByDomainDryRun(t *testing.T) {
-	// Iter 111: dry_run enumerates but doesn't call RecrawlURL. Matched > 0,
+	// Matched > 0,
 	// Queued == 0, DryRun echoed in response.
 	s := seedRecrawlByDomainStore(t)
 	srv := New(s).WithAdminToken("k")
@@ -146,7 +146,7 @@ func TestAdminRecrawlByDomainDryRun(t *testing.T) {
 }
 
 func TestAdminRecrawlByDomainDryRunIncludesURLs(t *testing.T) {
-	// Iter 123: dry_run=true returns the matched URLs in the URLs field,
+	// dry_run=true returns the matched URLs in the URLs field,
 	// not just the count. Operators previewing a pattern need to see WHICH
 	// URLs would be queued.
 	s := seedRecrawlByDomainStore(t)
@@ -198,7 +198,7 @@ func TestAdminRecrawlByDomainDryRunIncludesURLs(t *testing.T) {
 }
 
 func TestAdminRecrawlByDomainNonDryRunOmitsURLs(t *testing.T) {
-	// Iter 123: non-dry-run response should NOT include URLs (would be
+	// non-dry-run response should NOT include URLs (would be
 	// redundant with queued count + errors map). omitempty keeps response shape small.
 	s := seedRecrawlByDomainStore(t)
 	srv := New(s).WithAdminToken("k")
@@ -229,7 +229,7 @@ func TestAdminRecrawlByDomainNonDryRunOmitsURLs(t *testing.T) {
 
 func TestAdminRecrawlByDomainUnknownReturns200Empty(t *testing.T) {
 	// A pattern that matches nothing should succeed with matched=0 (not 404).
-	// Matches the export-filter convention from iter 104 — empty result is
+	// Matches the export-filter convention from — empty result is
 	// a valid response, not an error.
 	s := seedRecrawlByDomainStore(t)
 	srv := New(s).WithAdminToken("k")

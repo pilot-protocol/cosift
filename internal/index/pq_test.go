@@ -8,7 +8,7 @@ import (
 
 // TestPQTrainAndEncodeRoundTrip — train a codebook on N=2000 random
 // 64-d vectors, encode them, and verify reconstruction error stays
-// below a sane threshold. Locks down the iter-413 happy path.
+// below a sane threshold. Locks down the happy path.
 func TestPQTrainAndEncodeRoundTrip(t *testing.T) {
 	dim := 64
 	M := 8  // 8 subspaces of 8 dims each

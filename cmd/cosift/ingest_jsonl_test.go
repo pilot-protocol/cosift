@@ -157,7 +157,7 @@ func TestRunIngestAutoDetectJSONLExtension(t *testing.T) {
 }
 
 func TestRunIngestAutoDetectJSONFallback(t *testing.T) {
-	// -format auto + non-jsonl extension → JSON loader (iter-1 behavior preserved).
+	// -format auto + non-jsonl extension → JSON loader.
 	dir := filepath.Join(t.TempDir(), "data")
 	cfg := config.Default()
 	cfg.DataDir = dir

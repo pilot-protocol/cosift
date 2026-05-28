@@ -1,6 +1,6 @@
 package main
 
-// Iter 353: unit tests for the small pure helpers introduced during the
+// unit tests for the small pure helpers introduced during the
 // path-2 rework. These functions are called from inside the HTTP handler
 // and CLI consumer paths; the E2E test exercises them transitively, but
 // behavior contracts are clearer when locked down at the function level.
@@ -58,7 +58,7 @@ func TestSourceIDOf(t *testing.T) {
 }
 
 func TestRrfFuse(t *testing.T) {
-	// Iter 354: lock down rrfFuse contract (iter 272). RRF score per URL =
+	// RRF score per URL =
 	// sum over lists of 1/(k+rank+1). Construct a fixture with no ties so
 	// the ranking is deterministic — sort.Slice doesn't guarantee a stable
 	// order for equal-keyed elements.
@@ -98,7 +98,7 @@ func TestRrfFuse(t *testing.T) {
 		t.Errorf("rrfFuse: expected https://a top, got %+v", got0)
 	}
 
-	// Iter 378: hybrid-fallback near-miss. /search?retriever=hybrid runs
+	// /search?retriever=hybrid runs
 	// BM25 and dense; if one returns an empty list (e.g. graph loaded but
 	// query embeds to a vec with no neighbors), rrfFuse must preserve the
 	// other list's ordering — not crash, not drop everything.
@@ -115,7 +115,7 @@ func TestRrfFuse(t *testing.T) {
 	}
 
 	// Single-list input: behaves as a pass-through of the input order. Same
-	// invariant the iter-373 hybrid fallback relies on when only one
+	// invariant the hybrid fallback relies on when only one
 	// retriever fires.
 	single := rrfFuse([][]index.Hit{listA})
 	if len(single) != 3 || single[0].URL != "https://a" || single[2].URL != "https://c" {
@@ -124,7 +124,7 @@ func TestRrfFuse(t *testing.T) {
 }
 
 func TestParseSubQueries(t *testing.T) {
-	// Iter 355: lock down the planner-output parser (iter 243). The chat
+	// The chat
 	// client returns a JSON array, sometimes wrapped in markdown fences,
 	// sometimes prefixed by chatty prose. Falls back to [fallback] when
 	// the array can't be located.
@@ -181,7 +181,7 @@ func TestPeekWarnings(t *testing.T) {
 	}
 }
 
-// TestRateLimiter — iter 394. Burst is consumed instantly, then the bucket
+// TestRateLimiter — Burst is consumed instantly, then the bucket
 // refills at rpm/60 per second. Whitelisted IPs bypass entirely.
 func TestRateLimiter(t *testing.T) {
 	rl := &rateLimiter{
@@ -218,8 +218,8 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
-// TestParseDecayHalfLife — iter 389/498. Valid positive floats pass; "0"
-// explicitly disables; empty now returns the iter-498 default (180 days,
+// TestParseDecayHalfLife — Iter. Valid positive floats pass; "0"
+// explicitly disables; empty now returns the default (180 days,
 // overridable via COSIFT_DEFAULT_DECAY_DAYS env).
 func TestParseDecayHalfLife(t *testing.T) {
 	// Ensure no env override leaks from the caller's shell.
@@ -229,7 +229,7 @@ func TestParseDecayHalfLife(t *testing.T) {
 		want float64
 		ok   bool
 	}{
-		{"", 180, true}, // iter 498: empty triggers default-on, half-life 180 days
+		{"", 180, true}, // empty triggers default-on, half-life 180 days
 		{"30", 30, true},
 		{"0.5", 0.5, true},
 		{"0", 0, false}, // explicit 0 = disable (overrides any default)
@@ -246,7 +246,7 @@ func TestParseDecayHalfLife(t *testing.T) {
 		}
 	}
 
-	// Operators can disable via env, restoring iter-389 behavior.
+	// Operators can disable via env, restoring behavior.
 	_ = os.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
 	defer os.Unsetenv("COSIFT_DEFAULT_DECAY_DAYS")
 	if got, ok := parseDecayHalfLife(""); ok || got != 0 {
@@ -254,7 +254,7 @@ func TestParseDecayHalfLife(t *testing.T) {
 	}
 }
 
-// TestApplyTimeDecay — iter 389. Hits with publish dates get multiplied by
+// TestApplyTimeDecay — Hits with publish dates get multiplied by
 // exp(-ln2 · age / halfLife) and resort. Half-life=30 days: 30d-old hit
 // drops to 0.5x; 60d-old to 0.25x. Hits without PublishedAt are unchanged.
 func TestApplyTimeDecay(t *testing.T) {
@@ -295,7 +295,7 @@ func TestApplyTimeDecay(t *testing.T) {
 	}
 }
 
-// TestParseMMRLambda — iter 384. Valid floats in [0,1] pass; everything else
+// TestParseMMRLambda — Valid floats in [0,1] pass; everything else
 // short-circuits MMR.
 func TestParseMMRLambda(t *testing.T) {
 	cases := []struct {
@@ -319,7 +319,7 @@ func TestParseMMRLambda(t *testing.T) {
 	}
 }
 
-// TestMMRSelect — iter 384. With 3 candidates: a (highly relevant), b
+// TestMMRSelect — With 3 candidates: a (highly relevant), b
 // (near-duplicate of a, also highly relevant), c (moderately relevant but
 // diverse). At λ=0.4 (diversity-leaning) MMR picks a, then c (diverse from
 // a beats the near-dup b), then b. λ=1.0 reverts to pure relevance.
@@ -367,7 +367,7 @@ func TestMMRSelect(t *testing.T) {
 	}
 }
 
-// TestPebbleInfoJSON locks down the iter-380/381 jq-friendly shape so future
+// TestPebbleInfoJSON locks down the Iter jq-friendly shape so future
 // changes to the offline pebble-info path can't silently drop a field or
 // regress the retrievers list. /stats reads the same shape — broken parity
 // would silently break dashboards that consume both.

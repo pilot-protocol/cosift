@@ -35,9 +35,9 @@ func (s *stubEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 
 func newStoreT(t *testing.T) *store.Store {
 	t.Helper()
-	// Iter 134: OpenMemory — no on-disk artifacts. Crawler tests already use
+	// OpenMemory — no on-disk artifacts. Crawler tests already use
 	// MaxConcurrent=1 (line 63 etc.), so the SetMaxOpenConns(1) cap from
-	// iter-133's OpenMemory doesn't contend.
+	//'s OpenMemory doesn't contend.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -253,7 +253,7 @@ func TestCrawlWithoutEmbedderSkipsPassages(t *testing.T) {
 	}
 }
 
-// Iter 146: per-host ChunkSize override wins over global ChunkSize. Crawl
+// Crawl
 // the same long doc twice — once with no override (uses global) and once with
 // a per-host override matching the test server's host. The per-host override
 // must apply, producing a different passage count.
@@ -270,7 +270,7 @@ func TestCrawlPerHostChunkSizeOverride(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Extract the host from the test-server URL — iter 146's match key.
+	// Extract the host from the test-server URL —'s match key.
 	host := strings.TrimPrefix(srv.URL, "http://")
 
 	run := func(globalSize int, perHost map[string]int) int {
@@ -309,7 +309,7 @@ func TestCrawlPerHostChunkSizeOverride(t *testing.T) {
 	}
 }
 
-// Iter 142: cfg.Crawler.ChunkSize override produces more chunks than default.
+// cfg.Crawler.ChunkSize override produces more chunks than default.
 // Default chunker (320 word target) emits one chunk on the 200-word sample;
 // setting ChunkSize=50 must split it into multiple passages.
 func TestCrawlChunkSizeOverrideEmitsMorePassages(t *testing.T) {
@@ -358,11 +358,11 @@ func TestCrawlChunkSizeOverrideEmitsMorePassages(t *testing.T) {
 	}
 }
 
-// Iter 141: server gzip-encodes the response. The crawler must transparently
-// decompress (via Go's http.Transport auto-handling) and parse the original
-// HTML. Pre-iter-141 the crawler manually set Accept-Encoding: gzip, which
-// disabled Go's auto-decompression — the body would arrive as raw gzipped
-// bytes and Title extraction would silently fail. This locks in the fix.
+// The crawler must transparently decompress (via Go's http.Transport
+// auto-handling) and parse the original HTML. The crawler must NOT
+// manually set Accept-Encoding: gzip — doing so disables Go's
+// auto-decompression and the body arrives as raw gzipped bytes,
+// silently breaking Title extraction.
 func TestCrawlGzipEncodedResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var buf bytes.Buffer
@@ -402,7 +402,7 @@ func TestCrawlGzipEncodedResponse(t *testing.T) {
 	}
 }
 
-// TestEnqueueLinksRespectsPerHostCap — iter 195. Verifies cfg.MaxURLsPerHost
+// TestEnqueueLinksRespectsPerHostCap — Verifies cfg.MaxURLsPerHost
 // caps the per-host queue. A page with 30 outbound links to host-A and a cap
 // of 5 must produce exactly 5 queued URLs on host-A (not 30). Without the cap
 // fix, fanout-heavy hosts grow their queue unboundedly into the tens of
@@ -437,7 +437,7 @@ func TestEnqueueLinksRespectsPerHostCap(t *testing.T) {
 }
 
 // TestEnqueueLinksUnlimitedWhenCapIsZero — backward compatibility. When
-// MaxURLsPerHost is 0 (the default, pre-iter-195 behavior), the crawler
+// MaxURLsPerHost is 0 (the default, pre behavior), the crawler
 // must enqueue all valid links without any cap.
 func TestEnqueueLinksUnlimitedWhenCapIsZero(t *testing.T) {
 	s := newStoreT(t)

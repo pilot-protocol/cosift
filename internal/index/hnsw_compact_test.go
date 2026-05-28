@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestHNSWZombieCompaction reproduces the iter-428 production finding:
+// TestHNSWZombieCompaction reproduces the production finding:
 // when ~80% of HNSW nodes have nil vec (partial-persist zombies),
 // graph navigation fragments and Recall@K drops far below the clean
 // baseline — bench-pq saw production at 0.74 vs the expected 0.99.

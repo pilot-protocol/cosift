@@ -20,13 +20,13 @@ import (
 // TestPebbleServeEndToEnd — populate a Pebble store, launch the
 // pebble-serve handler in-process against a free port, hit /healthz +
 // /stats + /search + /contents, assert the responses are coherent.
-// Iter 205. The /search assertion is the load-bearing one: it proves
+// The /search assertion is the load-bearing one: it proves
 // the Pebble backend serves real BM25 results through an HTTP layer.
 func TestPebbleServeEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
 	}
-	// Iter 498: time-decay default-on changes retriever labels for these
+	// time-decay default-on changes retriever labels for these
 	// assertions ("bm25" → "bm25+decay:180d"). Test contract is about
 	// retriever-selection logic, not decay; disable decay for this fixture.
 	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
@@ -98,15 +98,15 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if stats["backend"] != "pebble" {
 		t.Errorf("stats backend: want pebble, got %v", stats["backend"])
 	}
-	// Iter 346: assert iter-280's BM25 config fields land in the response.
-	// Catches regressions in /stats payload assembly + the iter-279 K1/B getters.
+	// assert's BM25 config fields land in the response.
+	// Catches regressions in /stats payload assembly + the K1/B getters.
 	if _, ok := stats["bm25_k1"].(float64); !ok {
 		t.Errorf("stats: missing bm25_k1, got %v", stats["bm25_k1"])
 	}
 	if _, ok := stats["bm25_b"].(float64); !ok {
 		t.Errorf("stats: missing bm25_b, got %v", stats["bm25_b"])
 	}
-	// Iter 375: retrievers list lets clients introspect capability without
+	// retrievers list lets clients introspect capability without
 	// probing each ?retriever= value. No HNSW graph in the fixture, so it
 	// should be exactly bm25 + bm25-mlt.
 	rArr, ok := stats["retrievers"].([]any)
@@ -135,12 +135,12 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	if topURL != "https://x/raft" {
 		t.Errorf("top hit for raft query: want https://x/raft, got %s", topURL)
 	}
-	// Iter 350: total_candidates (iter 283) reports the BM25 pool size before
+	// total_candidates reports the BM25 pool size before
 	// filter. Must be > 0 when hits > 0 (the candidate pool fed the hits).
 	if tc, _ := got["total_candidates"].(float64); tc <= 0 {
 		t.Errorf("/search: total_candidates should be > 0, got %v", got["total_candidates"])
 	}
-	// Iter 352: retriever label (iter 234/248/252) identifies the pipeline.
+	// retriever label identifies the pipeline.
 	// Bare BM25 should be exactly "bm25"; rerank/expand decorate this.
 	if rt, _ := got["retriever"].(string); rt != "bm25" {
 		t.Errorf("/search retriever: want 'bm25', got %q", rt)
@@ -155,8 +155,8 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("contents text: %v", contents["text"])
 	}
 
-	// /find_similar — text mode (iter 298). Exercises the text-mode branch
-	// the iter-322 compile bug lived in. Catches regression class:
+	// /find_similar — text mode. Exercises the text-mode branch
+	// the compile bug lived in. Catches regression class:
 	// out-of-scope variables inside the topN==0 / empty-result short-circuit.
 	fs := mustGet(t, base+"/find_similar?text="+url.QueryEscape("distributed consensus replicated log"))
 	fsHits, ok := fs["hits"].([]any)
@@ -167,9 +167,9 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("find_similar text-mode: expected at least one hit on consensus terms, got 0")
 	}
 
-	// /find_similar — URL mode (iter 236). The source URL must NOT appear
-	// in the result set. Catches the source-URL-exclusion check (iter 245's
-	// 'if h.URL == src.URL { continue }').
+	// /find_similar — URL mode. The source URL must NOT appear in the
+	// result set. Catches the source-URL-exclusion check
+	// (`if h.URL == src.URL { continue }`).
 	fu := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&k=5")
 	fuHits, _ := fu["hits"].([]any)
 	for _, h := range fuHits {
@@ -180,10 +180,10 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /find_similar?retriever=hybrid (iter 373) without a loaded HNSW graph
+	// /find_similar?retriever=hybrid without a loaded HNSW graph
 	// must silently fall through to BM25-MLT and emit a warning. Parallel
-	// to the iter-367 /search?retriever=dense fallback contract — locks in
-	// the iter-371/372/373 behavior so a future refactor can't regress it
+	// to the /search?retriever=dense fallback contract — locks in
+	// the Iter behavior so a future refactor can't regress it
 	// to a 5xx or a dropped warning.
 	hr := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&retriever=hybrid&k=5")
 	if rt, _ := hr["retriever"].(string); rt != "bm25-mlt" {
@@ -200,7 +200,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		if !strings.Contains(first, "retriever=hybrid") {
 			t.Errorf("/find_similar?retriever=hybrid: warning didn't mention the value: %s", first)
 		}
-		// Iter 379: warning text says "BM25-MLT" on /find_similar (the
+		// warning text says "BM25-MLT" on /find_similar (the
 		// actual fallback retriever), not the generic "BM25" used for
 		// /search/answer/research. Catches accidental regression of the
 		// per-endpoint suffix.
@@ -209,7 +209,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /find_similar?url=X&mmr=0.5 (iter 386) without HNSW: must warn that
+	// /find_similar?url=X&mmr=0.5 without HNSW: must warn that
 	// the graph is missing (no diversification possible). Must NOT warn
 	// about embedder — URL-mode MMR uses the source's graph vector.
 	mfu := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&mmr=0.5")
@@ -229,7 +229,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	}
 
 	// /find_similar?retriever=dense&url=X without graph: also falls through.
-	// Iter 372 specifically: the URL-mode carve-out suppresses the
+	// specifically: the URL-mode carve-out suppresses the
 	// 'no embedder' warning, so the only warning we should see is the
 	// graph-missing one — NOT a misleading 'no embedder' duplicate.
 	dr := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&retriever=dense")
@@ -244,7 +244,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /verify — counter drift check (iter 230). 503 on drift; we expect OK.
+	// /verify — counter drift check. 503 on drift; we expect OK.
 	vresp, err := http.Get(base + "/verify")
 	if err != nil {
 		t.Fatalf("/verify: %v", err)
@@ -254,7 +254,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/verify: want 200, got %d", vresp.StatusCode)
 	}
 
-	// POST /search (iter 277) — JSON body equivalent of GET ?q=&k=. The
+	// POST /search — JSON body equivalent of GET ?q=&k=. The
 	// re-encode-to-URL.Values handoff makes this a thin pass-through; this
 	// assertion guards against a regression that breaks the wrapper.
 	postBody := strings.NewReader(`{"q":"raft consensus","k":3}`)
@@ -275,7 +275,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("POST /search: expected hits, got %s", pbody)
 	}
 
-	// /metrics (iter 231) — Prometheus exposition format. Just confirm
+	// /metrics — Prometheus exposition format. Just confirm
 	// 200 + Content-Type + at least one expected metric name.
 	mresp, err := http.Get(base + "/metrics")
 	if err != nil {
@@ -290,9 +290,9 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/metrics: missing cosift_indexed_docs in body: %s", mbody)
 	}
 
-	// /search?expand=true (iter 252) without a chat client should:
-	//   - normalize the expand field to "hyde" (iter 308)
-	//   - emit a warning about no chat client configured (iter 292)
+	// /search?expand=true without a chat client should:
+	//   - normalize the expand field to "hyde"
+	//   - emit a warning about no chat client configured
 	// Since no chat is configured in this test scaffold, effective_query
 	// stays empty (omitted) and the warning fires.
 	eresp := mustGet(t, base+"/search?q=raft&expand=true")
@@ -304,12 +304,12 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?expand=true without chat: want a warning, got none")
 	}
 
-	// /search?retriever=dense (iter 363) without a loaded HNSW graph should:
+	// /search?retriever=dense without a loaded HNSW graph should:
 	//   - silently fall through to BM25 (retriever stays "bm25", hits still
-	//     come back) — iter 365 made this transparent via the retrieve helper
-	//   - emit a warning (iter 363/364) so operators don't think dense fired
+	//     come back) — made this transparent via the retrieve helper
+	//   - emit a warning so operators don't think dense fired
 	// The test fixture never sets COSIFT_LOAD_HNSW=true and has no embedder,
-	// so this exercises the silent-fallback path the iter-366 label preserves.
+	// so this exercises the silent-fallback path the label preserves.
 	rresp := mustGet(t, base+"/search?q=raft&retriever=dense")
 	if rt, _ := rresp["retriever"].(string); rt != "bm25" {
 		t.Errorf("/search?retriever=dense without graph: want fallback to 'bm25', got %q", rt)
@@ -327,7 +327,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /search?mmr=0.5 (iter 384) without HNSW must silently fall through
+	// /search?mmr=0.5 without HNSW must silently fall through
 	// (no MMR diversification) and emit a warning. Search results still
 	// return — MMR is a re-ranker, never a gate.
 	mres := mustGet(t, base+"/search?q=raft&mmr=0.5")
@@ -349,8 +349,8 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?mmr=0.5 without HNSW: want warning mentioning HNSW, got %v", mwarn)
 	}
 
-	// /search?mmr=nope (iter 384): unparseable values warn instead of silently
-	// being ignored. Mirrors the iter-310/311 sort=/k= warning pattern.
+	// /search?mmr=nope: unparseable values warn instead of silently
+	// being ignored. Mirrors the Iter sort=/k= warning pattern.
 	mbres := mustGet(t, base+"/search?q=raft&mmr=nope")
 	sawBadMMR := false
 	for _, w := range mbres["warnings"].([]any) {
@@ -363,8 +363,8 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?mmr=nope: want warning mentioning the bad value, got %v", mbres["warnings"])
 	}
 
-	// /search with a malformed sort value (iter 310) must surface a warning
-	// in the response. Covers the iter-292/309/310/311/313 warnings machinery.
+	// /search with a malformed sort value must surface a warning
+	// in the response. Covers the Iter warnings machinery.
 	wresp := mustGet(t, base+"/search?q=raft&sort=newest")
 	warnings, ok := wresp["warnings"].([]any)
 	if !ok || len(warnings) == 0 {
@@ -376,8 +376,8 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /search?include_text=true (iter 237) must inline doc.Text on each hit.
-	// Iter 247 made the flag work uniformly across endpoints; this guards
+	// /search?include_text=true must inline doc.Text on each hit.
+	// made the flag work uniformly across endpoints; this guards
 	// /search specifically since it has the most params in flight.
 	itresp := mustGet(t, base+"/search?q=raft&include_text=true&k=3")
 	ithits, _ := itresp["hits"].([]any)
@@ -390,7 +390,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		}
 	}
 
-	// /search with include_domains (iter 232). The dot-boundary matcher
+	// /search with include_domains. The dot-boundary matcher
 	// excludes hosts outside the allowlist. The corpus has 'x' as the only
 	// host, so include_domains=x should keep everything and =other.tld
 	// should drop everything.
@@ -405,7 +405,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?include_domains=x: want hits from corpus, got 0")
 	}
 
-	// POST /contents batch (iter 254/255). Up to 100 URLs; each result has
+	// POST /contents batch. Up to 100 URLs; each result has
 	// found+title+text or found:false+error.
 	batchBody := strings.NewReader(`{"urls":["https://x/raft","https://x/missing"]}`)
 	cres, err := http.Post(base+"/contents", "application/json", batchBody)

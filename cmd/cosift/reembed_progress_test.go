@@ -8,7 +8,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/config"
 )
 
-// TestRunReembedAcceptsProgressFlag verifies the iter-107 flag-wiring without
+// TestRunReembedAcceptsProgressFlag verifies the flag-wiring without
 // actually calling the embedder API. Reembed has no other test coverage (it
 // requires OpenAI API), so this is the minimum smoke test for the structural
 // change: -progress parses without error, and execution proceeds to the API

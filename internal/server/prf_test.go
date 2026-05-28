@@ -13,7 +13,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-// Iter 159 — unit tests for selectPRFTerms.
+// unit tests for selectPRFTerms.
 
 func TestSelectPRFTermsBasic(t *testing.T) {
 	// 4 docs about programming languages. "concurrency" appears in 3,
@@ -71,8 +71,8 @@ func TestSelectPRFTermsCapsAtN(t *testing.T) {
 }
 
 func TestSelectPRFTermsDeterministic(t *testing.T) {
-	// Equal-count terms should sort alphabetically (iter-137 flake lesson:
-	// never rely on map-iteration order for ranking).
+	// Equal-count terms must sort alphabetically — never rely on map
+	// iteration order for ranking.
 	texts := map[string]string{
 		"a": "banana apple cherry",
 		"b": "banana apple cherry",
@@ -95,7 +95,7 @@ func TestSelectPRFTermsDeterministic(t *testing.T) {
 	}
 }
 
-// Iter 170 — unit tests for applyPRFIfRequested.
+// unit tests for applyPRFIfRequested.
 // Coverage: param parsing (off / on), retriever gating (bm25 / hybrid / dense),
 // hit-count gate (≥3 floor), source-tag-suffix presence.
 
@@ -108,7 +108,7 @@ func newPRFTestServer(t *testing.T) (*Server, *httptest.Server, []string) {
 	t.Cleanup(func() { s.Close() })
 
 	idx := index.NewBM25(s)
-	// Corpus engineered to mirror iter 159's recall test: 3 docs share a
+	// Corpus engineered to mirror's recall test: 3 docs share a
 	// distinctive vocabulary term "goroutines"; a 4th doc uses only
 	// "goroutines" without the query term "concurrency".
 	docs := []struct{ url, title, text string }{
@@ -221,7 +221,7 @@ func TestApplyPRFHappyPathBM25(t *testing.T) {
 	}
 }
 
-// Iter 172 — applyPRFToResearchPassages unit tests.
+// applyPRFToResearchPassages unit tests.
 
 func TestApplyPRFToResearchPassagesGates(t *testing.T) {
 	srv, _, _ := newPRFTestServer(t)
@@ -318,9 +318,9 @@ func TestPRFWiringOnResearchSmoke(t *testing.T) {
 }
 
 // Smoke tests: /answer + streaming /answer must accept ?prf=true and return
-// 200 without panic. Behavior is tested in iter 159 (algorithm) + the
+// 200 without panic. Behavior is tested in (algorithm) + the
 // applyPRFIfRequested unit tests above. This test catches the wiring
-// contract per the iter-169 enumeration discipline.
+// contract per the enumeration discipline.
 func TestPRFWiringOnAnswerSmoke(t *testing.T) {
 	srv, _, _ := newPRFTestServer(t)
 	// /answer requires a chat client; wire a stub that returns a canned answer.

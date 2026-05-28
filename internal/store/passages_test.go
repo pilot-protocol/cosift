@@ -75,7 +75,7 @@ func TestPassageUpsertReplaces(t *testing.T) {
 }
 
 func TestDocumentETagRoundtrip(t *testing.T) {
-	// Closes the iter-19 migration gap: writing + reading a doc with the new
+	// Closes the migration gap: writing + reading a doc with the new
 	// validator columns must work end-to-end.
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -346,7 +346,7 @@ func TestPruneStaleParaphrases(t *testing.T) {
 	}
 }
 
-// Iter 162 — HyDE cache store roundtrip + pruning + case-norm.
+// HyDE cache store roundtrip + pruning + case-norm.
 
 func TestHyDECacheRoundtrip(t *testing.T) {
 	s := newTestStore(t)

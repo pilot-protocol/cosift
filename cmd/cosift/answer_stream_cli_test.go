@@ -181,7 +181,7 @@ func TestRunAnswerCLIStreamWithoutDoneEventSucceeds(t *testing.T) {
 	}
 }
 
-// TestForEachSSEEvent is a focused unit test on the iter-109 extracted scanner.
+// TestForEachSSEEvent is a focused unit test on the extracted scanner.
 // Locks in framing semantics for both research and answer consumers.
 func TestForEachSSEEvent(t *testing.T) {
 	wire := "event: plan\ndata: {\"strategy\":\"planner\"}\n\n" +

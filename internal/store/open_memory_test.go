@@ -21,7 +21,7 @@ func TestOpenMemoryBasicCRUD(t *testing.T) {
 		URL:       "https://x/doc",
 		Title:     "Test",
 		Text:      "content",
-		Source:    "iter-133",
+		Source:    "test",
 		FetchedAt: time.Now(),
 	})
 	if err != nil {
@@ -56,7 +56,7 @@ func TestOpenMemoryPathIndicator(t *testing.T) {
 }
 
 func TestOpenMemoryMigrationRuns(t *testing.T) {
-	// The iter-104 ListDocuments query reads published_at; if migrations
+	// The ListDocuments query reads published_at; if migrations
 	// didn't run, the column would be missing and the query would fail.
 	// This is a stronger schema-applied check than just opening.
 	s, err := OpenMemory()
@@ -70,7 +70,7 @@ func TestOpenMemoryMigrationRuns(t *testing.T) {
 		URL:         "https://x/dated",
 		Title:       "Dated",
 		Text:        "body",
-		Source:      "iter-133",
+		Source:      "test",
 		FetchedAt:   time.Now(),
 		PublishedAt: pub,
 	}); err != nil {

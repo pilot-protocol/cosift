@@ -85,7 +85,7 @@ func TestBoilerplateTokenMatchExactness(t *testing.T) {
 		{"footer", true, "exact match"},
 		{"site-footer", true, "exact match (we list site-footer)"},
 
-		// These caused the iter-188 bug — must NOT trigger.
+		// These caused the bug — must NOT trigger.
 		{"vector-feature-main-menu-pinned-disabled", false, "hyphen-bounded sub-word"},
 		{"vector-feature-language-in-main-page-header-disabled", false, "hyphen-bounded sub-word"},
 		{"navbar-link-active", false, "hyphen-bounded sub-word containing navbar"},

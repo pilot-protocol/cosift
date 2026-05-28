@@ -68,7 +68,7 @@ func TestPQCodebookDecodeRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestPQCodeBlobBytePackBackcompat — iter 418. K≤256 codebooks emit
+// TestPQCodeBlobBytePackBackcompat — K≤256 codebooks emit
 // byte-packed blobs (M bytes); K>256 codebooks emit uint16 LE
 // (2*M bytes). DecodeCodeBlob auto-detects shape — lets a legacy
 // uint16 corpus be read by a byte-packed binary silently.

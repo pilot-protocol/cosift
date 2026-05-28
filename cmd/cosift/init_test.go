@@ -131,8 +131,8 @@ func TestRunInitForceOverwrites(t *testing.T) {
 	}
 }
 
-// TestRunInitConfigSurvivesDoctorDefaults verifies the iter-67 init output
-// doesn't trigger any FAIL in iter-58's defaults cross-check. A config that
+// TestRunInitConfigSurvivesDoctorDefaults verifies the init output
+// doesn't trigger any FAIL in's defaults cross-check. A config that
 // init writes and doctor rejects would be a regression at the seam between
 // the two iters.
 func TestRunInitConfigSurvivesDoctorDefaults(t *testing.T) {

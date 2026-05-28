@@ -212,8 +212,8 @@ func TestSearchDenseAndHybrid(t *testing.T) {
 	}
 }
 
-// Iter 143: per-request ?hybrid_dense_weight= override beats server defaults.
-// Same corpus + retrievers as iter-138's deterministic-orderings test; verify
+// per-request ?hybrid_dense_weight= override beats server defaults.
+// Same corpus + retrievers as's deterministic-orderings test; verify
 // the query param wins over WithDefaults's stale value.
 func TestSearchHybridDenseWeightPerRequestOverride(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -251,7 +251,7 @@ func TestSearchHybridDenseWeightPerRequestOverride(t *testing.T) {
 	}
 }
 
-// Iter 171: /admin/stats surfaces Paraphrases + HyDECache counts from the
+// /admin/stats surfaces Paraphrases + HyDECache counts from the
 // store. Inserts 2 paraphrase rows + 3 HyDE rows directly via SaveParaphrases
 // / SaveHyDE, asserts the response carries the right counts.
 func TestAdminStatsLLMCacheCounts(t *testing.T) {
@@ -286,15 +286,15 @@ func TestAdminStatsLLMCacheCounts(t *testing.T) {
 	}
 }
 
-// Iter 168: MMR wiring sweep — unit tests for mmrFromQuery (the parsing
+// MMR wiring sweep — unit tests for mmrFromQuery (the parsing
 // helper extracted at N=5 sites) + smoke tests for /answer and /research.
 //
 // Why smoke tests, not behavioral assertions: MMR's effect through hybrid
 // retrieval's RRF fusion is dampened on small corpora — fusion rewards
 // multi-list appearance, which masks diversity picks. The MMR algorithm
-// itself is tested in iter-158 (vector_test.go) and iter-167 (/find_similar).
-// For /answer + /research the wiring contract is: ?mmr=true must NOT 500
-// AND must reach mmrFromQuery, which is verified separately as a unit test.
+// itself is tested in vector_test.go. For /answer + /research the wiring
+// contract is: ?mmr=true must NOT 500 AND must reach mmrFromQuery, which
+// is verified separately as a unit test.
 
 func TestMMRFromQueryParsing(t *testing.T) {
 	cases := []struct {
@@ -333,7 +333,7 @@ func TestMMRFromQueryParsing(t *testing.T) {
 
 // Smoke test: /answer?mmr=true and /research?mmr=true must reach the
 // handlers without error. The algorithm runs inside runDense; effects are
-// algorithm-tested in iter 158/167 already.
+// algorithm-tested in Iter already.
 func TestMMRWiringOnAnswerAndResearchSmoke(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -381,8 +381,8 @@ func TestMMRWiringOnAnswerAndResearchSmoke(t *testing.T) {
 	}
 }
 
-// Iter 167: /find_similar?mmr=true re-ranks the kNN result for diversity.
-// Same corpus shape as iter-158's TestSearchMMRPromotesDiversity, plus a
+// /find_similar?mmr=true re-ranks the kNN result for diversity.
+// Same corpus shape as's TestSearchMMRPromotesDiversity, plus a
 // "seed" doc. Pure kNN returns near-duplicates first; MMR surfaces the
 // distinct vector earlier.
 func TestFindSimilarWithMMR(t *testing.T) {
@@ -469,8 +469,8 @@ func TestFindSimilarWithMMR(t *testing.T) {
 	}
 }
 
-// Iter 178: AnswerSource.Score populated from retrieval hits + ?calibrate=true
-// normalizes to within-response fractions. Mirrors iter-164's /search behavior.
+// AnswerSource.Score populated from retrieval hits + ?calibrate=true
+// normalizes to within-response fractions. Mirrors's /search behavior.
 func TestAnswerSourceScoreAndCalibrate(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -528,7 +528,7 @@ func TestAnswerSourceScoreAndCalibrate(t *testing.T) {
 	}
 }
 
-// Iter 178 — calibrateSources unit tests, mirroring iter-164's calibrateHits.
+// calibrateSources unit tests, mirroring's calibrateHits.
 func TestCalibrateSourcesBasic(t *testing.T) {
 	sources := []AnswerSource{
 		{ID: 1, URL: "a", Score: 8.0},
@@ -559,12 +559,12 @@ func TestCalibrateSourcesEdgeCases(t *testing.T) {
 	}
 }
 
-// Iter 177: triple composability on /answer — ?mmr=true + ?hyde=true + ?prf=true.
-// Pair tests (iter 174 caught HyDE+expand bug; iters 175, 176 passed clean)
+// triple composability on /answer — ?mmr=true + ?hyde=true + ?prf=true.
+// Pair tests
 // don't cover all 3-way interactions. This test locks the realistic operator
 // power-user request shape: enable all three IR-quality features at once.
 //
-// Test design (matches iter-176's constraints since MMR participates):
+// Test design (matches's constraints since MMR participates):
 //   - 8 docs needed (>6 for MMR to actually rerank, not early-return)
 //   - dups + 1 orthogonal distinct
 //   - Some docs contain "alpha", some don't, so PRF has something to mine
@@ -576,7 +576,7 @@ func TestCalibrateSourcesEdgeCases(t *testing.T) {
 //
 // The "+prf" effect is not behaviorally asserted here — /answer's response
 // shape doesn't surface per-hit source tags. The wiring contract for PRF is
-// covered by iter-170's TestPRFWiringOnAnswerSmoke; this test confirms PRF
+// covered by's TestPRFWiringOnAnswerSmoke; this test confirms PRF
 // running alongside HyDE+MMR doesn't crash or skip the other features.
 func TestAnswerTripleCompose(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -668,7 +668,7 @@ func TestAnswerTripleCompose(t *testing.T) {
 	chat.mu.Unlock()
 }
 
-// Iter 176: MMR + ?hybrid_dense_weight= composability on /search?retriever=hybrid.
+// MMR + ?hybrid_dense_weight= composability on /search?retriever=hybrid.
 //
 // Both features touch the hybrid retrieval path:
 //   - MMR (mmrParamsKey) → runDense swaps Search to SearchMMR
@@ -676,7 +676,7 @@ func TestAnswerTripleCompose(t *testing.T) {
 //     applies the weight to the RRF fusion
 //
 // Code inspection suggests independent — MMR modifies the dense LIST that
-// goes into RRF; weight modifies HOW RRF fuses. iter-175 lesson: prove it
+// goes into RRF; weight modifies HOW RRF fuses. lesson: prove it
 // via differential outcome.
 //
 // Test design constraints surfaced while building this:
@@ -790,13 +790,13 @@ func TestSearchMMRAndHybridDenseWeightCompose(t *testing.T) {
 	}
 }
 
-// Iter 175: HyDE + MMR composability on /search?retriever=dense.
+// HyDE + MMR composability on /search?retriever=dense.
 //
 // Both features touch runDense:
 //   - HyDE swaps the embedding source (raw q → hypothetical passage)
 //   - MMR swaps the algorithm (vidx.Search → vidx.SearchMMR)
 //
-// By inspection they operate on independent state. Per iter-174's bug-class
+// By inspection they operate on independent state. Per's bug-class
 // lesson, "assume broken until proven via trackingEmbedder." This test is
 // the proof — locks in the contract so any future refactor that breaks the
 // independence fails immediately.
@@ -910,10 +910,10 @@ func TestSearchHyDEAndMMRCompose(t *testing.T) {
 	}
 }
 
-// Iter 174: HyDE + ?expand=true compose correctly on /answer. The bug
-// caught here: pre-iter-174, all paraphrase retrievals reused HyDE-of-q on
+// HyDE + ?expand=true compose correctly on /answer. The bug
+// caught here: pre, all paraphrase retrievals reused HyDE-of-q on
 // the dense leg, silently breaking expand's diversification. The fix is
-// per-paraphrase HyDE generation, mirroring iter-165's /research pattern.
+// per-paraphrase HyDE generation, mirroring's /research pattern.
 //
 // Load-bearing assertion: trackingEmbedder records each text passed to
 // Embed(). Expect HYPO::q (main) + HYPO::pq1 + HYPO::pq2 — three distinct
@@ -957,7 +957,7 @@ func TestAnswerHyDEAndExpandCompose(t *testing.T) {
 	resp.Body.Close()
 
 	// Expect 3 HyDE invocations: main "alpha" + 2 paraphrases "beta variant",
-	// "gamma variant". The iter-162 cache may de-dup repeats; with 3 distinct
+	// "gamma variant". The cache may de-dup repeats; with 3 distinct
 	// queries we should see exactly 3 hyde calls.
 	chat.mu.Lock()
 	if chat.hydeCalls != 3 {
@@ -1004,7 +1004,7 @@ func TestAnswerHyDEAndExpandCompose(t *testing.T) {
 	}
 }
 
-// polyParaHydeChat extends polyChat by also handling the iter-44
+// polyParaHydeChat extends polyChat by also handling the
 // paraphraser system prompt — returns a JSON array on that purpose.
 type polyParaHydeChat struct {
 	paraReply   string // for "Generate paraphrases" prompts
@@ -1040,12 +1040,12 @@ func (p *polyParaHydeChat) Chat(_ context.Context, msgs []embed.ChatMsg) (string
 	}
 }
 
-// Iter 166: /answer?hyde=true must actually wire HyDE — iter-161 shipped
+// /answer?hyde=true must actually wire HyDE — shipped
 // HyDE for /search and I (loosely) claimed "/answer inherits via runSearch"
-// in iter-161 NOTES. That was WRONG — /answer's handler never parsed the
-// param. iter-166 fixes the bug AND captures the regression class via this
+// in NOTES. That was WRONG — /answer's handler never parsed the
+// param. fixes the bug AND captures the regression class via this
 // test: assert the trackingEmbedder sees the hypothetical passage, NOT the
-// raw query. Same load-bearing shape as iter-163 hybrid-PRF + iter-165
+// raw query. Same load-bearing shape as hybrid-PRF +
 // research-HyDE tests.
 //
 // Also covers /answer?stream=true&hyde=true.
@@ -1157,7 +1157,7 @@ func TestAnswerWithHyDE(t *testing.T) {
 	emb.mu.Unlock()
 }
 
-// Iter 165: /research?hyde=true generates a HyDE passage per variant
+// /research?hyde=true generates a HyDE passage per variant
 // (planner sub-query or paraphrase), and retrieves with each variant's
 // hypothetical passage rather than the variant text itself. Load-bearing
 // assertion: the embedder records each VARIANT'S passage as the embed input,
@@ -1213,7 +1213,7 @@ func TestResearchWithHyDE(t *testing.T) {
 	}
 
 	// Embedder must have seen each variant's HYPOTHETICAL passage, NOT the
-	// variant text itself. If iter-165 regresses and passes the variant
+	// variant text itself. If regresses and passes the variant
 	// straight to runDense, "alpha facet"/"beta facet" appear in emb.embedded.
 	emb.mu.Lock()
 	embedded := append([]string(nil), emb.embedded...)
@@ -1234,7 +1234,7 @@ func TestResearchWithHyDE(t *testing.T) {
 	}
 }
 
-// Iter 164: calibrateHits unit tests.
+// calibrateHits unit tests.
 
 func TestCalibrateHitsBasic(t *testing.T) {
 	hits := []SearchHit{
@@ -1279,7 +1279,7 @@ func TestCalibrateHitsSingleHit(t *testing.T) {
 	}
 }
 
-// Iter 164 integration: ?calibrate=true populates score_calibrated; default
+// integration: ?calibrate=true populates score_calibrated; default
 // (no query param) leaves it omitted.
 func TestSearchCalibrateRoundtrip(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -1332,7 +1332,7 @@ func TestSearchCalibrateRoundtrip(t *testing.T) {
 	}
 }
 
-// trackingEmbedder records every text passed to Embed(). Used by iter-163
+// trackingEmbedder records every text passed to Embed(). Used by
 // to assert that the dense sub-call sees ONLY the original query, never the
 // PRF-expanded one.
 type trackingEmbedder struct {
@@ -1363,10 +1363,10 @@ func (e *trackingEmbedder) Embed(_ context.Context, texts []string) ([][]float32
 	return out, nil
 }
 
-// Iter 163: hybrid PRF expands the BM25 sub-query while dense stays on the
+// hybrid PRF expands the BM25 sub-query while dense stays on the
 // original query. Asserts the load-bearing wiring contract: the embedder
 // must be asked to embed ONLY "concurrency" (the original query), NEVER the
-// PRF-expanded variant. If iter-163 ever regresses to wire the expanded
+// PRF-expanded variant. If ever regresses to wire the expanded
 // query into runDense, this test fails immediately.
 //
 // Also asserts source carries +prf(N).
@@ -1413,7 +1413,7 @@ func TestSearchHybridPRFExpandsBM25Only(t *testing.T) {
 
 	// Load-bearing assertion: the embedder must NEVER have been asked to
 	// embed the expanded query. The expansion picks "routines" (doc-freq=3);
-	// expanded q = "concurrency routines". If iter-163 regressed and wired
+	// expanded q = "concurrency routines". If regressed and wired
 	// the expanded query into runDense, the tracker would have it.
 	emb.mu.Lock()
 	embedded := append([]string(nil), emb.embedded...)
@@ -1428,7 +1428,7 @@ func TestSearchHybridPRFExpandsBM25Only(t *testing.T) {
 	}
 }
 
-// Iter 161: HyDE swaps the dense query embedding for the embedding of an
+// HyDE swaps the dense query embedding for the embedding of an
 // LLM-generated hypothetical answer. We can't run a real LLM in tests, so
 // the stubChat returns a hand-crafted passage and the stubEmbedder maps
 // the passage text to a vector that hits a specific doc.
@@ -1504,7 +1504,7 @@ func TestSearchHyDEViaHandler(t *testing.T) {
 	}
 }
 
-// Iter 161: ?hyde=true returns 400 when no chat client is configured.
+// ?hyde=true returns 400 when no chat client is configured.
 func TestSearchHyDERequiresChat(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -1521,7 +1521,7 @@ func TestSearchHyDERequiresChat(t *testing.T) {
 	}
 }
 
-// Iter 161: ?hyde=true returns 400 when no embedder is configured (chat
+// ?hyde=true returns 400 when no embedder is configured (chat
 // alone isn't enough — HyDE only helps DENSE/HYBRID retrieval).
 func TestSearchHyDERequiresEmbedder(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -1539,7 +1539,7 @@ func TestSearchHyDERequiresEmbedder(t *testing.T) {
 	}
 }
 
-// Iter 159: PRF query expansion. Query "concurrency" alone hits docs that
+// PRF query expansion. Query "concurrency" alone hits docs that
 // mention "concurrency" but misses a related doc that uses "goroutines"
 // instead. After running initial BM25, PRF mines the top hits for
 // distinctive terms ("goroutines" appears in 2+ of them) and re-searches
@@ -1613,7 +1613,7 @@ func TestSearchPRFExpandsRecall(t *testing.T) {
 	}
 }
 
-// Iter 158: `/search?mmr=true&retriever=dense` re-ranks top candidates for
+// `/search?mmr=true&retriever=dense` re-ranks top candidates for
 // diversity. Same corpus shape as the unit test in vector_test.go: 3 near-dup
 // vectors + 1 distinct. Verify (a) baseline dense puts a near-dup at rank 1
 // (which it always does — it's the top-relevance pick), then a near-dup at
@@ -1709,14 +1709,14 @@ func TestSearchMMRViaHandler(t *testing.T) {
 	}
 }
 
-// Iter 157: composability sweep. Exercises 4 hit filters + sort in a single
+// Exercises 4 hit filters + sort in a single
 // request and verifies the order of operations is stable:
 //  1. retrieval (BM25 here)
-//  2. date filter (iter 77 — since / until)
-//  3. domain filter (iter 79 — include_domains / exclude_domains)
-//  4. sort (iter 78 — date_desc)
+//  2. date filter
+//  3. domain filter
+//  4. sort
 //  5. enrichment + GetDocMetas fetch
-//  6. author filter (iter 153 — consumes the same metas map)
+//  6. author filter
 //
 // Corpus engineered so each filter drops at least one doc, leaving exactly 2
 // surviving hits whose order is sort-determined. If any filter is silently
@@ -1793,7 +1793,7 @@ func TestSearchComposability(t *testing.T) {
 	}
 }
 
-// Iter 156: SearchHit.favicon surfaces documents.favicon end-to-end.
+// SearchHit.favicon surfaces documents.favicon end-to-end.
 func TestSearchFaviconField(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -1821,7 +1821,7 @@ func TestSearchFaviconField(t *testing.T) {
 	}
 }
 
-// Iter 155: SearchHit.image surfaces documents.image. Exercises the
+// SearchHit.image surfaces documents.image. Exercises the
 // store → DocMeta → SearchHit JSON path (parser → Document is locked in
 // by the parse_meta tests).
 func TestSearchImageField(t *testing.T) {
@@ -1851,7 +1851,7 @@ func TestSearchImageField(t *testing.T) {
 	}
 }
 
-// Iter 154: /answer synth prompt sees Author when present, omits the line
+// /answer synth prompt sees Author when present, omits the line
 // when Author is empty (so the LLM doesn't get a blank "Author: " that invites
 // hallucinated attribution). Test exercises BOTH branches with one corpus.
 func TestAnswerSynthPromptIncludesAuthor(t *testing.T) {
@@ -1890,7 +1890,7 @@ func TestAnswerSynthPromptIncludesAuthor(t *testing.T) {
 	}
 }
 
-// Iter 153: ?author= and ?exclude_author= filters. Three-doc corpus with
+// ?author= and ?exclude_author= filters. Three-doc corpus with
 // distinct authors; verify include narrows, exclude widens, both compose,
 // and an undated/unauthored doc is dropped only when include is non-empty.
 func TestSearchAuthorFilter(t *testing.T) {
@@ -1969,7 +1969,7 @@ func TestSearchAuthorFilter(t *testing.T) {
 	}
 }
 
-// Iter 150: SearchHit.author populated from documents.author column,
+// SearchHit.author populated from documents.author column,
 // driven by JSON-LD author.name extraction in the crawler. This test
 // exercises the store layer directly (we don't run a crawl); the crawler→
 // parser→store path is covered by the existing JSON-LD parse tests.
@@ -2000,7 +2000,7 @@ func TestSearchAuthorField(t *testing.T) {
 	}
 }
 
-// Iter 148: ?include_text=true populates SearchHit.Text inline.
+// ?include_text=true populates SearchHit.Text inline.
 // ?max_text=N caps each hit's text. Default cap is 5000 chars.
 func TestSearchIncludeText(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -2053,8 +2053,8 @@ func TestSearchIncludeText(t *testing.T) {
 	}
 }
 
-// Iter 144: per-request ?expand_main_weight= override beats server defaults.
-// Mirrors iter-143's ?hybrid_dense_weight= test for the expand path.
+// per-request ?expand_main_weight= override beats server defaults.
+// Mirrors's ?hybrid_dense_weight= test for the expand path.
 func TestSearchExpandMainWeightPerRequestOverride(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -2086,7 +2086,7 @@ func TestSearchExpandMainWeightPerRequestOverride(t *testing.T) {
 	}
 }
 
-// Iter 144: /admin/config surfaces the iter-136/138 weight knobs so operators
+// /admin/config surfaces the Iter weight knobs so operators
 // can verify their config without restarting the server.
 func TestAdminConfigSurfacesWeightKnobs(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -2107,7 +2107,7 @@ func TestAdminConfigSurfacesWeightKnobs(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	bs := string(body)
-	// Iter 152: JSON tags converted Defaults fields to snake_case for /admin/config.
+	// JSON tags converted Defaults fields to snake_case for /admin/config.
 	if !strings.Contains(bs, `"expand_main_weight":2.5`) {
 		t.Errorf("expand_main_weight not surfaced in /admin/config response: %s", bs)
 	}
@@ -2116,7 +2116,7 @@ func TestAdminConfigSurfacesWeightKnobs(t *testing.T) {
 	}
 }
 
-// Iter 138: HybridDenseWeight knob shifts hybrid retrieval toward dense.
+// HybridDenseWeight knob shifts hybrid retrieval toward dense.
 // Corpus engineered so BM25 ranks A first (high "alpha" tf) and dense ranks B
 // first (stub embedder maps query "alpha" → unit vector aligned with B).
 // With HybridDenseWeight=5.0, the dense list dominates → B wins.
@@ -2640,7 +2640,7 @@ func TestAdminConfigShape(t *testing.T) {
 	}
 }
 
-// TestAdminConfigResearchSynthK verifies the iter-62 ResearchSynthK field
+// TestAdminConfigResearchSynthK verifies the ResearchSynthK field
 // round-trips through /admin/config, locking the JSON shape against regression.
 func TestAdminConfigResearchSynthK(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -2811,7 +2811,7 @@ func TestSearchExpandFusesParaphraseResults(t *testing.T) {
 	}
 }
 
-// Iter 136: ExpandMainWeight knob shifts fused ordering toward the main query.
+// ExpandMainWeight knob shifts fused ordering toward the main query.
 // Corpus engineered so the main query (q="alpha") prefers doc A and the
 // paraphrase (q="beta") prefers doc B; both return the same two docs in
 // opposite orders so they tie under equal-weight RRF. With
@@ -2909,7 +2909,7 @@ func TestParaphraseCacheMetrics(t *testing.T) {
 func TestParaphraseCacheCrossInstance(t *testing.T) {
 	// First server populates the SQLite paraphrase cache via an LLM call.
 	// Second server (sharing the same store) should serve from cache without
-	// calling the LLM — closes the iter-46 "cold processes pay" gap.
+	// calling the LLM — closes the "cold processes pay" gap.
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
 
@@ -3547,7 +3547,7 @@ func TestResearchPlannerStrategyExplicit(t *testing.T) {
 	}
 }
 
-// TestSearchDateFilter verifies iter-77 date-aware search: ?since= and ?until=
+// TestSearchDateFilter verifies date-aware search: ?since= and ?until=
 // filter results by document PublishedAt; docs with unknown publication date
 // (PublishedAt zero) are excluded when any filter is active.
 func TestSearchDateFilter(t *testing.T) {
@@ -3680,7 +3680,7 @@ func TestSearchDateFilterRFC3339(t *testing.T) {
 	}
 }
 
-// TestSearchSortByDate verifies iter-78 ?sort=date_desc/date_asc. Mixed dated +
+// TestSearchSortByDate verifies ?sort=date_desc/date_asc. Mixed dated +
 // undated docs are sorted with undated last regardless of direction.
 func TestSearchSortByDate(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -3805,7 +3805,7 @@ func TestSearchSortByDateWithFilter(t *testing.T) {
 	}
 }
 
-// TestSearchDomainFilter verifies iter-79 ?include_domains= and ?exclude_domains=.
+// TestSearchDomainFilter verifies ?include_domains= and ?exclude_domains=.
 // Suffix matching means "example.com" matches "blog.example.com" too.
 func TestSearchDomainFilter(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -3884,7 +3884,7 @@ func TestSearchDomainFilter(t *testing.T) {
 	}
 }
 
-// TestSearchHitEnrichmentFields verifies iter-82 — /search response carries
+// TestSearchHitEnrichmentFields verifies — /search response carries
 // PublishedAt + Domain per hit.: callers shouldn't have to round-trip
 // /contents to get publication date or domain.
 func TestSearchHitEnrichmentFields(t *testing.T) {
@@ -3948,7 +3948,7 @@ func TestSearchHitEnrichmentFields(t *testing.T) {
 	}
 }
 
-// TestSearchHitExcerptFallback verifies iter-83 — BM25-only hits get an Excerpt
+// TestSearchHitExcerptFallback verifies — BM25-only hits get an Excerpt
 // (first 500 chars of body) since they have no Highlight. Confirms the
 // fallback semantics: Excerpt is populated when Highlight is nil.
 func TestSearchHitExcerptFallback(t *testing.T) {
@@ -3992,7 +3992,7 @@ func TestSearchHitExcerptFallback(t *testing.T) {
 	}
 }
 
-// TestResearchSourcesEnriched verifies iter-84 — /research sources carry
+// TestResearchSourcesEnriched verifies — /research sources carry
 // Domain + PublishedAt + Excerpt to match /search response shape.
 func TestResearchSourcesEnriched(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -4126,7 +4126,7 @@ func TestSearchHitEnrichmentJSONShape(t *testing.T) {
 	}
 }
 
-// TestContentsBatchHappyPath verifies iter-88 — POST /contents accepts a list
+// TestContentsBatchHappyPath verifies — POST /contents accepts a list
 // of URLs, returns per-URL outcomes including found-false for misses.
 func TestContentsBatchHappyPath(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -4229,8 +4229,8 @@ func TestContentsBatchOverLimit(t *testing.T) {
 	}
 }
 
-// TestContentsBatchGETStillWorks verifies the iter-7 single-URL GET path
-// is unchanged when iter-88 adds the POST variant.
+// TestContentsBatchGETStillWorks verifies the single-URL GET path
+// is unchanged when adds the POST variant.
 func TestContentsBatchGETStillWorks(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -4254,8 +4254,8 @@ func TestContentsBatchGETStillWorks(t *testing.T) {
 	}
 }
 
-// TestRobotsTxt verifies iter-87 — /robots.txt advertises /sitemap.xml as
-// absolute URL, allows everything except /admin/*. Pairs with iter-86 sitemap.
+// TestRobotsTxt verifies — /robots.txt advertises /sitemap.xml as
+// absolute URL, allows everything except /admin/*. Pairs with sitemap.
 func TestRobotsTxt(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -4294,8 +4294,7 @@ func TestRobotsTxt(t *testing.T) {
 }
 
 // TestRobotsTxtSitemapResolvable verifies the sitemap URL advertised by
-// robots.txt actually resolves (200 OK + sitemap content). End-to-end check
-// of the iter-86/iter-87 pair.
+// robots.txt actually resolves (200 OK + sitemap content).
 func TestRobotsTxtSitemapResolvable(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -4331,7 +4330,7 @@ func TestRobotsTxtSitemapResolvable(t *testing.T) {
 	}
 }
 
-// TestSitemapEmptyCorpus verifies the iter-86 /sitemap.xml endpoint emits
+// TestSitemapEmptyCorpus verifies the /sitemap.xml endpoint emits
 // well-formed XML even when the corpus is empty.
 func TestSitemapEmptyCorpus(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -4425,9 +4424,9 @@ func TestSitemapXMLEscape(t *testing.T) {
 	}
 }
 
-// TestDashboardHTML smoke-tests the iter-27 dashboard endpoint. Verifies it
-// serves static HTML + carries the iter-81 "with publish date" card so the
-// dashboard renders the iter-80 stat correctly.
+// TestDashboardHTML smoke-tests the dashboard endpoint. Verifies it
+// serves static HTML + carries the "with publish date" card so the
+// dashboard renders the stat correctly.
 func TestDashboardHTML(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -4449,7 +4448,7 @@ func TestDashboardHTML(t *testing.T) {
 	if !strings.Contains(s2, "cosift dashboard") {
 		t.Errorf("missing title")
 	}
-	// Iter-81 addition: the dashboard JS must reference docs_with_published_at
+	// addition: the dashboard JS must reference docs_with_published_at
 	// AND render a "with publish date" card.
 	if !strings.Contains(s2, "docs_with_published_at") {
 		t.Errorf("dashboard should reference docs_with_published_at field from /admin/stats")
@@ -4457,7 +4456,7 @@ func TestDashboardHTML(t *testing.T) {
 	if !strings.Contains(s2, "with publish date") {
 		t.Errorf("dashboard should render the 'with publish date' card")
 	}
-	// Iter 180: the dashboard JS must reference the iter-171 LLM-cache fields
+	// the dashboard JS must reference the LLM-cache fields
 	// AND render the conditional "paraphrases" / "hyde cache" cards. Both
 	// are zero-hidden so the bare HTML always contains the field name plus
 	// the card title strings — they're rendered only when count > 0.
@@ -4468,7 +4467,7 @@ func TestDashboardHTML(t *testing.T) {
 	}
 }
 
-// TestAdminStatsDocsWithPublishedAt verifies the iter-80 corpus-shape stat.
+// TestAdminStatsDocsWithPublishedAt verifies the corpus-shape stat.
 // Mixed dated + undated docs; only the dated ones are counted in the field.
 func TestAdminStatsDocsWithPublishedAt(t *testing.T) {
 	s, _ := store.OpenMemory()
@@ -4590,7 +4589,7 @@ func TestSearchDomainFilterExactHostMatch(t *testing.T) {
 	}
 }
 
-// TestStoreDocumentPublishedAtRoundTrip verifies the iter-77 schema migration:
+// TestStoreDocumentPublishedAtRoundTrip verifies the schema migration:
 // PublishedAt persists through UpsertDocument → GetDocByURL.
 func TestStoreDocumentPublishedAtRoundTrip(t *testing.T) {
 	s, _ := store.OpenMemory()

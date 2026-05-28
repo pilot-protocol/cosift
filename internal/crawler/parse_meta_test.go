@@ -109,7 +109,7 @@ func TestParseEmptyMetaContentSkipped(t *testing.T) {
 	}
 }
 
-// Iter 155: og:image preferred over twitter:image; both preferred over
+// og:image preferred over twitter:image; both preferred over
 // JSON-LD `image`. Absence everywhere → empty ParsedDoc.Image.
 func TestParseImageOgPreferred(t *testing.T) {
 	html := `<!doctype html>
@@ -165,7 +165,7 @@ func TestParseImageAbsent(t *testing.T) {
 	}
 }
 
-// Iter 156 — favicon extraction from <link rel="...">.
+// favicon extraction from <link rel="...">.
 func TestParseFavicon(t *testing.T) {
 	cases := []struct {
 		name, html, base, want string

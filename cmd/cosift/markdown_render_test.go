@@ -113,7 +113,7 @@ func TestRenderRankedMarkdownBasic(t *testing.T) {
 }
 
 func TestRenderRankedMarkdownFindSimilarTitle(t *testing.T) {
-	// Iter 97: same renderer handles /find_similar with a different title.
+	// same renderer handles /find_similar with a different title.
 	out := renderRankedMarkdown("Similar to: https://x/seed", []server.SearchHit{
 		{URL: "https://x/a", Title: "Neighbor A", Score: 0.91, Source: "dense"},
 	})

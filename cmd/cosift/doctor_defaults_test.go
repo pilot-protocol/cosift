@@ -113,7 +113,7 @@ func TestDoctorDefaultsExplicitBM25NoWarn(t *testing.T) {
 	}
 }
 
-// iter-62 ResearchSynthK: zero is the "use default" sentinel and must NOT
+// ResearchSynthK: zero is the "use default" sentinel and must NOT
 // trigger the all-zero summary path (we want it to be a no-op zero, not
 // "ignore this field"). PASS+detail with synth_k=0 is the right behavior.
 func TestDoctorDefaultsSynthKZero(t *testing.T) {

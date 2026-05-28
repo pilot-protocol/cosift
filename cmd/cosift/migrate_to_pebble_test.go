@@ -15,7 +15,7 @@ import (
 
 // TestMigrateToPebble — round-trip: populate a SQLite store, migrate to
 // Pebble, run a sample query through PebbleBM25 against the migrated
-// data, verify the same top hit. Iter 204.
+// data, verify the same top hit.
 func TestMigrateToPebble(t *testing.T) {
 	ctx := context.Background()
 

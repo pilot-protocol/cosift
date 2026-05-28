@@ -40,7 +40,7 @@ func seedExportTestStore(t *testing.T) *config.Config {
 }
 
 func TestRunExportFormatJSONDefault(t *testing.T) {
-	// Default format json preserves the iter-1 wire shape (eval.Corpus pretty-printed).
+	// Default format json preserves the wire shape (eval.Corpus pretty-printed).
 	cfg := seedExportTestStore(t)
 	out := filepath.Join(t.TempDir(), "out.json")
 	if err := runExport(context.Background(), cfg, []string{"-output", out}); err != nil {
@@ -59,7 +59,7 @@ func TestRunExportFormatJSONDefault(t *testing.T) {
 	}
 	// Pretty-printed → contains newlines + indent.
 	if !strings.Contains(string(body), "\n  ") {
-		t.Errorf("default json should be pretty-printed (iter-1 shape): %q", body)
+		t.Errorf("default json should be pretty-printed: %q", body)
 	}
 }
 

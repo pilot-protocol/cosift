@@ -10,7 +10,7 @@ import (
 )
 
 func TestCrawlerMaxDepthForUsesOverride(t *testing.T) {
-	// Iter 129: cfg.PerHostMaxDepth wins over cfg.MaxDepth.
+	// cfg.PerHostMaxDepth wins over cfg.MaxDepth.
 	cfg := config.Crawler{
 		MaxDepth: 3,
 		PerHostMaxDepth: map[string]int{
@@ -32,8 +32,8 @@ func TestCrawlerMaxDepthForUsesOverride(t *testing.T) {
 }
 
 func TestCrawlerMaxDepthForNilMap(t *testing.T) {
-	// Empty config map → all hosts use default. Matches the iter-1 single-cap
-	// behavior; iter-129 should be additive.
+	// Empty config map → all hosts use default. Matches the single-cap
+	// behavior; should be additive.
 	cfg := config.Crawler{MaxDepth: 5}
 	c := &Crawler{cfg: cfg}
 
@@ -44,7 +44,7 @@ func TestCrawlerMaxDepthForNilMap(t *testing.T) {
 
 func TestCrawlerMaxDepthForOverrideCanExceedDefault(t *testing.T) {
 	// An override can be LARGER than the global default — operators explicitly
-	// opt in to deeper crawls on specific hosts. iter-129 semantics.
+	// opt in to deeper crawls on specific hosts. semantics.
 	cfg := config.Crawler{
 		MaxDepth:        2,
 		PerHostMaxDepth: map[string]int{"docs.example.com": 10},

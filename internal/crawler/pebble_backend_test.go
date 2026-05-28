@@ -12,7 +12,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-// TestCrawlerAgainstPebbleBackend — iter 212. NewWithBackend builds a
+// TestCrawlerAgainstPebbleBackend — NewWithBackend builds a
 // crawler bound to a PebbleStore + PebbleBM25; the same end-to-end flow
 // (seed → run → query → assert text indexed) that TestCrawlEmbedsAndPersistsPassage
 // covers for SQLite must succeed against the Pebble path.

@@ -65,15 +65,15 @@ func TestPatternMatchesEndAnchorWithWildcard(t *testing.T) {
 	}
 }
 
-// TestPatternMatchesNoEndAnchorBehaviorUnchanged is the iter-3 regression
-// guard. All patterns without `$` should behave EXACTLY as before iter-132.
+// TestPatternMatchesNoEndAnchorBehaviorUnchanged is the regression
+// guard. All patterns without `$` should behave EXACTLY as before
 func TestPatternMatchesNoEndAnchorBehaviorUnchanged(t *testing.T) {
 	cases := []struct {
 		pattern string
 		path    string
 		want    bool
 	}{
-		// /admin — prefix match (iter-3)
+		// /admin — prefix match
 		{"/admin", "/admin", true},
 		{"/admin", "/admin/foo", true}, // prefix match WITHOUT $
 		{"/admin", "/admin-other", true},
@@ -110,7 +110,7 @@ Disallow: /*.pdf$
 	}{
 		{"/admin", false},        // /admin$ disallows exactly /admin
 		{"/admin/foo", true},     // /admin without $ would match; with $, only /admin exactly
-		{"/admin/public/", true}, // explicit Allow (iter-3 longer-prefix wins)
+		{"/admin/public/", true}, // explicit Allow
 		{"/file.pdf", false},     // /*.pdf$ disallows
 		{"/file.pdf?dl=1", true}, // query suffix breaks $-anchor
 		{"/file.html", true},     // not a pdf

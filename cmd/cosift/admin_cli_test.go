@@ -60,7 +60,7 @@ func captureAdminStdout(t *testing.T, f func()) string {
 }
 
 func TestAdminUsageError(t *testing.T) {
-	// Iter 121: when `cosift admin` is invoked without a subcommand, the
+	// when `cosift admin` is invoked without a subcommand, the
 	// usage message must list every known admin subcommand. If a future iter
 	// adds a 6th admin sub-op, this test fails unless the help text is also
 	// updated — keeping the dispatch switch and the help-text in sync.
@@ -80,12 +80,12 @@ func TestAdminUsageError(t *testing.T) {
 		}
 	}
 
-	// Multi-line format (vs the iter-99 single-line log.Fatal).
+	// Multi-line format (vs the single-line log.Fatal).
 	if strings.Count(out, "\n") < 5 {
 		t.Errorf("help text should be multi-line; got %d lines:\n%s", strings.Count(out, "\n"), out)
 	}
 
-	// Must NOT contain the log-package timestamp prefix (the iter-99 bug
+	// Must NOT contain the log-package timestamp prefix (the bug
 	// being fixed: log.Fatal added "2026/05/23 ..." noise).
 	if strings.Contains(out, "/") && strings.Contains(out[:50], ":") {
 		// Heuristic: a date-time prefix would have a slash AND a colon in the first 50 chars.
@@ -172,14 +172,14 @@ func TestAdminStatsHumanOutput(t *testing.T) {
 	if idxExample == -1 || idxTest == -1 || idxExample > idxTest {
 		t.Errorf("top domains not sorted by count desc; example.com idx=%d, test.org idx=%d, out=%q", idxExample, idxTest, out)
 	}
-	// Iter 171: when paraphrases + hyde_cache are both zero, the LLM-caches
+	// when paraphrases + hyde_cache are both zero, the LLM-caches
 	// section should NOT appear (fresh deployments don't carry the noise).
 	if strings.Contains(out, "=== LLM caches ===") {
 		t.Errorf("LLM caches section should be hidden when both caches are empty; got %q", out)
 	}
 }
 
-// Iter 171: when /admin/stats reports non-zero cache counts, the CLI
+// when /admin/stats reports non-zero cache counts, the CLI
 // renders the new LLM-caches section.
 func TestAdminStatsLLMCachesShown(t *testing.T) {
 	stats := server.AdminStatsResponse{
@@ -205,7 +205,7 @@ func TestAdminStatsLLMCachesShown(t *testing.T) {
 	}
 }
 
-// Iter 171: when only one cache is populated, only that line appears.
+// when only one cache is populated, only that line appears.
 func TestAdminStatsLLMCachesPartial(t *testing.T) {
 	stats := server.AdminStatsResponse{
 		Documents: 100, Terms: 500,
@@ -268,7 +268,7 @@ func TestAdminStatsTokenFlagOverridesEnv(t *testing.T) {
 }
 
 func TestAdminStatsSummaryOutput(t *testing.T) {
-	// Iter 122: -summary produces a single-line compact output.
+	// -summary produces a single-line compact output.
 	stats := server.AdminStatsResponse{
 		Documents:     1234,
 		Frontier:      store.FrontierStats{Queued: 56, InFlight: 2, Done: 1170, Errored: 12},

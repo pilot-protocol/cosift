@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestBenchCrawlSmall verifies the crawler bench mode (iter 70) runs to
+// TestBenchCrawlSmall verifies the crawler bench mode runs to
 // completion against an in-process website. The benchCrawl function is
 // self-contained — spins up the httptest server, runs the crawl, prints
 // throughput. We just need to confirm it doesn't error and the printed
@@ -31,7 +31,7 @@ func TestBenchCrawlSmall(t *testing.T) {
 	}
 }
 
-// TestBenchResultJSON verifies the iter-71 JSON output is parseable + carries
+// TestBenchResultJSON verifies the JSON output is parseable + carries
 // the expected field names. The format is documented as a CI-ingestion contract;
 // this test locks it against accidental rename.
 func TestBenchResultJSON(t *testing.T) {

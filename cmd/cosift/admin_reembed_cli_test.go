@@ -309,7 +309,7 @@ func TestAdminReembedCLISinceEmptyOmittedFromBody(t *testing.T) {
 }
 
 func TestAdminReembedCLIDryRunFlagPropagates(t *testing.T) {
-	// Iter 126: -dry-run sets DryRun=true in the request body.
+	// -dry-run sets DryRun=true in the request body.
 	events := [][2]string{
 		{"started", `{"total_docs":42,"target_model":"text-embedding-3-small"}`},
 		{"done", `{"docs_processed":0,"passages_written":0,"dropped_old":0,"dry_run":true,"took":"3ms"}`},
@@ -347,7 +347,7 @@ func TestAdminReembedCLIDryRunRendersSummary(t *testing.T) {
 		}
 	})
 	// Dry-run summary references the started event's count (4250), not the
-	// done event's zeros (0 docs_processed). This is the iter-126 behavior:
+	// done event's zeros (0 docs_processed). This is the behavior:
 	// dry-run users want "how many would be processed?", not "how many were processed?".
 	if !strings.Contains(out, "4250 docs would be re-embedded") {
 		t.Errorf("dry-run summary should reference started count: %q", out)
@@ -358,7 +358,7 @@ func TestAdminReembedCLIDryRunRendersSummary(t *testing.T) {
 	if !strings.Contains(out, "Re-run without -dry-run") {
 		t.Errorf("dry-run summary should hint at the next step: %q", out)
 	}
-	// Should NOT show the regular "Done: 0 docs reembedded" message (the iter-113
+	// Should NOT show the regular "Done: 0 docs reembedded" message (the
 	// non-dry-run output would be misleading for dry-run since both have docs_processed=0).
 	if strings.Contains(out, "Done: 0 docs reembedded") {
 		t.Errorf("dry-run shouldn't render the non-dry-run Done line: %q", out)
@@ -367,7 +367,7 @@ func TestAdminReembedCLIDryRunRendersSummary(t *testing.T) {
 
 func TestAdminReembedCLIGuardMentionsDryRun(t *testing.T) {
 	// Without -y AND without -dry-run, the guard error should mention BOTH
-	// options (iter-126: dry-run is the new escape hatch).
+	// options.
 	cfg := config.Default()
 	err := runAdmin(context.Background(), cfg, "reembed", nil)
 	if err == nil {
@@ -382,7 +382,7 @@ func TestAdminReembedCLIGuardMentionsDryRun(t *testing.T) {
 }
 
 func TestAdminReembedCLIBothFlagsDryRunWins(t *testing.T) {
-	// Both -y and -dry-run set → dry-run wins (iter-111 safer-on-conflict).
+	// Both -y and -dry-run set → dry-run wins.
 	events := [][2]string{
 		{"started", `{"total_docs":1,"target_model":"v"}`},
 		{"done", `{"docs_processed":0,"passages_written":0,"dropped_old":0,"dry_run":true,"took":"1ms"}`},
@@ -402,7 +402,7 @@ func TestAdminReembedCLIBothFlagsDryRunWins(t *testing.T) {
 }
 
 func TestAdminReembedCLIDryRunWithSinceCompose(t *testing.T) {
-	// Dry-run + since: both propagate, summary still uses iter-126 dry-run shape.
+	// Dry-run + since: both propagate, summary still uses dry-run shape.
 	events := [][2]string{
 		{"started", `{"total_docs":1234,"target_model":"v"}`},
 		{"done", `{"docs_processed":0,"passages_written":0,"dropped_old":0,"dry_run":true,"took":"5ms"}`},

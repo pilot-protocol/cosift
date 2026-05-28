@@ -8,10 +8,10 @@ import (
 )
 
 // seedDocsByDomain inserts docs spanning multiple domains and subdomains so
-// the iter-79 suffix-on-dot-boundary semantics get exercised.
+// the suffix-on-dot-boundary semantics get exercised.
 func seedDocsByDomain(t *testing.T) *Store {
 	t.Helper()
-	// Iter 134: OpenMemory.
+	// OpenMemory.
 	s, err := OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -57,7 +57,7 @@ func TestListURLsByDomainExactAndSubdomains(t *testing.T) {
 
 func TestListURLsByDomainRejectsAdversarialMatch(t *testing.T) {
 	// `example.com` should NOT match `evilexample.com` (the classic
-	// suffix-without-boundary adversarial case from iter 79).
+	// suffix-without-boundary adversarial case from).
 	s := seedDocsByDomain(t)
 	got, err := s.ListURLsByDomain(context.Background(), "example.com")
 	if err != nil {

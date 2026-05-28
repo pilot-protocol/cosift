@@ -7,7 +7,7 @@ import (
 )
 
 func TestCrawlerMaxBodyBytesForUsesOverride(t *testing.T) {
-	// Iter 130: cfg.PerHostMaxBodyBytes wins over cfg.MaxBodyBytes for matching hosts.
+	// cfg.PerHostMaxBodyBytes wins over cfg.MaxBodyBytes for matching hosts.
 	cfg := config.Crawler{
 		MaxBodyBytes: 5 << 20, // 5 MB default
 		PerHostMaxBodyBytes: map[string]int64{
@@ -29,7 +29,7 @@ func TestCrawlerMaxBodyBytesForUsesOverride(t *testing.T) {
 }
 
 func TestCrawlerMaxBodyBytesForNilMap(t *testing.T) {
-	// Empty config → all hosts use default. iter-1 semantic preserved.
+	// Empty config → all hosts use default. semantic preserved.
 	cfg := config.Crawler{MaxBodyBytes: 2 << 20}
 	c := &Crawler{cfg: cfg}
 
@@ -40,7 +40,7 @@ func TestCrawlerMaxBodyBytesForNilMap(t *testing.T) {
 
 func TestCrawlerMaxBodyBytesForBothZeroFallsTo5MB(t *testing.T) {
 	// When both PerHostMaxBodyBytes[host] is unset/zero AND MaxBodyBytes is
-	// zero, fall back to 5MB safe default (preserves iter-1 fetch behavior:
+	// zero, fall back to 5MB safe default (preserves fetch behavior:
 	// `if limit <= 0 { limit = 5 << 20 }`).
 	cfg := config.Crawler{} // both unset
 	c := &Crawler{cfg: cfg}
@@ -66,7 +66,7 @@ func TestCrawlerMaxBodyBytesForZeroOverrideIgnored(t *testing.T) {
 }
 
 func TestCrawlerMaxBodyBytesForOverrideCanExceedDefault(t *testing.T) {
-	// Override is the FULL cap (iter-129 semantic) — can be larger than default.
+	// Override is the FULL cap — can be larger than default.
 	cfg := config.Crawler{
 		MaxBodyBytes:        1 << 20, // 1 MB default
 		PerHostMaxBodyBytes: map[string]int64{"papers.example.com": 100 << 20},

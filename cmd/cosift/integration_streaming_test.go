@@ -18,7 +18,7 @@ import (
 // e2eScriptedChat returns scripted replies for sequential Chat/ChatStream calls.
 // Mirrors the package-private scriptedChat in internal/server's http_test.go;
 // we can't import that, so this is a self-contained copy for the cmd/cosift
-// E2E suite. Iter 119.
+// E2E suite.
 type e2eScriptedChat struct {
 	replies     []string
 	calls       int
@@ -87,8 +87,8 @@ func bootE2EServer(t *testing.T, docs []store.Document, chat embed.ChatClient) s
 	return httpSrv.URL
 }
 
-// TestE2EResearchStreaming is the iter-119 cross-package end-to-end check.
-// Real server emits events; real CLI parses them. Catches drift the iter-98
+// TestE2EResearchStreaming is the cross-package end-to-end check.
+// Real server emits events; real CLI parses them. Catches drift the
 // hand-crafted-events test can't see.
 func TestE2EResearchStreaming(t *testing.T) {
 	docs := []store.Document{
@@ -171,7 +171,7 @@ func TestE2EResearchStreamingTokenChunks(t *testing.T) {
 	}
 }
 
-// e2eStubEmbedder satisfies embed.Embedder for the iter-120 /admin/reembed
+// e2eStubEmbedder satisfies embed.Embedder for the /admin/reembed
 // E2E test. Returns fixed 4-dim vectors. Equivalent to the package-private
 // reembedStubEmbedder in internal/server/admin_reembed_test.go (cmd/cosift
 // can't import _test.go files from other packages).
@@ -188,7 +188,7 @@ func (e *e2eStubEmbedder) Embed(_ context.Context, texts []string) ([][]float32,
 }
 
 // bootE2EServerWithEmbedder wires store + server + admin token + embedder in
-// one call. Used by /admin/reembed E2E test (iter 120) where the embedder is
+// one call. Used by /admin/reembed E2E test where the embedder is
 // the central piece, not the chat client.
 func bootE2EServerWithEmbedder(t *testing.T, docs []store.Document, emb embed.Embedder, adminToken string) string {
 	t.Helper()
@@ -212,10 +212,10 @@ func bootE2EServerWithEmbedder(t *testing.T, docs []store.Document, emb embed.Em
 }
 
 func TestE2EAdminReembedStreaming(t *testing.T) {
-	// Third E2E streaming test (iter 119 added research + answer). Closes the
+	// Third E2E streaming test. Closes the
 	// lock-in coverage for the third SSE endpoint — drift between
-	// handleAdminReembed's event emission (iter 112) and consumeReembedSSE's
-	// parsing (iter 113) would slip past the existing tests but fail here.
+	// handleAdminReembed's event emission and consumeReembedSSE's
+	// parsing would slip past the existing tests but fail here.
 	docs := []store.Document{
 		{URL: "https://x/doc1", Title: "Doc 1", Text: strings.Repeat("content ", 30),
 			Source: "test", FetchedAt: time.Now()},
@@ -256,7 +256,7 @@ func TestE2EAdminReembedStreaming(t *testing.T) {
 }
 
 func TestE2EAdminReembedWithSinceStreaming(t *testing.T) {
-	// Iter-116/117 added since-filter. E2E verifies the filter propagates
+	// added since-filter. E2E verifies the filter propagates
 	// from CLI flag → request body → server filter → started total_docs.
 	pub2025 := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
 	pub2024 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -278,7 +278,7 @@ func TestE2EAdminReembedWithSinceStreaming(t *testing.T) {
 	})
 
 	// since=2025-01-01 → old (2024-06) dropped, only new (2025-06) reembedded.
-	// started event's total_docs reflects the post-filter count (iter-116).
+	// started event's total_docs reflects the post-filter count.
 	if !strings.Contains(out, "[reembed started: 1 docs, target=stub-target]") {
 		t.Errorf("since filter not applied; expected 1 doc, got:\n%s", out)
 	}
@@ -289,7 +289,7 @@ func TestE2EAdminReembedWithSinceStreaming(t *testing.T) {
 
 func TestE2EAnswerStreaming(t *testing.T) {
 	// /answer has fewer event types than /research (no plan event).
-	// Drift on `/answer` specifically would slip past iter-98 tests but be caught here.
+	// Drift on `/answer` specifically would slip past tests but be caught here.
 	docs := []store.Document{
 		{URL: "https://x/raft", Title: "Raft Consensus", Text: "Raft is a consensus algorithm.",
 			Source: "test", FetchedAt: time.Now()},

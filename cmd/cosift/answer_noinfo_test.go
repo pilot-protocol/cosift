@@ -5,7 +5,7 @@ import "testing"
 // TestAnswerLooksLikeNoInfo locks down the matcher used by /answer to decide
 // whether to emit a suggest_escalation hint. The 60-Q eval harness uses the
 // same phrase list; if these drift apart, eval results stop predicting how
-// often the chat UI surfaces the "Try research mode" button. Iter 489.
+// often the chat UI surfaces the "Try research mode" button.
 func TestAnswerLooksLikeNoInfo(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -12,7 +12,7 @@ import (
 
 // loadFixturePDF reads the tiny hand-crafted PDF from testdata/. ~600 bytes
 // on disk — well within the directive's "keep disk usage low for tests" rule.
-// The file is committed; generated once by the iter-73 NOTES procedure (see
+// The file is committed; generated once by the NOTES procedure (see
 // the python snippet there).
 func loadFixturePDF(t *testing.T) []byte {
 	t.Helper()
@@ -71,7 +71,7 @@ func TestParsePDFGarbageBody(t *testing.T) {
 	}
 }
 
-// TestCrawlerHandlesPDFContentType verifies the iter-73 dispatch wiring:
+// TestCrawlerHandlesPDFContentType verifies the dispatch wiring:
 // crawler fetches a URL that returns application/pdf, indexes the extracted
 // text. End-to-end exercise of fetch → content-type check → ParsePDF →
 // document upsert.
@@ -102,7 +102,7 @@ func TestCrawlerHandlesPDFContentType(t *testing.T) {
 	}
 }
 
-// TestParsePDFNeverPanics — iter 191. The ledongthuc/pdf library uses panic()
+// TestParsePDFNeverPanics — The ledongthuc/pdf library uses panic()
 // for non-local error flow on malformed PDFs. A single malformed PDF in the
 // crawl frontier was killing the entire `cosift crawl` process mid-run after
 // indexing ~2200 docs. The fix wraps ParsePDF in defer/recover; this test

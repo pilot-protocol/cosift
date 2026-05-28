@@ -17,7 +17,7 @@ import (
 // Each doc has enough text that the chunker emits ≥1 chunk.
 func seedReembedStore(t *testing.T, n int) *store.Store {
 	t.Helper()
-	// Iter 134: OpenMemory.
+	// OpenMemory.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -208,11 +208,11 @@ func TestAdminReembedBadInput(t *testing.T) {
 }
 
 // seedMixedDateReembedStore inserts docs with mixed published_at: some pre-2026,
-// some post-2026, some undated. Lets iter-116 since-filter tests exercise the
+// some post-2026, some undated. Lets since-filter tests exercise the
 // boundary semantics.
 func seedMixedDateReembedStore(t *testing.T) *store.Store {
 	t.Helper()
-	// Iter 134: OpenMemory.
+	// OpenMemory.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
@@ -288,8 +288,8 @@ func TestAdminReembedSinceMatchesNothing(t *testing.T) {
 	}
 }
 
-// trackingStubEmbedder counts Embed calls so iter-125 tests can verify the
-// dry-run path doesn't invoke the embedder. Builds on the iter-112 reembed
+// trackingStubEmbedder counts Embed calls so tests can verify the
+// dry-run path doesn't invoke the embedder. Builds on the reembed
 // stub (which doesn't track calls) without modifying that fixture.
 type trackingStubEmbedder struct {
 	model      string
@@ -308,7 +308,7 @@ func (e *trackingStubEmbedder) Embed(_ context.Context, texts []string) ([][]flo
 }
 
 func TestAdminReembedDryRunSkipsEmbedLoop(t *testing.T) {
-	// Iter 125: dry_run=true → started event reports count, done event
+	// dry_run=true → started event reports count, done event
 	// reports zeros + dry_run:true. The embedder is NOT invoked.
 	s := seedReembedStore(t, 5)
 	emb := &trackingStubEmbedder{model: "stub-v1"}
@@ -373,7 +373,7 @@ func TestAdminReembedDryRunComposesWithSince(t *testing.T) {
 
 func TestAdminReembedSinceMalformed(t *testing.T) {
 	// Malformed since → 400 with structured error, NOT an SSE error event
-	// (caller using curl expects iter-77 /search?since= behavior).
+	// (caller using curl expects /search?since= behavior).
 	s := seedReembedStore(t, 1)
 	srv := New(s).WithAdminToken("k").WithVector(nil, &reembedStubEmbedder{model: "stub-v1"})
 	httpSrv := httptest.NewServer(srv.Handler())
@@ -409,10 +409,10 @@ func TestAdminReembedEmptyBodyOK(t *testing.T) {
 	}
 }
 
-// Iter 145: WithChunker override shrinks chunk size → more passages written.
+// WithChunker override shrinks chunk size → more passages written.
 // Seeds a single ~200-word doc, then runs reembed twice: once at defaults, once
 // with WithChunker(50, 10). The smaller setting must produce strictly more
-// passages — proves the iter-145 wiring threads through to the reembed handler.
+// passages — proves the wiring threads through to the reembed handler.
 func TestAdminReembedHonorsWithChunker(t *testing.T) {
 	countPassages := func(srv *Server) int {
 		httpSrv := httptest.NewServer(srv.Handler())

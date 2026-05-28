@@ -69,7 +69,7 @@ func readExportedURLs(t *testing.T, path string) []string {
 }
 
 func TestRunExportNoFilters(t *testing.T) {
-	// Without filters, all 4 docs are exported (regression check for iter-103).
+	// Without filters, all 4 docs are exported (regression check for).
 	cfg := seedExportFilterStore(t)
 	out := filepath.Join(t.TempDir(), "out.json")
 	if err := runExport(context.Background(), cfg, []string{"-output", out}); err != nil {
@@ -131,7 +131,7 @@ func TestRunExportSinceDateFilter(t *testing.T) {
 	urls := readExportedURLs(t, out)
 	// blog.example.com/a (2025-06-01) dropped; example.com/b (2026-02-15) kept;
 	// otherdomain.org/c (2026-04-10) kept; undated.test/d (zero) dropped per
-	// iter-77 semantics.
+	// semantics.
 	if len(urls) != 2 {
 		t.Fatalf("want 2 post-2026 docs, got %d: %+v", len(urls), urls)
 	}
@@ -209,7 +209,7 @@ func TestRunExportInvalidDate(t *testing.T) {
 }
 
 func TestMatchesDomainPattern(t *testing.T) {
-	// iter-79 semantics: suffix on dot boundary.
+	// semantics: suffix on dot boundary.
 	cases := []struct {
 		host, pattern string
 		want          bool

@@ -127,7 +127,7 @@ func TestOpenAIChatErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestStripThinkingBlocks — iter 395. R1-distill emits <think>...</think>
+// TestStripThinkingBlocks — R1-distill emits <think>...</think>
 // before the actual response. Must be stripped so the planner JSON parses
 // and /answer responses stay clean.
 func TestStripThinkingBlocks(t *testing.T) {
@@ -139,7 +139,7 @@ func TestStripThinkingBlocks(t *testing.T) {
 		{"<think>line1\nline2\nline3</think>\n\nFinal: yes", "Final: yes"},
 		{"<think>a</think>before<think>b</think>after", "beforeafter"},
 		{"  <think>think</think>  trimmed  ", "trimmed"},
-		// Iter 477e: orphaned <think> (no closing tag) gets scrubbed too. Qwen3.5
+		// Qwen3.5
 		// + max_tokens cap can cut a model mid-reasoning, leaving a hanging
 		// <think>...; previously we kept the text. The new policy strips the
 		// orphan so the visible reply isn't polluted with truncated reasoning.

@@ -111,7 +111,7 @@ func TestRRFDownweightsLateRanks(t *testing.T) {
 	}
 }
 
-// Iter 158: MMR re-ranking. Corpus has 3 near-duplicates of the same vector
+// MMR re-ranking. Corpus has 3 near-duplicates of the same vector
 // and 1 distinct vector. Pure-relevance search picks the 3 near-duplicates
 // first; MMR with lambda<1 promotes the distinct one to surface diverse content.
 func TestSearchMMRPromotesDiversity(t *testing.T) {
@@ -189,7 +189,7 @@ func TestSearchMMREdgeCases(t *testing.T) {
 	}
 }
 
-// Iter-135 RRFWeighted tests.
+// RRFWeighted tests.
 
 func TestRRFWeightedEqualWeightsMatchesRRF(t *testing.T) {
 	// Equal weights of any positive constant must produce the same ranking
@@ -255,7 +255,7 @@ func TestRRFWeightedShiftsOrderingByWeight(t *testing.T) {
 }
 
 func TestRRFWeightedNilWeightsFallsBackToEqual(t *testing.T) {
-	// Iter 137 fix: avoid tied scores so map-iteration order across two RRF
+	// fix: avoid tied scores so map-iteration order across two RRF
 	// calls doesn't make the comparison flaky. Lists `[[A,B,C],[A,C]]` give:
 	//   A: 1/61 + 1/61 ≈ 0.0328
 	//   C: 1/63 + 1/62 ≈ 0.0320
@@ -335,9 +335,9 @@ func TestRRFWithHostBoostsReordersByHost(t *testing.T) {
 func TestRRFWeightedDefensiveFallback(t *testing.T) {
 	// Length mismatch and non-positive weight must both fall back to equal-weight,
 	// not silently drop a retriever. The safer-on-conflict default established
-	// in iter-126 (-y vs -dry-run) applies here too.
+	// in (-y vs -dry-run) applies here too.
 	//
-	// Iter 137 fix: use the same flake-proof corpus as
+	// fix: use the same flake-proof corpus as
 	// TestRRFWeightedNilWeightsFallsBackToEqual (A=0.0328, C=0.0320, B=0.0161
 	// — all distinct).
 	lists := [][]string{{"A", "B", "C"}, {"A", "C"}}

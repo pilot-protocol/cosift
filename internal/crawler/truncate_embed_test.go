@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestTruncateForEmbedByteCap locks in iter 430's byte cap.
+// TestTruncateForEmbedByteCap locks in's byte cap.
 // nomic-embed-text rejects inputs above 2048 BERT tokens. Dense source
 // code / CI logs / JSON have many micro-tokens per byte, so token
 // estimates alone underestimate cost and inputs still 400. The cap is
@@ -19,7 +19,7 @@ func TestTruncateForEmbedByteCap(t *testing.T) {
 	}
 }
 
-// TestTruncateForEmbedTokenCap covers the original iter-421 path: long
+// TestTruncateForEmbedTokenCap covers the original path: long
 // CJK text where tokens accumulate at 1/rune even at low byte count.
 func TestTruncateForEmbedTokenCap(t *testing.T) {
 	cjk := strings.Repeat("中文测试", 1000) // 4 runes × 3 bytes = 12 bytes; 4 tokens

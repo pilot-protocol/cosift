@@ -13,7 +13,7 @@ import (
 
 // TestHNSWPersistRoundTrip — build, persist, load into a fresh HNSW,
 // verify Search returns the same top-k hits as the original. Locks in
-// the iter-203 binary format contract.
+// the binary format contract.
 func TestHNSWPersistRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pebble")
 	ps, err := store.OpenPebble(dir)
@@ -181,7 +181,7 @@ func sameURLOrder(a, b []string) bool {
 	return true
 }
 
-// TestLoadHNSWMeta locks down iter 358: the cheap meta-only read must return
+// TestLoadHNSWMeta locks down the cheap meta-only read must return
 // the same {Dim, NodeCount} that a freshly persisted HNSW graph reports.
 // Lives in the persistence test file because it shares the Pebble-fixture
 // scaffold.

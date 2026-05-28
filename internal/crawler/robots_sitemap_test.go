@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseRobotsExtractsSitemap(t *testing.T) {
-	// Iter 131: Sitemap directive is group-independent per the sitemaps.org spec.
+	// Sitemap directive is group-independent per the sitemaps.org spec.
 	body := `# example
 User-agent: *
 Disallow: /admin/

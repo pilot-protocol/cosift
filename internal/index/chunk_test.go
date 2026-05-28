@@ -123,7 +123,7 @@ func lastNWords(s string, n int) string {
 	return strings.Join(parts[len(parts)-n:], " ")
 }
 
-// Iter 147: NewChunkerWith locks the override-fallback contract.
+// NewChunkerWith locks the override-fallback contract.
 func TestNewChunkerWith(t *testing.T) {
 	defaults := NewChunker()
 	cases := []struct {

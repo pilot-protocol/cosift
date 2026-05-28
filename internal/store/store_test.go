@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TestGetDocMetas verifies iter-82's batched URL→DocMeta lookup. Mixed dated
+// TestGetDocMetas verifies's batched URL→DocMeta lookup. Mixed dated
 // and undated docs, plus a URL not in the store (should be absent from the
 // returned map, not produce an error).
 func TestGetDocMetas(t *testing.T) {
@@ -56,7 +56,7 @@ func TestGetDocMetas(t *testing.T) {
 	}
 }
 
-// TestFailFrontierStoresError verifies iter-85: FailFrontier persists the
+// TestFailFrontierStoresError verifies: FailFrontier persists the
 // error string in last_error, which ListErroredFrontier surfaces.
 func TestFailFrontierStoresError(t *testing.T) {
 	s := newTestStore(t)
@@ -133,7 +133,7 @@ func TestListErroredFrontierLimit(t *testing.T) {
 	}
 }
 
-// TestGetDocMetasExcerptTruncation verifies iter-83's SQL substr truncation.
+// TestGetDocMetasExcerptTruncation verifies's SQL substr truncation.
 // A document with 2000+ chars body produces an Excerpt at most 500 chars.
 func TestGetDocMetasExcerptTruncation(t *testing.T) {
 	s := newTestStore(t)
@@ -175,8 +175,8 @@ func TestGetDocMetasEmpty(t *testing.T) {
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	// Iter 134: migrated to OpenMemory — no on-disk artifacts, faster tests,
-	// honors the directive's "keep disk usage low for tests" language. iter-133
+	// migrated to OpenMemory — no on-disk artifacts, faster tests,
+	// honors the directive's "keep disk usage low for tests" language.
 	// shipped the API; this iter switches the highest-frequency helper to use it.
 	s, err := OpenMemory()
 	if err != nil {
@@ -329,7 +329,7 @@ func TestFrontierFailureIncrementsAttempts(t *testing.T) {
 	}
 }
 
-// Iter 181: concurrent ClaimFrontier doesn't return SQLITE_BUSY_SNAPSHOT errors.
+// concurrent ClaimFrontier doesn't return SQLITE_BUSY_SNAPSHOT errors.
 //
 // Pre-fix, ClaimFrontier ran BeginTx → SELECT → UPDATE → COMMIT. Under WAL
 // with multiple writers, one worker's SELECT established a read snapshot;
@@ -345,7 +345,7 @@ func TestFrontierFailureIncrementsAttempts(t *testing.T) {
 //
 // On-disk because reproducing the WAL multi-writer race REQUIRES multiple
 // connections. Uses t.TempDir() so the test cleans up after itself; one of
-// the rare disk-using tests in the post-iter-134 store package.
+// the rare disk-using tests in the post store package.
 func TestFrontierClaimConcurrencyNoLockErrors(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
@@ -407,10 +407,10 @@ func TestFrontierClaimConcurrencyNoLockErrors(t *testing.T) {
 	}
 }
 
-// TestClaimFrontierHostFairness — iter 190. ClaimFrontier should prefer URLs
+// TestClaimFrontierHostFairness — ClaimFrontier should prefer URLs
 // whose host has no in-flight row, so the worker pool spreads across hosts
 // instead of stacking on a single fanout-heavy domain. Locks in the
-// scheduling contract surfaced by the iter-190 v2 crawl analysis where 96%
+// scheduling contract surfaced by the v2 crawl analysis where 96%
 // of indexed docs came from 2 hosts despite 13 hosts being in the frontier.
 func TestClaimFrontierHostFairness(t *testing.T) {
 	ctx := context.Background()
@@ -491,7 +491,7 @@ func TestExtractHost(t *testing.T) {
 	}
 }
 
-// TestCrawlStatus — iter 193. Verifies the operator-facing crawl snapshot
+// TestCrawlStatus — Verifies the operator-facing crawl snapshot
 // returned by Store.CrawlStatus aggregates correctly across frontier statuses,
 // host counts, error classes, and rolling-window doc rates.
 func TestCrawlStatus(t *testing.T) {
@@ -578,14 +578,14 @@ func TestCrawlStatus(t *testing.T) {
 	}
 }
 
-// TestFirstIndexedAtStableAcrossReFetches — iter 194. UpsertDocument must set
+// TestFirstIndexedAtStableAcrossReFetches — UpsertDocument must set
 // first_indexed_at exactly once (on initial INSERT). Subsequent upserts of
 // the same URL — what re-crawling produces — must leave first_indexed_at
 // unchanged even though fetched_at moves forward.
 //
 // Without this invariant, crawl-status' rolling-rate windows would count
 // every re-fetch as a "new" doc and inflate the rate enormously (observed in
-// v3: 5,768 total docs, but the iter-193 fetched_at-based window reported
+// v3: 5,768 total docs, but the fetched_at-based window reported
 // 5,769 docs in 30 min — basically the entire index, because the crawler
 // re-touched almost every row).
 func TestFirstIndexedAtStableAcrossReFetches(t *testing.T) {

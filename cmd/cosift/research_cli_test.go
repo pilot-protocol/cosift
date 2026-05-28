@@ -19,7 +19,7 @@ import (
 
 // newResearchStub returns an httptest server replying with `resp` on /research.
 // Returns an accessor for the captured request URL so flag-mapping tests can
-// assert on the wire shape, mirroring iter-90's newSearchStubWithCapture.
+// assert on the wire shape, mirroring's newSearchStubWithCapture.
 func newResearchStub(t *testing.T, resp server.ResearchResponse) (*httptest.Server, func() *url.URL) {
 	t.Helper()
 	var captured *url.URL

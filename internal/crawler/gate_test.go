@@ -68,7 +68,7 @@ func TestHostGateRespectsContext(t *testing.T) {
 }
 
 func TestHostGateOverrideAppliesPerHost(t *testing.T) {
-	// Iter 128: override map should set a different delay for the named host
+	// override map should set a different delay for the named host
 	// while leaving others on the default.
 	overrides := map[string]time.Duration{
 		"slow.example.com": 200 * time.Millisecond,
@@ -110,8 +110,8 @@ func TestHostGateOverrideSerializesAtOverrideRate(t *testing.T) {
 }
 
 func TestHostGateNilOverridesIsSafe(t *testing.T) {
-	// Constructing with nil overrides should work exactly like the iter-1 single-arg
-	// constructor — every host uses the default. This is the path the iter-128
+	// Constructing with nil overrides should work exactly like the single-arg
+	// constructor — every host uses the default. This is the path the
 	// crawler instantiation takes when cfg.PerHostOverrides is empty.
 	g := newHostGate(10*time.Millisecond, nil)
 	if d := g.delayFor("anywhere.com"); d != 10*time.Millisecond {

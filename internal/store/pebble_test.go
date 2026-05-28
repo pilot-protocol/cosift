@@ -330,7 +330,7 @@ func TestPebblePostingsPersistAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestPebbleReindexDeletesOrphanedPostings — iter 208. Index a doc with
+// TestPebbleReindexDeletesOrphanedPostings — Index a doc with
 // terms {alpha, beta, gamma}; re-index with {alpha, delta}; beta and
 // gamma postings for the doc MUST be deleted (or queries for those terms
 // return the doc as a phantom hit).
@@ -432,7 +432,6 @@ func TestPebbleReindexDoesNotAffectOtherDocs(t *testing.T) {
 }
 
 // TestPebbleFrontierPushClaimComplete — basic Push → Claim → Complete flow.
-// Iter 209.
 func TestPebbleFrontierPushClaimComplete(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
@@ -536,7 +535,7 @@ func TestPebbleFrontierFailTruncatesLongErrors(t *testing.T) {
 	}
 }
 
-// TestPebbleFrontierHostFair — iter 210. The same contract as
+// TestPebbleFrontierHostFair — The same contract as
 // TestClaimFrontierHostFairness on the SQLite side: when many URLs are
 // queued from hostA and only one each from B and C, the first three claims
 // (without intervening Completes) must each pick a distinct host. The 4th
@@ -584,7 +583,7 @@ func TestPebbleFrontierHostFair(t *testing.T) {
 	}
 }
 
-// TestPebbleCountQueuedPerHost — iter 211. Queue URLs across distinct hosts,
+// TestPebbleCountQueuedPerHost — Queue URLs across distinct hosts,
 // query per-host counts. Hosts with no queued URLs are absent from the map.
 func TestPebbleCountQueuedPerHost(t *testing.T) {
 	p := newPebbleStore(t)
