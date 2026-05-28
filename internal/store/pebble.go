@@ -310,7 +310,7 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 // GetDocMeta returns (URL, title) for docID via the cheap 'i' side blob.
 // ok=false when nothing was indexed for the ID. Avoids the full
 // Document gob decode that GetDocByID does.
-func (p *PebbleStore) GetDocMeta(ctx context.Context, docID int64) (url, title string, ok bool, err error) {
+func (p *PebbleStore) GetDocMeta(ctx context.Context, docID int64) (string, string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", false, err
 	}
@@ -1032,19 +1032,19 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	batch := p.db.NewBatch()
 	defer batch.Close()
 
-	if err := batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
+	if err = batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
 		return err
 	}
 	// Counters are appended to the same batch so all-or-nothing semantics
 	// hold — a torn write can't leave the counters out of sync with 'l'.
 	sumBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
-	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+	if err = batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
 		return err
 	}
 	countBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
-	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+	if err = batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
 		return err
 	}
 	// On re-index,

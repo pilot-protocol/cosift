@@ -195,9 +195,9 @@ func readWetRecord(br *bufio.Reader) (*WetRecord, error) {
 	// Headers until empty line.
 	headers := make(map[string]string, 12)
 	for {
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return nil, err
+		line, e := br.ReadString('\n')
+		if e != nil {
+			return nil, e
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
 		if trimmed == "" {

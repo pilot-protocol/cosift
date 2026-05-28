@@ -2669,22 +2669,22 @@ func runEval(ctx context.Context, args []string) error {
 			rerank:    *useRerank,
 			http:      &http.Client{Timeout: 30 * time.Second},
 		}
-		summary, err := eval.Run(ctx, qs, ret)
-		if err != nil {
-			return err
+		summary, e := eval.Run(ctx, qs, ret)
+		if e != nil {
+			return e
 		}
 		summary.Name = fmt.Sprintf("%s/api(%s)", qs.Name, *apiURL)
 		fmt.Print(eval.PrintTable(summary))
 		if *baselinePath != "" {
-			base, err := eval.LoadSummary(*baselinePath)
-			if err != nil {
-				return fmt.Errorf("baseline: %w", err)
+			base, e := eval.LoadSummary(*baselinePath)
+			if e != nil {
+				return fmt.Errorf("baseline: %w", e)
 			}
 			fmt.Printf("\nvs baseline (%s):\n%s", *baselinePath, eval.Diff(base, summary))
 		}
 		if *savePath != "" {
-			if err := eval.SaveSummary(summary, *savePath); err != nil {
-				return fmt.Errorf("save: %w", err)
+			if e := eval.SaveSummary(summary, *savePath); e != nil {
+				return fmt.Errorf("save: %w", e)
 			}
 			fmt.Printf("\nsaved summary to %s\n", *savePath)
 		}
@@ -2709,15 +2709,15 @@ func runEval(ctx context.Context, args []string) error {
 
 	bm := index.NewBM25(s)
 	for _, d := range corpus.Docs {
-		id, err := s.UpsertDocument(ctx, &store.Document{
+		id, e := s.UpsertDocument(ctx, &store.Document{
 			URL: d.URL, Title: d.Title, Text: d.Text,
 			Source: "eval", FetchedAt: time.Now(),
 		})
-		if err != nil {
-			return fmt.Errorf("ingest %s: %w", d.URL, err)
+		if e != nil {
+			return fmt.Errorf("ingest %s: %w", d.URL, e)
 		}
-		if err := bm.IndexDocument(ctx, id, d.Title, d.Text); err != nil {
-			return fmt.Errorf("index %s: %w", d.URL, err)
+		if e := bm.IndexDocument(ctx, id, d.Title, d.Text); e != nil {
+			return fmt.Errorf("index %s: %w", d.URL, e)
 		}
 	}
 
@@ -2744,14 +2744,14 @@ func runEval(ctx context.Context, args []string) error {
 			dTitle := fmt.Sprintf("Distractor %d", i)
 			dText := generateDistractorText(drng, neutralVocab, 100)
 			distractorTexts[i] = dText
-			id, err := s.UpsertDocument(ctx, &store.Document{
+			id, e := s.UpsertDocument(ctx, &store.Document{
 				URL: dURL, Title: dTitle, Text: dText, Source: "distractor", FetchedAt: time.Now(),
 			})
-			if err != nil {
-				return fmt.Errorf("distractor %d: %w", i, err)
+			if e != nil {
+				return fmt.Errorf("distractor %d: %w", i, e)
 			}
-			if err := bm.IndexDocument(ctx, id, dTitle, dText); err != nil {
-				return fmt.Errorf("index distractor %d: %w", i, err)
+			if e := bm.IndexDocument(ctx, id, dTitle, dText); e != nil {
+				return fmt.Errorf("index distractor %d: %w", i, e)
 			}
 		}
 		fmt.Printf("injected %d distractor docs into BM25 index\n", *distractors)
@@ -2792,9 +2792,9 @@ func runEval(ctx context.Context, args []string) error {
 			}
 		}
 		fmt.Printf("embedding %d passages across %d docs with %s (batch=%d)...\n", len(allTexts), len(corpus.Docs), *embModel, *embBatch)
-		vecs, err := batchEmbed(ctx, emb, allTexts, *embBatch)
-		if err != nil {
-			return fmt.Errorf("embed corpus: %w", err)
+		vecs, e := batchEmbed(ctx, emb, allTexts, *embBatch)
+		if e != nil {
+			return fmt.Errorf("embed corpus: %w", e)
 		}
 		vi := index.NewVectorIndex(*embDim)
 		for j, v := range vecs {
@@ -3794,8 +3794,8 @@ func benchCrawl(ctx context.Context, n, perHostDelayMs int) (*benchResult, error
 	// crawler's link-discovery rate. Avoids the 1.5s "frontier empty"
 	// terminator firing before link parsing has populated more work.
 	for i := 0; i < n; i++ {
-		if err := c.Seed(fmt.Sprintf("%s/p%d", srv.URL, i)); err != nil {
-			return nil, fmt.Errorf("seed p%d: %w", i, err)
+		if e := c.Seed(fmt.Sprintf("%s/p%d", srv.URL, i)); e != nil {
+			return nil, fmt.Errorf("seed p%d: %w", i, e)
 		}
 	}
 
@@ -5852,25 +5852,25 @@ func recomputeSummary(r savedAnswerEvalReport) map[string]struct {
 		MeanGrounding float64 `json:"mean_grounding"`
 		Combined      float64 `json:"combined"`
 	})
-	for _, strat := range []string{"planner", "paraphrase"} {
+	for _, strategy := range []string{"planner", "paraphrase"} {
 		var covSum, grdSum, n int
 		for _, q := range r.Reports {
 			for _, sr := range q.Reports {
-				if sr.Strategy == strat {
+				if sr.Strategy == strategy {
 					covSum += sr.Coverage
 					grdSum += sr.Grounding
 					n++
 				}
 			}
 		}
-		s := out[strat]
+		s := out[strategy]
 		s.N = n
 		if n > 0 {
 			s.MeanCoverage = float64(covSum) / float64(n)
 			s.MeanGrounding = float64(grdSum) / float64(n)
 			s.Combined = s.MeanCoverage + s.MeanGrounding
 		}
-		out[strat] = s
+		out[strategy] = s
 	}
 	return out
 }
@@ -5910,14 +5910,14 @@ func runAnswerEvalCompare(_ context.Context, args []string) error {
 	// Summary deltas.
 	fmt.Printf("%-12s   N     cov     grnd    comb   |   Δcov    Δgrnd   Δcomb\n", "strategy")
 	fmt.Println("-----------------------------------------------------------------------")
-	for _, strat := range []string{"planner", "paraphrase"} {
-		ab, bb := a.Summary[strat], b.Summary[strat]
+	for _, strategy := range []string{"planner", "paraphrase"} {
+		ab, bb := a.Summary[strategy], b.Summary[strategy]
 		if ab.N == 0 && bb.N == 0 {
-			fmt.Printf("%-12s   (not present in either report)\n", strat)
+			fmt.Printf("%-12s   (not present in either report)\n", strategy)
 			continue
 		}
 		fmt.Printf("%-12s %3d→%-3d %.2f→%.2f %.2f→%.2f %.2f→%.2f | %+.2f  %+.2f  %+.2f\n",
-			strat, ab.N, bb.N,
+			strategy, ab.N, bb.N,
 			ab.MeanCoverage, bb.MeanCoverage,
 			ab.MeanGrounding, bb.MeanGrounding,
 			ab.Combined, bb.Combined,

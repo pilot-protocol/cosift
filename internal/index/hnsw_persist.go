@@ -146,19 +146,24 @@ func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	h.maxLevel = meta.maxLevel
 	h.nodes = make([]hnswNode, meta.nodeCount)
 
+	var decodeErr error
 	err = ps.IterateVectorNodes(ctx, func(nodeID uint64, blob []byte) bool {
 		if int(nodeID) >= len(h.nodes) {
 			return true // out-of-bounds — skip silently
 		}
-		n, err := decodeHNSWNode(blob, meta.dim)
-		if err != nil {
-			return false // bail; outer call returns context.Err or this err? defer to err return
+		n, e := decodeHNSWNode(blob, meta.dim)
+		if e != nil {
+			decodeErr = fmt.Errorf("decode node %d: %w", nodeID, e)
+			return false
 		}
 		h.nodes[nodeID] = *n
 		return true
 	})
 	if err != nil {
 		return nil, false, err
+	}
+	if decodeErr != nil {
+		return nil, false, decodeErr
 	}
 	return h, true, nil
 }

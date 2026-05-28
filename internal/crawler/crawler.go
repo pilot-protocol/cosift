@@ -406,8 +406,7 @@ func (c *Crawler) statusDumper(ctx context.Context, path string) {
 			if pebbleLike, ok := c.store.(interface {
 				CorpusStats(ctx context.Context) (int64, int64, error)
 			}); ok {
-				sumLen, count, err := pebbleLike.CorpusStats(ctx)
-				if err == nil && count > 0 {
+				if sumLen, count, e := pebbleLike.CorpusStats(ctx); e == nil && count > 0 {
 					indexedDocs = count
 					avgDocLen = float64(sumLen) / float64(count)
 				}
@@ -669,8 +668,8 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		if res.lastModified != "" {
 			prior.LastModified = res.lastModified
 		}
-		if _, err := c.store.UpsertDocument(ctx, prior); err != nil {
-			return err
+		if _, e := c.store.UpsertDocument(ctx, prior); e != nil {
+			return e
 		}
 		return nil
 	}
@@ -725,8 +724,8 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			if res.lastModified != "" {
 				existing.LastModified = res.lastModified
 			}
-			if _, err := c.store.UpsertDocument(ctx, existing); err != nil {
-				return err
+			if _, e := c.store.UpsertDocument(ctx, existing); e != nil {
+				return e
 			}
 			return nil
 		}

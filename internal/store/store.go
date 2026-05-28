@@ -620,7 +620,7 @@ func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (Cra
 	}
 	for rows.Next() {
 		var fs FrontierStatusCount
-		if err := rows.Scan(&fs.Status, &fs.Count); err != nil {
+		if err = rows.Scan(&fs.Status, &fs.Count); err != nil {
 			rows.Close()
 			return r, err
 		}
@@ -638,7 +638,7 @@ func (s *Store) CrawlStatus(ctx context.Context, topHostsN, topErrorsN int) (Cra
 	}
 	for rows.Next() {
 		var h HostDocCount
-		if err := rows.Scan(&h.Host, &h.Count); err != nil {
+		if err = rows.Scan(&h.Host, &h.Count); err != nil {
 			rows.Close()
 			return r, err
 		}

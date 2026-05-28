@@ -2845,8 +2845,8 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	var sb strings.Builder
 	sources := make([]AnswerSource, 0, len(hits))
 	for i, h := range hits {
-		doc, err := s.store.GetDocByURL(ctx, h.URL)
-		if err != nil {
+		doc, e := s.store.GetDocByURL(ctx, h.URL)
+		if e != nil {
 			continue
 		}
 		text := doc.Text
