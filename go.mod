@@ -1,6 +1,6 @@
 module github.com/pilot-protocol/cosift
 
-go 1.25.3
+go 1.25.10
 
 require (
 	github.com/cockroachdb/pebble v1.1.5
