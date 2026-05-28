@@ -99,12 +99,17 @@ flags:
 
 var version = "0.0.1-dev"
 
-// chunkerWith is a thin shim around's index.NewChunkerWith — kept as
-// a local alias to avoid churning the 4 CLI callsites, and so the Iter
-// "where chunker config gets resolved" path remains discoverable from this file.
+// chunkerWith is a thin alias for index.NewChunkerWith; keeps the four
+// CLI call sites short and grep-discoverable.
 func chunkerWith(size, overlap int) *index.Chunker {
 	return index.NewChunkerWith(size, overlap)
 }
+
+// usageError signals that flag.Usage (or a per-command usage line) was
+// printed and the process should exit with status 2.
+type usageError struct{ msg string }
+
+func (u *usageError) Error() string { return u.msg }
 
 func main() {
 	cfgPath := flag.String("config", "cosift.json", "path to config file")
@@ -116,9 +121,25 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := config.Load(*cfgPath)
+	err := run(*cfgPath)
+	if err == nil {
+		return
+	}
+	var ue *usageError
+	if errors.As(err, &ue) {
+		if ue.msg != "" {
+			fmt.Fprintln(os.Stderr, ue.msg)
+		}
+		os.Exit(2)
+	}
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}
+
+func run(cfgPath string) error {
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -128,47 +149,41 @@ func main() {
 	case "version":
 		fmt.Println(version)
 	case "init":
-		if err := runInit(*cfgPath, flag.Args()[1:]); err != nil {
-			log.Fatalf("init: %v", err)
+		if err := runInit(cfgPath, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("init: %w", err)
 		}
 	case "crawl":
-		args := flag.Args()[1:]
-		if err := runCrawl(ctx, cfg, args); err != nil {
-			log.Fatalf("crawl: %v", err)
+		if err := runCrawl(ctx, cfg, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("crawl: %w", err)
 		}
 	case "query":
-		// query text is the FIRST positional arg, then optional
-		// flags. Old: `cosift query "text"` (still works). New: `cosift
-		// query "text" -k 20 -json`.
 		if flag.NArg() < 2 {
-			log.Fatal("query: text required (usage: cosift query <text> [-k N] [-json])")
+			return &usageError{msg: "query: text required (usage: cosift query <text> [-k N] [-json])"}
 		}
 		if err := runQuery(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
-			log.Fatalf("query: %v", err)
+			return fmt.Errorf("query: %w", err)
 		}
 	case "search":
-		// HTTP-via-server search. Same positional+flags pattern as `query`.
-		// Distinct from `query` (BM25 local-only); `search` exercises the full
-		// pipeline of a running cosift instance.
+		// HTTP-via-server search; exercises the full pipeline of a running
+		// cosift instance, unlike `query` which is BM25 local-only.
 		if flag.NArg() < 2 {
-			log.Fatal("search: text required (usage: cosift search <text> [-server URL] [-k N] [-retriever ...] [-json])")
+			return &usageError{msg: "search: text required (usage: cosift search <text> [-server URL] [-k N] [-retriever ...] [-json])"}
 		}
 		if err := runSearchCLI(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
-			log.Fatalf("search: %v", err)
+			return fmt.Errorf("search: %w", err)
 		}
 	case "research":
 		// HTTP-via-server research. Sibling to `search` but hits the
 		// /research endpoint — LLM synthesis over retrieved sources.
 		if flag.NArg() < 2 {
-			log.Fatal("research: text required (usage: cosift research <text> [-server URL] [-strategy planner|paraphrase] [-json])")
+			return &usageError{msg: "research: text required (usage: cosift research <text> [-server URL] [-strategy planner|paraphrase] [-json])"}
 		}
 		if err := runResearchCLI(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
-			log.Fatalf("research: %v", err)
+			return fmt.Errorf("research: %w", err)
 		}
 	case "find-similar":
-		// HTTP-via-server find-similar. URL was positional-required.
-		// relax to accept either positional URL OR -text/-text-file
-		//. Treat first non-flag arg as URL.
+		// Accepts either a positional URL or -text / -text-file. The first
+		// non-flag arg is treated as a URL.
 		fsArgs := flag.Args()[1:]
 		var sourceURL string
 		if len(fsArgs) > 0 && !strings.HasPrefix(fsArgs[0], "-") {
@@ -176,152 +191,144 @@ func main() {
 			fsArgs = fsArgs[1:]
 		}
 		if err := runFindSimilarCLI(ctx, cfg, sourceURL, fsArgs); err != nil {
-			log.Fatalf("find-similar: %v", err)
+			return fmt.Errorf("find-similar: %w", err)
 		}
 	case "contents":
-		// GET /contents (single URL) or POST /contents (batch — multiple
-		// positional URLs OR -file).content fetching from the CLI.
-		// Required-args validation happens inside runContentsCLI after flag
-		// parsing because URLs can come from positional args OR -file.
+		// GET /contents (single URL) or POST /contents (batch). Required-args
+		// validation happens inside runContentsCLI after flag parsing because
+		// URLs can come from positional args OR -file.
 		if err := runContentsCLI(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("contents: %v", err)
+			return fmt.Errorf("contents: %w", err)
 		}
 	case "answer":
-		// HTTP-via-server /answer — single-question LLM answer with
-		// cited sources. Sibling to `research` but no plan/expansion strategy
-		// surface (just answer the question, k retrieved sources).
+		// HTTP-via-server /answer — single-question LLM answer with cited
+		// sources. Sibling to `research` but no plan/expansion surface.
 		if flag.NArg() < 2 {
-			log.Fatal("answer: question required (usage: cosift answer <text> [-server URL] [-k N] [-expand] [-json])")
+			return &usageError{msg: "answer: question required (usage: cosift answer <text> [-server URL] [-k N] [-expand] [-json])"}
 		}
 		if err := runAnswerCLI(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
-			log.Fatalf("answer: %v", err)
+			return fmt.Errorf("answer: %w", err)
 		}
 	case "admin":
-		// Admin CLI subcommands — bearer-auth /admin/* endpoints.
-		// added `recrawl` (destructive POST, requires -y).
-		// added `recrawl-domain` (bulk by domain, requires -y or -dry-run).
-		// multi-line help when invoked without a subcommand.
 		if flag.NArg() < 2 {
-			fmt.Fprint(os.Stderr, adminUsageError())
-			os.Exit(2)
+			return &usageError{msg: adminUsageError()}
 		}
 		if err := runAdmin(ctx, cfg, flag.Arg(1), flag.Args()[2:]); err != nil {
-			log.Fatalf("admin: %v", err)
+			return fmt.Errorf("admin: %w", err)
 		}
 	case "stats":
 		if err := runStats(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("stats: %v", err)
+			return fmt.Errorf("stats: %w", err)
 		}
 	case "status-file":
 		if err := runStatusFile(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("status-file: %v", err)
+			return fmt.Errorf("status-file: %w", err)
 		}
 	case "crawl-status":
 		if err := runCrawlStatus(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("crawl-status: %v", err)
+			return fmt.Errorf("crawl-status: %w", err)
 		}
 	case "eval":
 		if err := runEval(ctx, flag.Args()[1:]); err != nil {
-			log.Fatalf("eval: %v", err)
+			return fmt.Errorf("eval: %w", err)
 		}
 	case "answer-eval":
 		if err := runAnswerEval(ctx, flag.Args()[1:]); err != nil {
-			log.Fatalf("answer-eval: %v", err)
+			return fmt.Errorf("answer-eval: %w", err)
 		}
 	case "answer-eval-compare":
 		if err := runAnswerEvalCompare(ctx, flag.Args()[1:]); err != nil {
-			log.Fatalf("answer-eval-compare: %v", err)
+			return fmt.Errorf("answer-eval-compare: %w", err)
 		}
 	case "bench-compare":
 		if err := runBenchCompare(flag.Args()[1:]); err != nil {
-			log.Fatalf("bench-compare: %v", err)
+			return fmt.Errorf("bench-compare: %w", err)
 		}
 	case "ingest":
 		if err := runIngest(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("ingest: %v", err)
+			return fmt.Errorf("ingest: %w", err)
 		}
 	case "export":
 		if err := runExport(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("export: %v", err)
+			return fmt.Errorf("export: %w", err)
 		}
 	case "migrate-to-pebble":
 		if err := runMigrateToPebble(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("migrate-to-pebble: %v", err)
+			return fmt.Errorf("migrate-to-pebble: %w", err)
 		}
 	case "gc":
 		if err := runGC(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("gc: %v", err)
+			return fmt.Errorf("gc: %w", err)
 		}
 	case "outcomes":
 		if err := runOutcomes(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("outcomes: %v", err)
+			return fmt.Errorf("outcomes: %w", err)
 		}
 	case "doctor":
-		// extended doctor with optional remote checks via -server / -token.
+		// runDoctor already prints its own report; non-nil err means at
+		// least one check failed (exit 1) with no extra wrapping.
 		if err := runDoctor(ctx, cfg, flag.Args()[1:]); err != nil {
-			os.Exit(1)
+			return err
 		}
 	case "check-robots":
 		if err := runCheckRobots(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("check-robots: %v", err)
+			return fmt.Errorf("check-robots: %w", err)
 		}
 	case "crawl-errors":
 		if err := runCrawlErrors(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("crawl-errors: %v", err)
+			return fmt.Errorf("crawl-errors: %w", err)
 		}
 	case "reembed":
 		if err := runReembed(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("reembed: %v", err)
+			return fmt.Errorf("reembed: %w", err)
 		}
 	case "compact-index":
 		if err := runCompactIndex(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("compact-index: %v", err)
+			return fmt.Errorf("compact-index: %w", err)
 		}
 	case "bench":
 		if err := runBench(ctx, flag.Args()[1:]); err != nil {
-			log.Fatalf("bench: %v", err)
+			return fmt.Errorf("bench: %w", err)
 		}
 	case "bench-pq":
 		if err := runBenchPQ(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("bench-pq: %v", err)
+			return fmt.Errorf("bench-pq: %w", err)
 		}
 	case "parse-pdf":
-		// Stdin = pdf bytes,
-		// stdout = JSON {title, text} or {error}. Sets a soft memory
-		// limit so the kernel can kill us via OOM if the ledongthuc/pdf
-		// library starts allocating without bound — parent survives.
-		debug.SetMemoryLimit(500 << 20) // 500 MiB soft cap
+		// Stdin = pdf bytes, stdout = JSON. Sets a soft memory limit so the
+		// kernel can kill us via OOM if the pdf library allocates without
+		// bound — parent survives.
+		debug.SetMemoryLimit(500 << 20)
 		crawler.ParsePDFChild(os.Stdin, os.Stdout)
-		return
 	case "hnsw-rebuild":
 		if err := runHNSWRebuild(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("hnsw-rebuild: %v", err)
+			return fmt.Errorf("hnsw-rebuild: %w", err)
 		}
 	case "refresh-due":
 		if err := runRefreshDue(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("refresh-due: %v", err)
+			return fmt.Errorf("refresh-due: %w", err)
 		}
 	case "serve":
 		if err := runServe(ctx, cfg); err != nil {
-			log.Fatalf("serve: %v", err)
+			return fmt.Errorf("serve: %w", err)
 		}
 	case "pebble-serve":
 		if err := runPebbleServe(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("pebble-serve: %v", err)
+			return fmt.Errorf("pebble-serve: %w", err)
 		}
 	case "pebble-info":
 		if err := runPebbleInfo(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("pebble-info: %v", err)
+			return fmt.Errorf("pebble-info: %w", err)
 		}
 	case "verify":
 		if err := runVerifyPebble(ctx, cfg, flag.Args()[1:]); err != nil {
-			log.Fatalf("verify: %v", err)
+			return fmt.Errorf("verify: %w", err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		flag.Usage()
-		os.Exit(2)
+		return &usageError{msg: "unknown command: " + cmd}
 	}
+	return nil
 }
 
 // authStatus describes how a configured capability will authenticate to its
@@ -2322,10 +2329,9 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 	}
 	if effectiveDryRun {
 		fmt.Printf("Dry-run: %d URL(s) match %q. Re-run with -y (not -dry-run) to queue them.\n", rr.Matched, rr.Domain)
-		// -limit-list 0 → count only
-		//. -limit-list -1 →
-		// unlimited (operator wants the full list, accepts console spam).
-		// Otherwise: print up to listLimit and append a "... (N more)" suffix.
+		// -limit-list 0 → count only. -limit-list -1 → unlimited (operator
+		// wants the full list, accepts console spam). Otherwise: print up
+		// to listLimit and append a "... (N more)" suffix.
 		if *listLimit != 0 && len(rr.URLs) > 0 {
 			n := *listLimit
 			if n < 0 || n > len(rr.URLs) {

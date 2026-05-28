@@ -893,9 +893,8 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// / honor server-configured chunker overrides via
-	//'s NewChunkerWith helper. Falls back to NewChunker defaults
-	// (320/64) when both fields are zero.
+	// Honor server-configured chunker overrides. Falls back to NewChunker
+	// defaults (320/64) when both fields are zero.
 	chunker := index.NewChunkerWith(s.chunkSize, s.chunkOverlap)
 	const batchSize = 64
 	var passagesWritten int
@@ -2796,13 +2795,11 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ?hyde=true on /answer. shipped HyDE for /search but
-	// /answer's handler never parsed the query param — runSearch alone won't
-	// set the passage in ctx. Same shape as's /search wiring +
-	//'s /research wiring.
-	// also set hydeEnabledKey so expandHits knows to do per-paraphrase
-	// HyDE generation (otherwise paraphrase retrievals reuse HyDE-of-q for
-	// their dense leg, silently breaking expand's diversification).
+	// ?hyde=true on /answer. Mirrors /search's wiring: read the query
+	// param, set the HyDE passage on ctx, and also set hydeEnabledKey so
+	// expandHits does per-paraphrase HyDE generation. Without the latter,
+	// every paraphrase retrieval reuses HyDE-of-q on its dense leg and
+	// expand's diversification breaks silently.
 	ctx := r.Context()
 	if v := r.URL.Query().Get("hyde"); v == "true" || v == "1" {
 		if s.hyde == nil {

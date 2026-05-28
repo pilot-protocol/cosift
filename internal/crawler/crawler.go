@@ -822,11 +822,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 							log.Printf("zombie-reclaim: passageWriter %T does NOT implement URLInvalidator (one-time check)", c.passageWriter)
 						} else {
 							n, err := inv.MarkURLInvalid(ctx, item.URL)
-							if err != nil {
+							switch {
+							case err != nil:
 								log.Printf("zombie-reclaim %s: %v", item.URL, err)
-							} else if n > 0 {
+							case n > 0:
 								log.Printf("zombie-reclaim %s: invalidated %d stale passages", item.URL, n)
-							} else if c.zombieDebugLogged < 5 {
+							case c.zombieDebugLogged < 5:
 								// Diagnostic: first few zero-hit cases to confirm code path is reached.
 								log.Printf("zombie-reclaim %s: 0 prior passages (diagnostic)", item.URL)
 								c.zombieDebugLogged++
