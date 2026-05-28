@@ -408,6 +408,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
@@ -3006,7 +3008,7 @@ type searchRequest struct {
 
 func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 	var req searchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -3069,7 +3071,7 @@ type findSimilarRequest struct {
 
 func (s *pebbleHTTP) handleFindSimilarPOST(w http.ResponseWriter, r *http.Request) {
 	var req findSimilarRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -3161,7 +3163,7 @@ func (req synthRequest) toValues() url.Values {
 
 func (s *pebbleHTTP) handleAnswerPOST(w http.ResponseWriter, r *http.Request) {
 	var req synthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -3171,7 +3173,7 @@ func (s *pebbleHTTP) handleAnswerPOST(w http.ResponseWriter, r *http.Request) {
 
 func (s *pebbleHTTP) handleResearchPOST(w http.ResponseWriter, r *http.Request) {
 	var req synthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -5810,7 +5812,7 @@ type contentsBatchItem struct {
 func (s *pebbleHTTP) handleContentsBatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req contentsBatchReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
