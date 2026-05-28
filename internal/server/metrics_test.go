@@ -69,9 +69,12 @@ func TestMetricsEndpointThroughServer(t *testing.T) {
 	defer httpSrv.Close()
 
 	// Hit a couple of endpoints so there's something to scrape.
-	http.Get(httpSrv.URL + "/healthz")
-	http.Get(httpSrv.URL + "/stats")
-	http.Get(httpSrv.URL + "/stats")
+	for _, path := range []string{"/healthz", "/stats", "/stats"} {
+		r, _ := http.Get(httpSrv.URL + path)
+		if r != nil {
+			r.Body.Close()
+		}
+	}
 
 	resp, err := http.Get(httpSrv.URL + "/metrics")
 	if err != nil {
@@ -163,12 +166,16 @@ func TestMetricsCountsRateLimitDenial(t *testing.T) {
 	defer httpSrv.Close()
 
 	// First request: allowed (404-ish — chat not configured, but limiter checked first).
-	_, _ = http.Get(httpSrv.URL + "/answer?q=hi")
+	r0, _ := http.Get(httpSrv.URL + "/answer?q=hi")
+	if r0 != nil {
+		r0.Body.Close()
+	}
 	// Second: should be denied (429).
 	resp, _ := http.Get(httpSrv.URL + "/answer?q=hi")
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("second hit: got %d want 429", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	metricsResp, _ := http.Get(httpSrv.URL + "/metrics")
 	body, _ := io.ReadAll(metricsResp.Body)

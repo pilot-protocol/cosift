@@ -104,16 +104,19 @@ func TestSearchBadParams(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("missing q: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	resp, _ = http.Get(srv.URL + "/search?q=hi&k=999")
 	if resp.StatusCode != 400 {
 		t.Errorf("k out of range: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	resp, _ = http.Get(srv.URL + "/search?q=hi&k=notanint")
 	if resp.StatusCode != 400 {
 		t.Errorf("non-int k: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 // stubEmbedder returns a fixed-dim vector that pulls toward whichever URL's
@@ -2295,6 +2298,7 @@ func TestAnswerExpandUnconfigured(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("expand without paraphraser: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestAnswerWithoutChat(t *testing.T) {
@@ -2303,6 +2307,7 @@ func TestAnswerWithoutChat(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("expected 400 without WithChat: got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestFindSimilar(t *testing.T) {
@@ -2464,6 +2469,7 @@ func TestAdminRecrawlAuthMatrix(t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Errorf("no token configured: got %d want 403", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	// 2) Token configured, no Authorization header → 401.
 	srv2 := New(s).WithAdminToken("secret-abc")
@@ -2473,6 +2479,7 @@ func TestAdminRecrawlAuthMatrix(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("no header: got %d want 401", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	// 3) Token configured, wrong bearer → 401.
 	req, _ := http.NewRequest("POST", h2.URL+"/admin/recrawl", strings.NewReader(body))
@@ -2482,6 +2489,7 @@ func TestAdminRecrawlAuthMatrix(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("wrong token: got %d want 401", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	// 4) Correct bearer → 200 + URLs queued.
 	req, _ = http.NewRequest("POST", h2.URL+"/admin/recrawl", strings.NewReader(body))
@@ -2530,6 +2538,7 @@ func TestAdminStatsShape(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("unauth: got %d want 401", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	req, _ := http.NewRequest("GET", httpSrv.URL+"/admin/stats", nil)
 	req.Header.Set("Authorization", "Bearer k")
@@ -2703,6 +2712,7 @@ func TestFeedbackRecordsOutcome(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status: got %d want 200", resp.StatusCode)
 	}
+	resp.Body.Close()
 	total, useful, _ := s.CountOutcomes(context.Background())
 	if total != 1 || useful != 1 {
 		t.Errorf("counts: total=%d useful=%d want 1/1", total, useful)
@@ -2713,6 +2723,7 @@ func TestFeedbackRecordsOutcome(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("missing url: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestAdminRecrawlBadInput(t *testing.T) {
@@ -2954,6 +2965,7 @@ func TestSearchExpandUnconfigured(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("expand=true without WithParaphraser: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestSearchDenseUnconfigured(t *testing.T) {
@@ -2962,6 +2974,7 @@ func TestSearchDenseUnconfigured(t *testing.T) {
 	if resp.StatusCode != 400 {
 		t.Errorf("dense without WithVector: got %d want 400", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestContentsFromStore(t *testing.T) {
@@ -2989,6 +3002,7 @@ func TestContentsNotFound(t *testing.T) {
 	if resp.StatusCode != 404 {
 		t.Errorf("expected 404 for unknown URL, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
 func TestContentsOnDemandFetch(t *testing.T) {
@@ -3026,7 +3040,8 @@ func TestContentsOnDemandFetch(t *testing.T) {
 
 	// Repeat call — we deliberately do NOT persist on-demand fetches, so it
 	// should hit the fetcher again.
-	_, _ = http.Get(httpSrv.URL + "/contents?url=https://example.com/fresh")
+	resp2, _ := http.Get(httpSrv.URL + "/contents?url=https://example.com/fresh")
+	resp2.Body.Close()
 	if called != 2 {
 		t.Errorf("on-demand fetches should not be persisted; expected fetcher called twice, got %d", called)
 	}
