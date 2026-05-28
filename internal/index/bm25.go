@@ -11,6 +11,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -214,7 +215,7 @@ func (b *BM25) Search(ctx context.Context, q string, k int) ([]Hit, error) {
 		var termID int64
 		var df int64
 		err := db.QueryRowContext(ctx, `SELECT id, doc_freq FROM terms WHERE term = ?;`, term).Scan(&termID, &df)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {

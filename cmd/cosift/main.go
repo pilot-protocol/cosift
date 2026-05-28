@@ -912,7 +912,7 @@ func forEachSSEEvent(body io.Reader, handle func(event, data string) error) erro
 			// Blank line terminates an event block — dispatch.
 			if event != "" {
 				if err := handle(event, data); err != nil {
-					if err == errSSEDone {
+					if errors.Is(err, errSSEDone) {
 						return nil
 					}
 					return err

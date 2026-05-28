@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -133,7 +134,7 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 				return err
 			}
 			rec, err := readWetRecord(br)
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			if err != nil {
@@ -157,7 +158,7 @@ func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexic
 		}
 	}()
 	wg.Wait()
-	if readErr != nil && readErr != context.Canceled {
+	if readErr != nil && !errors.Is(readErr, context.Canceled) {
 		return int(indexed.Load()), readErr
 	}
 	return int(indexed.Load()), nil

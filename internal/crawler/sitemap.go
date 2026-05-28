@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -141,7 +142,7 @@ func streamSitemapEmit(body []byte, itemTag string, emit func(string)) error {
 	var locBuf strings.Builder
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
