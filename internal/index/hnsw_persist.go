@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -146,15 +147,23 @@ func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	h.maxLevel = meta.maxLevel
 	h.nodes = make([]hnswNode, meta.nodeCount)
 
-	var decodeErr error
+	// Corrupt blobs (bit rot, partial writes from prior crashes) leave the
+	// slot at its zero value — same shape as a zombie node, which the Search
+	// path already filters via len(vec) == 0. Log the first few so they're
+	// visible without flooding the journal, plus a final tally.
+	var skipped int
+	const logFirst = 5
 	err = ps.IterateVectorNodes(ctx, func(nodeID uint64, blob []byte) bool {
 		if int(nodeID) >= len(h.nodes) {
 			return true // out-of-bounds — skip silently
 		}
 		n, e := decodeHNSWNode(blob, meta.dim)
 		if e != nil {
-			decodeErr = fmt.Errorf("decode node %d: %w", nodeID, e)
-			return false
+			if skipped < logFirst {
+				log.Printf("LoadHNSW: skipping corrupt node %d: %v", nodeID, e)
+			}
+			skipped++
+			return true
 		}
 		h.nodes[nodeID] = *n
 		return true
@@ -162,8 +171,8 @@ func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if decodeErr != nil {
-		return nil, false, decodeErr
+	if skipped > 0 {
+		log.Printf("LoadHNSW: %d corrupt node blob(s) skipped (left as zombies)", skipped)
 	}
 	return h, true, nil
 }

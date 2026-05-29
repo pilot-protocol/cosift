@@ -114,6 +114,73 @@ func TestLoadHNSWAbsent(t *testing.T) {
 	}
 }
 
+// TestLoadHNSWSkipsCorruptNode — one corrupted node blob must not ground the
+// load. Reproduces the production case where node K's persisted blob carries
+// dim=0 instead of the meta-declared dim (bit rot / partial write from a
+// prior crash). The slot becomes a zombie (nil vec) — same shape Search
+// already filters via len(vec) == 0 — and the rest of the index is intact.
+func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const (
+		n         = 10
+		dim       = 8
+		corruptID = 4
+	)
+	h := NewHNSW(dim)
+	h.rng = rand.New(rand.NewSource(1))
+	for i := 0; i < n; i++ {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = float32(i+1) * 0.1
+		}
+		h.AddPassage(fmt.Sprintf("https://x/%d", i), "t", i*100, 50, v)
+	}
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// Overwrite node `corruptID`'s blob with a minimal-but-invalid payload.
+	// urlLen=0 + titleLen=0 + offset=0 + length=0 + level=0 + dim=0 — every
+	// field zero, which makes decodeHNSWNode return "dim mismatch: got 0".
+	bad := make([]byte, 2+2+4+4+4+4)
+	if err := ps.PutVectorNodesBatch(ctx, []store.VectorNodeEntry{
+		{ID: corruptID, Blob: bad},
+	}); err != nil {
+		t.Fatalf("PutVectorNodesBatch: %v", err)
+	}
+
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil {
+		t.Fatalf("LoadHNSW: %v (expected nil — corrupt node should be skipped)", err)
+	}
+	if !ok {
+		t.Fatal("LoadHNSW ok=false; expected true")
+	}
+	if loaded.Len() != n {
+		t.Errorf("loaded.Len(): want %d (slot count is meta.nodeCount), got %d", n, loaded.Len())
+	}
+	// Corrupted slot has nil vec — Search will skip it.
+	if got := len(loaded.nodes[corruptID].vec); got != 0 {
+		t.Errorf("corrupt slot vec: want len 0 (zombie), got %d", got)
+	}
+	// Every OTHER slot survived intact.
+	for i := 0; i < n; i++ {
+		if i == corruptID {
+			continue
+		}
+		if got := len(loaded.nodes[i].vec); got != dim {
+			t.Errorf("slot %d vec: want len %d, got %d", i, dim, got)
+		}
+	}
+}
+
 // TestHNSWNodeEncodingExact — a single-node round-trip with controlled
 // values asserts every field survives encode→decode bit-for-bit.
 func TestHNSWNodeEncodingExact(t *testing.T) {
