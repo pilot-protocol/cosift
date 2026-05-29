@@ -14,8 +14,15 @@ RUN CGO_ENABLED=0 GOOS=linux \
 
 # Stage 2: minimal runtime. Alpine carries ca-certs for outbound HTTPS
 # (OpenAI/Cohere/embedding sidecars).
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && \
+#
+# PILOT-154: pin both the base image patch level AND apk packages so
+# rebuilds are deterministic. Bump these together when the Alpine 3.20.x
+# branch picks up a security update — verify the new versions are still
+# available in dl-cdn.alpinelinux.org/alpine/v3.20/main before merging.
+FROM alpine:3.20.6
+RUN apk add --no-cache \
+    ca-certificates=20260413-r0 \
+    tzdata=2026b-r0 && \
     addgroup -S cosift && adduser -S -G cosift cosift && \
     mkdir -p /var/lib/cosift && chown -R cosift:cosift /var/lib/cosift
 
