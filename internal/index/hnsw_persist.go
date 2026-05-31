@@ -314,7 +314,12 @@ func decodeHNSWNode(buf []byte, expectedDim int) (*hnswNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if expectedDim > 0 && int(dim) != expectedDim {
+	// dim==0 is the deliberate zombie sentinel that encodeHNSWNode writes
+	// for nodes whose vec was nil'd by MarkURLPassagesInvalid. The empty-vec
+	// node still carries url/title/level/neighbors so the graph adjacency
+	// stays consistent; Search filters these via len(vec)==0. Any other
+	// non-matching dim is real corruption.
+	if dim != 0 && int(dim) != expectedDim {
 		return nil, fmt.Errorf("node blob dim mismatch: got %d, expected %d", dim, expectedDim)
 	}
 	vec := make([]float32, dim)

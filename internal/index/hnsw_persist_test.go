@@ -114,11 +114,88 @@ func TestLoadHNSWAbsent(t *testing.T) {
 	}
 }
 
-// TestLoadHNSWSkipsCorruptNode — one corrupted node blob must not ground the
-// load. Reproduces the production case where node K's persisted blob carries
-// dim=0 instead of the meta-declared dim (bit rot / partial write from a
-// prior crash). The slot becomes a zombie (nil vec) — same shape Search
-// already filters via len(vec) == 0 — and the rest of the index is intact.
+// TestLoadHNSWZombieRoundTrip locks in the encoder/decoder symmetry that
+// the GH200 OOM-cycle investigation surfaced: MarkURLPassagesInvalid sets
+// vec=nil; the next Persist encodes those nodes with dim=0; LoadHNSW must
+// accept dim=0 as the deliberate zombie sentinel and preserve everything
+// else (url, title, offset, length, level, neighbors) so the graph
+// adjacency stays consistent across restarts.
+func TestLoadHNSWZombieRoundTrip(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const (
+		n        = 10
+		dim      = 8
+		zombieID = 4
+	)
+	h := NewHNSW(dim)
+	h.rng = rand.New(rand.NewSource(1))
+	for i := 0; i < n; i++ {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = float32(i+1) * 0.1
+		}
+		h.AddPassage(fmt.Sprintf("https://x/%d", i), fmt.Sprintf("title %d", i), i*100, 50, v)
+	}
+	// Zombie one node via the production code path — mirrors what
+	// MarkURLPassagesInvalid does when a URL is re-crawled.
+	h.MarkURLPassagesInvalid(fmt.Sprintf("https://x/%d", zombieID))
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil {
+		t.Fatalf("LoadHNSW: %v (zombie must NOT be treated as corruption)", err)
+	}
+	if !ok {
+		t.Fatal("LoadHNSW ok=false; expected true")
+	}
+	if loaded.Len() != n {
+		t.Errorf("loaded.Len(): want %d, got %d", n, loaded.Len())
+	}
+	// Zombie slot: empty vec, but url/title/offset/length/level/neighbors
+	// must survive so search-layer graph navigation works against it.
+	z := loaded.nodes[zombieID]
+	if len(z.vec) != 0 {
+		t.Errorf("zombie vec: want len 0, got %d", len(z.vec))
+	}
+	wantURL := fmt.Sprintf("https://x/%d", zombieID)
+	if z.url != wantURL {
+		t.Errorf("zombie url: want %q, got %q", wantURL, z.url)
+	}
+	if z.title == "" {
+		t.Errorf("zombie title: want preserved, got empty")
+	}
+	if z.offset != zombieID*100 {
+		t.Errorf("zombie offset: want %d, got %d", zombieID*100, z.offset)
+	}
+	if z.length != 50 {
+		t.Errorf("zombie length: want 50, got %d", z.length)
+	}
+	if len(z.neighbors) == 0 {
+		t.Errorf("zombie neighbors: want non-empty layer list (preserves graph adjacency), got empty")
+	}
+	// Every NON-zombie slot still has its vec.
+	for i := 0; i < n; i++ {
+		if i == zombieID {
+			continue
+		}
+		if got := len(loaded.nodes[i].vec); got != dim {
+			t.Errorf("slot %d vec: want len %d, got %d", i, dim, got)
+		}
+	}
+}
+
+// TestLoadHNSWSkipsCorruptNode — actual storage-level corruption (a truncated
+// node blob, not a zombie) must not ground the load. Slot becomes empty,
+// rest of the index is intact.
 func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pebble")
 	ps, err := store.OpenPebble(dir)
@@ -146,10 +223,16 @@ func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	// Overwrite node `corruptID`'s blob with a minimal-but-invalid payload.
-	// urlLen=0 + titleLen=0 + offset=0 + length=0 + level=0 + dim=0 — every
-	// field zero, which makes decodeHNSWNode return "dim mismatch: got 0".
-	bad := make([]byte, 2+2+4+4+4+4)
+	// Overwrite node `corruptID`'s blob with a blob whose declared dim is
+	// neither 0 (the zombie sentinel) nor the meta dim. This is the real-
+	// corruption shape the decoder should still reject.
+	bad := make([]byte, 0, 32)
+	bad = append(bad, 0, 0)        // urlLen
+	bad = append(bad, 0, 0)        // titleLen
+	bad = append(bad, 0, 0, 0, 0)  // offset
+	bad = append(bad, 0, 0, 0, 0)  // length
+	bad = append(bad, 0, 0, 0, 0)  // level
+	bad = append(bad, 99, 0, 0, 0) // dim = 99 — mismatch with meta dim=8
 	if err := ps.PutVectorNodesBatch(ctx, []store.VectorNodeEntry{
 		{ID: corruptID, Blob: bad},
 	}); err != nil {
@@ -158,7 +241,7 @@ func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
 
 	loaded, ok, err := LoadHNSW(ctx, ps)
 	if err != nil {
-		t.Fatalf("LoadHNSW: %v (expected nil — corrupt node should be skipped)", err)
+		t.Fatalf("LoadHNSW: %v (expected nil — corrupt node should be skipped, not grounded)", err)
 	}
 	if !ok {
 		t.Fatal("LoadHNSW ok=false; expected true")
@@ -166,11 +249,9 @@ func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
 	if loaded.Len() != n {
 		t.Errorf("loaded.Len(): want %d (slot count is meta.nodeCount), got %d", n, loaded.Len())
 	}
-	// Corrupted slot has nil vec — Search will skip it.
 	if got := len(loaded.nodes[corruptID].vec); got != 0 {
-		t.Errorf("corrupt slot vec: want len 0 (zombie), got %d", got)
+		t.Errorf("corrupt slot vec: want len 0 (skipped → empty), got %d", got)
 	}
-	// Every OTHER slot survived intact.
 	for i := 0; i < n; i++ {
 		if i == corruptID {
 			continue
