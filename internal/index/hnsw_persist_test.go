@@ -114,6 +114,107 @@ func TestLoadHNSWAbsent(t *testing.T) {
 	}
 }
 
+// TestLoadHNSWLegacyTruncatedZombieAccepted — the 4.23M production blobs on
+// the GH200 box are 20 bytes long: header-only, no neighbor section. They came
+// from pre-fix encodings of zero-value hnswNode{} slots (neighbors=nil), which
+// the old encoder wrote as 20 bytes. The fixed decoder must accept these as
+// zero-state zombies (no vec, no neighbors), not error and ground the load.
+func TestLoadHNSWLegacyTruncatedZombieAccepted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const (
+		n        = 5
+		dim      = 4
+		legacyID = 2
+	)
+	h := NewHNSW(dim)
+	h.rng = rand.New(rand.NewSource(1))
+	for i := 0; i < n; i++ {
+		v := []float32{float32(i + 1), 0, 0, 0}
+		h.AddPassage(fmt.Sprintf("https://x/%d", i), "t", i*100, 50, v)
+	}
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// Hand-craft the legacy 20-byte blob: urlLen=0, titleLen=0, offset=0,
+	// length=0, level=0, dim=0 — and nothing else. Exactly the production
+	// shape we saw in the GH200 journal ("truncated at offset 20").
+	legacy := []byte{
+		0, 0, // urlLen
+		0, 0, // titleLen
+		0, 0, 0, 0, // offset
+		0, 0, 0, 0, // length
+		0, 0, 0, 0, // level
+		0, 0, 0, 0, // dim
+	}
+	if len(legacy) != 20 {
+		t.Fatalf("legacy fixture size: got %d, want 20", len(legacy))
+	}
+	if err := ps.PutVectorNodesBatch(ctx, []store.VectorNodeEntry{
+		{ID: legacyID, Blob: legacy},
+	}); err != nil {
+		t.Fatalf("PutVectorNodesBatch: %v", err)
+	}
+
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil {
+		t.Fatalf("LoadHNSW: %v (legacy zombie must NOT ground the load)", err)
+	}
+	if !ok {
+		t.Fatal("LoadHNSW ok=false; expected true")
+	}
+	z := loaded.nodes[legacyID]
+	if len(z.vec) != 0 {
+		t.Errorf("legacy zombie vec: want empty, got len %d", len(z.vec))
+	}
+	if len(z.neighbors) != 0 {
+		t.Errorf("legacy zombie neighbors: want nil, got %d layers", len(z.neighbors))
+	}
+}
+
+// TestEncodeHNSWNodeAlwaysWritesLayerHeaders — fixes the asymmetry that
+// produced the 20-byte truncated blobs. With neighbors=nil and level=2,
+// the new encoder must still emit 3 (= level+1) layer headers, each with
+// nbCount=0, so a subsequent decode round-trips cleanly.
+func TestEncodeHNSWNodeAlwaysWritesLayerHeaders(t *testing.T) {
+	n := &hnswNode{
+		vecDoc:    vecDoc{url: "https://x/0", title: "t", offset: 0, length: 1, vec: nil},
+		level:     2,
+		neighbors: nil, // the bug case: nil neighbors with non-zero level
+	}
+	blob := encodeHNSWNode(n)
+	// 20 (header) + 3 * 2 (nbCount headers) + 0 + url(11) + title(1) = 38
+	headerLen := 2 + len(n.url) + 2 + len(n.title) + 4 + 4 + 4 + 4
+	wantMin := headerLen + 3*2
+	if len(blob) < wantMin {
+		t.Errorf("encoded blob: want >= %d bytes (header + 3 layer counts), got %d", wantMin, len(blob))
+	}
+
+	// Round-trip back through decode — should NOT truncate.
+	decoded, err := decodeHNSWNode(blob, 0) // expectedDim=0 → no dim check
+	if err != nil {
+		t.Fatalf("decode: %v (round-trip must work with explicit layer headers)", err)
+	}
+	if decoded.level != 2 {
+		t.Errorf("decoded level: want 2, got %d", decoded.level)
+	}
+	if len(decoded.neighbors) != 3 {
+		t.Errorf("decoded neighbors: want 3 layers (level+1), got %d", len(decoded.neighbors))
+	}
+	for l, layer := range decoded.neighbors {
+		if len(layer) != 0 {
+			t.Errorf("layer %d: want empty, got %d entries", l, len(layer))
+		}
+	}
+}
+
 // TestLoadHNSWZombieRoundTrip locks in the encoder/decoder symmetry that
 // the GH200 OOM-cycle investigation surfaced: MarkURLPassagesInvalid sets
 // vec=nil; the next Persist encodes those nodes with dim=0; LoadHNSW must

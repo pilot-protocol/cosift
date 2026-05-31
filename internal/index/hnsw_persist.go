@@ -243,8 +243,17 @@ func encodeHNSWNode(n *hnswNode) []byte {
 	}
 	buf = append(buf, vecBytes...)
 
-	// Per-layer neighbor lists.
-	for _, layer := range n.neighbors {
+	// Per-layer neighbor lists. Always emit exactly level+1 layer headers
+	// so the decoder, which reads `level+1` layers, sees a complete blob
+	// even when the in-memory node has nil or short neighbors (zero-value
+	// slots from LoadHNSW's pre-allocation, for instance). Missing layers
+	// are written as nbCount=0; the decoder rebuilds them as empty slices.
+	expectedLayers := n.level + 1
+	for l := 0; l < expectedLayers; l++ {
+		var layer []int
+		if l < len(n.neighbors) {
+			layer = n.neighbors[l]
+		}
 		put16(uint16(len(layer)))
 		nbBuf := make([]byte, 4*len(layer))
 		for i, nb := range layer {
@@ -334,6 +343,18 @@ func decodeHNSWNode(buf []byte, expectedDim int) (*hnswNode, error) {
 	for l := 0; l <= int(int32(level)); l++ {
 		nbCount, err := read16()
 		if err != nil {
+			// Legacy 20-byte zombie blob: dim=0 + no neighbor section. Old
+			// encoder wrote nothing past the dim field when n.neighbors was
+			// nil. The new encoder always emits level+1 headers, so this
+			// branch only triggers on pre-fix on-disk blobs. Treat as a
+			// zero-state zombie with no graph adjacency — Search filters
+			// via len(vec)==0 and an empty neighbor list is fine for
+			// addEdges to skip cleanly. The next clean shutdown will
+			// rewrite the slot with the new encoder and heal it.
+			if dim == 0 && l == 0 {
+				neighbors = nil
+				break
+			}
 			return nil, err
 		}
 		layer := make([]int, nbCount)
