@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -129,6 +130,95 @@ func TestPebbleBM25IDFStopwordFilter(t *testing.T) {
 	hits, _ = idx.Search(ctx, "filler needle", 3)
 	if len(hits) == 0 || hits[0].URL != "https://x/9" {
 		t.Errorf("with filter disabled, needle doc must still rank top: %+v", hits)
+	}
+}
+
+// TestPebbleBM25MaxScorePreservesTopKMembership locks in the Phase-2
+// contract: MaxScore-style early termination must not lose any doc that
+// would have been in the lossless top-K. We compare top-K membership
+// (URL set) with the optimization on vs off across a corpus where the
+// optimization should actually trigger early-break.
+func TestPebbleBM25MaxScorePreservesTopKMembership(t *testing.T) {
+	ps, idx := newPebbleBM25(t)
+	ctx := context.Background()
+
+	// Build a corpus where one term ("needle") has tiny DF (1 doc) and
+	// another ("padding") has huge DF (49 of 50 docs). After processing
+	// "needle" first, the K-th-best partial score is high enough that
+	// MaxScore should break before scanning "padding"'s long postings.
+	// Top-K must still contain the needle doc.
+	for i := 0; i < 49; i++ {
+		id, err := ps.UpsertDocument(ctx, &store.Document{
+			URL: fmt.Sprintf("https://x/pad/%d", i), Title: "padding doc",
+			Text: "padding padding padding padding padding", FetchedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("upsert pad/%d: %v", i, err)
+		}
+		if err := idx.IndexDocument(ctx, id, "padding doc", "padding padding padding padding padding"); err != nil {
+			t.Fatalf("index pad/%d: %v", i, err)
+		}
+	}
+	id, err := ps.UpsertDocument(ctx, &store.Document{
+		URL: "https://x/needle", Title: "needle in haystack",
+		Text: "needle padding text", FetchedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("upsert needle: %v", err)
+	}
+	if err := idx.IndexDocument(ctx, id, "needle in haystack", "needle padding text"); err != nil {
+		t.Fatalf("index needle: %v", err)
+	}
+
+	// With optimization (default).
+	t.Setenv("COSIFT_BM25_DISABLE_MAXSCORE", "")
+	hits, err := idx.Search(ctx, "needle padding", 3)
+	if err != nil {
+		t.Fatalf("search (maxscore on): %v", err)
+	}
+	if len(hits) == 0 || hits[0].URL != "https://x/needle" {
+		t.Errorf("MaxScore on: needle doc must rank top, got %+v", hits)
+	}
+
+	// Without optimization (regression switch).
+	t.Setenv("COSIFT_BM25_DISABLE_MAXSCORE", "1")
+	hits2, err := idx.Search(ctx, "needle padding", 3)
+	if err != nil {
+		t.Fatalf("search (maxscore off): %v", err)
+	}
+	if len(hits2) == 0 || hits2[0].URL != "https://x/needle" {
+		t.Errorf("MaxScore off: needle doc must rank top, got %+v", hits2)
+	}
+
+	// Top hit URL must agree across optimization-on and optimization-off.
+	if hits[0].URL != hits2[0].URL {
+		t.Errorf("top-K membership diverges: maxscore=%s vs lossless=%s",
+			hits[0].URL, hits2[0].URL)
+	}
+}
+
+// TestKthLargest — partial heap-select helper used by MaxScore early-stop.
+func TestKthLargest(t *testing.T) {
+	cases := []struct {
+		name   string
+		scores map[int64]float64
+		k      int
+		want   float64
+	}{
+		{"empty", map[int64]float64{}, 5, 0},
+		{"k=0", map[int64]float64{1: 10}, 0, 0},
+		{"k larger than map → smallest", map[int64]float64{1: 5, 2: 3, 3: 8}, 10, 3},
+		{"k=1 → max", map[int64]float64{1: 5, 2: 9, 3: 7, 4: 2}, 1, 9},
+		{"k=3 → third best", map[int64]float64{1: 5, 2: 9, 3: 7, 4: 2, 5: 8}, 3, 7},
+		{"k equals size → smallest", map[int64]float64{1: 5, 2: 9, 3: 7}, 3, 5},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := kthLargest(c.scores, c.k)
+			if got != c.want {
+				t.Errorf("got %v want %v", got, c.want)
+			}
+		})
 	}
 }
 

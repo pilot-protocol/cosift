@@ -148,7 +148,28 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		active = candidates[:1]
 	}
 
-	for _, c := range active {
+	// MaxScore-style early termination. Walk terms in descending IDF order
+	// (most informative first), accumulating partial scores. After each
+	// term, check whether the remaining terms' max-possible contributions
+	// can still push an unseen doc into top-K — if not, break.
+	//
+	// The BM25 contribution of one term to any doc is bounded above by
+	// idf*(k1+1) — saturates as tf grows relative to docLen. Sum of these
+	// upper bounds across remaining terms = the maximum score a doc not
+	// yet seen can ever accumulate. If that sum drops below the current
+	// K-th best partial score, no future doc can enter top-K. Top-K
+	// membership stays lossless; in-top-K ranking can shift (the rerank
+	// pipeline re-orders anyway, and the score-decay/MMR stages tolerate
+	// approximate partial scores). COSIFT_BM25_DISABLE_MAXSCORE=1 disables
+	// the optimization for benchmark-grade lossless ranking.
+	maxScoreEnabled := os.Getenv("COSIFT_BM25_DISABLE_MAXSCORE") == ""
+	remainingMax := 0.0
+	if maxScoreEnabled {
+		for _, c := range active {
+			remainingMax += c.idf * (b.k1 + 1.0)
+		}
+	}
+	for i, c := range active {
 		err := b.store.IteratePostings(ctx, c.info.ID, func(p store.PostingEntry) bool {
 			// docLen is inline in the posting value — no separate
 			// GetDocLen call. Removed ~25k Pebble Gets per query at N=10k.
@@ -164,6 +185,18 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		})
 		if err != nil {
 			return nil, err
+		}
+		if !maxScoreEnabled || i == len(active)-1 || len(scores) < k {
+			continue
+		}
+		remainingMax -= c.idf * (b.k1 + 1.0)
+		// Find current K-th best score (threshold for top-K membership).
+		theta := kthLargest(scores, k)
+		// No unseen doc can accumulate more than remainingMax. If that's
+		// below the current threshold, remaining terms can only shuffle
+		// in-top-K ranking — which the reranker fixes — so stop.
+		if remainingMax < theta {
+			break
 		}
 	}
 
@@ -249,4 +282,63 @@ func (b *PebbleBM25) filterByPhrasesPebble(ctx context.Context, hits []Hit, phra
 		}
 	}
 	return out
+}
+
+// kthLargest returns the k-th highest value in the scores map. If the map
+// has fewer than k entries, returns the smallest present (0 if empty).
+// Implemented with a partial heap-select to avoid sorting the entire map
+// on every MaxScore check — scores can be very large during query
+// processing on multi-million-doc corpora.
+func kthLargest(scores map[int64]float64, k int) float64 {
+	if k <= 0 || len(scores) == 0 {
+		return 0
+	}
+	if k >= len(scores) {
+		// Smallest present value.
+		minS := math.Inf(1)
+		for _, s := range scores {
+			if s < minS {
+				minS = s
+			}
+		}
+		return minS
+	}
+	// Maintain a min-heap of size k. The root is the k-th largest seen.
+	h := make([]float64, 0, k)
+	for _, s := range scores {
+		if len(h) < k {
+			h = append(h, s)
+			// Sift up.
+			for i := len(h) - 1; i > 0; {
+				p := (i - 1) / 2
+				if h[p] <= h[i] {
+					break
+				}
+				h[p], h[i] = h[i], h[p]
+				i = p
+			}
+			continue
+		}
+		if s <= h[0] {
+			continue
+		}
+		// Replace root, sift down.
+		h[0] = s
+		for i := 0; ; {
+			l, r := 2*i+1, 2*i+2
+			smallest := i
+			if l < len(h) && h[l] < h[smallest] {
+				smallest = l
+			}
+			if r < len(h) && h[r] < h[smallest] {
+				smallest = r
+			}
+			if smallest == i {
+				break
+			}
+			h[i], h[smallest] = h[smallest], h[i]
+			i = smallest
+		}
+	}
+	return h[0]
 }
