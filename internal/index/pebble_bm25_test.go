@@ -69,6 +69,69 @@ func TestPebbleBM25BasicSearch(t *testing.T) {
 	}
 }
 
+// TestPebbleBM25IDFStopwordFilter locks in the Phase-1 latency fix: query
+// terms with IDF below the threshold are pruned before postings scan
+// (where the static stopword list misses corpus-specific high-DF words
+// like "what" / "how"). Lossless on the meaningful terms; the fallback
+// guarantees at least one term keeps firing so single-stopword queries
+// still return something.
+func TestPebbleBM25IDFStopwordFilter(t *testing.T) {
+	ps, idx := newPebbleBM25(t)
+	ctx := context.Background()
+
+	// Corpus shape: "filler" appears in 9/10 docs (very low IDF), "needle"
+	// appears in 1/10 (very high IDF). Query "filler needle" must still
+	// return the doc with "needle" at the top, regardless of pruning.
+	docs := []struct {
+		url, title, text string
+	}{
+		{"https://x/0", "doc 0", "filler text content"},
+		{"https://x/1", "doc 1", "filler text content"},
+		{"https://x/2", "doc 2", "filler text content"},
+		{"https://x/3", "doc 3", "filler text content"},
+		{"https://x/4", "doc 4", "filler text content"},
+		{"https://x/5", "doc 5", "filler text content"},
+		{"https://x/6", "doc 6", "filler text content"},
+		{"https://x/7", "doc 7", "filler text content"},
+		{"https://x/8", "doc 8", "filler text content"},
+		{"https://x/9", "needle doc", "needle in haystack, no filler here"},
+	}
+	for _, d := range docs {
+		id, err := ps.UpsertDocument(ctx, &store.Document{
+			URL: d.url, Title: d.title, Text: d.text, FetchedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("upsert %s: %v", d.url, err)
+		}
+		if err := idx.IndexDocument(ctx, id, d.title, d.text); err != nil {
+			t.Fatalf("index %s: %v", d.url, err)
+		}
+	}
+
+	// Default (filter active): "filler needle" must return needle doc on top.
+	hits, err := idx.Search(ctx, "filler needle", 3)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) == 0 || hits[0].URL != "https://x/9" {
+		t.Errorf("default filter: top hit should be needle doc, got %+v", hits)
+	}
+
+	// Stopword-only fallback: query with only the high-DF term still
+	// returns something instead of zero hits.
+	hits, _ = idx.Search(ctx, "filler", 3)
+	if len(hits) == 0 {
+		t.Errorf("filler-only query: fallback should keep one term active, got 0 hits")
+	}
+
+	// COSIFT_BM25_MIN_IDF=0 disables pruning entirely (regression switch).
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
+	hits, _ = idx.Search(ctx, "filler needle", 3)
+	if len(hits) == 0 || hits[0].URL != "https://x/9" {
+		t.Errorf("with filter disabled, needle doc must still rank top: %+v", hits)
+	}
+}
+
 // TestPebbleBM25MatchesSQLite — the centerpiece behavioral parity check.
 // Index the same corpus into both SQLite-backed BM25 and PebbleBM25; query
 // each with several queries; assert the top-3 hits agree by URL set. The

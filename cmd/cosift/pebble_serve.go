@@ -4399,6 +4399,30 @@ func (s *pebbleHTTP) buildRetrieverLabel(retrieverParam, expandMode string, dens
 	return label
 }
 
+// applyLLMEndpointDefaults sets the retriever-choice and rerank defaults
+// the LLM-synthesized endpoints (/answer, /research) want. BM25 alone is
+// too slow at multi-million-doc corpora for synchronous LLM use, and the
+// reranker is the proven quality recovery layer — so /answer and /research
+// default to hybrid + rerank whenever the components are wired, while
+// /search keeps its plain-BM25 default for low-latency operator use.
+//
+// Operators retain full control: ?retriever=bm25|dense|hybrid and
+// ?rerank=true|false|1|0 override either default.
+func (s *pebbleHTTP) applyLLMEndpointDefaults(retrieverParam, rerankParam string) (string, bool) {
+	denseReady := s.hnsw != nil && s.embedder != nil
+	if retrieverParam == "" && denseReady {
+		retrieverParam = "hybrid"
+	}
+	wantRerank := s.reranker != nil
+	switch rerankParam {
+	case "false", "0":
+		wantRerank = false
+	case "true", "1":
+		wantRerank = s.reranker != nil
+	}
+	return retrieverParam, wantRerank
+}
+
 // retrieve dispatches retriever choice (bm25 / dense / hybrid) and
 // then expansion (bare / HyDE / paraphrase+RRF) for BM25 paths. Shared by
 // /search, /answer, /research so all three endpoints get the same retriever
@@ -4619,10 +4643,12 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
 	includeText := r.URL.Query().Get("include_text") == "true"
-	// ?rerank=true reorders the BM25 top-pool before synth. Rerank quality
-	// beats BM25 for "which 5 sources answer this question" — widens the
-	// candidate pool to rerankCandK before truncation.
-	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	// Default to hybrid + rerank on /answer — the reranker is the proven
+	// quality recovery layer; ?retriever=bm25 and ?rerank=false opt out.
+	retrieverParam, wantRerank := s.applyLLMEndpointDefaults(
+		r.URL.Query().Get("retriever"),
+		r.URL.Query().Get("rerank"),
+	)
 	keepCap := k
 	if wantRerank {
 		keepCap = s.rerankCandK
@@ -4646,7 +4672,6 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	// expansion dispatch (bare / HyDE / paraphrase+RRF).
 	// retriever dispatch (bm25 / dense / hybrid) via shared helper.
 	expandMode := r.URL.Query().Get("expand")
-	retrieverParam := r.URL.Query().Get("retriever")
 	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
@@ -5231,7 +5256,11 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// retriever dispatch (bm25 / dense / hybrid) applies per
 	// sub-query — every sub-query runs through the same retriever.
 	expandMode := r.URL.Query().Get("expand")
-	retrieverParam := r.URL.Query().Get("retriever")
+	// Default to hybrid + rerank on /research — same rationale as /answer.
+	retrieverParam, wantRerank := s.applyLLMEndpointDefaults(
+		r.URL.Query().Get("retriever"),
+		r.URL.Query().Get("rerank"),
+	)
 	for _, sq := range subs {
 		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
@@ -5254,7 +5283,6 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// same rerank wiring as /search and /answer — pool widens to
 	// rerankCandK before materialization, rerank reorders the pool, truncate
 	// to k after rerank so citation numbers track the final order.
-	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
 	keepCap := k
 	if wantRerank {
 		keepCap = s.rerankCandK
@@ -5446,9 +5474,12 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	// per-sub-query retriever dispatch (bm25 / dense / hybrid).
 	// read retriever + wantRerank early so the plan event can
 	// surface the full retriever label, not just expand.
+	// Default to hybrid + rerank on /research streaming — same rationale as /answer.
 	expandMode := r.URL.Query().Get("expand")
-	retrieverParam := r.URL.Query().Get("retriever")
-	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
+	retrieverParam, wantRerank := s.applyLLMEndpointDefaults(
+		r.URL.Query().Get("retriever"),
+		r.URL.Query().Get("rerank"),
+	)
 	denseReady := s.hnsw != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandMode != "", wantRerank)
 

@@ -14,11 +14,26 @@ package index
 import (
 	"context"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pilot-protocol/cosift/internal/store"
 )
+
+// bm25MinIDF is the IDF floor below which a query term is treated as a
+// stopword and skipped. Default 0.5 catches terms in >60% of the corpus
+// ("the", "is", "of"). Operators can tune via COSIFT_BM25_MIN_IDF; set
+// to 0 to disable pruning entirely (backward-compat for benchmark runs).
+func bm25MinIDF() float64 {
+	if v := os.Getenv("COSIFT_BM25_MIN_IDF"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	return 0.5
+}
 
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.
 type PebbleBM25 struct {
@@ -91,7 +106,20 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// doc_len is now inline in each posting value (no per-doc Get).
 	scores := make(map[int64]float64)
 
+	// Collect (term, idf, info) tuples first so we can drop high-DF stopwords
+	// before scanning postings. At 6M+-doc corpora the killer terms ("what",
+	// "is", "the") account for nearly all BM25 latency without contributing
+	// to ranking. Lossless on the kept terms; safety: if every term gets
+	// pruned we fall back to the single highest-IDF candidate so a query
+	// like "what is the" still returns something.
+	minIDF := bm25MinIDF()
+	type termPost struct {
+		term string
+		idf  float64
+		info store.TermInfo
+	}
 	uniqTerms := dedupeStrings(tokens)
+	candidates := make([]termPost, 0, len(uniqTerms))
 	for _, term := range uniqTerms {
 		info, ok, err := b.store.GetTermInfo(ctx, term)
 		if err != nil {
@@ -101,8 +129,27 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 			continue
 		}
 		idf := math.Log(1.0 + (float64(totalDocs)-float64(info.DocFreq)+0.5)/(float64(info.DocFreq)+0.5))
+		candidates = append(candidates, termPost{term: term, idf: idf, info: info})
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	// Sort descending by IDF so the fallback below picks the rarest term.
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].idf > candidates[j].idf })
+	active := candidates[:0]
+	for _, c := range candidates {
+		if c.idf >= minIDF {
+			active = append(active, c)
+		}
+	}
+	if len(active) == 0 {
+		// Every term was a stopword. Keep the top-IDF candidate so we
+		// surface SOMETHING relevant rather than 0 hits.
+		active = candidates[:1]
+	}
 
-		err = b.store.IteratePostings(ctx, info.ID, func(p store.PostingEntry) bool {
+	for _, c := range active {
+		err := b.store.IteratePostings(ctx, c.info.ID, func(p store.PostingEntry) bool {
 			// docLen is inline in the posting value — no separate
 			// GetDocLen call. Removed ~25k Pebble Gets per query at N=10k.
 			docLen := p.DocLen
@@ -111,7 +158,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 			}
 			tfF := float64(p.TF)
 			lenNorm := 1.0 - b.b + b.b*(float64(docLen)/avgDocLen)
-			score := idf * ((tfF * (b.k1 + 1.0)) / (tfF + b.k1*lenNorm))
+			score := c.idf * ((tfF * (b.k1 + 1.0)) / (tfF + b.k1*lenNorm))
 			scores[p.DocID] += score
 			return true
 		})

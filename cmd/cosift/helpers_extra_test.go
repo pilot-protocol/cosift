@@ -1,11 +1,76 @@
 package main
 
 import (
+	"context"
 	"math"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/rerank"
 )
+
+// stubEmbedder + stubReranker — non-nil-only fixtures for default-dispatch
+// tests. Neither's methods are exercised by applyLLMEndpointDefaults.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, nil
+}
+func (stubEmbedder) Model() string { return "stub" }
+func (stubEmbedder) Dim() int      { return 0 }
+
+type stubReranker struct{}
+
+func (stubReranker) Name() string { return "stub" }
+func (stubReranker) Rerank(_ context.Context, _ string, _ []rerank.Candidate) ([]string, error) {
+	return nil, nil
+}
+
+// TestApplyLLMEndpointDefaults locks in the Phase-1 contract: /answer and
+// /research default to hybrid + rerank when components are wired, but
+// explicit ?retriever / ?rerank overrides always win.
+func TestApplyLLMEndpointDefaults(t *testing.T) {
+	denseReadySrv := &pebbleHTTP{
+		hnsw:     index.NewHNSW(4),
+		embedder: stubEmbedder{},
+		reranker: stubReranker{},
+	}
+	noDenseSrv := &pebbleHTTP{reranker: stubReranker{}}
+	bareSrv := &pebbleHTTP{}
+
+	cases := []struct {
+		name        string
+		srv         *pebbleHTTP
+		retParam    string
+		rerankParam string
+		wantRet     string
+		wantRerank  bool
+	}{
+		{"empty + denseReady + reranker → hybrid+rerank", denseReadySrv, "", "", "hybrid", true},
+		{"empty + denseReady + reranker + rerank=false → hybrid no rerank", denseReadySrv, "", "false", "hybrid", false},
+		{"empty + denseReady + reranker + rerank=0 → hybrid no rerank", denseReadySrv, "", "0", "hybrid", false},
+		{"empty + denseReady + reranker + rerank=true → hybrid+rerank", denseReadySrv, "", "true", "hybrid", true},
+		{"explicit retriever=bm25 keeps bm25", denseReadySrv, "bm25", "", "bm25", true},
+		{"explicit retriever=dense keeps dense", denseReadySrv, "dense", "", "dense", true},
+		{"no embedder → fall through to default bm25", noDenseSrv, "", "", "", true},
+		{"no embedder + rerank=false → bm25 no rerank", noDenseSrv, "", "false", "", false},
+		{"no reranker at all → no rerank regardless", bareSrv, "", "true", "", false},
+		{"no reranker + retriever=hybrid explicit honored", bareSrv, "hybrid", "", "hybrid", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotRet, gotRerank := c.srv.applyLLMEndpointDefaults(c.retParam, c.rerankParam)
+			if gotRet != c.wantRet {
+				t.Errorf("retriever: got %q want %q", gotRet, c.wantRet)
+			}
+			if gotRerank != c.wantRerank {
+				t.Errorf("rerank: got %v want %v", gotRerank, c.wantRerank)
+			}
+		})
+	}
+}
 
 func TestAuthStatus(t *testing.T) {
 	cases := []struct {
