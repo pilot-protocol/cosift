@@ -77,9 +77,16 @@ type Monitor struct {
 	totalViolations atomic.Int64
 
 	// Last-evaluated snapshot per endpoint, surfaced on /sla.
-	lastMu       sync.RWMutex
-	lastStatus   map[string]EndpointStatus
-	lastEvalAt   time.Time
+	lastMu     sync.RWMutex
+	lastStatus map[string]EndpointStatus
+	lastEvalAt time.Time
+
+	// Tracks the most recently logged severity for
+	// each (endpoint, metric) combo. A violation is only persisted to
+	// disk when the severity changes ("" → warn → critical, or back).
+	// Without this, a single bad sample stuck in the rolling window
+	// generates a duplicate jsonl entry every evaluation tick.
+	lastSeverity map[string]string // key = endpoint+"\x00"+metric → "warn" / "critical" / "" (recovered)
 }
 
 // EndpointStatus is the most recent evaluation result for an endpoint.
@@ -102,11 +109,12 @@ func New(targets []Target, window time.Duration, logPath string) (*Monitor, erro
 		window = 5 * time.Minute
 	}
 	m := &Monitor{
-		targets:    make(map[string]Target, len(targets)),
-		window:     window,
-		buckets:    make(map[string]*ringBuffer),
-		logPath:    logPath,
-		lastStatus: make(map[string]EndpointStatus),
+		targets:      make(map[string]Target, len(targets)),
+		window:       window,
+		buckets:      make(map[string]*ringBuffer),
+		logPath:      logPath,
+		lastStatus:   make(map[string]EndpointStatus),
+		lastSeverity: make(map[string]string),
 	}
 	for _, t := range targets {
 		if t.Endpoint == "" {
@@ -195,20 +203,11 @@ func (m *Monitor) evaluate() {
 		t, hasTarget := m.targets[ep]
 		if hasTarget {
 			var vios []Violation
-			if t.P95 > 0 && st.P95 > t.P95 {
-				vios = append(vios, m.recordViolation(ep, now, "p95",
-					float64(st.P95.Milliseconds()), float64(t.P95.Milliseconds()), len(samples)))
-			}
-			if t.P99 > 0 && st.P99 > t.P99 {
-				vios = append(vios, m.recordViolation(ep, now, "p99",
-					float64(st.P99.Milliseconds()), float64(t.P99.Milliseconds()), len(samples)))
-			}
-			if t.MaxErrorRate > 0 && st.ErrorRate > t.MaxErrorRate {
-				vios = append(vios, m.recordViolation(ep, now, "error_rate",
-					st.ErrorRate, t.MaxErrorRate, len(samples)))
-			}
+			vios = m.checkMetric(vios, ep, now, "p95", float64(st.P95.Milliseconds()), float64(t.P95.Milliseconds()), len(samples), t.P95 > 0 && st.P95 > t.P95)
+			vios = m.checkMetric(vios, ep, now, "p99", float64(st.P99.Milliseconds()), float64(t.P99.Milliseconds()), len(samples), t.P99 > 0 && st.P99 > t.P99)
+			vios = m.checkMetric(vios, ep, now, "error_rate", st.ErrorRate, t.MaxErrorRate, len(samples), t.MaxErrorRate > 0 && st.ErrorRate > t.MaxErrorRate)
 			st.Violations = vios
-			st.OKMeetsSLA = len(vios) == 0
+			st.OKMeetsSLA = !violatingAny(t, st)
 		} else {
 			st.OKMeetsSLA = true // no target → can't violate
 		}
@@ -221,24 +220,71 @@ func (m *Monitor) evaluate() {
 	m.lastMu.Unlock()
 }
 
-func (m *Monitor) recordViolation(endpoint string, at time.Time, metric string, observed, target float64, n int) Violation {
-	severity := "warn"
-	if observed > target*1.5 {
-		severity = "critical"
+// checkMetric handles one (endpoint, metric) pair per evaluation tick.
+// Persists a violation to disk only when the severity transitions (e.g.
+// recovered → warn, warn → critical, critical → recovered). Without this
+// gating, a single bad sample stuck in the rolling window generated a
+// duplicate jsonl entry every 30s tick — observed on GH200 as 60+ near-
+// identical lines for a single 31s /stats outlier.
+func (m *Monitor) checkMetric(out []Violation, endpoint string, now time.Time, metric string, observed, target float64, n int, violating bool) []Violation {
+	key := endpoint + "\x00" + metric
+	severity := ""
+	if violating {
+		severity = "warn"
+		if target > 0 && observed > target*1.5 {
+			severity = "critical"
+		}
+	}
+	prev := m.lastSeverity[key]
+	if severity == prev {
+		// No transition — suppress.
+		if violating {
+			// Still want to surface in the in-memory snapshot, just don't
+			// re-log to disk. Build the Violation without persisting.
+			out = append(out, Violation{
+				Endpoint: endpoint, At: now, Metric: metric,
+				Observed: observed, Target: target,
+				WindowSec: int(m.window / time.Second), SampleSize: n,
+				Severity: severity,
+			})
+		}
+		return out
+	}
+	m.lastSeverity[key] = severity
+	if severity == "" {
+		// Transitioned BACK to meeting SLA — log a recovery marker.
+		m.persist(Violation{
+			Endpoint: endpoint, At: now, Metric: metric,
+			Observed: observed, Target: target,
+			WindowSec: int(m.window / time.Second), SampleSize: n,
+			Severity: "recovered",
+		})
+		return out
 	}
 	v := Violation{
-		Endpoint:   endpoint,
-		At:         at,
-		Metric:     metric,
-		Observed:   observed,
-		Target:     target,
-		WindowSec:  int(m.window / time.Second),
-		SampleSize: n,
-		Severity:   severity,
+		Endpoint: endpoint, At: now, Metric: metric,
+		Observed: observed, Target: target,
+		WindowSec: int(m.window / time.Second), SampleSize: n,
+		Severity: severity,
 	}
 	m.totalViolations.Add(1)
 	m.persist(v)
-	return v
+	return append(out, v)
+}
+
+// violatingAny returns whether any tracked metric is breaching the
+// target. Used to set OKMeetsSLA without re-running the comparisons.
+func violatingAny(t Target, st EndpointStatus) bool {
+	if t.P95 > 0 && st.P95 > t.P95 {
+		return true
+	}
+	if t.P99 > 0 && st.P99 > t.P99 {
+		return true
+	}
+	if t.MaxErrorRate > 0 && st.ErrorRate > t.MaxErrorRate {
+		return true
+	}
+	return false
 }
 
 func (m *Monitor) persist(v Violation) {

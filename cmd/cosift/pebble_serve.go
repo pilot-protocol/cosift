@@ -2872,14 +2872,17 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 // contends with crawler writers). Called by handleStats both
 // synchronously (cold) and from a background goroutine (SWR refresh).
 func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
-	st, err := s.store.Stats(ctx)
+	// /stats was observed taking 31s under load
+	// when the SWR cache exceeded maxStale: store.Stats() iterates the
+	// entire 'd' family (10.87M entries) every cold compute. The
+	// CorpusStats counter is an O(1) atomic read mirror of the persisted
+	// indexed_docs meta — equivalent doc count for any operator-facing
+	// purpose, microseconds instead of seconds. Terms isn't populated in
+	// the Pebble path (always 0) so dropping the scan loses nothing.
+	sumLen, indexedDocs, err := s.store.CorpusStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// surface the running counters here too so /stats is
-	// the one canonical "shape of the index" call instead of "ask /stats for
-	// doc count, then ask /metrics for average length". Both reads are O(1).
-	sumLen, indexedDocs, _ := s.store.CorpusStats(ctx)
 	var avg float64
 	if indexedDocs > 0 {
 		avg = float64(sumLen) / float64(indexedDocs)
@@ -2887,8 +2890,8 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	// surface config knobs that affect retrieval/synth quality so
 	// operators can verify env overrides took effect from one endpoint.
 	out := map[string]any{
-		"documents":    st.Documents,
-		"terms":        st.Terms,
+		"documents":    indexedDocs,
+		"terms":        int64(0),
 		"indexed_docs": indexedDocs,
 		"sum_doc_len":  sumLen,
 		"avg_doc_len":  avg,
@@ -2965,7 +2968,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 			webDenom = n
 		}
 	}
-	out["web_pct"] = 100.0 * float64(st.Documents) / float64(webDenom)
+	out["web_pct"] = 100.0 * float64(indexedDocs) / float64(webDenom)
 	out["web_denominator"] = webDenom
 	out["has_vectors"] = s.hasVectors
 	switch {
@@ -3027,7 +3030,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	// Computes docs added since process start and per-minute rate.
 	if s.crawlActive {
 		uptimeMin := time.Since(s.started).Minutes()
-		added := int(st.Documents) - s.startupDocs
+		added := int(indexedDocs) - s.startupDocs
 		if added < 0 {
 			added = 0
 		}
