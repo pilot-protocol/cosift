@@ -2891,6 +2891,7 @@ func (s *pebbleHTTP) handleDomainsAudit(w http.ResponseWriter, r *http.Request) 
 			"host":      host,
 			"count":     count,
 			"authority": score,
+			"recommend": classify(score),
 		}
 		if err := enc.Encode(rec); err != nil {
 			return false
