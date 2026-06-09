@@ -366,6 +366,62 @@ func TestPebbleCorpusStats(t *testing.T) {
 	}
 }
 
+// TestPebbleBootstrapCorpusStats verifies the rescue path used after
+// the GH200 incident where the meta counters were observed at zero
+// despite a populated 'l' family. BootstrapCorpusStats must scan,
+// persist, and seed the atomic mirror — so subsequent /stats reads
+// show the recomputed value without the O(N) scan.
+func TestPebbleBootstrapCorpusStats(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	tokenize := func(s string) []string { return strings.Fields(s) }
+
+	// Populate via IndexDocument so 'l' family has entries.
+	for i := 0; i < 5; i++ {
+		id, _ := p.UpsertDocument(ctx, &Document{URL: "u" + string(rune('a'+i)), FetchedAt: time.Now()})
+		if err := p.IndexDocument(ctx, id, "", "x y z", tokenize, 1); err != nil {
+			t.Fatalf("IndexDocument: %v", err)
+		}
+	}
+
+	// Simulate the post-restart bug: meta on disk is 0 + atomic uninitialized.
+	p.mu.Lock()
+	_ = p.db.Delete(metaKey("indexed_docs"), p.writeOpts)
+	_ = p.db.Delete(metaKey("sum_doc_len"), p.writeOpts)
+	p.mu.Unlock()
+	p.corpusSumLen.Store(0)
+	p.corpusIndexedDocs.Store(0)
+	p.corpusStatsLoaded.Store(false)
+
+	sumLen, count, recomputed, err := p.BootstrapCorpusStats(ctx)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if !recomputed {
+		t.Errorf("expected recomputed=true on a 0-meta + non-empty corpus")
+	}
+	if count != 5 {
+		t.Errorf("count: got %d want 5", count)
+	}
+	if sumLen != 15 {
+		t.Errorf("sumLen: got %d want 15 (5 docs × 3 tokens)", sumLen)
+	}
+
+	// Atomic mirror should now be populated.
+	if got := p.corpusIndexedDocs.Load(); got != 5 {
+		t.Errorf("atomic mirror not seeded: got %d", got)
+	}
+
+	// Re-run should no-op.
+	_, _, recomputed2, err := p.BootstrapCorpusStats(ctx)
+	if err != nil {
+		t.Fatalf("re-Bootstrap: %v", err)
+	}
+	if recomputed2 {
+		t.Errorf("second Bootstrap should no-op when counter is non-zero")
+	}
+}
+
 // TestPebbleCorpusStatsLockFreePath verifies the atomic-mirror path:
 // after a single IndexDocument commit, subsequent CorpusStats calls
 // must serve from atomics without taking p.mu. We assert by manually

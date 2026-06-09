@@ -1959,6 +1959,63 @@ func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int6
 	return sumLen, count, nil
 }
 
+// BootstrapCorpusStats reconciles the (sum_doc_len, indexed_docs)
+// meta counters with reality. Use case: a prior restart left the meta
+// at 0 but the 'l' family is populated — observed on GH200 after the
+// HNSW healing series wiped meta. Without this, BM25 IDF computation
+// falls back to avgDocLen=1, mildly degrading ranking.
+//
+// Strategy: if the in-memory mirror still reads 0 after a few seconds
+// of normal operation (meaning no IndexDocument commits this lifetime
+// either), scan the 'l' family once, persist the recomputed totals,
+// and update the atomic mirror. O(N) scan but only runs on the
+// detect-then-fix path; steady state is unaffected.
+//
+// Safe to call multiple times; subsequent calls no-op after success.
+func (p *PebbleStore) BootstrapCorpusStats(ctx context.Context) (sumLen, count int64, recomputed bool, err error) {
+	cur := p.corpusIndexedDocs.Load()
+	if cur > 0 {
+		return p.corpusSumLen.Load(), cur, false, nil
+	}
+	sumLen, count, err = p.SumDocLengths(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if count == 0 {
+		// Genuinely empty corpus — nothing to bootstrap.
+		return 0, 0, false, nil
+	}
+	// Persist the recomputed totals so the value survives the next
+	// restart without re-running the scan. Single batch keeps the
+	// (sumLen, count) pair atomic on disk.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Re-check inside the lock: a concurrent IndexDocument may have
+	// just populated the counters.
+	if p.corpusIndexedDocs.Load() > 0 {
+		return p.corpusSumLen.Load(), p.corpusIndexedDocs.Load(), false, nil
+	}
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	sumBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+		return 0, 0, false, err
+	}
+	countBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(countBuf, uint64(count))
+	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+		return 0, 0, false, err
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return 0, 0, false, err
+	}
+	p.corpusSumLen.Store(sumLen)
+	p.corpusIndexedDocs.Store(count)
+	p.corpusStatsLoaded.Store(true)
+	return sumLen, count, true, nil
+}
+
 // DomainCount is the (host, doc count) tuple returned by TopDomains.
 type DomainCount struct {
 	Host  string `json:"host"`

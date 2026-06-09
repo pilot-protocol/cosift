@@ -488,6 +488,23 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
+	// Production state observed on GH200: after a restart series that
+	// healed HNSW zombies, the meta counters showed 0 while the 'l'
+	// family had 10.87M entries — degraded BM25 length normalization.
+	// Off the hot path so HNSW load + first request aren't blocked.
+	go func() {
+		// Brief settle so an active IndexDocument can populate counters
+		// the cheap way before we kick the O(N) scan.
+		time.Sleep(10 * time.Second)
+		sumLen, count, recomputed, err := ps.BootstrapCorpusStats(ctx)
+		if err != nil {
+			log.Printf("pebble-serve: corpus stats bootstrap failed: %v", err)
+			return
+		}
+		if recomputed {
+			log.Printf("pebble-serve: corpus stats bootstrapped (indexed_docs=%d, sum_doc_len=%d)", count, sumLen)
+		}
+	}()
 	// Only
 	// listens on loopback so it can never be exposed publicly through the
 	// reverse proxy. Set COSIFT_PPROF_ADDR=127.0.0.1:6060 to enable.
