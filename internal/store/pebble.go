@@ -951,7 +951,14 @@ func (p *PebbleStore) ClearFrontier(ctx context.Context) error {
 	}
 	lo := []byte{famFrontier}
 	hi := []byte{famFrontier + 1}
-	return p.db.DeleteRange(lo, hi, p.writeOpts)
+	if err := p.db.DeleteRange(lo, hi, p.writeOpts); err != nil {
+		return err
+	}
+	// On 8M tombstoned entries the next startup's RecoverInFlight scan
+	// would walk past every tombstone holding p.mu for 10+ minutes,
+	// blocking all admin endpoints. Synchronous Compact collapses the
+	// range immediately. Parallelize=true uses Pebble's worker pool.
+	return p.db.Compact(lo, hi, true)
 }
 
 // ClearPQFamily removes every persisted PQ key (codebook + per-node codes).
