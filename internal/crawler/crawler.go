@@ -53,6 +53,14 @@ type Crawler struct {
 	// keeps manual /admin/sitemap-import behavior unchanged.
 	autoSitemapMu   sync.Mutex
 	autoSitemapSeen map[string]struct{}
+	// Bounded semaphore over in-flight auto-sitemap discovery goroutines.
+	// Each spawn lives up to 5 min and parks on PebbleStore.mu while
+	// streaming sitemap URLs into the frontier. Without a cap, spam
+	// directories with thousands of fake subdomains pin thousands of
+	// goroutines under the store mutex and starve live query traffic
+	// (observed: 3194 total goroutines, 2559 stuck on this stack, BM25
+	// p50 degraded from <1s to >20s).
+	sitemapSem chan struct{}
 
 	// bounded diagnostic counter for the zombie-reclaim path.
 	// Logs the first few zero-hit cases so we can confirm the code path
@@ -189,7 +197,20 @@ func newBare(cfg config.Crawler) *Crawler {
 	if cfg.RespectRobots {
 		robots = NewRobots(httpClient, cfg.UserAgent)
 	}
-	return &Crawler{cfg: cfg, http: httpClient, robots: robots}
+	// Cap concurrent auto-sitemap discoveries at 16. Override via
+	// COSIFT_AUTO_SITEMAP_CONCURRENCY for benchmarking.
+	sitemapCap := 16
+	if v := os.Getenv("COSIFT_AUTO_SITEMAP_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			sitemapCap = n
+		}
+	}
+	return &Crawler{
+		cfg:        cfg,
+		http:       httpClient,
+		robots:     robots,
+		sitemapSem: make(chan struct{}, sitemapCap),
+	}
 }
 
 // maybeAutoSitemap kicks off a background sitemap discovery the first
@@ -213,12 +234,23 @@ func (c *Crawler) maybeAutoSitemap(ctx context.Context, u *url.URL) {
 	c.autoSitemapSeen[u.Host] = struct{}{}
 	c.autoSitemapMu.Unlock()
 
+	// Non-blocking acquire. When the cap is saturated (spam discovery
+	// storms), drop this host instead of leaking another 5-min goroutine.
+	// The host is already marked seen, so we won't retry — that's fine:
+	// real URLs from the host still get crawled via the normal frontier.
+	select {
+	case c.sitemapSem <- struct{}{}:
+	default:
+		return
+	}
+
 	scheme := u.Scheme
 	if scheme == "" {
 		scheme = "https"
 	}
 	host := u.Host
 	go func() {
+		defer func() { <-c.sitemapSem }()
 		// Detach from the request ctx (which gets canceled when the
 		// triggering URL's processing finishes) so the goroutine has
 		// time to finish a possibly-slow sitemap-index walk. Cap at 5 min.
