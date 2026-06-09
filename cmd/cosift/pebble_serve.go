@@ -38,12 +38,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"crypto/sha256"
+	"encoding/hex"
+
 	"github.com/pilot-protocol/cosift/internal/crawler"
 
+	"github.com/pilot-protocol/cosift/internal/answercache"
+	"github.com/pilot-protocol/cosift/internal/chatgate"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/sla"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -251,14 +257,78 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
 	// anonymous auth when cfg.Chat.URL is set (self-hosted, no key
 	// needed). Required only for hosted defaults (empty URL = api.openai.com).
+	// Shared between answer + rerank pools so an
+	// /answer burst can't also exhaust the rerank pool's goroutines.
+	srv.chatGate = chatgate.New(
+		envIntDefault("COSIFT_LLM_GATE_RERANK", 8),
+		envIntDefault("COSIFT_LLM_GATE_ANSWER", 4),
+	)
+	// /answer response cache. Default TTL 60s + 1024-entry cap is a
+	// reasonable starting point for a workload with a few hundred
+	// recurring queries; raise via COSIFT_ANSWER_CACHE_TTL_SEC for
+	// stable corpora, disable with =0 if every query is unique.
+	srv.answerCache = answercache.New(
+		time.Duration(envIntDefault("COSIFT_ANSWER_CACHE_TTL_SEC", 60))*time.Second,
+		envIntDefault("COSIFT_ANSWER_CACHE_CAP", 1024),
+	)
+	// Tries the vLLM /metrics endpoint at the chat origin (works for
+	// self-hosted vLLM, no-op against OpenAI). Threshold default 8 — that
+	// matches the answer-pool cap so when the chat backend is already
+	// saturated we stop trying to add more LLM work.
+	if cfg.Chat.URL != "" {
+		probeURL := chatgate.VLLMMetricsURLFrom(cfg.Chat.URL)
+		threshold := envIntDefault("COSIFT_LLM_DEGRADE_QUEUE", 8)
+		interval := envDurationMsDefault("COSIFT_LLM_PROBE_MS", 2*time.Second)
+		srv.llmProbe = chatgate.NewLoadProbe(probeURL, threshold, interval)
+		go srv.llmProbe.Run(ctx)
+		log.Printf("pebble-serve: vLLM load probe started (url=%s, threshold=%d, interval=%s)", probeURL, threshold, interval)
+	}
+	// Defaults match the
+	// June-3 baseline measurements; ops can override per env. Violation
+	// log defaults under cfg.DataDir so it co-locates with the rest of
+	// the operational state.
+	slaLogPath := os.Getenv("COSIFT_SLA_LOG_PATH")
+	if slaLogPath == "" && cfg.DataDir != "" {
+		slaLogPath = filepath.Join(cfg.DataDir, "sla-violations.jsonl")
+	}
+	slaTargets := []sla.Target{
+		{Endpoint: "/search", P95: envDurationMsDefault("COSIFT_SLA_SEARCH_P95_MS", 1500*time.Millisecond), P99: envDurationMsDefault("COSIFT_SLA_SEARCH_P99_MS", 4*time.Second), MaxErrorRate: 0.02},
+		{Endpoint: "/answer", P95: envDurationMsDefault("COSIFT_SLA_ANSWER_P95_MS", 8*time.Second), P99: envDurationMsDefault("COSIFT_SLA_ANSWER_P99_MS", 20*time.Second), MaxErrorRate: 0.05},
+		{Endpoint: "/research", P95: envDurationMsDefault("COSIFT_SLA_RESEARCH_P95_MS", 30*time.Second), P99: envDurationMsDefault("COSIFT_SLA_RESEARCH_P99_MS", 60*time.Second), MaxErrorRate: 0.05},
+		{Endpoint: "/healthz", P95: 50 * time.Millisecond, P99: 200 * time.Millisecond, MaxErrorRate: 0.01},
+		{Endpoint: "/stats", P95: 200 * time.Millisecond, P99: time.Second, MaxErrorRate: 0.01},
+	}
+	slaWindow := envDurationMsDefault("COSIFT_SLA_WINDOW_MS", 5*time.Minute)
+	slaEvalInterval := envDurationMsDefault("COSIFT_SLA_EVAL_MS", 30*time.Second)
+	if m, err := sla.New(slaTargets, slaWindow, slaLogPath); err == nil {
+		srv.sla = m
+		go srv.sla.Run(ctx.Done(), slaEvalInterval)
+		log.Printf("pebble-serve: SLA monitor started (window=%s, eval=%s, log=%s)", slaWindow, slaEvalInterval, slaLogPath)
+	} else {
+		log.Printf("pebble-serve: SLA monitor disabled: %v", err)
+	}
+	// Holds the unwrapped OpenAIChatClient so the rerank
+	// wrapper below can sit directly on top of the inner client (single
+	// gate acquisition per call) instead of stacking on srv.chatSafe.
+	var rawChatForRerank embed.ChatClient
 	if cfg.Chat.Model != "" {
 		apiKey := resolveAPIKey("chat")
-		srv.chat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
+		rawChat := embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Chat.Model)
+		rawChatForRerank = rawChat
+		srv.chatSafe = chatgate.NewSafeChat(rawChat, chatgate.Options{
+			Gate:          srv.chatGate,
+			Kind:          chatgate.KindAnswer,
+			StageDeadline: envDurationMsDefault("COSIFT_LLM_DEADLINE_ANSWER_MS", 30*time.Second),
+			MaxRetries:    envIntDefault("COSIFT_LLM_RETRIES", 1),
+		})
+		srv.chat = srv.chatSafe
 		auth := "anonymous"
 		if apiKey != "" {
 			auth = "bearer-token"
 		}
-		log.Printf("pebble-serve: /answer enabled (chat model=%s, auth=%s)", cfg.Chat.Model, auth)
+		st := srv.chatGate.Stats()
+		log.Printf("pebble-serve: /answer enabled (chat model=%s, auth=%s, gate=answer:%d/rerank:%d)",
+			cfg.Chat.Model, auth, st.AnswerCap, st.RerankCap)
 	}
 	// Same anonymous-when-URL
 	// semantics as chat above.
@@ -314,14 +384,20 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		// model (e.g. qwen3.5:0.8b) to rerank so it doesn't queue behind chat
 		// generations on the same model. Falls back to the main chat client
 		// when Rerank.Model is empty or equal to Chat.Model.
-		rerankChat := srv.chat
+		var rerankInner embed.ChatClient = rawChatForRerank
 		if cfg.Rerank.Model != "" && cfg.Rerank.Model != cfg.Chat.Model {
 			apiKey := resolveAPIKey("chat")
-			rerankChat = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Rerank.Model)
+			rerankInner = embed.NewOpenAIChat(apiKey, cfg.Chat.URL, cfg.Rerank.Model)
 			log.Printf("pebble-serve: rerank using dedicated chat (model=%s, url=%s)", cfg.Rerank.Model, cfg.Chat.URL)
 		}
-		srv.reranker = rerank.NewLLMReranker(rerankChat)
-		log.Printf("pebble-serve: rerank enabled (llm: %s)", rerankChat.Model())
+		srv.rerankSafe = chatgate.NewSafeChat(rerankInner, chatgate.Options{
+			Gate:          srv.chatGate,
+			Kind:          chatgate.KindRerank,
+			StageDeadline: envDurationMsDefault("COSIFT_LLM_DEADLINE_RERANK_MS", 5*time.Second),
+			MaxRetries:    envIntDefault("COSIFT_LLM_RETRIES", 1),
+		})
+		srv.reranker = rerank.NewLLMReranker(srv.rerankSafe)
+		log.Printf("pebble-serve: rerank enabled (llm: %s, gated)", srv.rerankSafe.Model())
 	}
 	srv.rerankCandK = cfg.Rerank.CandidateK
 	if srv.rerankCandK <= 0 {
@@ -393,6 +469,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /contents", wrap(srv.handleContentsBatch))
 	mux.HandleFunc("GET /verify", wrap(srv.handleVerify))
 	mux.HandleFunc("GET /metrics", wrap(srv.handleMetrics))
+	mux.HandleFunc("GET /sla", wrap(srv.handleSLA))
 	mux.HandleFunc("GET /find_similar", wrap(srv.handleFindSimilar))
 	mux.HandleFunc("POST /find_similar", wrap(srv.handleFindSimilarPOST))
 	mux.HandleFunc("GET /answer", wrap(srv.handleAnswer))
@@ -694,6 +771,34 @@ type pebbleHTTP struct {
 	reranker    rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
 	rerankCandK int              // candidates pulled for rerank; default 20
 
+	// Bounded LLM concurrency + circuit breaker. chatGate is shared
+	// between the answer and rerank pools so a burst on one side can't
+	// also pin the goroutines of the other (the auto-sitemap-style leak
+	// that took the box down). chatSafe wraps the answer-class client
+	// (used for /answer, planner, HyDE, paraphrase) with KindAnswer;
+	// rerankSafe wraps the per-passage scoring client with KindRerank.
+	// Nil = uninitialized (tests / mocks).
+	chatGate   *chatgate.Gate
+	chatSafe   *chatgate.SafeChat
+	rerankSafe *chatgate.SafeChat
+
+	// TTL'd response cache + singleflight for /answer. A popular query
+	// during a load spike costs one hybrid + rerank + LLM call; the
+	// next 100 callers hit the cache in microseconds OR join the
+	// in-flight call (sub-second). Disabled when ttl=0.
+	answerCache *answercache.Cache
+
+	// Polls vLLM /metrics. When num_requests_waiting exceeds
+	// COSIFT_LLM_DEGRADE_QUEUE, optional LLM stages (rerank, HyDE,
+	// paraphrase) are silently skipped — graceful degradation rather
+	// than queue-then-timeout.
+	llmProbe *chatgate.LoadProbe
+
+	// Per-endpoint latency + error-rate tracking against
+	// operator-configured targets. Violations are appended to disk
+	// (COSIFT_SLA_LOG_PATH) and surfaced on /sla.
+	sla *sla.Monitor
+
 	// hostBoosts is the operator-configured host-suffix →
 	// multiplier map, applied to fused retrieval scores by /query.
 	// Empty / nil = no boosts (fast path).
@@ -825,6 +930,30 @@ type endpointMetrics struct {
 // path is sync.Map.Load + two atomic Adds — no contention even under high
 // RPS. Duration is sampled after the handler returns so streaming endpoints
 // account for their full open connection time.
+// envIntDefault reads name as an int; falls back to def when unset or
+// unparseable. Used by gate / deadline knobs so operators can tune via
+// env without a config-file roundtrip.
+func envIntDefault(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// envDurationMsDefault reads name as a millisecond integer; returns def
+// on missing/invalid. Chose ms over Go's "2s" parse to keep operator
+// muscle memory consistent with the other COSIFT_*_MS knobs.
+func envDurationMsDefault(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return def
+}
+
 // rateLimiter is a per-IP token-bucket limiter. Active when
 // COSIFT_RATELIMIT_RPM > 0; nil = disabled. Whitelisted IPs bypass entirely.
 type rateLimiter struct {
@@ -948,8 +1077,47 @@ func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 		m := v.(*endpointMetrics)
 		m.count.Add(1)
 		start := time.Now()
-		h(w, r)
-		m.sumNanos.Add(time.Since(start).Nanoseconds())
+		// Wrap the writer so the SLA monitor knows whether the call
+		// succeeded; default status to 200 because handlers that just
+		// w.Write() never call WriteHeader explicitly.
+		sw := &statusCapturingWriter{ResponseWriter: w, status: 200}
+		h(sw, r)
+		dur := time.Since(start)
+		m.sumNanos.Add(dur.Nanoseconds())
+		if s.sla != nil {
+			s.sla.Observe(key, dur, sw.status < 500)
+		}
+	}
+}
+
+// statusCapturingWriter lets the count middleware record the response
+// status for the SLA observer. The middleware treats 5xx as failures
+// for SLA purposes; 4xx are client errors and don't count against us.
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusCapturingWriter) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status = code
+		s.wroteHeader = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusCapturingWriter) Write(p []byte) (int, error) {
+	if !s.wroteHeader {
+		s.wroteHeader = true
+	}
+	return s.ResponseWriter.Write(p)
+}
+
+// Flush passes through to support SSE / streaming handlers.
+func (s *statusCapturingWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 
@@ -2606,6 +2774,22 @@ func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSLA returns the current SLA evaluation snapshot. Read-only.
+// Surfaces per-endpoint p50/p95/p99 + error rate, configured targets,
+// and the most recent violations. Operators consume this in dashboards
+// + on-call paging.
+func (s *pebbleHTTP) handleSLA(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if s.sla == nil {
+		_, _ = w.Write([]byte(`{"enabled":false}`))
+		return
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(s.sla.Snapshot())
+}
+
 func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	// stale-while-revalidate cache.
 	//   - Fresh hit (< TTL): return cached, X-Cache: HIT.
@@ -2706,6 +2890,28 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		// COSIFT_HYDE_CACHE_SIZE / _PARA_CACHE_SIZE overrides took effect.
 		out["hyde_cache_size"] = s.hydeCacheCap
 		out["paraphrase_cache_size"] = s.paraCacheCap
+	}
+	// Bounded LLM concurrency + circuit-breaker state. Surfaced so
+	// operators can see whether the gate is shedding load (rejected > 0)
+	// or holding requests (in_flight = cap) and whether the breaker has
+	// tripped (state != "closed").
+	if s.chatGate != nil {
+		out["llm_gate"] = s.chatGate.Stats()
+	}
+	if s.chatSafe != nil {
+		out["llm_answer_circuit"] = s.chatSafe.CircuitState()
+	}
+	if s.rerankSafe != nil {
+		out["llm_rerank_circuit"] = s.rerankSafe.CircuitState()
+	}
+	if s.answerCache != nil {
+		out["answer_cache"] = s.answerCache.Stats()
+	}
+	if s.llmProbe != nil {
+		out["llm_load"] = s.llmProbe.Stats()
+	}
+	if s.sla != nil {
+		out["sla"] = s.sla.Snapshot()
 	}
 	// embed cache hit/miss counters so operators can see how
 	// often re-fetches are skipping ollama. The cache wraps the round-
@@ -4420,6 +4626,14 @@ func (s *pebbleHTTP) applyLLMEndpointDefaults(retrieverParam, rerankParam string
 	case "true", "1":
 		wantRerank = s.reranker != nil
 	}
+	// When the vLLM probe says the backend is queue-deep, silently
+	// disable rerank. Operators can override by passing ?rerank=true
+	// explicitly — but with COSIFT_LLM_DEGRADE_QUEUE breached, the
+	// rerank call would just queue and time out anyway. Better to ship
+	// hybrid scores fast than block on a doomed LLM call.
+	if wantRerank && rerankParam == "" && s.llmProbe != nil && s.llmProbe.Loaded() {
+		wantRerank = false
+	}
 	return retrieverParam, wantRerank
 }
 
@@ -4621,6 +4835,91 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "missing q parameter")
 		return
 	}
+	// Cache + singleflight on /answer. Key is the full query-string
+	// (sorted) so different filter combos don't collide. We capture the
+	// rendered body into a buffer; on success the buffer is the cache
+	// value. Skip the cache for explicit no-cache requests and for
+	// streaming clients.
+	if s.answerCache != nil && r.Header.Get("Cache-Control") != "no-cache" {
+		key := answerCacheKey(r)
+		body, err, shared := s.answerCache.Do(key, func() ([]byte, error) {
+			rec := &bufferedResponse{header: http.Header{}, status: 200}
+			s.handleAnswerInner(rec, r, start)
+			if rec.status != http.StatusOK {
+				return nil, errAnswerNotOK
+			}
+			return rec.buf.Bytes(), nil
+		})
+		if err == nil {
+			if shared {
+				w.Header().Set("X-Cache", "hit")
+			} else {
+				w.Header().Set("X-Cache", "miss")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+			return
+		}
+		// On non-OK from the inner handler, fall through to the
+		// uncached path so the real status code reaches the client.
+	}
+	s.handleAnswerInner(w, r, start)
+}
+
+// errAnswerNotOK signals that the inner handler wrote a non-2xx
+// response — don't cache it, and let the caller re-run uncached so
+// the proper status reaches the client.
+var errAnswerNotOK = errors.New("answer: non-OK response, not cached")
+
+// answerCacheKey is the deterministic cache key for a given /answer
+// request. Sorts query parameters so URL-order doesn't fragment the
+// cache; drops parameters that don't affect the response.
+func answerCacheKey(r *http.Request) string {
+	q := r.URL.Query()
+	// Don't key on transport-only or debug-only flags.
+	q.Del("cluster_local")
+	q.Del("trace")
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for _, k := range keys {
+		for _, v := range q[k] {
+			sb.WriteString(k)
+			sb.WriteByte('=')
+			sb.WriteString(v)
+			sb.WriteByte('\x00')
+		}
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:16])
+}
+
+// bufferedResponse captures a handler's writes into a buffer so we
+// can store the rendered JSON in answerCache before flushing to the
+// real response writer.
+type bufferedResponse struct {
+	buf    bytes.Buffer
+	header http.Header
+	status int
+}
+
+func (b *bufferedResponse) Header() http.Header        { return b.header }
+func (b *bufferedResponse) WriteHeader(statusCode int) { b.status = statusCode }
+func (b *bufferedResponse) Write(p []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	return b.buf.Write(p)
+}
+
+// handleAnswerInner is the uncached body. Called both via the cache
+// path (with a bufferedResponse) and directly when the cache is
+// disabled or a non-OK response needs the real writer.
+func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, start time.Time) {
+	q := r.URL.Query().Get("q")
 	k := 5
 	if v := r.URL.Query().Get("k"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
