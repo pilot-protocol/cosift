@@ -24,6 +24,72 @@ var suspectTLDs = map[string]bool{
 	"buzz": true, "gq": true, "support": true, "lol": true, "icu": true,
 }
 
+// platformETLDs identifies major content platforms that legitimately
+// have many subdomains in our corpus — GitHub Pages, Tumblr, WordPress,
+// blog hosts, indie game / music platforms, BBC sub-sites. These get
+// EXEMPTED from the subdomain-density penalty (a real spam-farm signal
+// for unknown eTLD+1s) but don't get the trusted-list boost. They
+// score from baseline 0.5 — let TLD heuristics + per-host signals
+// (Tranco/Majestic when loaded) sort them out.
+//
+// Curated from observed false positives: pre-platforms list, the live
+// audit was flagging clojure.github.io, scala.github.io, news.bbc.co.uk,
+// pythonwise.blogspot.com, www.tumblr.com, bandcamp.com, itch.io,
+// wordpress.com all as "block."
+var platformETLDs = map[string]bool{
+	"github.io":     true,
+	"gitlab.io":     true,
+	"netlify.app":   true,
+	"vercel.app":    true,
+	"pages.dev":     true,
+	"web.app":       true,
+	"firebaseapp.com": true,
+	"appspot.com":   true,
+	"herokuapp.com": true,
+	"glitch.me":     true,
+	"replit.dev":    true,
+	"repl.co":       true,
+	"deno.dev":      true,
+	"fly.dev":       true,
+	"workers.dev":   true,
+	"neocities.org": true,
+
+	"tumblr.com":    true,
+	"wordpress.com": true,
+	"blogspot.com":  true,
+	"substack.com":  true,
+	"medium.com":    true,
+	"ghost.io":      true,
+	"mastodon.social": true,
+	"mastodon.online": true,
+
+	"bandcamp.com":  true,
+	"itch.io":       true,
+	"soundcloud.com": true,
+
+	"fandom.com":    true,
+	"wikia.com":     true,
+	"sched.com":     true,
+
+	"bbc.co.uk":     true,
+	"bbc.com":       true,
+
+	"reddit.com":    true,
+	"quora.com":     true,
+	"medium.dev":    true,
+
+	"shopify.com":   true,
+	"squarespace.com": true,
+	"wixsite.com":   true,
+	"weebly.com":    true,
+
+	"amazonaws.com": true,
+	"cloudfront.net": true,
+	"akamaihd.net":  true,
+	"akamaized.net": true,
+	"fastly.net":    true,
+}
+
 // embeddedTrusted is the curated allow-list shipped in the binary so
 // that a scorer with no external Tranco/Majestic data still produces
 // useful signals from day one. Selected for: documentation primary

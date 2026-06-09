@@ -54,18 +54,48 @@ func TestScoreInstitutional(t *testing.T) {
 func TestScoreSubdomainFarm(t *testing.T) {
 	s := New()
 	s.SetSubdomainCounts(map[string]int{
-		"cutestat.com": 5000,
-		"lap.hu":       1500,
-		"safebrand.io": 50, // below the 100 threshold
+		"cutestat.com":  831000, // observed real GH200 number
+		"jiali.sbs":     215000,
+		"genericfarm.io": 12000, // legitimate-TLD farm
+		"safebrand.io":  500,    // below the 1000 threshold
 	})
-	if got := s.Score("foo.cutestat.com"); got >= 0.4 {
-		t.Errorf("subdomain farm not penalized: got %.2f", got)
+	if got := s.Score("foo.cutestat.com"); got >= 0.25 {
+		t.Errorf("real spam farm not blocked: got %.2f want < 0.25", got)
 	}
-	if got := s.Score("bar.lap.hu"); got >= 0.4 {
-		t.Errorf("subdomain farm not penalized: got %.2f", got)
+	if got := s.Score("bar.jiali.sbs"); got >= 0.25 {
+		t.Errorf("real spam farm not blocked: got %.2f want < 0.25", got)
 	}
 	if got := s.Score("api.safebrand.io"); got < 0.4 {
 		t.Errorf("low-density site over-penalized: got %.2f", got)
+	}
+}
+
+// TestPlatformETLDExempt locks in the GH200 false-positive fix:
+// legitimate content platforms with many subdomains (GitHub Pages,
+// Tumblr, WordPress, BBC sub-sites) must not be classified as spam
+// farms.
+func TestPlatformETLDExempt(t *testing.T) {
+	s := New()
+	s.SetSubdomainCounts(map[string]int{
+		"github.io":     20000, // hypothetically high
+		"tumblr.com":    50000,
+		"wordpress.com": 100000,
+		"bbc.co.uk":     500,
+	})
+	cases := []string{
+		"clojure.github.io",
+		"scala.github.io",
+		"www.tumblr.com",
+		"pythonwise.blogspot.com",
+		"news.bbc.co.uk",
+		"bandcamp.com",
+		"itch.io",
+	}
+	for _, host := range cases {
+		got := s.Score(host)
+		if got < 0.40 {
+			t.Errorf("legit platform %s classified as block: %.2f", host, got)
+		}
 	}
 }
 

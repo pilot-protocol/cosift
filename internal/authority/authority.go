@@ -142,19 +142,27 @@ func (s *Scorer) Score(host string) float64 {
 		score += 0.15
 	}
 
-	// Subdomain-farm penalty: when the eTLD+1 has many distinct hosts
-	// AND neither the specific host nor the eTLD+1 is whitelisted,
-	// penalize. github.io has many subdomains but raft.github.io is on
-	// the trust list — we don't want a blanket penalty to drag it down.
+	// Subdomain-farm penalty: when the eTLD+1 has an absurd number of
+	// distinct hosts, almost certainly a spam farm. Thresholds tuned
+	// against the live GH200 distribution where the real spam clusters
+	// (cutestat.com 831K, jiali.sbs 215K, meiru.cfd 182K, etc.) sit at
+	// 100K+ while legitimate platforms (github.io, tumblr.com,
+	// wordpress.com, bbc.co.uk) sit well below 10K. Below-10K gets a
+	// mild penalty; below-1K gets none. Known major platforms are
+	// further exempted via platformETLDs so a legit Tumblr/GitHub Pages
+	// page isn't dragged down regardless of size.
+	e := eTLD1(host)
 	s.mu.RLock()
-	subN := s.subdomain[eTLD1(host)]
+	subN := s.subdomain[e]
 	s.mu.RUnlock()
-	if !s.trusted[host] && !s.trusted[eTLD1(host)] {
+	if !s.trusted[host] && !s.trusted[e] && !platformETLDs[e] {
 		switch {
+		case subN >= 100000:
+			score -= 0.40 // unambiguous spam farm
+		case subN >= 10000:
+			score -= 0.30
 		case subN >= 1000:
-			score -= 0.3
-		case subN >= 100:
-			score -= 0.15
+			score -= 0.10
 		}
 	}
 
