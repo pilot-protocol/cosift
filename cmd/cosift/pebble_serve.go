@@ -4905,51 +4905,37 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 	case "entity":
 		// Rule-based query rewrite for question-form entity lookups
 		// ("who created X", "how tall is X", "what is the capital of
-		// X"). Strips the question form, adds canonical-attribute words,
-		// fuses BM25 hits with the original query via RRF. No LLM call;
-		// no latency cost; lifts the fact-category eval from 54% → 80%+
-		// in offline testing. Empty rewrite slice = no pattern matched,
-		// fall through to bare BM25.
+		// X"). Strips the question form, appends canonical-attribute
+		// keywords to the original, single BM25 call. The earlier
+		// RRF-fusion variant regressed legitimate passes because
+		// equal-weight fusion across 4 queries pushed the original's
+		// top hit out of the reranker's top-30. Concat preserves the
+		// original signal while letting the new keywords add positive
+		// scoring contributions where biographical pages exist.
 		rewrites := qexpand.RewriteEntity(q)
 		if len(rewrites) == 0 {
 			hits, err := s.idx.Search(ctx, q, fetchK)
 			return hits, q, err
 		}
-		queries := append([]string{q}, rewrites...)
-		lists := make([][]index.Hit, 0, len(queries))
-		for _, qq := range queries {
-			h, lerr := s.idx.Search(ctx, qq, fetchK)
-			if lerr != nil {
-				continue
-			}
-			lists = append(lists, h)
-		}
-		hits := rrfFuse(lists)
-		if len(hits) > fetchK {
-			hits = hits[:fetchK]
-		}
-		return hits, q + " | " + strings.Join(rewrites, " | "), nil
+		expanded := q + " " + strings.Join(rewrites, " ")
+		hits, err := s.idx.Search(ctx, expanded, fetchK)
+		return hits, expanded, err
 	default:
-		// Bare path now also runs entity-expansion when the query
-		// matches a question-form pattern — cheap regex check, fuses
-		// for free. Operators can disable with
-		// COSIFT_DISABLE_ENTITY_EXPAND=1 (benchmark mode).
+		// Bare path runs entity-expansion when the query matches a
+		// question-form pattern. Earlier RRF-fuse experiment regressed
+		// 'who created the World Wide Web' (passing → bail) because
+		// equal-weight fusion across 4 queries pushed the
+		// previously-#1 Berners-Lee bio out of the reranker's top-30.
+		// Concat-into-single-query avoids the fusion-weight problem:
+		// the rewrites only add positive scoring contributions for
+		// pages that contain the canonical-attribute words ("creator,"
+		// "inventor"), without diluting the original query's ranking
+		// signal. Operators can disable with COSIFT_DISABLE_ENTITY_EXPAND=1.
 		if os.Getenv("COSIFT_DISABLE_ENTITY_EXPAND") == "" {
 			if rewrites := qexpand.RewriteEntity(q); len(rewrites) > 0 {
-				queries := append([]string{q}, rewrites...)
-				lists := make([][]index.Hit, 0, len(queries))
-				for _, qq := range queries {
-					h, lerr := s.idx.Search(ctx, qq, fetchK)
-					if lerr != nil {
-						continue
-					}
-					lists = append(lists, h)
-				}
-				hits := rrfFuse(lists)
-				if len(hits) > fetchK {
-					hits = hits[:fetchK]
-				}
-				return hits, q + " | " + strings.Join(rewrites, " | "), nil
+				expanded := q + " " + strings.Join(rewrites, " ")
+				hits, err := s.idx.Search(ctx, expanded, fetchK)
+				return hits, expanded, err
 			}
 		}
 		hits, err := s.idx.Search(ctx, q, fetchK)
