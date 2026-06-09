@@ -192,13 +192,11 @@ func classify(score float64) string {
 	}
 }
 
-func etld1OfHost(host string) string {
-	parts := strings.Split(host, ".")
-	if len(parts) < 2 {
-		return host
-	}
-	return parts[len(parts)-2] + "." + parts[len(parts)-1]
-}
+// etld1OfHost delegates to the publicsuffix-backed helper in the
+// authority package. Inlined separately, the audit binary would
+// produce different bucket keys than the live Scorer (the bug we
+// shipped publicsuffix to close).
+func etld1OfHost(host string) string { return authority.ETLD1(host) }
 
 func tldOfHost(host string) string {
 	i := strings.LastIndex(host, ".")

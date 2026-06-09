@@ -552,12 +552,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		refresh := func() {
 			counts := map[string]int{}
 			err := ps.IterateDomains(ctx, func(host string, _ int) bool {
-				parts := strings.Split(host, ".")
-				if len(parts) < 2 {
+				// Use the Scorer's eTLD+1 logic so the bucket keys we
+				// produce here match what Score() looks up — without this
+				// the publicsuffix-aware Scorer keys on "bbc.co.uk" while
+				// the bootstrap keys on "co.uk" and the lookup misses.
+				e := authority.ETLD1(host)
+				if e == "" {
 					return true
 				}
-				etld := parts[len(parts)-2] + "." + parts[len(parts)-1]
-				counts[etld]++
+				counts[e]++
 				return true
 			})
 			if err != nil {

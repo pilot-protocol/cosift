@@ -29,6 +29,8 @@ package authority
 import (
 	"strings"
 	"sync"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Scorer holds the data needed to rank a host. Zero value is unusable;
@@ -229,10 +231,35 @@ func trancoBoost(rank int) float64 {
 	}
 }
 
-// eTLD1 returns the last two dot-separated components. Cheap and
-// good enough for spam clustering; misses .co.uk style (which is
-// fine — we deliberately don't penalize the eTLD+1 of bbc.co.uk).
+// ETLD1 is the exported alias for eTLD1 so external callers (the
+// in-server subdomain-count bootstrap, audit subcommand) can share the
+// same publicsuffix-aware key with the Scorer. Without this, ad-hoc
+// in-line parsers would produce different bucket keys and the lookup
+// in Score would silently miss for compound suffixes (.co.uk, .com.au).
+func ETLD1(host string) string { return eTLD1(host) }
+
+// eTLD1 returns the registrable eTLD+1 (e.g. "bbc.co.uk" for
+// "news.bbc.co.uk", "github.io" for "raft.github.io"). Backed by the
+// IANA Public Suffix List bundled with golang.org/x/net/publicsuffix.
+//
+// On a parse failure (malformed host, empty input) we fall back to
+// returning the input unchanged — the lookup just misses the cache,
+// no panic. The previous naive "last 2 components" parser fired for
+// most cases but mis-classified compound suffixes like .co.uk /
+// .com.au / .ac.uk; live GH200 audit saw news.bbc.co.uk score 0.40
+// instead of 0.90 because the trust-list lookup for "bbc.co.uk"
+// missed (parser returned "co.uk").
 func eTLD1(host string) string {
+	if host == "" {
+		return host
+	}
+	if e, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil && e != "" {
+		return e
+	}
+	// publicsuffix returns an error for hosts that ARE themselves a
+	// public suffix (e.g. "co.uk") or for IP addresses. Fall back to
+	// the cheap last-two-components heuristic so the rest of the
+	// scoring pipeline still gets a stable bucket key.
 	parts := strings.Split(host, ".")
 	if len(parts) < 2 {
 		return host

@@ -168,15 +168,35 @@ func TestMultiplier(t *testing.T) {
 
 func TestETLD1(t *testing.T) {
 	cases := map[string]string{
-		"x.y.example.com":      "example.com",
-		"docs.python.org":      "python.org",
-		"example.com":          "example.com",
-		"raft.github.io":       "github.io",
-		"localhost":            "localhost",
+		"x.y.example.com":  "example.com",
+		"docs.python.org":  "python.org",
+		"example.com":      "example.com",
+		"raft.github.io":   "raft.github.io", // github.io is a public suffix → site is the eTLD+1
+		"localhost":        "localhost",
+		// The bug we shipped publicsuffix to fix:
+		"news.bbc.co.uk":   "bbc.co.uk",
+		"www.bbc.co.uk":    "bbc.co.uk",
+		"docs.example.com.au": "example.com.au",
+		"www.gov.uk":       "www.gov.uk", // gov.uk is the suffix; www is the registrable
+		"foo.ac.jp":        "foo.ac.jp",
 	}
 	for in, want := range cases {
 		if got := eTLD1(in); got != want {
 			t.Errorf("eTLD1(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestBBCCoUKTrusted locks in the publicsuffix fix: news.bbc.co.uk
+// must inherit the trusted boost from bbc.co.uk in the embedded list.
+// Pre-fix, the naive parser returned eTLD+1=co.uk so the host lookup
+// missed and the score landed at 0.40 instead of 0.90.
+func TestBBCCoUKTrusted(t *testing.T) {
+	s := New()
+	hosts := []string{"news.bbc.co.uk", "www.bbc.co.uk", "bbc.co.uk", "bbc.com"}
+	for _, h := range hosts {
+		if got := s.Score(h); got < 0.85 {
+			t.Errorf("%s: got %.2f, want ≥ 0.85", h, got)
 		}
 	}
 }
