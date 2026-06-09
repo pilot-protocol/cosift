@@ -540,6 +540,46 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			log.Printf("pebble-serve: corpus stats bootstrapped (indexed_docs=%d, sum_doc_len=%d)", count, sumLen)
 		}
 	}()
+	// Without this the
+	// subdomain-density penalty in authority.Score never fires — we
+	// saw 6.68M .cfd/.sbs hosts on GH200 sitting at score 0.20 instead
+	// of dropping to "block." Single-pass iteration is ~18s at 9M hosts;
+	// runs off the hot path so HNSW load isn't blocked. Re-runs every
+	// 6h to track ongoing crawl growth without operator intervention.
+	go func() {
+		// Initial settle so the rest of startup completes first.
+		time.Sleep(15 * time.Second)
+		refresh := func() {
+			counts := map[string]int{}
+			err := ps.IterateDomains(ctx, func(host string, _ int) bool {
+				parts := strings.Split(host, ".")
+				if len(parts) < 2 {
+					return true
+				}
+				etld := parts[len(parts)-2] + "." + parts[len(parts)-1]
+				counts[etld]++
+				return true
+			})
+			if err != nil {
+				log.Printf("pebble-serve: subdomain-count refresh: %v", err)
+				return
+			}
+			srv.authority.SetSubdomainCounts(counts)
+			log.Printf("pebble-serve: authority subdomain counts refreshed (%d eTLD+1 buckets)", len(counts))
+		}
+		refresh()
+		// Re-scan periodically to absorb ongoing crawl growth.
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				refresh()
+			}
+		}
+	}()
 	// Only
 	// listens on loopback so it can never be exposed publicly through the
 	// reverse proxy. Set COSIFT_PPROF_ADDR=127.0.0.1:6060 to enable.

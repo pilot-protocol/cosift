@@ -170,13 +170,22 @@ func runDomainAudit(ctx context.Context, args []string) error {
 	return nil
 }
 
+// classify maps an authority score to the recommended action.
+// Thresholds chosen against the live GH200 distribution: the
+// suspect-TLD penalty (-0.3) and subdomain-density penalty (-0.3)
+// each pull score from 0.5 to 0.2; either signal alone leaves a host
+// at "down-weight," both push to "block." A .cfd subdomain of a
+// 200k-host farm scores 0.0 → block. A plain .cfd domain with no
+// farm signal scores 0.2 → block (cheap TLDs are not the long tail
+// we want to preserve). An unknown but legitimate site scores 0.5 →
+// keep.
 func classify(score float64) string {
 	switch {
 	case score >= 0.75:
 		return "trusted"
 	case score >= 0.40:
 		return "keep"
-	case score >= 0.20:
+	case score >= 0.25:
 		return "down-weight"
 	default:
 		return "block"
