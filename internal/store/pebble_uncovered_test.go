@@ -366,6 +366,44 @@ func TestPebbleCorpusStats(t *testing.T) {
 	}
 }
 
+// TestPebbleIndexDocumentTrustsMirror locks in the GH200 fix: once
+// the atomic mirror is seeded, IndexDocument must read from it (not
+// from Pebble meta). If meta were to return 0 transiently (the bug
+// we shipped to defend against), the in-memory mirror keeps the
+// counter intact and the next commit re-persists the correct value.
+func TestPebbleIndexDocumentTrustsMirror(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	tokenize := func(s string) []string { return strings.Fields(s) }
+
+	// Seed the corpus + the atomic mirror.
+	for i := 0; i < 3; i++ {
+		id, _ := p.UpsertDocument(ctx, &Document{URL: "u" + string(rune('a'+i)), FetchedAt: time.Now()})
+		_ = p.IndexDocument(ctx, id, "", "a b c", tokenize, 1)
+	}
+	if _, count, _ := p.CorpusStats(ctx); count != 3 {
+		t.Fatalf("setup: count=%d want 3", count)
+	}
+
+	// Simulate the meta corruption by deleting the meta keys WITHOUT
+	// clearing the atomic mirror. Production analogue: a torn write or
+	// compaction quirk transiently makes the meta return 0.
+	p.mu.Lock()
+	_ = p.db.Delete(metaKey("indexed_docs"), p.writeOpts)
+	_ = p.db.Delete(metaKey("sum_doc_len"), p.writeOpts)
+	p.mu.Unlock()
+
+	// IndexDocument on a NEW doc should still produce count=4, not 1.
+	idNew, _ := p.UpsertDocument(ctx, &Document{URL: "uz", FetchedAt: time.Now()})
+	if err := p.IndexDocument(ctx, idNew, "", "x y", tokenize, 1); err != nil {
+		t.Fatalf("IndexDocument: %v", err)
+	}
+	_, count, _ := p.CorpusStats(ctx)
+	if count != 4 {
+		t.Errorf("count after re-index with deleted meta: got %d want 4 (mirror should have rescued)", count)
+	}
+}
+
 // TestPebbleBootstrapCorpusStats verifies the rescue path used after
 // the GH200 incident where the meta counters were observed at zero
 // despite a populated 'l' family. BootstrapCorpusStats must scan,

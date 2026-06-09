@@ -1032,8 +1032,21 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err != nil {
 		return err
 	}
-	sumLen := p.readMetaInt64Locked("sum_doc_len")
-	indexedCount := p.readMetaInt64Locked("indexed_docs")
+	// Once the atomic mirror is seeded (startup CorpusStats or
+	// BootstrapCorpusStats), trust it as the source of truth instead
+	// of round-tripping through Pebble meta. Defends against the case
+	// observed on GH200 where meta read returned 0 mid-restart and
+	// IndexDocument blindly wrote that 0 back, losing the counter
+	// permanently. The mirror is updated only under p.mu (held here),
+	// so coherent with Pebble's persisted state.
+	var sumLen, indexedCount int64
+	if p.corpusStatsLoaded.Load() {
+		sumLen = p.corpusSumLen.Load()
+		indexedCount = p.corpusIndexedDocs.Load()
+	} else {
+		sumLen = p.readMetaInt64Locked("sum_doc_len")
+		indexedCount = p.readMetaInt64Locked("indexed_docs")
+	}
 	if hadOld {
 		sumLen -= oldLen
 	} else {
