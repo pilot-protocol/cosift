@@ -81,3 +81,38 @@ func runPebbleCompact(ctx context.Context, args []string) error {
 // Reference to *pebble import so the compile-time symbol stays in
 // case future range alternatives need the pebble.Options type.
 var _ pebble.Options
+
+// runFrontierClear opens a Pebble store offline and wipes the entire
+// frontier ('f' family) via the same code path /admin/frontier-clear
+// uses, then closes. The advantage over the admin endpoint: cosift-serve
+// must be stopped, so no in-flight crawler workers can enqueue new URLs
+// AFTER the clear. The endpoint version was observed re-populating with
+// link-extracted URLs from workers finishing fetches mid-clear.
+//
+// Operator workflow:
+//
+//	sudo systemctl stop cosift-serve
+//	cosift frontier-clear -dir /home/ubuntu/cosift-data/pebble
+//	sudo systemctl start cosift-serve
+func runFrontierClear(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("frontier-clear", flag.ExitOnError)
+	dir := fs.String("dir", "", "PebbleStore directory (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dir == "" {
+		return fmt.Errorf("-dir required")
+	}
+	ps, err := store.OpenPebble(*dir)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer ps.Close()
+	t0 := time.Now()
+	fmt.Fprintln(fs.Output(), "clearing frontier ('f' family) + compacting...")
+	if err := ps.ClearFrontier(ctx); err != nil {
+		return fmt.Errorf("clear: %w", err)
+	}
+	fmt.Fprintf(fs.Output(), "frontier cleared in %s\n", time.Since(t0))
+	return nil
+}

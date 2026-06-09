@@ -326,6 +326,10 @@ func run(cfgPath string) error {
 		if err := runPebbleCompact(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("pebble-compact: %w", err)
 		}
+	case "frontier-clear":
+		if err := runFrontierClear(ctx, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("frontier-clear: %w", err)
+		}
 	case "domain-audit":
 		if err := runDomainAudit(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("domain-audit: %w", err)
