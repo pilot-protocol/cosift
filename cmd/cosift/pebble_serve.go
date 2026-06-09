@@ -4832,14 +4832,13 @@ func (s *pebbleHTTP) applyLLMEndpointDefaults(retrieverParam, rerankParam string
 // embedder; missing either falls through to BM25 — warningsFor()
 // surfaces that to the client.
 // applyAuthorityToDense converts HNSW VectorHits into index.Hits with
-// the per-host authority multiplier applied to the score — mirrors what
-// PebbleBM25.Search does internally for the BM25 path. Without this the
-// dense channel was injecting cutestat/.cfd/.sbs spam into the RRF
-// fusion at the hybrid retriever (observed: 'What is the C10K problem?'
-// cited 3 luanjiao.cfd subdomains in the top-5 source list). The
-// reranker downstream would also see those candidates; multiplying
-// in-place ensures the fusion ranker drops them at the same threshold
-// the BM25 side already enforces.
+// the per-host authority multiplier applied to the score, AND re-sorts
+// the result by the new score so the rank order reflects authority.
+// RRF fusion downstream uses rank position, not raw score, so without
+// the re-sort the multiplier was a no-op (observed: 'What is the C10K
+// problem?' still cited 3 luanjiao.cfd subdomains after applying the
+// multiplier alone). PebbleBM25.Search already multiplies AND sorts
+// internally; this helper mirrors that contract for the dense path.
 func (s *pebbleHTTP) applyAuthorityToDense(vhits []index.VectorHit) []index.Hit {
 	out := make([]index.Hit, len(vhits))
 	for i, vh := range vhits {
@@ -4849,6 +4848,7 @@ func (s *pebbleHTTP) applyAuthorityToDense(vhits []index.VectorHit) []index.Hit 
 		}
 		out[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: score}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
 }
 
