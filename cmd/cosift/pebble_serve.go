@@ -475,6 +475,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
 	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
+	mux.HandleFunc("POST /admin/frontier-clear", wrap(srv.handleFrontierClear))
 	mux.HandleFunc("POST /admin/rss-import", wrap(srv.handleRSSImport))
 	mux.HandleFunc("POST /admin/crawl-now", wrap(srv.handleCrawlNow))
 	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
@@ -1971,6 +1972,30 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queued": req.URL})
+}
+
+// handleFrontierClear wipes the entire frontier in a single Pebble
+// DeleteRange — every queued URL, primary + secondary index. Used when
+// the frontier is so polluted by spam-discovery crawls that
+// claim-time exclude rules can't drain it in reasonable time. Operator
+// re-seeds via seeds-file restart or /admin/sitemap-import calls.
+//
+// Sees the same PeerAuthToken as the other admin endpoints. Returns the
+// approximate count of deleted entries (DeleteRange is O(tombstones),
+// not O(N), so the count is reported as -1 to signal "swept range").
+func (s *pebbleHTTP) handleFrontierClear(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+			return
+		}
+	}
+	if err := s.store.ClearFrontier(r.Context()); err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
 // handleFrontierPurgeHost deletes every queued frontier entry whose host

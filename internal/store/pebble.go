@@ -936,6 +936,24 @@ func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 	return p.db.DeleteRange(lo, hi, p.writeOpts)
 }
 
+// ClearFrontier removes every persisted frontier entry — both the
+// primary 'f'+'u'+url records and the secondary 'f'+'q'+host indexes —
+// in a single DeleteRange. Used by /admin/frontier-clear to drop a
+// frontier polluted by spam-discovery crawls (observed on GH200: 8M+
+// .cfd/.sbs URLs queued in the auto-sitemap storm, draining via the
+// claim-time exclude check would take hours of mutex churn).
+//
+// Caller is responsible for re-seeding from cosift.json crawler.seeds
+// or pushing fresh URLs via /admin/sitemap-import / crawl-enqueue.
+func (p *PebbleStore) ClearFrontier(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo := []byte{famFrontier}
+	hi := []byte{famFrontier + 1}
+	return p.db.DeleteRange(lo, hi, p.writeOpts)
+}
+
 // ClearPQFamily removes every persisted PQ key (codebook + per-node codes).
 // Used by `cosift hnsw-rebuild` because node indices change during rebuild,
 // invalidating the existing codes.
