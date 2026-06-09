@@ -1,0 +1,242 @@
+// Package authority scores indexed hosts on a [0, 1] authority scale.
+//
+// Search ranking multiplies BM25 / hybrid scores by (1 + alpha * authority)
+// so high-authority hosts (Wikipedia, MDN, kernel.org, arxiv) float above
+// the spam directories that dominate the long tail of the crawl. The score
+// is a blend of:
+//
+//   - **Tranco / Majestic rank lookups** (optional CSV imports). Tranco
+//     measures DNS-level popularity; Majestic measures referring-subnet
+//     link diversity. Both are publicly downloadable.
+//   - **TLD heuristics.** .gov / .edu / .mil / .ac.* / .nhs.uk lift the
+//     score; ephemeral spam TLDs (.sbs, .cfd, .top, .xyz with subdomain
+//     density) drag it down.
+//   - **Subdomain-density penalty.** When 1,000+ subdomains share an
+//     eTLD+1 and none are otherwise authoritative, it's a spam farm
+//     (cutestat clones, lap.hu mirrors, programas-gratis directory
+//     networks). Applied via SetSubdomainCount before Score.
+//   - **Hand-curated whitelist** of well-known authoritative hosts so a
+//     scorer with no external data still produces useful signals.
+//
+// The Scorer is read-mostly after construction; Score is safe to call
+// from many goroutines. CSV loads happen at server startup and are
+// gated by a single Load* call. No background mutations.
+//
+// Operators with no Tranco/Majestic CSVs available still get useful
+// scoring from the embedded whitelist + TLD + subdomain-density signals.
+package authority
+
+import (
+	"strings"
+	"sync"
+)
+
+// Scorer holds the data needed to rank a host. Zero value is unusable;
+// construct via New.
+type Scorer struct {
+	// rank-style lookups; lower rank = more authoritative.
+	tranco   map[string]int
+	majestic map[string]int
+
+	// per-host static lists.
+	trusted map[string]bool
+
+	// eTLD+1 → number of distinct subdomains observed in the corpus.
+	// Populated externally (e.g. by the domain-audit job). High values
+	// trigger the subdomain-farm penalty unless the eTLD+1 itself is
+	// trusted.
+	mu        sync.RWMutex
+	subdomain map[string]int
+
+	// Tunables, settable via env at construction:
+	//   alpha — exposed for callers that want to know the multiplier
+	//   used by Score; the actual multiplication is done at the call
+	//   site, not here, so we just hold it for visibility.
+	alpha float64
+}
+
+// New builds a Scorer pre-populated with the embedded whitelist and
+// default suspect-TLD set. Call LoadTranco / LoadMajestic to add
+// external rank data.
+func New() *Scorer {
+	t := make(map[string]bool, len(embeddedTrusted))
+	for _, h := range embeddedTrusted {
+		t[h] = true
+	}
+	return &Scorer{
+		tranco:    map[string]int{},
+		majestic:  map[string]int{},
+		trusted:   t,
+		subdomain: map[string]int{},
+		alpha:     2.0,
+	}
+}
+
+// Alpha is the multiplier callers should apply: final = base * (1 + alpha * Score(host)).
+// Default 2.0 (top-of-list trusted host gets ~3x lift; junk stays at 1x).
+func (s *Scorer) Alpha() float64 { return s.alpha }
+
+// WithAlpha sets the recommended multiplier. Chainable.
+func (s *Scorer) WithAlpha(a float64) *Scorer {
+	if a >= 0 {
+		s.alpha = a
+	}
+	return s
+}
+
+// SetSubdomainCounts replaces the eTLD+1 → host count map. Called by
+// the audit job. Pass nil to clear the penalty.
+func (s *Scorer) SetSubdomainCounts(counts map[string]int) {
+	s.mu.Lock()
+	if counts == nil {
+		s.subdomain = map[string]int{}
+	} else {
+		s.subdomain = counts
+	}
+	s.mu.Unlock()
+}
+
+// Score returns a [0, 1] authority score for the host.
+// Lookups are O(1) maps; safe from many goroutines.
+func (s *Scorer) Score(host string) float64 {
+	if s == nil || host == "" {
+		return 0.5 // unknown defaults to neutral
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimPrefix(host, "www.")
+
+	score := 0.5
+
+	// Embedded whitelist — generous bump.
+	if s.trusted[host] || s.trusted[eTLD1(host)] {
+		score += 0.4
+	}
+
+	// Tranco rank → log-scale boost. Top 100 → +0.3; top 1k → +0.2;
+	// top 100k → +0.1; top 1M → +0.05.
+	if r, ok := s.tranco[host]; ok && r > 0 {
+		score += trancoBoost(r)
+	} else if r, ok := s.tranco[eTLD1(host)]; ok && r > 0 {
+		score += trancoBoost(r) * 0.8 // slight penalty for matching only the eTLD+1
+	}
+
+	// Majestic Trust Flow is 0-100 → up to +0.15.
+	if tf, ok := s.majestic[host]; ok && tf > 0 {
+		score += float64(tf) / 100.0 * 0.15
+	} else if tf, ok := s.majestic[eTLD1(host)]; ok && tf > 0 {
+		score += float64(tf) / 100.0 * 0.12
+	}
+
+	// TLD adjustments.
+	t := tldOf(host)
+	switch {
+	case institutionalTLDs[t]:
+		score += 0.2
+	case suspectTLDs[t]:
+		score -= 0.3
+	}
+
+	// .ac.* and .nhs.uk style — second-level institutional.
+	if strings.HasSuffix(host, ".ac.uk") || strings.HasSuffix(host, ".ac.jp") ||
+		strings.HasSuffix(host, ".nhs.uk") || strings.HasSuffix(host, ".gov.uk") {
+		score += 0.15
+	}
+
+	// Subdomain-farm penalty: when the eTLD+1 has many distinct hosts
+	// AND neither the specific host nor the eTLD+1 is whitelisted,
+	// penalize. github.io has many subdomains but raft.github.io is on
+	// the trust list — we don't want a blanket penalty to drag it down.
+	s.mu.RLock()
+	subN := s.subdomain[eTLD1(host)]
+	s.mu.RUnlock()
+	if !s.trusted[host] && !s.trusted[eTLD1(host)] {
+		switch {
+		case subN >= 1000:
+			score -= 0.3
+		case subN >= 100:
+			score -= 0.15
+		}
+	}
+
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score
+}
+
+// Multiplier is the convenience wrapper for callers that don't want to
+// remember the formula: returned value is (1 + alpha * Score(host)),
+// ready to multiply into a BM25 / hybrid score.
+func (s *Scorer) Multiplier(host string) float64 {
+	if s == nil {
+		return 1.0
+	}
+	return 1.0 + s.alpha*s.Score(host)
+}
+
+// Stats is a snapshot of loaded data sizes for /stats publishing.
+type Stats struct {
+	TrustedHosts        int     `json:"trusted_hosts"`
+	TrancoEntries       int     `json:"tranco_entries"`
+	MajesticEntries     int     `json:"majestic_entries"`
+	SubdomainCountEntries int   `json:"subdomain_count_entries"`
+	Alpha               float64 `json:"alpha"`
+}
+
+func (s *Scorer) Stats() Stats {
+	if s == nil {
+		return Stats{}
+	}
+	s.mu.RLock()
+	subN := len(s.subdomain)
+	s.mu.RUnlock()
+	return Stats{
+		TrustedHosts:        len(s.trusted),
+		TrancoEntries:       len(s.tranco),
+		MajesticEntries:     len(s.majestic),
+		SubdomainCountEntries: subN,
+		Alpha:               s.alpha,
+	}
+}
+
+// trancoBoost converts a Tranco rank (1 = best, 1M = worst) into a
+// monotone-decreasing additive score in [0, 0.3].
+func trancoBoost(rank int) float64 {
+	switch {
+	case rank <= 100:
+		return 0.30
+	case rank <= 1_000:
+		return 0.22
+	case rank <= 10_000:
+		return 0.16
+	case rank <= 100_000:
+		return 0.10
+	case rank <= 1_000_000:
+		return 0.05
+	default:
+		return 0.0
+	}
+}
+
+// eTLD1 returns the last two dot-separated components. Cheap and
+// good enough for spam clustering; misses .co.uk style (which is
+// fine — we deliberately don't penalize the eTLD+1 of bbc.co.uk).
+func eTLD1(host string) string {
+	parts := strings.Split(host, ".")
+	if len(parts) < 2 {
+		return host
+	}
+	return parts[len(parts)-2] + "." + parts[len(parts)-1]
+}
+
+// tldOf returns the rightmost dot-separated component, lowercased.
+func tldOf(host string) string {
+	i := strings.LastIndex(host, ".")
+	if i < 0 || i == len(host)-1 {
+		return ""
+	}
+	return strings.ToLower(host[i+1:])
+}

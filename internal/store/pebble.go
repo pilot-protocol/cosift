@@ -2035,6 +2035,53 @@ type DomainCount struct {
 	Count int    `json:"count"`
 }
 
+// IterateDomains walks the entire 'h' family once and calls fn for each
+// (host, doc_count) pair. Returning false from fn stops iteration.
+// O(N) but performs a SINGLE scan — the audit-style alternative to
+// paginating ListDomains (which re-scans every page).
+//
+// Use case: producing a JSONL inventory for the domain-audit job
+// without forcing 18 000 full scans at 500-entry pages.
+func (p *PebbleStore) IterateDomains(ctx context.Context, fn func(host string, count int) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famHost},
+		UpperBound: []byte{famHost + 1},
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	var curHost string
+	var curCount int
+	for valid := it.First(); valid; valid = it.Next() {
+		k := it.Key()
+		if len(k) < 1+1+8 {
+			continue
+		}
+		// Layout: 'h' + host + 0x00 + uint64(docID); host slice is
+		// k[1 : len(k)-9]. Iteration is lexicographically sorted on
+		// the host bytes, so all entries for one host come together.
+		host := string(k[1 : len(k)-9])
+		if host != curHost {
+			if curHost != "" {
+				if !fn(curHost, curCount) {
+					return nil
+				}
+			}
+			curHost = host
+			curCount = 0
+		}
+		curCount++
+	}
+	if curHost != "" {
+		fn(curHost, curCount)
+	}
+	return it.Error()
+}
+
 // ListDomains is a paginated + filtered variant of TopDomains. Walks the
 // 'h' family once, counts per host, filters by substring `q` (empty = all),
 // sorts desc by count, returns the slice [offset:offset+limit) plus the

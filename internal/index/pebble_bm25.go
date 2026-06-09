@@ -14,11 +14,13 @@ package index
 import (
 	"context"
 	"math"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/pilot-protocol/cosift/internal/authority"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -45,6 +47,12 @@ type PebbleBM25 struct {
 	// B≈0.5; short-doc corpora often prefer B=1.0.
 	k1 float64
 	b  float64
+
+	// Per-host authority multiplier applied at hit-resolution time.
+	// Wikipedia / kernel.org / arxiv float above the spam directories
+	// in the long tail without requiring a separate ranking pass. Nil
+	// = passthrough (multiplier = 1.0 for every hit).
+	authority *authority.Scorer
 }
 
 // NewPebbleBM25 returns a search-only handle over the given PebbleStore.
@@ -52,6 +60,14 @@ type PebbleBM25 struct {
 // Tokenize + TitleBoost from this package).
 func NewPebbleBM25(s *store.PebbleStore) *PebbleBM25 {
 	return &PebbleBM25{store: s, k1: K1, b: B}
+}
+
+// WithAuthority attaches an authority Scorer; hits get their score
+// multiplied by Scorer.Multiplier(host) before final ranking. Pass nil
+// to disable. Chainable.
+func (b *PebbleBM25) WithAuthority(a *authority.Scorer) *PebbleBM25 {
+	b.authority = a
+	return b
 }
 
 // WithBM25Params overrides the default k1 / b for this instance. Values ≤0
@@ -222,6 +238,14 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		if m.url == "" {
 			continue
 		}
+		// Apply the per-host authority multiplier. Wikipedia /
+		// kernel.org / arxiv float over the spam directories that
+		// share the same BM25 lexical score. Cheap — one map lookup
+		// per hit candidate, k≈thousands not millions. Reranker still
+		// re-orders within the boosted candidate pool.
+		if b.authority != nil {
+			sc *= b.authority.Multiplier(hostFromURL(m.url))
+		}
 		hits = append(hits, Hit{DocID: docID, URL: m.url, Title: m.title, Score: sc})
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
@@ -282,6 +306,20 @@ func (b *PebbleBM25) filterByPhrasesPebble(ctx context.Context, hits []Hit, phra
 		}
 	}
 	return out
+}
+
+// hostFromURL extracts the lowercased host from a URL string; returns
+// empty when parsing fails (caller treats that as "no authority data").
+// Cheap enough to inline-call once per hit candidate (k≈thousands).
+func hostFromURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Host)
 }
 
 // kthLargest returns the k-th highest value in the scores map. If the map

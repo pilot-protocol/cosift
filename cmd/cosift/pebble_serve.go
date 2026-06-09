@@ -44,6 +44,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/crawler"
 
 	"github.com/pilot-protocol/cosift/internal/answercache"
+	"github.com/pilot-protocol/cosift/internal/authority"
 	"github.com/pilot-protocol/cosift/internal/chatgate"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
@@ -199,6 +200,38 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 	idx := index.NewPebbleBM25(ps)
+	// Wikipedia / kernel.org / arxiv float
+	// above spam directories in the long tail. Optional Tranco /
+	// Majestic CSVs at COSIFT_TRANCO_CSV / COSIFT_MAJESTIC_CSV improve
+	// the score; with no CSVs the embedded whitelist + TLD heuristics
+	// still produce useful signals.
+	scorer := authority.New()
+	if v := os.Getenv("COSIFT_AUTHORITY_ALPHA"); v != "" {
+		if a, err := strconv.ParseFloat(v, 64); err == nil && a >= 0 {
+			scorer = scorer.WithAlpha(a)
+		}
+	}
+	if path := os.Getenv("COSIFT_TRANCO_CSV"); path != "" {
+		if f, err := os.Open(path); err == nil {
+			n, _ := scorer.LoadTranco(f)
+			_ = f.Close()
+			log.Printf("pebble-serve: authority Tranco loaded (%d entries from %s)", n, path)
+		} else {
+			log.Printf("pebble-serve: WARN COSIFT_TRANCO_CSV=%q: %v", path, err)
+		}
+	}
+	if path := os.Getenv("COSIFT_MAJESTIC_CSV"); path != "" {
+		if f, err := os.Open(path); err == nil {
+			n, _ := scorer.LoadMajestic(f)
+			_ = f.Close()
+			log.Printf("pebble-serve: authority Majestic loaded (%d entries from %s)", n, path)
+		} else {
+			log.Printf("pebble-serve: WARN COSIFT_MAJESTIC_CSV=%q: %v", path, err)
+		}
+	}
+	idx = idx.WithAuthority(scorer)
+	log.Printf("pebble-serve: authority scoring enabled (alpha=%.2f, trusted=%d, tranco=%d, majestic=%d)",
+		scorer.Alpha(), scorer.Stats().TrustedHosts, scorer.Stats().TrancoEntries, scorer.Stats().MajesticEntries)
 	// COSIFT_BM25_K1 / COSIFT_BM25_B override per instance.
 	// Shared with runQuery via applyBM25EnvOverrides so any PebbleBM25 built
 	// from CLI or server honors the same env.
@@ -227,6 +260,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		vectorNodes:  vectorNodes,
 		hnsw:         hnswGraph,
 		started:      time.Now(),
+		authority:    scorer,
 		// capture doc count at startup so /stats can compute
 		// per-minute crawl rate without long-term counters.
 		startupDocs: vectorNodes, // placeholder; overwritten below
@@ -470,6 +504,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /verify", wrap(srv.handleVerify))
 	mux.HandleFunc("GET /metrics", wrap(srv.handleMetrics))
 	mux.HandleFunc("GET /sla", wrap(srv.handleSLA))
+	mux.HandleFunc("GET /admin/domains-audit", wrap(srv.handleDomainsAudit))
 	mux.HandleFunc("GET /find_similar", wrap(srv.handleFindSimilar))
 	mux.HandleFunc("POST /find_similar", wrap(srv.handleFindSimilarPOST))
 	mux.HandleFunc("GET /answer", wrap(srv.handleAnswer))
@@ -810,6 +845,11 @@ type pebbleHTTP struct {
 	// paraphrase) are silently skipped — graceful degradation rather
 	// than queue-then-timeout.
 	llmProbe *chatgate.LoadProbe
+
+	// Per-host authority Scorer; multiplies BM25 / hybrid scores by
+	// (1 + alpha * Score(host)). Wikipedia / kernel.org / arxiv float
+	// over the spam directories in the long tail of the crawl.
+	authority *authority.Scorer
 
 	// Per-endpoint latency + error-rate tracking against
 	// operator-configured targets. Violations are appended to disk
@@ -2791,6 +2831,89 @@ func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDomainsAudit streams the entire 'h' family as JSONL, one
+// {host, count, authority, etld1, tld} record per line. Single pass
+// over the index — at 9M hosts on the GH200 this is ~30 seconds of
+// streaming, vs the 18000 full scans that brute-paginating /domains
+// would force. Read-only; safe to run live.
+//
+// Query params:
+//
+//	min_count=N — emit only hosts with count >= N (default 1)
+//	limit=N     — cap the number of emitted rows (default unlimited)
+//	below=F     — emit only hosts with authority score < F (filter
+//	              for the blocklist proposal stream; default 1.0)
+//	above=F     — emit only hosts with score >= F (filter for the
+//	              authority-list inspection; default 0.0)
+func (s *pebbleHTTP) handleDomainsAudit(w http.ResponseWriter, r *http.Request) {
+	minCount := 1
+	if v := r.URL.Query().Get("min_count"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			minCount = n
+		}
+	}
+	limit := -1
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	below := 1.0
+	if v := r.URL.Query().Get("below"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			below = f
+		}
+	}
+	above := 0.0
+	if v := r.URL.Query().Get("above"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			above = f
+		}
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	enc := json.NewEncoder(w)
+	emitted := 0
+	flusher, _ := w.(http.Flusher)
+	flushEvery := 256
+	err := s.store.IterateDomains(r.Context(), func(host string, count int) bool {
+		if count < minCount {
+			return true
+		}
+		var score float64 = 0.5
+		if s.authority != nil {
+			score = s.authority.Score(host)
+		}
+		if score >= below || score < above {
+			return true
+		}
+		rec := map[string]any{
+			"host":      host,
+			"count":     count,
+			"authority": score,
+		}
+		if err := enc.Encode(rec); err != nil {
+			return false
+		}
+		emitted++
+		if limit > 0 && emitted >= limit {
+			return false
+		}
+		if flusher != nil && emitted%flushEvery == 0 {
+			flusher.Flush()
+		}
+		return true
+	})
+	if err != nil {
+		// Best-effort: log and stop; we may have already flushed
+		// partial output, so don't try to writeProblem.
+		log.Printf("handleDomainsAudit: %v", err)
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
 // handleSLA returns the current SLA evaluation snapshot. Read-only.
 // Surfaces per-endpoint p50/p95/p99 + error rate, configured targets,
 // and the most recent violations. Operators consume this in dashboards
@@ -2932,6 +3055,9 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	}
 	if s.sla != nil {
 		out["sla"] = s.sla.Snapshot()
+	}
+	if s.authority != nil {
+		out["authority"] = s.authority.Stats()
 	}
 	// embed cache hit/miss counters so operators can see how
 	// often re-fetches are skipping ollama. The cache wraps the round-

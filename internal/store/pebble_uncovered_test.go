@@ -366,6 +366,42 @@ func TestPebbleCorpusStats(t *testing.T) {
 	}
 }
 
+// TestPebbleIterateDomains verifies the single-scan host inventory used
+// by the domain-audit pipeline. Must emit each host exactly once with
+// the correct doc count, regardless of insertion order.
+func TestPebbleIterateDomains(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	hosts := map[string]int{
+		"alpha.example.com": 3,
+		"beta.example.com":  5,
+		"gamma.example.org": 1,
+	}
+	for host, n := range hosts {
+		for i := 0; i < n; i++ {
+			d := &Document{URL: "https://" + host + "/" + string(rune('a'+i)), Domain: host, FetchedAt: time.Now()}
+			if _, err := p.UpsertDocument(ctx, d); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+		}
+	}
+	got := map[string]int{}
+	if err := p.IterateDomains(ctx, func(host string, count int) bool {
+		got[host] = count
+		return true
+	}); err != nil {
+		t.Fatalf("IterateDomains: %v", err)
+	}
+	for host, want := range hosts {
+		if got[host] != want {
+			t.Errorf("%s: got %d want %d", host, got[host], want)
+		}
+	}
+	if len(got) != len(hosts) {
+		t.Errorf("got %d hosts, want %d (%v)", len(got), len(hosts), got)
+	}
+}
+
 // TestPebbleIndexDocumentTrustsMirror locks in the GH200 fix: once
 // the atomic mirror is seeded, IndexDocument must read from it (not
 // from Pebble meta). If meta were to return 0 transiently (the bug
