@@ -4106,10 +4106,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		bm25Fired = true
 		if queryVec, ok := getQueryVec(); ok {
 			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
-			denseHits := make([]index.Hit, len(vhits))
-			for i, vh := range vhits {
-				denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-			}
+			denseHits := s.applyAuthorityToDense(vhits)
 			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits})
 			if len(hits) > fetchK {
 				hits = hits[:fetchK]
@@ -4834,6 +4831,27 @@ func (s *pebbleHTTP) applyLLMEndpointDefaults(retrieverParam, rerankParam string
 // matrix. Dense / hybrid require both the loaded HNSW graph and an
 // embedder; missing either falls through to BM25 — warningsFor()
 // surfaces that to the client.
+// applyAuthorityToDense converts HNSW VectorHits into index.Hits with
+// the per-host authority multiplier applied to the score — mirrors what
+// PebbleBM25.Search does internally for the BM25 path. Without this the
+// dense channel was injecting cutestat/.cfd/.sbs spam into the RRF
+// fusion at the hybrid retriever (observed: 'What is the C10K problem?'
+// cited 3 luanjiao.cfd subdomains in the top-5 source list). The
+// reranker downstream would also see those candidates; multiplying
+// in-place ensures the fusion ranker drops them at the same threshold
+// the BM25 side already enforces.
+func (s *pebbleHTTP) applyAuthorityToDense(vhits []index.VectorHit) []index.Hit {
+	out := make([]index.Hit, len(vhits))
+	for i, vh := range vhits {
+		score := vh.Score
+		if s.authority != nil {
+			score *= s.authority.Multiplier(hostFromURL(vh.URL))
+		}
+		out[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: score}
+	}
+	return out
+}
+
 func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
 	denseReady := s.hnsw != nil && s.embedder != nil
 	switch {
@@ -4843,10 +4861,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 			return nil, "", fmt.Errorf("embedder: %w", err)
 		}
 		vhits := s.hnsw.Search(ctx, vecs[0], fetchK)
-		hits := make([]index.Hit, len(vhits))
-		for i, vh := range vhits {
-			hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-		}
+		hits := s.applyAuthorityToDense(vhits)
 		return hits, q, nil
 	case retrieverParam == "hybrid" && denseReady:
 		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansion(ctx, q, fetchK, expandMode)
@@ -4858,10 +4873,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 			return nil, "", fmt.Errorf("embedder: %w", embErr)
 		}
 		denseV := s.hnsw.Search(ctx, vecs[0], fetchK)
-		denseHits := make([]index.Hit, len(denseV))
-		for i, vh := range denseV {
-			denseHits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
-		}
+		denseHits := s.applyAuthorityToDense(denseV)
 		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits})
 		if len(hits) > fetchK {
 			hits = hits[:fetchK]
