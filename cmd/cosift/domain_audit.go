@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -204,15 +203,4 @@ func tldOfHost(host string) string {
 		return ""
 	}
 	return strings.ToLower(host[i+1:])
-}
-
-// hostFromAuditURL extracts a host from a URL string. Reserved for
-// follow-up integrations that need to map sample URLs back to hosts;
-// kept here so the audit binary stays self-contained.
-var _ = func(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	return strings.ToLower(u.Host)
 }
