@@ -61,6 +61,7 @@ usage:
   Path-2 (Pebble) commands — see docs/PEBBLE.md and docs/API.md:
   cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
   cosift pebble-info -dir D [-json]     dump corpus counters + pebble.Metrics for an offline store (-json = jq-friendly shape, no pebble.Metrics)
+  cosift pebble-compact -dir D [-range R]  force-compact a Pebble key range to collapse tombstones (R=all|f|d|l|v; default all) — service must be stopped
   cosift domain-audit -dir D [-tranco csv] [-majestic csv] [-out path] [-top N] [-min-count N]   single-scan host inventory + authority scoring (JSONL)
   cosift migrate-to-pebble -output D    copy a SQLite cosift data dir into a fresh Pebble store
   cosift verify [-json] [-server URL]   compare counters vs 'l' family scan (non-zero exit on drift; -server routes through HTTP /verify when the writer lock is held)
@@ -320,6 +321,10 @@ func run(cfgPath string) error {
 	case "pebble-info":
 		if err := runPebbleInfo(ctx, cfg, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("pebble-info: %w", err)
+		}
+	case "pebble-compact":
+		if err := runPebbleCompact(ctx, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("pebble-compact: %w", err)
 		}
 	case "domain-audit":
 		if err := runDomainAudit(ctx, flag.Args()[1:]); err != nil {

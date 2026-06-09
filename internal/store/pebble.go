@@ -936,6 +936,14 @@ func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 	return p.db.DeleteRange(lo, hi, p.writeOpts)
 }
 
+// DB returns the underlying Pebble handle for operations that need
+// direct access (e.g. the offline pebble-compact subcommand calling
+// db.Compact() to collapse tombstones after a frontier wipe).
+// Production code should prefer the typed wrappers on PebbleStore;
+// this escape hatch is for tooling that can't model its work via the
+// existing surface.
+func (p *PebbleStore) DB() *pebble.DB { return p.db }
+
 // ClearFrontier removes every persisted frontier entry — both the
 // primary 'f'+'u'+url records and the secondary 'f'+'q'+host indexes —
 // in a single DeleteRange. Used by /admin/frontier-clear to drop a
