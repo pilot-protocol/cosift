@@ -48,6 +48,18 @@ type PebbleStore struct {
 	mu        sync.Mutex           // serializes the rare URL→ID race during Upsert
 	writeOpts *pebble.WriteOptions // Sync (default) or NoSync (crawl-workload opt-in)
 
+	// In-memory mirrors of the persisted (sum_doc_len, indexed_docs)
+	// meta counters. CorpusStats is called on every BM25 query and
+	// previously took p.mu — which the 512 crawler workers hold
+	// continuously via IndexDocument / ClaimFrontier / FailFrontier.
+	// Queries blocked 15+ s waiting. The mirrors are updated under p.mu
+	// at IndexDocument-commit time (so they stay coherent with the
+	// persisted batch) and loaded lazily on first read after restart.
+	// Reads are pure atomic loads, no lock.
+	corpusSumLen      atomic.Int64
+	corpusIndexedDocs atomic.Int64
+	corpusStatsLoaded atomic.Bool
+
 	// Stats() does a full 'd' family iterator scan to count
 	// documents. With 120K docs across 870 SSTables that takes ~2.5 s and
 	// dominates /stats latency. Cache the result for a short TTL so the
@@ -1111,7 +1123,17 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	if err := batch.Set(docTermsKey(docID), packDocTerms(newIDs), nil); err != nil {
 		return err
 	}
-	return batch.Commit(p.writeOpts)
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return err
+	}
+	// Mirror the just-committed counters so CorpusStats can serve from
+	// atomics without grabbing p.mu — that lock is the bottleneck under
+	// crawl load. Stores are under p.mu so the (sumLen, indexedCount)
+	// pair we hold here is the one that just landed in Pebble.
+	p.corpusSumLen.Store(sumLen)
+	p.corpusIndexedDocs.Store(indexedCount)
+	p.corpusStatsLoaded.Store(true)
+	return nil
 }
 
 // PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
@@ -1916,10 +1938,24 @@ func (p *PebbleStore) CorpusStats(ctx context.Context) (sumLen int64, count int6
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
 	}
+	// Fast path — atomic read, no lock. Updated by IndexDocument after
+	// every successful commit.
+	if p.corpusStatsLoaded.Load() {
+		return p.corpusSumLen.Load(), p.corpusIndexedDocs.Load(), nil
+	}
+	// Cold path — first call since restart, or no IndexDocument has
+	// committed yet this process lifetime. Load from Pebble under the
+	// lock and seed the atomics so subsequent reads stay lock-free.
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.corpusStatsLoaded.Load() {
+		return p.corpusSumLen.Load(), p.corpusIndexedDocs.Load(), nil
+	}
 	sumLen = p.readMetaInt64Locked("sum_doc_len")
 	count = p.readMetaInt64Locked("indexed_docs")
+	p.corpusSumLen.Store(sumLen)
+	p.corpusIndexedDocs.Store(count)
+	p.corpusStatsLoaded.Store(true)
 	return sumLen, count, nil
 }
 

@@ -366,6 +366,49 @@ func TestPebbleCorpusStats(t *testing.T) {
 	}
 }
 
+// TestPebbleCorpusStatsLockFreePath verifies the atomic-mirror path:
+// after a single IndexDocument commit, subsequent CorpusStats calls
+// must serve from atomics without taking p.mu. We assert by manually
+// holding p.mu and confirming CorpusStats still returns immediately.
+func TestPebbleCorpusStatsLockFreePath(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	tokenize := func(s string) []string { return strings.Fields(s) }
+
+	id, _ := p.UpsertDocument(ctx, &Document{URL: "u", FetchedAt: time.Now()})
+	if err := p.IndexDocument(ctx, id, "", "a b c d", tokenize, 1); err != nil {
+		t.Fatalf("IndexDocument: %v", err)
+	}
+
+	// Mirror must be populated post-commit.
+	if !p.corpusStatsLoaded.Load() {
+		t.Fatalf("atomic mirror not seeded after IndexDocument")
+	}
+
+	// Hold the mutex; CorpusStats must NOT block on it.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	done := make(chan struct{})
+	var sum, count int64
+	var err error
+	go func() {
+		sum, count, err = p.CorpusStats(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("CorpusStats blocked on p.mu — fast path didn't kick in")
+	}
+	if err != nil {
+		t.Fatalf("CorpusStats: %v", err)
+	}
+	if sum != 4 || count != 1 {
+		t.Errorf("sum=%d count=%d want sum=4 count=1", sum, count)
+	}
+}
+
 func TestPebbleSumDocLengths(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
