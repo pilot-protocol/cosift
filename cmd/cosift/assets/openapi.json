@@ -103,6 +103,29 @@
         },
         "required": ["query", "plan", "answer", "sources", "model", "took"]
       },
+      "QueryPlan": {
+        "type": "object",
+        "description": "Structured retrieval plan emitted by the /query LLM planner.",
+        "properties": {
+          "intent": {"type": "string", "enum": ["current_news", "factual_lookup", "comparison", "research", "findability"]},
+          "queries": {"type": "array", "items": {"type": "string"}, "description": "3 expanded paraphrases of the original query."},
+          "since_days": {"type": "integer", "nullable": true},
+          "retriever": {"type": "string", "enum": ["bm25", "dense", "hybrid"]},
+          "decay_days": {"type": "integer", "nullable": true}
+        }
+      },
+      "QueryResponse": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "plan": {"$ref": "#/components/schemas/QueryPlan"},
+          "answer": {"type": "string"},
+          "sources": {"type": "array", "items": {"$ref": "#/components/schemas/AnswerSource"}},
+          "model": {"type": "string"},
+          "took": {"type": "string"}
+        },
+        "required": ["query", "plan", "answer", "sources", "model", "took"]
+      },
       "StatsResponse": {
         "type": "object",
         "properties": {
@@ -307,7 +330,30 @@
             "description": "OK (JSON when ?stream=false, text/event-stream when true)",
             "content": {
               "application/json": {"schema": {"$ref": "#/components/schemas/AnswerResponse"}},
-              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: warnings, sources, answer_chunk, done, error"}}
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: phase (pipeline progress: parsed/retrieve/filter/decay/rerank/judge/mmr/synth_start), warnings, sources, answer_chunk, suggest_escalation, done, error"}}
+            }
+          },
+          "501": {"description": "Chat model not configured"}
+        }
+      },
+      "post": {"tags": ["synth"], "summary": "JSON body form", "responses": {"200": {"description": "OK"}}}
+    },
+    "/query": {
+      "get": {
+        "tags": ["synth"],
+        "summary": "LLM-orchestrated query expansion: planner → 3-way expand + RRF + synth",
+        "description": "Single-shot variant of /research tuned for QUERY EXPANSION (paraphrase variants that catch corpus phrasing) rather than sub-question decomposition. The planner emits intent, 3 expanded queries, retriever choice, and optional since/decay windows; each expansion runs through retrieval, RRF-fuses by URL, and the top-k feed a cited synth. Stream the pipeline via ?stream=true.",
+        "parameters": [
+          {"$ref": "#/components/parameters/q"},
+          {"$ref": "#/components/parameters/k"},
+          {"$ref": "#/components/parameters/stream"}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK (JSON when ?stream=false, text/event-stream when true)",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/QueryResponse"}},
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: phase (plan_start, plan with intent+queries+retriever, expand per sub-query, fuse, materialize, synth_start), sources, answer_chunk, done, error"}}
             }
           },
           "501": {"description": "Chat model not configured"}
