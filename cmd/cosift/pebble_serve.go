@@ -6218,6 +6218,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	// while the plan call is still in flight. Fires before plan to give the
 	// fastest visual feedback when a misconfigured request arrives.
 	sse.warnings(s.warningsFor(r))
+	sse.phase("plan_start", map[string]any{"q": q, "model": sc.Model()})
 
 	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
@@ -6255,6 +6256,15 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		planEvent["retriever"] = retrieverLabel
 	}
 	sse.send(planEvent)
+	// Phase event mirrors /query's shape so the chat UI's timeline strip
+	// renders identical rows across all three synth endpoints. Co-exists
+	// with the legacy `type: plan` event above, which the CLI client at
+	// cmd/cosift/main.go keys on.
+	planPhase := map[string]any{"queries": subs, "retriever": retrieverLabel}
+	if mode := normalizeExpandMode(expandMode); mode != "" {
+		planPhase["expand"] = mode
+	}
+	sse.phase("plan", planPhase)
 
 	type ranked struct {
 		score float64
@@ -6268,7 +6278,8 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	for _, sq := range subs {
 		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 		if err != nil {
-			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err) //
+			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
+			sse.phase("expand", map[string]any{"query": sq, "error": err.Error()})
 			continue
 		}
 		for _, h := range hits {
@@ -6276,12 +6287,14 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 				best[h.URL] = ranked{score: h.Score, hit: h}
 			}
 		}
+		sse.phase("expand", map[string]any{"query": sq, "hits": len(hits)})
 	}
 	pooled := make([]ranked, 0, len(best))
 	for _, v := range best {
 		pooled = append(pooled, v)
 	}
 	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
+	sse.phase("fuse", map[string]any{"unique_urls": len(pooled)})
 	// Pool widens to
 	// rerankCandK, rerank reorders, then truncate to k before SSE 'sources'
 	// fires so the client sees the final rank-ordered list. wantRerank was
@@ -6327,6 +6340,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		}
 		cands = append(cands, c)
 	}
+	sse.phase("materialize", map[string]any{"candidates": len(cands)})
 	// time-decay on /research stream — same placement as sync.
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
 	if decaySet && len(cands) > 0 {
@@ -6358,6 +6372,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			}
 			cands = reordered
 		}
+		sse.phase("rerank", map[string]any{"reranker": s.reranker.Name(), "candidates": len(cands)})
 	}
 	// MMR diversification on /research stream — same pattern as sync.
 	// Updates retrieverLabel so the retriever field on the sources
@@ -6376,6 +6391,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			}
 			cands = reordered
 			retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+			sse.phase("mmr", map[string]any{"lambda": mmrLambda, "candidates": len(cands)})
 		}
 	}
 	if len(cands) > k {
@@ -6400,6 +6416,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		return
 	}
 
+	sse.phase("synth_start", map[string]any{"sources": len(sources), "model": sc.Model()})
 	_, err = s.doChatStream(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchSynthPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},

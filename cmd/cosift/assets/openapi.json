@@ -385,7 +385,7 @@
             "description": "OK",
             "content": {
               "application/json": {"schema": {"$ref": "#/components/schemas/ResearchResponse"}},
-              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: warnings, plan, sources, answer_chunk, done, error"}}
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: phase (plan_start, plan with sub-queries+retriever, expand per sub-query, fuse, materialize, rerank, mmr, synth_start), warnings, plan (legacy — same data as the phase event but kept for CLI back-compat), sources, answer_chunk, done, error"}}
             }
           }
         }
