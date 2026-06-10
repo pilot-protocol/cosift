@@ -31,19 +31,27 @@ func TestDefaultHasSensibleValues(t *testing.T) {
 	}
 }
 
-func TestLoadMissingFileReturnsDefaults(t *testing.T) {
-	// Save & restore env vars we touch.
-	for _, k := range []string{"PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR"} {
+// unsetEnvWithRestore unsets each variable for the duration of the test and
+// schedules t.Cleanup to restore the prior value (or unset state). Avoids
+// the defer-in-loop pattern gocritic flags.
+func unsetEnvWithRestore(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		k := k
 		orig, had := os.LookupEnv(k)
 		os.Unsetenv(k)
-		defer func(k, v string, had bool) {
+		t.Cleanup(func() {
 			if had {
-				os.Setenv(k, v)
+				os.Setenv(k, orig)
 			} else {
 				os.Unsetenv(k)
 			}
-		}(k, orig, had)
+		})
 	}
+}
+
+func TestLoadMissingFileReturnsDefaults(t *testing.T) {
+	unsetEnvWithRestore(t, "PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR")
 
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 	cfg, err := Load(path)
@@ -59,17 +67,7 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 }
 
 func TestLoadFromFile(t *testing.T) {
-	for _, k := range []string{"PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR"} {
-		orig, had := os.LookupEnv(k)
-		os.Unsetenv(k)
-		defer func(k, v string, had bool) {
-			if had {
-				os.Setenv(k, v)
-			} else {
-				os.Unsetenv(k)
-			}
-		}(k, orig, had)
-	}
+	unsetEnvWithRestore(t, "PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR")
 
 	body := []byte(`{
 		"data_dir": "/tmp/cosift-test",
@@ -108,17 +106,7 @@ func TestLoadBadJSONErrors(t *testing.T) {
 }
 
 func TestLoadEmptyDataDirFallsBackToDefault(t *testing.T) {
-	for _, k := range []string{"PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR"} {
-		orig, had := os.LookupEnv(k)
-		os.Unsetenv(k)
-		defer func(k, v string, had bool) {
-			if had {
-				os.Setenv(k, v)
-			} else {
-				os.Unsetenv(k)
-			}
-		}(k, orig, had)
-	}
+	unsetEnvWithRestore(t, "PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR")
 
 	body := []byte(`{"data_dir": "", "server": {"addr": "x:1"}}`)
 	dir := t.TempDir()
