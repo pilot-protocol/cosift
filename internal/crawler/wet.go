@@ -66,7 +66,7 @@ type WetRecord struct {
 // to just gob-encoding the Document and writing BM25 postings. Pair with
 // /admin/embed-backfill later to fill in dense vectors asynchronously.
 func (c *Crawler) SeedWET(ctx context.Context, wetURL string, dedupeFresh, lexicalOnly bool) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wetURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wetURL, http.NoBody)
 	if err != nil {
 		return 0, err
 	}

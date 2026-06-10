@@ -124,7 +124,7 @@ func (r *Robots) Sitemaps(ctx context.Context, hostURL string) []string {
 func (r *Robots) fetch(ctx context.Context, base string) *robotsRules {
 	empty := &robotsRules{fetchedAt: time.Now()}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/robots.txt", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/robots.txt", http.NoBody)
 	if err != nil {
 		return empty
 	}

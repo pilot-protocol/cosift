@@ -1362,7 +1362,7 @@ func (s *pebbleHTTP) scatterSearch(ctx context.Context, q string, k int, perPeer
 			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
 				endpoint = strings.TrimRight(peer, "/") + "/search?" + queryStr
 			}
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 			if t := s.cluster.PeerAuthToken; t != "" {
 				req.Header.Set("Authorization", "Bearer "+t)
 			}
@@ -1517,7 +1517,7 @@ func (s *pebbleHTTP) handleFindSimilarGateway(w http.ResponseWriter, r *http.Req
 			if strings.HasPrefix(peer, "http://") || strings.HasPrefix(peer, "https://") {
 				endpoint = strings.TrimRight(peer, "/") + "/find_similar?" + queryStr
 			}
-			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
+			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, http.NoBody)
 			if t := s.cluster.PeerAuthToken; t != "" {
 				req.Header.Set("Authorization", "Bearer "+t)
 			}
@@ -2220,7 +2220,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	answered, noInfo, errors, empty, totalMs := 0, 0, 0, 0, 0
+	answered, noInfo, errCount, empty, totalMs := 0, 0, 0, 0, 0
 	for _, r := range results {
 		totalMs += r.LatencyMs
 		switch r.Verdict {
@@ -2231,7 +2231,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 		case "empty":
 			empty++
 		default:
-			errors++
+			errCount++
 		}
 	}
 	n := len(evalQuickQueries)
@@ -2240,7 +2240,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 		"answered":        answered,
 		"no_info":         noInfo,
 		"empty":           empty,
-		"errors":          errors,
+		"errors":          errCount,
 		"answer_rate_pct": 100 * answered / n,
 		"avg_latency_ms":  totalMs / n,
 		"total_elapsed":   time.Since(t0).String(),
@@ -2651,7 +2651,7 @@ func (s *pebbleHTTP) handleWETImportBulk(w http.ResponseWriter, r *http.Request)
 
 	// Fetch the manifest. wet.paths.gz is a gzipped newline-delimited list
 	// of relative paths under data.commoncrawl.org.
-	mreq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.ManifestURL, nil)
+	mreq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.ManifestURL, http.NoBody)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "build manifest request: "+err.Error())
 		return
@@ -6515,7 +6515,7 @@ func openPebbleOrFriendlyErr(d string) (*store.PebbleStore, error) {
 // the writer lock is held by the crawl / serve process.
 func runVerifyViaServer(ctx context.Context, serverURL string, asJSON bool) error {
 	endpoint := strings.TrimRight(serverURL, "/") + "/verify"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return err
 	}

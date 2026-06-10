@@ -1094,7 +1094,7 @@ type fetchResult struct {
 // Sends conditional headers when the existing doc carries validators —
 // turns re-crawls of unchanged stable pages into 304s with zero body bandwidth.
 func (c *Crawler) fetch(ctx context.Context, u string, prior *store.Document) (*fetchResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
 		return nil, err
 	}

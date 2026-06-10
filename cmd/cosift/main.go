@@ -763,7 +763,7 @@ func runSearchCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	}
 
 	endpoint := strings.TrimRight(*serverURL, "/") + "/search?" + v.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -1349,7 +1349,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	}
 
 	endpoint := strings.TrimRight(*serverURL, "/") + "/research?" + v.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -1648,7 +1648,7 @@ func runContentsCLI(ctx context.Context, cfg *config.Config, args []string) erro
 		// Single — GET /contents?url=<url>.
 		v := url.Values{}
 		v.Set("url", urls[0])
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/contents?"+v.Encode(), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/contents?"+v.Encode(), http.NoBody)
 		if err != nil {
 			return err
 		}
@@ -1844,7 +1844,7 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	}
 
 	endpoint := strings.TrimRight(*serverURL, "/") + "/answer?" + v.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -4577,7 +4577,7 @@ func runCheckRobots(ctx context.Context, cfg *config.Config, args []string) erro
 	fmt.Println()
 	for _, h := range hosts {
 		probeURL := h + "/robots.txt"
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, http.NoBody)
 		req.Header.Set("User-Agent", *userAgent)
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -4882,7 +4882,7 @@ func doctorRemoteChecks(ctx context.Context, serverURL, token string) []doctorCh
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// /healthz
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", http.NoBody)
 	resp, err := client.Do(req)
 	if err != nil {
 		out = append(out, doctorCheck{"remote /healthz", "FAIL", fmt.Sprintf("%s: %v", serverURL, err)})
@@ -4898,7 +4898,7 @@ func doctorRemoteChecks(ctx context.Context, serverURL, token string) []doctorCh
 	}
 
 	// /stats
-	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, base+"/stats", nil)
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, base+"/stats", http.NoBody)
 	resp, err = client.Do(req)
 	if err != nil {
 		out = append(out, doctorCheck{"remote /stats", "FAIL", err.Error()})
@@ -4920,7 +4920,7 @@ func doctorRemoteChecks(ctx context.Context, serverURL, token string) []doctorCh
 	// /admin/config — only when token is provided. No token → skip silently
 	// (not a failure; operator may not have admin auth enabled).
 	if token != "" {
-		req, _ = http.NewRequestWithContext(ctx, http.MethodGet, base+"/admin/config", nil)
+		req, _ = http.NewRequestWithContext(ctx, http.MethodGet, base+"/admin/config", http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err = client.Do(req)
 		if err != nil {
@@ -5385,7 +5385,7 @@ func (r *httpAPIRetriever) Search(ctx context.Context, q string, k int) ([]strin
 	if r.rerank {
 		v.Set("rerank", "true")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/search?"+v.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/search?"+v.Encode(), http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -5610,7 +5610,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		for _, strategy := range []string{"planner", "paraphrase"} {
 			// /research call.
 			u := httpSrv.URL + "/research?strategy=" + strategy + "&q=" + url.QueryEscape(q.Text)
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 			resp, err := httpClient.Do(req)
 			if err != nil {
 				fmt.Printf("  %s: research call failed: %v\n", strategy, err)

@@ -96,7 +96,7 @@ func (p *LoadProbe) Run(ctx context.Context) {
 
 func (p *LoadProbe) pollOnce(ctx context.Context) {
 	p.calls.Add(1)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, http.NoBody)
 	if err != nil {
 		p.errors.Add(1)
 		return

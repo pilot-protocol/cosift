@@ -40,7 +40,7 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 		maxBodyBytes = 5 << 20
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}

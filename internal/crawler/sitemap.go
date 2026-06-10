@@ -67,7 +67,7 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 // accumulated; they flow straight to the emit callback (typically
 // c.Seed which writes to the persistent frontier).
 func (c *Crawler) fetchSitemapStream(ctx context.Context, url string, depthRemaining int, emit func(string)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return err
 	}

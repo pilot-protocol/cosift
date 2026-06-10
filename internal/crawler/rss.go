@@ -90,7 +90,7 @@ func (c *Crawler) SeedRSS(ctx context.Context, feedURL string) (int, error) {
 // flat list of article URLs. Tolerates each format failing — only fails if
 // BOTH parsers can't make sense of the body.
 func (c *Crawler) fetchRSS(ctx context.Context, feedURL string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
