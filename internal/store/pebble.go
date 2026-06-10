@@ -142,13 +142,12 @@ func OpenPebble(path string) (*PebbleStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pebble.Open(%s): %w", path, err)
 	}
-	// Sync (default) fsyncs each commit — safe
-	// against VM crash but expensive under sustained write load (the iter-
-	// 218 OOM root cause: batches stacked faster than fsync could drain).
-	// NoSync skips the fsync; durability stays vs PROCESS crash (WAL is
-	// still written), drops vs OS crash (OS buffer cache could lose seconds
-	// of writes). Acceptable for crawl workloads since the frontier
-	// resumes cleanly on next start.
+	// Sync (default) fsyncs each commit — safe against VM crash but
+	// expensive under sustained write load (batches stack faster than fsync
+	// can drain, OOM-killing the crawler). NoSync skips the fsync;
+	// durability stays vs PROCESS crash (WAL is still written), drops vs
+	// OS crash (OS buffer cache could lose seconds of writes). Acceptable
+	// for crawl workloads since the frontier resumes cleanly on next start.
 	wopts := pebble.Sync
 	if os.Getenv("COSIFT_PEBBLE_SYNC") == "false" {
 		wopts = pebble.NoSync

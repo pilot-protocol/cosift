@@ -142,9 +142,9 @@ func TestBinaryEndToEnd(t *testing.T) {
 // TestQuickstartE2E exercises the full onboarding pipeline through the real
 // binary: `cosift init -site URL` → `cosift crawl URL` → `cosift query "text"`.
 //
-// Catches regressions at the seam between init (writing
-// include_domains) and the crawler's domain enforcement. Unit tests cover each
-// piece in isolation, but the join wasn't tested before this iter.
+// Catches regressions at the seam between init (writing include_domains)
+// and the crawler's domain enforcement. Unit tests cover each piece in
+// isolation; this exercises the join.
 func TestQuickstartE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e build+crawl in -short mode")
