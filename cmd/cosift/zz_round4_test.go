@@ -1421,14 +1421,29 @@ func TestStreamAnswerSSE(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Errorf("content-type = %q, want SSE", ct)
 	}
-	// Read at least one SSE frame.
+	// Read SSE frames until we see the sources event or the stream ends.
+	// Each event is one flush, so a single Read returns one event — we
+	// must loop. Phase events now precede sources; before the refactor
+	// sources was always the first event.
+	var sb strings.Builder
 	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	body := string(buf[:n])
+	for sb.Len() < 64<<10 {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if strings.Contains(sb.String(), "\"type\":\"sources\"") {
+			break
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	body := sb.String()
 	if !strings.Contains(body, "data:") {
 		t.Errorf("no SSE frame in body: %q", body)
 	}
-	if !strings.Contains(body, "sources") {
+	if !strings.Contains(body, "\"type\":\"sources\"") {
 		t.Errorf("missing sources event: %q", body)
 	}
 }

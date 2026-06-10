@@ -146,6 +146,21 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 }
 .msg-assistant .msg-content .cite:hover { background: var(--accent-dim); }
 
+.phases {
+  margin: 8px 0 12px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--ink-dim);
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.phases:empty { display: none; }
+.phase-row { display: flex; gap: 10px; align-items: baseline; }
+.phase-name { color: var(--accent); font-weight: 600; min-width: 88px; }
+.phase-dur { color: var(--ink-dim); min-width: 64px; text-align: right; }
+.phase-meta { color: var(--ink); opacity: 0.7; }
+
 .sources {
   margin-top: 14px;
   display: flex; flex-direction: column; gap: 6px;
@@ -368,6 +383,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
       '<div class="msg-avatar">' + initial + '</div>' +
       '<div class="msg-body">' +
         '<div class="msg-role">' + (role === 'user' ? 'you' : 'cosift') + '</div>' +
+        (role === 'assistant' ? '<div class="phases"></div>' : '') +
         '<div class="msg-content"></div>' +
         '<div class="sources"></div>' +
       '</div>';
@@ -376,7 +392,37 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
     if (sources && sources.length) renderSources(div.querySelector('.sources'), sources);
     messagesEl.appendChild(div);
     div.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return { node: div, contentEl: contentEl, sourcesEl: div.querySelector('.sources') };
+    return {
+      node: div, contentEl: contentEl,
+      sourcesEl: div.querySelector('.sources'),
+      phasesEl: div.querySelector('.phases'),
+    };
+  }
+
+  // renderPhase appends one row to the phase timeline above the answer body.
+  // Format: NAME  ELAPSED  meta — meta summarizes the most useful detail
+  // fields (counts, model name, effective query). Compact one-liners so the
+  // strip stays scannable as the pipeline rolls forward.
+  function renderPhase(el, ev) {
+    if (!el) return;
+    var meta = [];
+    if (ev.hits != null) meta.push(ev.hits + ' hits');
+    if (ev.candidates != null) meta.push(ev.candidates + ' cands');
+    if (ev.kept != null && ev.dropped != null) meta.push(ev.kept + ' kept · ' + ev.dropped + ' dropped');
+    if (ev.sources != null) meta.push(ev.sources + ' sources');
+    if (ev.model) meta.push(ev.model);
+    if (ev.retriever) meta.push(ev.retriever);
+    if (ev.effective_query && ev.effective_query !== ev.q) meta.push('q=' + ev.effective_query);
+    if (ev.lambda != null) meta.push('λ=' + ev.lambda);
+    if (ev.half_life_days != null) meta.push(ev.half_life_days + 'd half-life');
+    if (ev.reranker) meta.push(ev.reranker);
+    var row = document.createElement('div');
+    row.className = 'phase-row';
+    row.innerHTML =
+      '<span class="phase-name">' + esc(ev.name || '') + '</span>' +
+      '<span class="phase-dur">+' + (ev.duration_ms != null ? ev.duration_ms + 'ms' : '') + '</span>' +
+      '<span class="phase-meta">' + esc(meta.join(' · ')) + '</span>';
+    el.appendChild(row);
   }
 
   function renderCitedHTML(text) {
@@ -516,7 +562,10 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
           if (!payload) continue;
           try {
             var ev = JSON.parse(payload);
-            if (ev.type === 'sources') {
+            if (ev.type === 'phase') {
+              renderPhase(asst.phasesEl, ev);
+              if (ev.name) statusBadge.innerHTML = '<span class="dot"></span> ' + esc(ev.name) + '…';
+            } else if (ev.type === 'sources') {
               sources = ev.sources || [];
               renderSources(asst.sourcesEl, sources);
               statusBadge.innerHTML = '<span class="dot"></span> writing answer…';

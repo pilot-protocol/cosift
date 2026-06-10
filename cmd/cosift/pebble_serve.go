@@ -5233,13 +5233,46 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	} else if wantRerank {
 		fetchK = keepCap * 2
 	}
+	// SSE opt-in. Open the stream BEFORE retrieve() so phase events can
+	// surface backend pipeline progress (retrieve / rerank / judge / mmr /
+	// synth_start) instead of just the synth-chunk tail. Opt in via
+	// ?stream=true or Accept: text/event-stream. Caps requirement: chat
+	// client must implement StreamingChatClient AND the ResponseWriter
+	// must support http.Flusher; if either is missing, fall through to
+	// sync (today's behavior).
+	wantStream := r.URL.Query().Get("stream") == "true" ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	var sse *answerSSE
+	var streamChat embed.StreamingChatClient
+	if wantStream {
+		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
+			if a := newAnswerSSE(w, start); a != nil {
+				sse, streamChat = a, sc
+				sse.warnings(s.warningsFor(r))
+				sse.phase("parsed", map[string]any{
+					"q": q, "k": k, "fetch_k": fetchK,
+					"retriever": retrieverParam, "rerank": wantRerank,
+				})
+			}
+		}
+	}
+
 	// expansion dispatch (bare / HyDE / paraphrase+RRF).
 	// retriever dispatch (bm25 / dense / hybrid) via shared helper.
 	expandMode := r.URL.Query().Get("expand")
 	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
 	if err != nil {
+		if sse != nil {
+			sse.errorEvt(err.Error())
+			return
+		}
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if sse != nil {
+		sse.phase("retrieve", map[string]any{
+			"hits": len(hits), "effective_query": effectiveQuery,
+		})
 	}
 	type cand struct {
 		src        answerSource
@@ -5291,6 +5324,9 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			break
 		}
 	}
+	if sse != nil {
+		sse.phase("filter", map[string]any{"candidates": len(cands)})
+	}
 	// time-decay re-weights then re-sorts BEFORE rerank, mirroring
 	// the /search pre-rerank placement so the reranker sees a freshness-
 	// aware pool.
@@ -5301,6 +5337,9 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			cands[i].score *= decayMultiplier(cands[i].src.PublishedAt, now, decayHalfLife)
 		}
 		sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
+		if sse != nil {
+			sse.phase("decay", map[string]any{"half_life_days": decayHalfLife})
+		}
 	}
 	// Optional rerank, then truncate to k. Done in this order so citation
 	// numbers in the prompt match the final rank-ordered sources list.
@@ -5325,6 +5364,9 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			}
 			cands = reordered
 		}
+		if sse != nil {
+			sse.phase("rerank", map[string]any{"reranker": s.reranker.Name(), "candidates": len(cands)})
+		}
 	}
 	// LLM relevance judge — STRICT gate. The reranker re-orders but
 	// doesn't drop; without this gate, marginal content (Wikipedia
@@ -5340,6 +5382,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	//
 	// Skip when ?judge=false or no chat client (correctness-preserving).
 	if r.URL.Query().Get("judge") != "false" && s.chat != nil && len(cands) > 1 {
+		before := len(cands)
 		jCands := make([]judge.Candidate, len(cands))
 		for i, c := range cands {
 			jCands[i] = judge.Candidate{ID: strconv.Itoa(i), Excerpt: c.rerankText}
@@ -5352,6 +5395,11 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			}
 		}
 		cands = keep
+		if sse != nil {
+			sse.phase("judge", map[string]any{
+				"before": before, "kept": len(cands), "dropped": before - len(cands),
+			})
+		}
 	}
 	// MMR diversification on /answer — same pattern as /search.
 	// Synth quality benefits when the top-k sources cover different
@@ -5370,6 +5418,9 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			}
 			cands = reordered
 			mmrFired = true
+		}
+		if sse != nil && mmrFired {
+			sse.phase("mmr", map[string]any{"lambda": mmrLambda, "candidates": len(cands)})
 		}
 	}
 	if len(cands) > k {
@@ -5402,6 +5453,12 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		if len(hits) > 0 {
 			msg = "Retrieval returned candidates but none were judged relevant to the question. The corpus may not cover this topic in usable detail."
 		}
+		if sse != nil {
+			sse.sources(q, sources, streamChat.Model(), retrieverLabel, len(hits))
+			sse.chunk(msg)
+			sse.done()
+			return
+		}
 		empty := answerResponse{
 			Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
 			Answer:  msg,
@@ -5420,21 +5477,19 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
 	}
 
-	// SSE streaming. Opt in via ?stream=true OR
-	// Accept: text/event-stream. Emits three event types:
-	//   sources — once, immediately after retrieval (so the client can render
-	//             links / citations while the LLM is still thinking)
-	//   chunk   — per chat delta; payload = {"delta": "..."}
-	//   done    — once, with the final {"took": "..."}
-	// Falls back to sync if the chat client doesn't implement StreamingChatClient.
-	wantStream := r.URL.Query().Get("stream") == "true" ||
-		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
-	if wantStream {
-		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			s.streamAnswer(w, r, sc, msgs, sources, q, len(hits), retrieverLabel, start)
+	if sse != nil {
+		sse.sources(q, sources, streamChat.Model(), retrieverLabel, len(hits))
+		sse.phase("synth_start", map[string]any{"sources": len(sources), "model": streamChat.Model()})
+		full, cerr := s.doChatStream(r.Context(), streamChat, msgs, sse.chunk)
+		if cerr != nil {
+			sse.errorEvt(cerr.Error())
 			return
 		}
-		// Not a streaming client — degrade silently to sync rather than 501.
+		if answerLooksLikeNoInfo(full) {
+			sse.suggestEscalation(q)
+		}
+		sse.done()
+		return
 	}
 
 	answer, err := s.doChat(r.Context(), s.chat, msgs)
@@ -5458,48 +5513,94 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *pebbleHTTP) streamAnswer(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, msgs []embed.ChatMsg, sources []answerSource, q string, totalCandidates int, retrieverLabel string, start time.Time) {
+// answerSSE wraps the SSE writer for /answer streaming. Methods emit the
+// well-known event types (phase, sources, answer_chunk, warnings, error,
+// suggest_escalation, done). Phase events surface pipeline progress
+// (retrieve / rerank / judge / mmr / synth_start) so clients can render a
+// timeline of what the backend is doing.
+type answerSSE struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	start   time.Time
+	last    time.Time // last phase emit; used to compute per-phase duration
+}
+
+// newAnswerSSE opens an SSE stream. Returns nil if the writer can't flush.
+// Caller is responsible for not calling writeProblem after this point —
+// the response status (200) and headers are committed here.
+func newAnswerSSE(w http.ResponseWriter, start time.Time) *answerSSE {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
-		return
+		return nil
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	return &answerSSE{w: w, flusher: flusher, start: start, last: start}
+}
 
-	sse := func(payload any) {
-		buf, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "data: %s\n\n", buf)
-		flusher.Flush()
-	}
-	if warns := s.warningsFor(r); len(warns) > 0 {
-		sse(map[string]any{"type": "warnings", "warnings": warns})
-	}
-	srcEvt := map[string]any{"type": "sources", "query": q, "sources": sources, "model": sc.Model(), "total_candidates": totalCandidates}
-	if retrieverLabel != "" {
-		srcEvt["retriever"] = retrieverLabel
-	}
-	sse(srcEvt)
+func (a *answerSSE) send(payload any) {
+	buf, _ := json.Marshal(payload)
+	fmt.Fprintf(a.w, "data: %s\n\n", buf)
+	a.flusher.Flush()
+}
 
-	full, err := s.doChatStream(r.Context(), sc, msgs, func(delta string) {
-		sse(map[string]any{"type": "answer_chunk", "text": delta})
-	})
-	if err != nil {
-		sse(map[string]any{"type": "error", "error": err.Error()})
+// phase emits a pipeline-step event with elapsed-since-start and
+// duration-since-last-phase, plus any caller-supplied detail fields.
+func (a *answerSSE) phase(name string, details map[string]any) {
+	now := time.Now()
+	evt := map[string]any{
+		"type":        "phase",
+		"name":        name,
+		"elapsed_ms":  now.Sub(a.start).Milliseconds(),
+		"duration_ms": now.Sub(a.last).Milliseconds(),
+	}
+	for k, v := range details {
+		evt[k] = v
+	}
+	a.last = now
+	a.send(evt)
+}
+
+func (a *answerSSE) warnings(warns []string) {
+	if len(warns) == 0 {
 		return
 	}
-	// parallel to the sync path — emit a suggest_escalation event
-	// when the streamed answer reads as a no-info bail. UI can render a
-	// "Try research mode" button after the answer finishes streaming.
-	if answerLooksLikeNoInfo(full) {
-		sse(map[string]any{
-			"type":               "suggest_escalation",
-			"suggest_escalation": "/research?q=" + url.QueryEscape(q) + "&strategy=planner",
-		})
+	a.send(map[string]any{"type": "warnings", "warnings": warns})
+}
+
+func (a *answerSSE) sources(q string, src []answerSource, model, retrieverLabel string, totalCandidates int) {
+	evt := map[string]any{
+		"type":             "sources",
+		"query":            q,
+		"sources":          src,
+		"model":            model,
+		"total_candidates": totalCandidates,
 	}
-	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
+	if retrieverLabel != "" {
+		evt["retriever"] = retrieverLabel
+	}
+	a.send(evt)
+}
+
+func (a *answerSSE) chunk(delta string) {
+	a.send(map[string]any{"type": "answer_chunk", "text": delta})
+}
+
+func (a *answerSSE) errorEvt(msg string) {
+	a.send(map[string]any{"type": "error", "error": msg})
+}
+
+func (a *answerSSE) suggestEscalation(q string) {
+	a.send(map[string]any{
+		"type":               "suggest_escalation",
+		"suggest_escalation": "/research?q=" + url.QueryEscape(q) + "&strategy=planner",
+	})
+}
+
+func (a *answerSSE) done() {
+	a.send(map[string]any{"type": "done", "took": time.Since(a.start).String()})
 }
 
 // /research — multi-step retrieval + synthesis. LLM decomposes the
