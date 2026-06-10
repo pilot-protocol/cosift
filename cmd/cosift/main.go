@@ -3872,7 +3872,7 @@ func sumDur(d []time.Duration) time.Duration {
 //
 // One-shot by default. Pass `-interval` to loop forever — useful when running
 // as a systemd service or inside the Docker image (no extra cron needed).
-func runRefreshDue(ctx context.Context, cfg *config.Config, args []string) error {
+func runRefreshDue(ctx context.Context, cfg *config.Config, args []string) (err error) {
 	fs := flag.NewFlagSet("refresh-due", flag.ExitOnError)
 	minH := fs.Duration("min", 1*time.Hour, "minimum re-crawl interval")
 	maxH := fs.Duration("max", 30*24*time.Hour, "maximum re-crawl interval")
@@ -4081,11 +4081,15 @@ func runExport(ctx context.Context, cfg *config.Config, args []string) error {
 		docs = docs[:*limit]
 	}
 
-	f, err := os.Create(*output)
-	if err != nil {
-		return err
+	f, cerr := os.Create(*output)
+	if cerr != nil {
+		return cerr
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close output: %w", closeErr)
+		}
+	}()
 
 	switch *format {
 	case "json":
@@ -4310,7 +4314,7 @@ func runGC(ctx context.Context, cfg *config.Config, args []string) error {
 
 // runOutcomes exports query_outcomes for offline calibration work. JSON for
 // programmatic consumers, CSV for spreadsheet / pandas notebooks.
-func runOutcomes(ctx context.Context, cfg *config.Config, args []string) error {
+func runOutcomes(ctx context.Context, cfg *config.Config, args []string) (err error) {
 	fs := flag.NewFlagSet("outcomes", flag.ExitOnError)
 	output := fs.String("output", "outcomes.json", "output path")
 	format := fs.String("format", "json", "json | csv")
@@ -4331,11 +4335,15 @@ func runOutcomes(ctx context.Context, cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(*output)
-	if err != nil {
-		return err
+	f, cerr := os.Create(*output)
+	if cerr != nil {
+		return cerr
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close output: %w", closeErr)
+		}
+	}()
 
 	switch *format {
 	case "json":

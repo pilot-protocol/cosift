@@ -44,7 +44,7 @@ import (
 // The scoring runs in two passes — first to compute subdomain density
 // per eTLD+1, then to apply the full Scorer with that data populated.
 // At 9M hosts on the GH200 this is ~30-60s of disk I/O, single scan.
-func runDomainAudit(ctx context.Context, args []string) error {
+func runDomainAudit(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("domain-audit", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (required; same dir as pebble-serve -dir)")
 	out := fs.String("out", "-", "output path; '-' = stdout")
@@ -125,11 +125,15 @@ func runDomainAudit(ctx context.Context, args []string) error {
 	// Pass 2: score + emit JSONL.
 	var w io.Writer = os.Stdout
 	if *out != "-" {
-		f, err := os.Create(*out)
-		if err != nil {
-			return fmt.Errorf("create output: %w", err)
+		f, ferr := os.Create(*out)
+		if ferr != nil {
+			return fmt.Errorf("create output: %w", ferr)
 		}
-		defer f.Close()
+		defer func() {
+			if cerr := f.Close(); cerr != nil && err == nil {
+				err = fmt.Errorf("close output: %w", cerr)
+			}
+		}()
 		w = f
 	}
 	enc := json.NewEncoder(w)
