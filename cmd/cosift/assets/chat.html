@@ -159,7 +159,9 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 .phase-row { display: flex; gap: 10px; align-items: baseline; }
 .phase-name { color: var(--accent); font-weight: 600; min-width: 88px; }
 .phase-dur { color: var(--ink-dim); min-width: 64px; text-align: right; }
-.phase-meta { color: var(--ink); opacity: 0.7; }
+.phase-meta { color: var(--ink); opacity: 0.7; flex: 1; }
+.phase-queries { margin: 2px 0 4px 98px; color: var(--ink); opacity: 0.65; }
+.phase-subq { padding: 1px 0; }
 
 .sources {
   margin-top: 14px;
@@ -399,30 +401,54 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
     };
   }
 
-  // renderPhase appends one row to the phase timeline above the answer body.
-  // Format: NAME  ELAPSED  meta — meta summarizes the most useful detail
-  // fields (counts, model name, effective query). Compact one-liners so the
-  // strip stays scannable as the pipeline rolls forward.
+  // renderPhase appends one row (or block) to the phase timeline above the
+  // answer body. Format: NAME +DUR meta — meta summarizes the most useful
+  // detail fields. Some events expand multi-line (plan with queries list,
+  // expand with the sub-query string verbatim).
   function renderPhase(el, ev) {
     if (!el) return;
     var meta = [];
+    var subline = '';
+    if (ev.intent) meta.push('intent=' + ev.intent);
+    if (ev.retriever) meta.push(ev.retriever);
+    if (ev.since_days != null) meta.push('since=' + ev.since_days + 'd');
+    if (ev.decay_days != null) meta.push('decay=' + ev.decay_days + 'd');
     if (ev.hits != null) meta.push(ev.hits + ' hits');
+    if (ev.unique_urls != null) meta.push(ev.unique_urls + ' unique');
     if (ev.candidates != null) meta.push(ev.candidates + ' cands');
     if (ev.kept != null && ev.dropped != null) meta.push(ev.kept + ' kept · ' + ev.dropped + ' dropped');
     if (ev.sources != null) meta.push(ev.sources + ' sources');
     if (ev.model) meta.push(ev.model);
-    if (ev.retriever) meta.push(ev.retriever);
     if (ev.effective_query && ev.effective_query !== ev.q) meta.push('q=' + ev.effective_query);
     if (ev.lambda != null) meta.push('λ=' + ev.lambda);
     if (ev.half_life_days != null) meta.push(ev.half_life_days + 'd half-life');
     if (ev.reranker) meta.push(ev.reranker);
+    if (ev.error) meta.push('error: ' + ev.error);
+    // Sub-query content: planner queries list, individual expand search,
+    // q on parsed/plan_start. Quoted so they read as text the LLM is using.
+    if (ev.query) subline = '"' + ev.query + '"';
+    if (ev.q && ev.name === 'plan_start') subline = '"' + ev.q + '"';
+    var queriesBlock = '';
+    if (Array.isArray(ev.queries) && ev.queries.length) {
+      queriesBlock = ev.queries.map(function (sq) {
+        return '<div class="phase-subq">→ ' + esc(sq) + '</div>';
+      }).join('');
+    }
     var row = document.createElement('div');
     row.className = 'phase-row';
     row.innerHTML =
       '<span class="phase-name">' + esc(ev.name || '') + '</span>' +
       '<span class="phase-dur">+' + (ev.duration_ms != null ? ev.duration_ms + 'ms' : '') + '</span>' +
-      '<span class="phase-meta">' + esc(meta.join(' · ')) + '</span>';
+      '<span class="phase-meta">' + esc(meta.join(' · ')) +
+        (subline ? ' <em style="color: var(--accent); font-style: normal;">' + esc(subline) + '</em>' : '') +
+        '</span>';
     el.appendChild(row);
+    if (queriesBlock) {
+      var block = document.createElement('div');
+      block.className = 'phase-queries';
+      block.innerHTML = queriesBlock;
+      el.appendChild(block);
+    }
   }
 
   function renderCitedHTML(text) {
@@ -502,45 +528,14 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
     var endpoint = mode === 'research' ? '/research'
                  : mode === 'query'    ? '/query'
                  : '/answer';
-    // Iter 499: /query returns JSON synchronously (LLM-planner orchestrates
-    // 3-way expansion + RRF fusion + synth — adds ~20s latency but better
-    // results on vague queries). /answer and /research stream via SSE.
-    var isStream = (mode !== 'query');
-    var url = endpoint + '?q=' + encodeURIComponent(q) + '&k=5' + (isStream ? '&stream=true' : '');
+    // All three modes (query / answer / research) stream via SSE so the
+    // phase timeline above the answer body surfaces backend pipeline
+    // progress (planner sub-queries, per-expansion hit counts, judge
+    // drops, synth tokens).
+    var isStream = true;
+    var url = endpoint + '?q=' + encodeURIComponent(q) + '&k=5&stream=true';
 
     try {
-      if (!isStream) {
-        // /query path: single JSON response, no streaming
-        statusBadge.innerHTML = '<span class="dot"></span> planning query…';
-        var resp = await fetch(url);
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        var d = await resp.json();
-        // Render the plan as a compact preamble
-        if (d.plan) {
-          var planBox = document.createElement('div');
-          planBox.style.cssText = 'margin: 6px 0 12px; padding: 8px 12px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); font-size: 12px; font-family: var(--mono); color: var(--ink-dim); border-radius: 4px;';
-          planBox.innerHTML = '<strong>plan:</strong> intent=' + esc(d.plan.intent || '') +
-            ' · retriever=' + esc(d.plan.retriever || '') +
-            (d.plan.since_days != null ? ' · since=' + d.plan.since_days + 'd' : '') +
-            (d.plan.decay_days != null ? ' · decay=' + d.plan.decay_days + 'd' : '') +
-            '<br><strong>queries:</strong> ' + (d.plan.queries || []).map(esc).join(' · ');
-          asst.contentEl.appendChild(planBox);
-        }
-        sources = d.sources || [];
-        renderSources(asst.sourcesEl, sources);
-        accumulated = d.answer || '';
-        asst.contentEl.innerHTML += renderCitedHTML(accumulated);
-        statusBadge.remove();
-        asst.contentEl.classList.remove('cursor');
-        if (d.took) {
-          var meta = document.createElement('div');
-          meta.style.cssText = 'font-size: 11px; color: var(--ink-dim); font-family: var(--mono); margin-top: 8px;';
-          meta.textContent = 'answered in ' + d.took;
-          asst.contentEl.appendChild(meta);
-        }
-        setBusy(false);
-        return;
-      }
       var resp = await fetch(url, { headers: { 'Accept': 'text/event-stream' } });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       var reader = resp.body.getReader();

@@ -5723,16 +5723,50 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSE opt-in. Stream phase events through the planner → expand → fuse
+	// → synth pipeline so operators see the LLM's sub-queries, per-expansion
+	// hit counts, fusion result, and synth tokens as they're produced.
+	wantStream := r.URL.Query().Get("stream") == "true" ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	var sse *answerSSE
+	var streamChat embed.StreamingChatClient
+	if wantStream {
+		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
+			if a := newAnswerSSE(w, start); a != nil {
+				sse, streamChat = a, sc
+				sse.phase("plan_start", map[string]any{"q": q, "model": s.chat.Model()})
+			}
+		}
+	}
+
 	// Step 1: LLM planner.
 	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
 		{Role: "system", Content: queryPlanPrompt},
 		{Role: "user", Content: q},
 	})
 	if err != nil {
+		if sse != nil {
+			sse.errorEvt("plan: " + err.Error())
+			return
+		}
 		writeProblem(w, http.StatusBadGateway, "plan: "+err.Error())
 		return
 	}
 	plan := parseQueryPlan(planRaw, q)
+	if sse != nil {
+		details := map[string]any{
+			"intent":    plan.Intent,
+			"retriever": plan.Retriever,
+			"queries":   plan.Queries,
+		}
+		if plan.SinceDays != nil {
+			details["since_days"] = *plan.SinceDays
+		}
+		if plan.DecayDays != nil {
+			details["decay_days"] = *plan.DecayDays
+		}
+		sse.phase("plan", details)
+	}
 
 	// Step 2: run each expanded query through retrieval, dedupe by URL.
 	type hitInfo struct {
@@ -5744,6 +5778,9 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 	for _, sub := range plan.Queries {
 		hits, _, err := s.retrieve(r.Context(), sub, fetchK, plan.Retriever, "")
 		if err != nil {
+			if sse != nil {
+				sse.phase("expand", map[string]any{"query": sub, "error": err.Error()})
+			}
 			continue
 		}
 		for rank, h := range hits {
@@ -5755,6 +5792,9 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 			} else {
 				byURL[h.URL] = &hitInfo{hit: h, bestRR: rr}
 			}
+		}
+		if sse != nil {
+			sse.phase("expand", map[string]any{"query": sub, "hits": len(hits)})
 		}
 	}
 
@@ -5769,6 +5809,9 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		fused = append(fused, h)
 	}
 	sort.Slice(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+	if sse != nil {
+		sse.phase("fuse", map[string]any{"unique_urls": len(fused)})
+	}
 
 	// Step 4: optional since filter + decay (decay handled by /answer-style
 	// path when we materialize). Apply since filter here on PublishedAt.
@@ -5816,6 +5859,9 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		cands = append(cands, c)
 	}
+	if sse != nil {
+		sse.phase("materialize", map[string]any{"candidates": len(cands)})
+	}
 
 	// Step 6: synth via answerSystemPrompt.
 	var promptSrcs strings.Builder
@@ -5825,6 +5871,26 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		c.src.Excerpt = c.excerpt
 		fmt.Fprintf(&promptSrcs, "[%d] %s\n%s\n\n", c.src.ID, c.src.URL, truncateForPromptLite(c.text, 1200))
 		sources = append(sources, c.src)
+	}
+
+	if sse != nil {
+		sse.sources(q, sources, s.chat.Model(), "query:planner+hybrid+rrf", len(fused))
+		if len(cands) == 0 {
+			sse.chunk("No sources matched the planner's expanded queries within the chosen time window.")
+			sse.done()
+			return
+		}
+		sse.phase("synth_start", map[string]any{"sources": len(sources), "model": streamChat.Model()})
+		_, cerr := s.doChatStream(r.Context(), streamChat, []embed.ChatMsg{
+			{Role: "system", Content: answerSystemPrompt},
+			{Role: "user", Content: "Sources:\n\n" + promptSrcs.String() + "Question: " + q},
+		}, sse.chunk)
+		if cerr != nil {
+			sse.errorEvt("synth: " + cerr.Error())
+			return
+		}
+		sse.done()
+		return
 	}
 
 	answerText := ""
