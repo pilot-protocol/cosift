@@ -5240,8 +5240,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	// client must implement StreamingChatClient AND the ResponseWriter
 	// must support http.Flusher; if either is missing, fall through to
 	// sync (today's behavior).
-	wantStream := r.URL.Query().Get("stream") == "true" ||
-		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	wantStream := wantsSSE(r)
 	var sse *answerSSE
 	var streamChat embed.StreamingChatClient
 	if wantStream {
@@ -5513,6 +5512,14 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// wantsSSE reports whether the request opts into Server-Sent Events,
+// either via ?stream=true or an Accept: text/event-stream header. Both
+// /answer, /query, and /research check the same envelope.
+func wantsSSE(r *http.Request) bool {
+	return r.URL.Query().Get("stream") == "true" ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+}
+
 // answerSSE wraps the SSE writer for /answer streaming. Methods emit the
 // well-known event types (phase, sources, answer_chunk, warnings, error,
 // suggest_escalation, done). Phase events surface pipeline progress
@@ -5726,8 +5733,7 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// SSE opt-in. Stream phase events through the planner → expand → fuse
 	// → synth pipeline so operators see the LLM's sub-queries, per-expansion
 	// hit counts, fusion result, and synth tokens as they're produced.
-	wantStream := r.URL.Query().Get("stream") == "true" ||
-		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	wantStream := wantsSSE(r)
 	var sse *answerSSE
 	var streamChat embed.StreamingChatClient
 	if wantStream {
@@ -5981,8 +5987,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// Emits phase-aware events so the UI can render the plan and source list
 	// before the synth call completes — /research often runs 10–30s
 	// (2-3 plan→retrieve→synth chat rounds), so phase visibility matters.
-	wantStream := r.URL.Query().Get("stream") == "true" ||
-		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	wantStream := wantsSSE(r)
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
 			s.streamResearch(w, r, sc, q, k, filt, start)

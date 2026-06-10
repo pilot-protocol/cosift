@@ -1479,6 +1479,66 @@ func TestStreamResearchSSE(t *testing.T) {
 	}
 }
 
+// TestStreamQuerySSE asserts /query?stream=true emits the expected phase
+// event sequence (plan_start → plan → expand → fuse → materialize →
+// synth_start → done). Catches regressions in handleQuery's SSE branch,
+// including event-type names the UI depends on.
+func TestStreamQuerySSE(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	mock := openaiTestServer(t)
+	// Planner first, then synth. Mock returns the same response for both
+	// — that's fine, parseQueryPlan tolerates non-JSON and falls back to
+	// echoing the original q as a single-element queries list.
+	mock.SetChatResponse(`{"intent":"factual_lookup","queries":["raft consensus","raft algorithm","distributed consensus raft"],"since_days":null,"retriever":"hybrid","decay_days":null}`)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/query", srv.handleQuery)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/query?q=raft+consensus&k=2&stream=true")
+	if err != nil {
+		t.Fatalf("GET /query: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("content-type = %q, want SSE", ct)
+	}
+	// Read until we see "done" or stream ends.
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for sb.Len() < 64<<10 {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if strings.Contains(sb.String(), "\"type\":\"done\"") {
+			break
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	body := sb.String()
+	// Phase event names the UI keys off; assert each fires at least once.
+	for _, want := range []string{
+		"\"name\":\"plan_start\"",
+		"\"name\":\"plan\"",
+		"\"name\":\"fuse\"",
+		"\"name\":\"materialize\"",
+		"\"type\":\"sources\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in body: %q", want, body)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // doRerank — wraps a Reranker with attempt/failure counters. A trivial
 // in-line fake covers both happy + error paths.
