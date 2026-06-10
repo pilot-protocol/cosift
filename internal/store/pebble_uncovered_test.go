@@ -352,7 +352,7 @@ func TestPebbleCorpusStats(t *testing.T) {
 
 	// Index something.
 	id, _ := p.UpsertDocument(ctx, &Document{URL: "u", FetchedAt: time.Now()})
-	tokenize := func(s string) []string { return strings.Fields(s) }
+	tokenize := strings.Fields
 	if err := p.IndexDocument(ctx, id, "title here", "the quick brown fox", tokenize, 2); err != nil {
 		t.Fatalf("IndexDocument: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestPebbleIterateDomains(t *testing.T) {
 func TestPebbleIndexDocumentTrustsMirror(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
-	tokenize := func(s string) []string { return strings.Fields(s) }
+	tokenize := strings.Fields
 
 	// Seed the corpus + the atomic mirror.
 	for i := 0; i < 3; i++ {
@@ -448,7 +448,7 @@ func TestPebbleIndexDocumentTrustsMirror(t *testing.T) {
 func TestPebbleBootstrapCorpusStats(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
-	tokenize := func(s string) []string { return strings.Fields(s) }
+	tokenize := strings.Fields
 
 	// Populate via IndexDocument so 'l' family has entries.
 	for i := 0; i < 5; i++ {
@@ -503,7 +503,7 @@ func TestPebbleBootstrapCorpusStats(t *testing.T) {
 func TestPebbleCorpusStatsLockFreePath(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
-	tokenize := func(s string) []string { return strings.Fields(s) }
+	tokenize := strings.Fields
 
 	id, _ := p.UpsertDocument(ctx, &Document{URL: "u", FetchedAt: time.Now()})
 	if err := p.IndexDocument(ctx, id, "", "a b c d", tokenize, 1); err != nil {
@@ -542,7 +542,7 @@ func TestPebbleCorpusStatsLockFreePath(t *testing.T) {
 func TestPebbleSumDocLengths(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
-	tokenize := func(s string) []string { return strings.Fields(s) }
+	tokenize := strings.Fields
 
 	id1, _ := p.UpsertDocument(ctx, &Document{URL: "u1", FetchedAt: time.Now()})
 	id2, _ := p.UpsertDocument(ctx, &Document{URL: "u2", FetchedAt: time.Now()})

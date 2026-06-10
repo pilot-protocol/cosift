@@ -35,9 +35,8 @@ func (s *stubEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 
 func newStoreT(t *testing.T) *store.Store {
 	t.Helper()
-	// OpenMemory — no on-disk artifacts. Crawler tests already use
-	// MaxConcurrent=1 (line 63 etc.), so the SetMaxOpenConns(1) cap from
-	//'s OpenMemory doesn't contend.
+	// OpenMemory — no on-disk artifacts. Crawler tests use MaxConcurrent=1,
+	// so the SetMaxOpenConns(1) cap in OpenMemory doesn't contend.
 	s, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)

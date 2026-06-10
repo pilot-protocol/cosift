@@ -177,7 +177,7 @@ func trivialTokenize(s string) []string {
 			flush()
 		} else {
 			if r >= 'A' && r <= 'Z' {
-				r = r + 32
+				r += 32
 			}
 			cur = append(cur, r)
 		}
