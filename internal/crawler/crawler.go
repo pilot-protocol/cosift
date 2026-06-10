@@ -934,6 +934,14 @@ func (c *Crawler) maxBodyBytesFor(host string) int64 {
 }
 
 func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
+	// Curated-corpus mode: don't enqueue ANY outbound links — the operator
+	// owns the URL set entirely (seeds-file + /admin/sitemap-import).
+	// Wikipedia portals link to ~200 URLs each, most of which are
+	// wiki-admin / diff / category pages that produce slop; disabling
+	// link extraction eliminates that noise class structurally.
+	if c.cfg.DisableLinkFollowing {
+		return
+	}
 	// First pass canonicalizes + filters by
 	// domain + depth, then batches a single host-count query, then enqueues
 	// only links whose host hasn't hit cfg.MaxURLsPerHost. Without this cap,

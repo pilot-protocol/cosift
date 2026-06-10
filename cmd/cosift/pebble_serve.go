@@ -49,6 +49,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/judge"
 	"github.com/pilot-protocol/cosift/internal/qexpand"
 	"github.com/pilot-protocol/cosift/internal/rerank"
 	"github.com/pilot-protocol/cosift/internal/sla"
@@ -4310,6 +4311,7 @@ const answerSystemPrompt = `You are a research assistant. Answer the user's ques
 - Cite sources by their numeric id in square brackets, e.g. [1] or [2,3]. Every factual claim needs a citation.
 - Synthesize the answer from what the sources state, including reasonable inferences from adjacent context — sources rarely state every answer verbatim.
 - Only fall back to "the sources do not cover X" if NONE of the sources have any relevant material at all. Do not refuse just because the exact formula, number, or phrase isn't quoted verbatim — extract whatever IS there and say so.
+- IGNORE sources that are irrelevant to the question — login forms, page-not-found stubs, wiki edit/diff/admin pages, navigation menus, raw image directories, or content about a different topic. Do not cite them. Do not mention them in your answer. Pretend they weren't in the source list.
 - Do not invent facts not supported by the sources.
 - Keep the answer focused on what the sources actually say; do not pad.`
 
@@ -5322,6 +5324,56 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 				}
 			}
 			cands = reordered
+		}
+	}
+	// LLM relevance judge — gates candidates before synthesis. The
+	// reranker re-orders but doesn't drop; without this gate, marginal
+	// content (Wikipedia diff/admin pages, dead .edu PDFs, JS-only
+	// landing pages with stub HTML) leaks into the synth context and
+	// produces "based on the sources, here is irrelevant trivia"
+	// answers. Judge drops anything below the threshold; if too few
+	// candidates pass we dig deeper into the rerank pool by raising
+	// the threshold-pool from top-k to top-3k.
+	//
+	// Skip when ?judge=false or no chat client (correctness-preserving).
+	if r.URL.Query().Get("judge") != "false" && s.chat != nil && len(cands) > 1 {
+		jCands := make([]judge.Candidate, len(cands))
+		for i, c := range cands {
+			jCands[i] = judge.Candidate{ID: strconv.Itoa(i), Excerpt: c.rerankText}
+		}
+		verdicts := judge.Judge(r.Context(), s.chat, q, jCands, judge.Options{MinScore: 0.4})
+		keep := make([]cand, 0, len(cands))
+		dropped := 0
+		for i, c := range cands {
+			if i < len(verdicts) && verdicts[i].Keep {
+				keep = append(keep, c)
+			} else {
+				dropped++
+			}
+		}
+		// If fewer than k candidates survived, top-up from the dropped
+		// pool by score — never go below k or we'd starve the synth.
+		if len(keep) < k && dropped > 0 {
+			type droppedRow struct {
+				cand
+				score float64
+			}
+			rest := make([]droppedRow, 0, dropped)
+			for i, c := range cands {
+				if i < len(verdicts) && !verdicts[i].Keep {
+					rest = append(rest, droppedRow{cand: c, score: verdicts[i].Score})
+				}
+			}
+			sort.Slice(rest, func(i, j int) bool { return rest[i].score > rest[j].score })
+			for _, r := range rest {
+				if len(keep) >= k {
+					break
+				}
+				keep = append(keep, r.cand)
+			}
+		}
+		if len(keep) > 0 {
+			cands = keep
 		}
 	}
 	// MMR diversification on /answer — same pattern as /search.

@@ -170,6 +170,19 @@ type Crawler struct {
 	// once per process lifetime (in-memory cache). Default false.
 	AutoSitemap bool `json:"auto_sitemap,omitempty"`
 
+	// DisableLinkFollowing turns the crawler from a spider into a pure
+	// ingester. When true, fetched pages are extracted + indexed but
+	// outbound <a href> links are NOT enqueued. The crawler only
+	// processes URLs explicitly pushed via the seeds file,
+	// /admin/sitemap-import, or /admin/crawl-enqueue.
+	//
+	// Use case: curated corpus where the operator owns the URL set
+	// (sitemap-driven). Wikipedia portals link to ~200 URLs each, most
+	// of which are wiki-admin / diff / category pages — disabling link
+	// extraction eliminates that entire noise class in one config flip.
+	// Default false preserves the classic spider behavior.
+	DisableLinkFollowing bool `json:"disable_link_following,omitempty"`
+
 	// RemoteFetcherURL — optional Cloudflare-Worker (or any
 	// HTTP service speaking the same shape) that fetches URLs on behalf
 	// of the crawler. When set, cosift's HTTP transport is wrapped so
