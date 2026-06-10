@@ -110,21 +110,6 @@ func Judge(ctx context.Context, chat embed.ChatClient, query string, cands []Can
 	return out
 }
 
-// Filter keeps only Candidates whose Verdict.Keep is true, preserving
-// input order. Convenience for callers that don't care about scores.
-func Filter(cands []Candidate, verdicts []Verdict) []Candidate {
-	if len(cands) != len(verdicts) {
-		return cands
-	}
-	out := make([]Candidate, 0, len(cands))
-	for i, c := range cands {
-		if verdicts[i].Keep {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 const judgeSystem = `You are a relevance judge. For each candidate passage, decide whether the passage is USEFUL FOR ANSWERING the user's query. "Useful" is the bar, not "literally states the answer verbatim" — documentation, RFC sections, paper abstracts, and reference content that provide grounding for the answer all count.
 
 - Score 1.0: directly answers the query OR primary canonical source for the topic.

@@ -303,35 +303,6 @@ func TestHostBoostFor(t *testing.T) {
 	}
 }
 
-func TestRRFWithHostBoostsEmptyMapMatchesUnboosted(t *testing.T) {
-	lists := [][]string{{"https://a.com/x", "https://b.com/y", "https://c.com/z"}}
-	base := RRFWeighted(lists, nil, 3, 60)
-	boosted := RRFWithHostBoosts(lists, nil, nil, 3, 60)
-	for i := range base {
-		if base[i] != boosted[i] {
-			t.Errorf("rank %d: unboosted=%s boosted=%s — empty map must be no-op",
-				i, base[i], boosted[i])
-		}
-	}
-}
-
-func TestRRFWithHostBoostsReordersByHost(t *testing.T) {
-	// Two retrievers agree on identical ranking; host boost on c.com flips
-	// it past a.com and b.com.
-	lists := [][]string{
-		{"https://a.com/1", "https://b.com/2", "https://c.com/3"},
-		{"https://a.com/1", "https://b.com/2", "https://c.com/3"},
-	}
-	unboosted := RRFWeighted(lists, nil, 3, 60)
-	if unboosted[0] != "https://a.com/1" {
-		t.Fatalf("sanity: expected a.com first, got %s", unboosted[0])
-	}
-	boosted := RRFWithHostBoosts(lists, nil, map[string]float64{"c.com": 5.0}, 3, 60)
-	if boosted[0] != "https://c.com/3" {
-		t.Errorf("expected c.com first after 5x boost, got %s (full: %v)", boosted[0], boosted)
-	}
-}
-
 func TestRRFWeightedDefensiveFallback(t *testing.T) {
 	// Length mismatch and non-positive weight must both fall back to equal-weight,
 	// not silently drop a retriever. The safer-on-conflict default established

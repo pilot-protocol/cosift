@@ -76,20 +76,6 @@ func TestJudgeStripsJSONFence(t *testing.T) {
 	}
 }
 
-func TestFilterPreservesOrder(t *testing.T) {
-	cands := []Candidate{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}
-	verdicts := []Verdict{
-		{ID: "a", Keep: true},
-		{ID: "b", Keep: false},
-		{ID: "c", Keep: true},
-		{ID: "d", Keep: true},
-	}
-	got := Filter(cands, verdicts)
-	if len(got) != 3 || got[0].ID != "a" || got[1].ID != "c" || got[2].ID != "d" {
-		t.Errorf("filter: %+v", got)
-	}
-}
-
 func TestJudgeMinScoreOverride(t *testing.T) {
 	resp := `{"id":0,"score":0.8}
 {"id":1,"score":0.4}

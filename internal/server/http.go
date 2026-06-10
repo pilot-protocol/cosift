@@ -132,7 +132,7 @@ func mmrFromQuery(ctx context.Context, r *http.Request) context.Context {
 //   - /feedback: 60/min  (cheap write to query_outcomes)
 //   - /answer + /research: 10/min  (each call burns LLM tokens)
 //
-// Opt out via WithFeedbackLimiter(0, 0) / WithLLMLimiter(0, 0).
+// Opt out via WithLLMLimiter(0, 0) (and similar option-builders below).
 func New(s *store.Store) *Server {
 	srv := &Server{
 		store:           s,
@@ -159,17 +159,6 @@ func New(s *store.Store) *Server {
 		return
 	})
 	return srv
-}
-
-// WithFeedbackLimiter replaces the default /feedback rate limit.
-// limit=0 disables limiting (handy in tests).
-func (s *Server) WithFeedbackLimiter(limit int, window time.Duration) *Server {
-	if limit <= 0 {
-		s.feedbackLimiter = nil
-	} else {
-		s.feedbackLimiter = newIPLimiter(limit, window)
-	}
-	return s
 }
 
 // WithLLMLimiter replaces the default /answer + /research rate limit.
