@@ -3540,7 +3540,10 @@ func TestDefaultsRetriever(t *testing.T) {
 	srv2 := New(s).WithDefaults(Defaults{Retriever: "hybrid"})
 	httpSrv2 := httptest.NewServer(srv2.Handler())
 	defer httpSrv2.Close()
-	resp2, _ := http.Get(httpSrv2.URL + "/search?q=alpha")
+	resp2, err := http.Get(httpSrv2.URL + "/search?q=alpha")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Errorf("hybrid default w/o WithVector: got %d want 400", resp2.StatusCode)

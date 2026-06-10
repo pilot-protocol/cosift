@@ -30,6 +30,13 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	// assertions ("bm25" → "bm25+decay:180d"). Test contract is about
 	// retriever-selection logic, not decay; disable decay for this fixture.
 	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	// The 3-doc fixture is too small for the default IDF floor (0.5) — any
+	// term in 2-of-3 docs lands at IDF≈0.47 and gets pruned as a stopword,
+	// leaving only doc-unique terms. /find_similar?url=… then BM25-matches
+	// the source URL itself, which is excluded, yielding 0 hits. Real
+	// corpora are large enough that the floor doesn't bite; disable it
+	// here so the test exercises the BM25-MLT fallback contract.
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
 
 	dir := filepath.Join(t.TempDir(), "pebble")
 	ps, err := store.OpenPebble(dir)

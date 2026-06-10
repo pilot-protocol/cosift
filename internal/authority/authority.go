@@ -189,11 +189,11 @@ func (s *Scorer) Multiplier(host string) float64 {
 
 // Stats is a snapshot of loaded data sizes for /stats publishing.
 type Stats struct {
-	TrustedHosts        int     `json:"trusted_hosts"`
-	TrancoEntries       int     `json:"tranco_entries"`
-	MajesticEntries     int     `json:"majestic_entries"`
-	SubdomainCountEntries int   `json:"subdomain_count_entries"`
-	Alpha               float64 `json:"alpha"`
+	TrustedHosts          int     `json:"trusted_hosts"`
+	TrancoEntries         int     `json:"tranco_entries"`
+	MajesticEntries       int     `json:"majestic_entries"`
+	SubdomainCountEntries int     `json:"subdomain_count_entries"`
+	Alpha                 float64 `json:"alpha"`
 }
 
 func (s *Scorer) Stats() Stats {
@@ -204,11 +204,11 @@ func (s *Scorer) Stats() Stats {
 	subN := len(s.subdomain)
 	s.mu.RUnlock()
 	return Stats{
-		TrustedHosts:        len(s.trusted),
-		TrancoEntries:       len(s.tranco),
-		MajesticEntries:     len(s.majestic),
+		TrustedHosts:          len(s.trusted),
+		TrancoEntries:         len(s.tranco),
+		MajesticEntries:       len(s.majestic),
 		SubdomainCountEntries: subN,
-		Alpha:               s.alpha,
+		Alpha:                 s.alpha,
 	}
 }
 
