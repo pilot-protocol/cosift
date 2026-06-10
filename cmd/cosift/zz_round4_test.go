@@ -1503,10 +1503,15 @@ func TestStreamAnswerSSEBypassesAnswerCache(t *testing.T) {
 	}
 }
 
+// TestStreamResearchSSE asserts /research?stream=true emits the expected
+// phase event sequence and keeps the legacy type:plan event alive for
+// the CLI client. Catches regressions in streamResearch's pipeline
+// instrumentation and the back-compat wire shape.
 func TestStreamResearchSSE(t *testing.T) {
 	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
 	mock := openaiTestServer(t)
-	mock.SetChatResponse(`["sub one","sub two"]`)
+	mock.SetChatResponse(`["raft basics","raft leader election"]`)
 	f := populatedPebbleStore(t)
 	srv := f.makeServer(mock)
 
@@ -1526,11 +1531,36 @@ func TestStreamResearchSSE(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Errorf("content-type = %q, want SSE", ct)
 	}
-	buf := make([]byte, 8192)
-	n, _ := resp.Body.Read(buf)
-	body := string(buf[:n])
-	if !strings.Contains(body, "data:") {
-		t.Errorf("no SSE frame: %q", body)
+	// Loop-read until we see "done" or the stream ends; each SSE flush
+	// is one Read.
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for sb.Len() < 64<<10 {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if strings.Contains(sb.String(), "\"type\":\"done\"") {
+			break
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	body := sb.String()
+	for _, want := range []string{
+		"\"name\":\"plan_start\"",
+		"\"name\":\"plan\"",
+		"\"name\":\"fuse\"",
+		"\"name\":\"materialize\"",
+		"\"type\":\"sources\"",
+		// Legacy plan event the CLI client at cmd/cosift/main.go
+		// keys on — must coexist with the phase variant.
+		"\"type\":\"plan\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in body: %q", want, body)
+		}
 	}
 }
 
