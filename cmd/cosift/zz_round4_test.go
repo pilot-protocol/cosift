@@ -1562,6 +1562,12 @@ func TestStreamResearchSSE(t *testing.T) {
 			t.Errorf("missing %s in body: %q", want, body)
 		}
 	}
+	// The mock planner returns two sub-queries, so the per-sub-query
+	// expand event must fire twice (once per sq). Guards the per-sub
+	// loop instrumentation.
+	if got := strings.Count(body, "\"name\":\"expand\""); got != 2 {
+		t.Errorf("expand phase events: got %d, want 2 (one per sub-query)", got)
+	}
 }
 
 // TestStreamQuerySSE asserts /query?stream=true emits the expected phase
@@ -1621,6 +1627,12 @@ func TestStreamQuerySSE(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s in body: %q", want, body)
 		}
+	}
+	// The mock planner returns three expanded queries, so the per-sub
+	// expand event must fire exactly three times. Guards the planner's
+	// expansion loop instrumentation.
+	if got := strings.Count(body, "\"name\":\"expand\""); got != 3 {
+		t.Errorf("expand phase events: got %d, want 3 (one per expansion)", got)
 	}
 }
 
