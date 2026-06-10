@@ -59,7 +59,7 @@ usage:
   cosift doctor [-json] [-server URL] [-token T]  pre-flight check (data dir, sqlite, pebble, HNSW, env; -json for CI)
 
   Path-2 (Pebble) commands — see docs/PEBBLE.md and docs/API.md:
-  cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/research/contents/healthz/stats/metrics/verify)
+  cosift pebble-serve -dir D            HTTP server backed by PebbleStore (search/find_similar/answer/query/research/contents/healthz/stats/metrics/verify)
   cosift pebble-info -dir D [-json]     dump corpus counters + pebble.Metrics for an offline store (-json = jq-friendly shape, no pebble.Metrics)
   cosift pebble-compact -dir D [-range R]  force-compact a Pebble key range to collapse tombstones (R=all|f|d|l|v; default all) — service must be stopped
   cosift domain-audit -dir D [-tranco csv] [-majestic csv] [-out path] [-top N] [-min-count N]   single-scan host inventory + authority scoring (JSONL)
