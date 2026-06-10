@@ -1089,19 +1089,19 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	batch := p.db.NewBatch()
 	defer batch.Close()
 
-	if err = batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
+	if err := batch.Set(docLenKey(docID), lenBuf, nil); err != nil {
 		return err
 	}
 	// Counters are appended to the same batch so all-or-nothing semantics
 	// hold — a torn write can't leave the counters out of sync with 'l'.
 	sumBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
-	if err = batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
 		return err
 	}
 	countBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
-	if err = batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
 		return err
 	}
 	// On re-index,

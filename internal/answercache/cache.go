@@ -157,10 +157,3 @@ func (c *Cache) Stats() Stats {
 		Shared:  c.shared.Load(),
 	}
 }
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
