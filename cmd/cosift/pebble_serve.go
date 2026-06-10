@@ -6206,35 +6206,24 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 //	done    — final {"took": "..."}
 //	error   — terminal; either plan, retrieval, or synth failed
 func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc embed.StreamingChatClient, q string, k int, filt retrievalFilters, start time.Time) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	sse := newAnswerSSE(w, start)
+	if sse == nil {
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
 		return
 	}
 	includeText := r.URL.Query().Get("include_text") == "true"
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	sse := func(payload any) {
-		buf, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "data: %s\n\n", buf)
-		flusher.Flush()
-	}
 
 	// surface silent no-ops upfront so SSE clients can render them
 	// while the plan call is still in flight. Fires before plan to give the
 	// fastest visual feedback when a misconfigured request arrives.
-	if warns := s.warningsFor(r); len(warns) > 0 {
-		sse(map[string]any{"type": "warnings", "warnings": warns})
-	}
+	sse.warnings(s.warningsFor(r))
 
 	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
 		{Role: "user", Content: q},
 	})
 	if err != nil {
-		sse(map[string]any{"type": "error", "phase": "plan", "error": err.Error()})
+		sse.send(map[string]any{"type": "error", "phase": "plan", "error": err.Error()})
 		return
 	}
 	subs := parseSubQueries(planRaw, q)
@@ -6264,7 +6253,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	if retrieverLabel != "" {
 		planEvent["retriever"] = retrieverLabel
 	}
-	sse(planEvent)
+	sse.send(planEvent)
 
 	type ranked struct {
 		score float64
@@ -6400,27 +6389,25 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		sources = append(sources, c.src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
-	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)} //
+	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)}
 	if retrieverLabel != "" {
-		srcEvt["retriever"] = retrieverLabel // Iter
+		srcEvt["retriever"] = retrieverLabel
 	}
-	sse(srcEvt)
+	sse.send(srcEvt)
 	if len(sources) == 0 {
-		sse(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
+		sse.send(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
 		return
 	}
 
 	_, err = s.doChatStream(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchSynthPrompt},
 		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
-	}, func(delta string) {
-		sse(map[string]any{"type": "answer_chunk", "text": delta})
-	})
+	}, sse.chunk)
 	if err != nil {
-		sse(map[string]any{"type": "error", "phase": "synth", "error": err.Error()})
+		sse.send(map[string]any{"type": "error", "phase": "synth", "error": err.Error()})
 		return
 	}
-	sse(map[string]any{"type": "done", "took": time.Since(start).String()})
+	sse.done()
 }
 
 // retrievalFilters bundles the four post-retrieval predicates /search,
