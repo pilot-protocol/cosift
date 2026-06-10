@@ -5344,7 +5344,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		for i, c := range cands {
 			jCands[i] = judge.Candidate{ID: strconv.Itoa(i), Excerpt: c.rerankText}
 		}
-		verdicts := judge.Judge(r.Context(), s.chat, q, jCands, judge.Options{MinScore: 0.4})
+		verdicts := judge.Judge(r.Context(), s.chat, q, jCands, judge.Options{MinScore: 0.3})
 		keep := make([]cand, 0, len(cands))
 		for i, c := range cands {
 			if i < len(verdicts) && verdicts[i].Keep {

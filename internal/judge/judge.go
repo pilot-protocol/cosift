@@ -125,13 +125,14 @@ func Filter(cands []Candidate, verdicts []Verdict) []Candidate {
 	return out
 }
 
-const judgeSystem = `You are a relevance judge. For each candidate passage, decide how directly it answers the user's query.
-- Score 1.0: directly answers the query, contains the specific facts asked for.
-- Score 0.7: substantially on-topic, partial answer, useful context.
-- Score 0.4: mentions the topic but lacks the specific information asked.
-- Score 0.0: irrelevant, wiki history/diff page, login form, image-only, navigation stub, off-topic.
+const judgeSystem = `You are a relevance judge. For each candidate passage, decide whether the passage is USEFUL FOR ANSWERING the user's query. "Useful" is the bar, not "literally states the answer verbatim" — documentation, RFC sections, paper abstracts, and reference content that provide grounding for the answer all count.
 
-Be strict. Wikipedia edit/diff/admin pages, login flows, image directories, and similar non-content pages score 0. Real article content scores at least 0.4. Direct answers score 0.8+.
+- Score 1.0: directly answers the query OR primary canonical source for the topic.
+- Score 0.7: substantially on-topic, contains supporting facts an answer would build on.
+- Score 0.4: topical context — mentions the entity/concept and is real article content, even if it doesn't state the specific value asked for. A page describing PostgreSQL max_connections semantics scores 0.4+ even if it doesn't quote the literal default.
+- Score 0.0: non-content (login form, wiki diff/edit/admin page, image directory, navigation stub, page not found), or genuinely off-topic.
+
+The line between 0.0 and 0.4 is "is this real content about something related?" — be permissive there. The line between 0.4 and 0.7 is "would a competent answer use this?" — be moderate.
 
 Output one JSON line per candidate. Nothing else.`
 
