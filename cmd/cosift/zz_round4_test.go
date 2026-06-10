@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/answercache"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/rerank"
@@ -1445,6 +1446,60 @@ func TestStreamAnswerSSE(t *testing.T) {
 	}
 	if !strings.Contains(body, "\"type\":\"sources\"") {
 		t.Errorf("missing sources event: %q", body)
+	}
+}
+
+// TestStreamAnswerSSEBypassesAnswerCache catches the bug found at deploy
+// time on the GH200 box: when handleAnswer's answerCache wrapper was
+// engaged, it routed handleAnswerInner through bufferedResponse — which
+// is NOT an http.Flusher — so newAnswerSSE returned nil and the SSE
+// path silently fell through to the sync JSON branch. The production
+// /answer?stream=true endpoint returned application/json instead of
+// text/event-stream, no phase events emitted.
+//
+// makeServer leaves srv.answerCache nil, so TestStreamAnswerSSE never
+// engaged the cache path. This test explicitly wires answerCache before
+// hitting /answer with stream=true.
+func TestStreamAnswerSSEBypassesAnswerCache(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
+	mock := openaiTestServer(t)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+	srv.answerCache = answercache.New(time.Minute, 16)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/answer", srv.handleAnswer)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/answer?q=raft+consensus&k=2&stream=true")
+	if err != nil {
+		t.Fatalf("GET /answer: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content-type = %q, want SSE (cache wrapper swallowed stream flag)", ct)
+	}
+	// Read until we see a phase event or the stream ends — phase events
+	// only fire when the SSE path engaged, which is the load-bearing
+	// assertion here.
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for sb.Len() < 32<<10 {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if strings.Contains(sb.String(), "\"type\":\"phase\"") {
+			break
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "\"type\":\"phase\"") {
+		t.Errorf("no phase event in body (cache wrapper hid streaming): %q", sb.String())
 	}
 }
 
