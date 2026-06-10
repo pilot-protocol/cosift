@@ -5104,8 +5104,9 @@ func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	// (sorted) so different filter combos don't collide. We capture the
 	// rendered body into a buffer; on success the buffer is the cache
 	// value. Skip the cache for explicit no-cache requests and for
-	// streaming clients.
-	if s.answerCache != nil && r.Header.Get("Cache-Control") != "no-cache" {
+	// streaming clients — bufferedResponse can't flush, so SSE would
+	// silently fall through to the sync JSON path.
+	if s.answerCache != nil && r.Header.Get("Cache-Control") != "no-cache" && !wantsSSE(r) {
 		key := answerCacheKey(r)
 		body, err, shared := s.answerCache.Do(key, func() ([]byte, error) {
 			rec := &bufferedResponse{header: http.Header{}, status: 200}
