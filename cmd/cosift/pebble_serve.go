@@ -5326,14 +5326,17 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			cands = reordered
 		}
 	}
-	// LLM relevance judge — gates candidates before synthesis. The
-	// reranker re-orders but doesn't drop; without this gate, marginal
-	// content (Wikipedia diff/admin pages, dead .edu PDFs, JS-only
-	// landing pages with stub HTML) leaks into the synth context and
-	// produces "based on the sources, here is irrelevant trivia"
-	// answers. Judge drops anything below the threshold; if too few
-	// candidates pass we dig deeper into the rerank pool by raising
-	// the threshold-pool from top-k to top-3k.
+	// LLM relevance judge — STRICT gate. The reranker re-orders but
+	// doesn't drop; without this gate, marginal content (Wikipedia
+	// diff/admin pages, dead .edu PDFs, JS-only landing pages with
+	// stub HTML) leaks into the synth context and produces "based on
+	// the sources, here is some irrelevant trivia" answers.
+	//
+	// Strict means: if a candidate fails the relevance threshold, it
+	// is DROPPED — we do not top up from the rejected pool to reach k.
+	// Better to return 2 truly relevant sources than 5 sources where 3
+	// are noise. If 0 candidates pass, downstream returns the "no
+	// matching sources" response (already handled below).
 	//
 	// Skip when ?judge=false or no chat client (correctness-preserving).
 	if r.URL.Query().Get("judge") != "false" && s.chat != nil && len(cands) > 1 {
@@ -5343,38 +5346,12 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		}
 		verdicts := judge.Judge(r.Context(), s.chat, q, jCands, judge.Options{MinScore: 0.4})
 		keep := make([]cand, 0, len(cands))
-		dropped := 0
 		for i, c := range cands {
 			if i < len(verdicts) && verdicts[i].Keep {
 				keep = append(keep, c)
-			} else {
-				dropped++
 			}
 		}
-		// If fewer than k candidates survived, top-up from the dropped
-		// pool by score — never go below k or we'd starve the synth.
-		if len(keep) < k && dropped > 0 {
-			type droppedRow struct {
-				cand
-				score float64
-			}
-			rest := make([]droppedRow, 0, dropped)
-			for i, c := range cands {
-				if i < len(verdicts) && !verdicts[i].Keep {
-					rest = append(rest, droppedRow{cand: c, score: verdicts[i].Score})
-				}
-			}
-			sort.Slice(rest, func(i, j int) bool { return rest[i].score > rest[j].score })
-			for _, r := range rest {
-				if len(keep) >= k {
-					break
-				}
-				keep = append(keep, r.cand)
-			}
-		}
-		if len(keep) > 0 {
-			cands = keep
-		}
+		cands = keep
 	}
 	// MMR diversification on /answer — same pattern as /search.
 	// Synth quality benefits when the top-k sources cover different
@@ -5417,9 +5394,17 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
 	}
 	if len(sources) == 0 {
+		// Distinguish the two failure modes so the client can tell
+		// "we have nothing on this topic" (retrieval returned 0 hits)
+		// from "we retrieved candidates but the relevance judge dropped
+		// every one of them" (the corpus has noise, not the answer).
+		msg := "No matching sources in the index."
+		if len(hits) > 0 {
+			msg = "Retrieval returned candidates but none were judged relevant to the question. The corpus may not cover this topic in usable detail."
+		}
 		empty := answerResponse{
 			Query: q, Expand: normalizeExpandMode(expandMode), Retriever: retrieverLabel,
-			Answer:  "No matching sources in the index.",
+			Answer:  msg,
 			Sources: sources, Model: s.chat.Model(), TotalCandidates: len(hits), Took: time.Since(start).String(),
 		}
 		if effectiveQuery != q {
