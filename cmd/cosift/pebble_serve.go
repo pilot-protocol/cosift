@@ -5249,6 +5249,8 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
 			if a := newAnswerSSE(w, start); a != nil {
 				sse, streamChat = a, sc
+				stopKA := sse.startKeepalive(r.Context(), 7*time.Second)
+				defer stopKA()
 				sse.warnings(s.warningsFor(r))
 				sse.phase("parsed", map[string]any{
 					"q": q, "k": k, "fetch_k": fetchK,
@@ -5527,11 +5529,19 @@ func wantsSSE(r *http.Request) bool {
 // suggest_escalation, done). Phase events surface pipeline progress
 // (retrieve / rerank / judge / mmr / synth_start) so clients can render a
 // timeline of what the backend is doing.
+//
+// Writes are mu-protected because the keepalive ticker can race with
+// the main handler goroutine. The handler does the substantive event
+// writes; the ticker emits SSE comment frames (": ka\n\n") to keep
+// the HTTP/2 stream alive across long retrieval / rerank / chat calls
+// — without them, browsers (Safari especially) close the stream when
+// no bytes flow for 10–30 s and the request fails mid-pipeline.
 type answerSSE struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 	start   time.Time
 	last    time.Time // last phase emit; used to compute per-phase duration
+	mu      sync.Mutex
 }
 
 // newAnswerSSE opens an SSE stream. Returns nil if the writer can't flush.
@@ -5561,8 +5571,39 @@ func newAnswerSSE(w http.ResponseWriter, start time.Time) *answerSSE {
 
 func (a *answerSSE) send(payload any) {
 	buf, _ := json.Marshal(payload)
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	fmt.Fprintf(a.w, "data: %s\n\n", buf)
 	a.flusher.Flush()
+}
+
+// startKeepalive launches a goroutine that emits SSE comment frames every
+// interval, keeping the HTTP/2 stream and any intermediate proxy alive
+// across long retrieval / chat calls that emit no real data. Returns a
+// stop function the caller defers; stopping is idempotent. The comment
+// frame format (`: text\n\n`) is the SSE keepalive convention — browsers
+// and EventSource clients ignore comment lines entirely.
+func (a *answerSSE) startKeepalive(ctx context.Context, interval time.Duration) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				a.mu.Lock()
+				fmt.Fprintf(a.w, ": ka %dms\n\n", time.Since(a.start).Milliseconds())
+				a.flusher.Flush()
+				a.mu.Unlock()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // phase emits a pipeline-step event with elapsed-since-start and
@@ -5752,6 +5793,8 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
 			if a := newAnswerSSE(w, start); a != nil {
 				sse, streamChat = a, sc
+				stopKA := sse.startKeepalive(r.Context(), 7*time.Second)
+				defer stopKA()
 				sse.phase("plan_start", map[string]any{"q": q, "model": s.chat.Model()})
 			}
 		}
@@ -6306,6 +6349,12 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		writeProblem(w, http.StatusInternalServerError, "streaming requires http.Flusher")
 		return
 	}
+	// /research can sit on a single slow retrieve or chat call for
+	// 10–30 s. Without a keepalive, the browser's HTTP/2 stream times
+	// out as inactive and the request fails mid-pipeline. 7 s gives
+	// generous headroom under Safari's ~30 s idle limit.
+	stopKA := sse.startKeepalive(r.Context(), 7*time.Second)
+	defer stopKA()
 	includeText := r.URL.Query().Get("include_text") == "true"
 
 	// surface silent no-ops upfront so SSE clients can render them
@@ -6405,6 +6454,13 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		// Retrieval round for this pass. Skip URLs we've already promoted.
 		best := make(map[string]ranked, k*len(subs))
 		for _, sq := range subs {
+			// Emit `retrieving` BEFORE the s.retrieve call so the SSE
+			// stream sends a frame every loop iteration even when the
+			// retrieve itself takes 10-15s on a cold corpus shard. Without
+			// this, the browser/proxy can see 10+ seconds of silence
+			// between expand events and close the HTTP/2 stream as
+			// inactive — cosift then sees context-canceled mid-retrieve.
+			sse.phase("retrieving", map[string]any{"pass": pass, "query": sq})
 			hits, _, rerr := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
 			if rerr != nil {
 				log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, rerr)
