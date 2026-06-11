@@ -5577,12 +5577,17 @@ func (a *answerSSE) send(payload any) {
 	a.flusher.Flush()
 }
 
-// startKeepalive launches a goroutine that emits SSE comment frames every
+// startKeepalive launches a goroutine that emits SSE data frames every
 // interval, keeping the HTTP/2 stream and any intermediate proxy alive
 // across long retrieval / chat calls that emit no real data. Returns a
-// stop function the caller defers; stopping is idempotent. The comment
-// frame format (`: text\n\n`) is the SSE keepalive convention — browsers
-// and EventSource clients ignore comment lines entirely.
+// stop function the caller defers; stopping is idempotent.
+//
+// We deliberately emit `data: {"type":"ka", ...}` frames rather than the
+// spec's `: comment` form. Safari's CFNetwork stream stack tracks
+// "no payload data received" separately from "no bytes received" — a
+// long-running stream of nothing but comment frames still trips its
+// internal timeout and the browser surfaces it as "Error: Load failed".
+// JSON ka frames count as real data; the chat UI ignores `type:"ka"`.
 func (a *answerSSE) startKeepalive(ctx context.Context, interval time.Duration) (stop func()) {
 	done := make(chan struct{})
 	go func() {
@@ -5595,10 +5600,10 @@ func (a *answerSSE) startKeepalive(ctx context.Context, interval time.Duration) 
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				a.mu.Lock()
-				fmt.Fprintf(a.w, ": ka %dms\n\n", time.Since(a.start).Milliseconds())
-				a.flusher.Flush()
-				a.mu.Unlock()
+				a.send(map[string]any{
+					"type":       "ka",
+					"elapsed_ms": time.Since(a.start).Milliseconds(),
+				})
 			}
 		}
 	}()

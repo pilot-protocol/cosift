@@ -617,8 +617,10 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
               asst.contentEl.appendChild(hint);
             } else if (ev.type === 'error') {
               throw new Error(ev.error || 'stream error');
-            } else if (ev.type === 'warnings') {
-              // ignore in UI
+            } else if (ev.type === 'warnings' || ev.type === 'ka') {
+              // ka = server keepalive (real data frame so Safari's
+              // CFNetwork doesn't time out on long-running streams);
+              // warnings = silent no-ops we surface via journalctl, not UI.
             }
           } catch (parseErr) {
             // skip malformed events
