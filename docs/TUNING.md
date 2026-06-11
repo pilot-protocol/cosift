@@ -140,7 +140,7 @@ The eval delta is what tells you. Single-anecdote tuning leads in circles.
 
 ## Pitfalls / non-obvious behavior
 
-Most of these used to be silent; iters 292/309/310/311/313 added a `warnings[]` field to every retrieval/synth response that names the specific issue. `jq .warnings` on a response is the fastest way to spot any of the no-op patterns below.
+Most of these used to be silent; every retrieval/synth response now carries a `warnings[]` field that names the specific issue. `jq .warnings` on a response is the fastest way to spot any of the no-op patterns below.
 
 - **`?expand=true` is silent without `cfg.Chat.Model`.** The response's `expand` field echoes the canonical strategy (`hyde` / `paraphrase`); `effective_query` only changes when the chat call actually fired. Without a chat client the response `warnings[]` carries `"expand=... requested but no chat client configured"`. Set `cfg.Chat.Model` (and `OPENAI_API_KEY` or equivalent), or accept that the flag is a no-op for your deployment.
 - **`?rerank=true` is silent without a reranker.** Same shape — flag accepted, no rerank applied. Response `warnings[]` flags it. `/stats` shows `reranker` when one is configured; absent means rerank is a no-op.

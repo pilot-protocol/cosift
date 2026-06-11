@@ -1,9 +1,9 @@
 # CLI flag design — why `-json`, `-format`, and `-text` aren't unified
 
-**Status:** design closed. Output-mode rationalization was considered through
-iters 102-114 (14 priorities lists in a row) and formally closed .
-This document explains why the current design is correct, so future contributors
-don't re-open the same question.
+**Status:** design closed. Output-mode rationalization was considered
+repeatedly, weighed against the cost of breaking existing CLI users, and
+formally closed. This document explains why the current design is
+correct, so future contributors don't re-open the same question.
 
 ## Current state
 
@@ -42,8 +42,8 @@ that look related but don't compose:
 - `-format text` (default) + `-json` → raw JSON output
 - `-format json` (new) + `-json` → ??? (both already-set bools? error? precedence?)
 
-Both unifications are footguns. caught this when adding `-format json`
-to export:
+Both unifications are footguns. The design review caught this when
+adding `-format json` to export:
 
 > "The synth CLIs already have `-json` as a separate flag, so accepting `json`
 > in their `-format` would create two confusable code paths. Export doesn't
