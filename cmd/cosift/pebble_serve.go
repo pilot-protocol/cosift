@@ -5628,7 +5628,12 @@ func (a *answerSSE) startKeepalive(ctx context.Context, interval time.Duration) 
 
 // phase emits a pipeline-step event with elapsed-since-start and
 // duration-since-last-phase, plus any caller-supplied detail fields.
+// Holds a.mu for the whole call so the read+write of a.last and the
+// write-to-the-wire are all atomic with respect to concurrent phase
+// calls and the keepalive ticker.
 func (a *answerSSE) phase(name string, details map[string]any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	now := time.Now()
 	evt := map[string]any{
 		"type":        "phase",
@@ -5640,7 +5645,9 @@ func (a *answerSSE) phase(name string, details map[string]any) {
 		evt[k] = v
 	}
 	a.last = now
-	a.send(evt)
+	buf, _ := json.Marshal(evt)
+	fmt.Fprintf(a.w, "data: %s\n\n", buf)
+	a.flusher.Flush()
 }
 
 func (a *answerSSE) warnings(warns []string) {
@@ -6471,32 +6478,49 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	for pass := 1; pass <= maxPasses; pass++ {
 		sse.phase("pass_start", map[string]any{"pass": pass, "queries": subs})
 
-		// Retrieval round for this pass. Skip URLs we've already promoted.
+		// Retrieval round for this pass. Sub-queries run concurrently with
+		// a bounded fan-out — they're independent calls to s.retrieve and
+		// the per-call cost dominates total pass latency. Serial execution
+		// of N sub-queries at ~12 s each pushed pass-1+pass-2 wall-clock
+		// past 60 s on this corpus, blowing the browser's hardcoded fetch
+		// timeout on long-streaming responses. With fan-out the pass
+		// shrinks to ~max(sub-query latency) plus the per-goroutine
+		// bookkeeping. sse.send is mutex-protected; bestMu protects best.
+		// seenURLs is read-only during this loop (last written at the end
+		// of the prior pass), so no synchronization is needed for it.
 		best := make(map[string]ranked, k*len(subs))
+		var bestMu sync.Mutex
+		var wg sync.WaitGroup
+		const subFanOut = 3
+		sem := make(chan struct{}, subFanOut)
 		for _, sq := range subs {
-			// Emit `retrieving` BEFORE the s.retrieve call so the SSE
-			// stream sends a frame every loop iteration even when the
-			// retrieve itself takes 10-15s on a cold corpus shard. Without
-			// this, the browser/proxy can see 10+ seconds of silence
-			// between expand events and close the HTTP/2 stream as
-			// inactive — cosift then sees context-canceled mid-retrieve.
-			sse.phase("retrieving", map[string]any{"pass": pass, "query": sq})
-			hits, _, rerr := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
-			if rerr != nil {
-				log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, rerr)
-				sse.phase("expand", map[string]any{"pass": pass, "query": sq, "error": rerr.Error()})
-				continue
-			}
-			for _, h := range hits {
-				if seenURLs[h.URL] {
-					continue
+			sq := sq
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				sse.phase("retrieving", map[string]any{"pass": pass, "query": sq})
+				hits, _, rerr := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
+				if rerr != nil {
+					log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, rerr)
+					sse.phase("expand", map[string]any{"pass": pass, "query": sq, "error": rerr.Error()})
+					return
 				}
-				if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
-					best[h.URL] = ranked{score: h.Score, hit: h}
+				bestMu.Lock()
+				for _, h := range hits {
+					if seenURLs[h.URL] {
+						continue
+					}
+					if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+						best[h.URL] = ranked{score: h.Score, hit: h}
+					}
 				}
-			}
-			sse.phase("expand", map[string]any{"pass": pass, "query": sq, "hits": len(hits)})
+				bestMu.Unlock()
+				sse.phase("expand", map[string]any{"pass": pass, "query": sq, "hits": len(hits)})
+			}()
 		}
+		wg.Wait()
 		totalCandidates += len(best)
 		pooled := make([]ranked, 0, len(best))
 		for _, v := range best {
