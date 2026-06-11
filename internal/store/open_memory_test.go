@@ -112,12 +112,13 @@ func TestOpenMemoryIsolation(t *testing.T) {
 		t.Fatalf("upsert a: %v", err)
 	}
 
-	// b should NOT see a's doc.
+	// b should NOT see a's doc — expected error is a "no rows" variant
+	// (Contains for flexibility across SQLite driver wrapping). Anything
+	// else means real failure.
 	_, err = b.GetDocByURL(context.Background(), "https://a/doc")
 	if err == nil {
 		t.Error("OpenMemory stores should be isolated, but b sees a's doc")
 	} else if !strings.Contains(err.Error(), "no rows") && err.Error() != "sql: no rows in result set" {
-		// Acceptable: "no rows" error. Anything else means real failure.
-		// (Use Contains for flexibility across SQLite driver wrapping.)
+		t.Errorf("unexpected error shape (want a no-rows variant): %v", err)
 	}
 }
