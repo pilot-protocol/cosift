@@ -14,6 +14,9 @@ curl 'http://127.0.0.1:7777/search?q=raft+leader+election&retriever=hybrid&expan
 # /answer — same matrix, cited LLM synth on top
 curl 'http://127.0.0.1:7777/answer?q=what+is+raft+consensus&retriever=hybrid&expand=hyde&rerank=true&mmr=0.7&stream=true'
 
+# /query — LLM planner picks intent + expands into 3 paraphrases, RRF-fuses
+curl 'http://127.0.0.1:7777/query?q=what+is+raft+consensus&stream=true'
+
 # /research — multi-step planner, each sub-query gets the same matrix
 curl 'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&retriever=hybrid&expand=paraphrase&rerank=true&mmr=0.5'
 
