@@ -268,9 +268,24 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		// per-minute crawl rate without long-term counters.
 		startupDocs: vectorNodes, // placeholder; overwritten below
 	}
-	// Read actual doc count at startup for crawl-rate baseline.
-	if st, _ := ps.Stats(ctx); st.Documents > 0 {
-		srv.startupDocs = int(st.Documents)
+	// Read actual doc count at startup for crawl-rate baseline. Uses
+	// CorpusStats (the atomic-mirror indexed_docs counter) — NOT
+	// Stats.Documents which scans the raw 'd' family. The two diverge
+	// in two ways:
+	//
+	//   - Stats.Documents may include partially-upserted rows that the
+	//     indexed_docs counter hasn't seen yet, leaving startupDocs >
+	//     indexedDocs and freezing docs_added_since_start at 0 forever.
+	//   - On a cold corpus, Stats does a 12s scan that returns the
+	//     count AT END-OF-SCAN, by which time the crawler has already
+	//     added 50+ more docs, pushing startupDocs above the post-boot
+	//     indexed_docs atomic.
+	//
+	// CorpusStats reads the atomic directly (or bootstraps it from the
+	// indexed_docs meta key on first call), giving an exact match with
+	// the indexedDocs value the rate calc uses below.
+	if _, count, err := ps.CorpusStats(ctx); err == nil && count > 0 {
+		srv.startupDocs = int(count)
 	} else {
 		srv.startupDocs = 0
 	}
