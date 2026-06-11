@@ -259,7 +259,34 @@ curl -N -H 'Accept: text/event-stream' \
   'http://127.0.0.1:7777/answer?q=what+is+raft&stream=true'
 ```
 
-Event sequence: optional `warnings` (when the request had silent no-ops) → `sources` (after retrieval; payload includes `query`, `sources`, `model`, `total_candidates`) → `answer_chunk` (per delta, payload `{"text": "..."}`) → `done` with `took`. On error: `error` event with the message and stream ends. Falls back to sync when the chat client doesn't implement streaming.
+Event sequence: optional `warnings` (when the request had silent no-ops) → `phase` events at each pipeline transition (`parsed`, `retrieve`, `filter`, `decay`, `rerank`, `judge`, `mmr`, `synth_start`; each carries `elapsed_ms` since request start, `duration_ms` since the previous phase, and step-specific details like hit counts or judge kept/dropped) → `sources` (after retrieval; payload includes `query`, `sources`, `model`, `total_candidates`) → `answer_chunk` (per delta, payload `{"text": "..."}`) → optional `suggest_escalation` when the model bailed → `done` with `took`. On error: `error` event with the message and stream ends. Falls back to sync when the chat client doesn't implement streaming OR when the request engages the answer cache (no-cache header or `?stream=true` both bypass the cache).
+
+## `GET /query` / `POST /query`
+
+LLM-orchestrated query expansion: planner emits intent + 3 paraphrased queries → retriever runs each → RRF-fuse by URL → cited synth. Single-shot variant of `/research` tuned for query-expansion rather than sub-question decomposition. Requires `cfg.Chat.Model`.
+
+```bash
+curl 'http://127.0.0.1:7777/query?q=what+is+HNSW&k=5'
+```
+
+```json
+{
+  "query": "what is HNSW",
+  "plan": {
+    "intent": "factual_lookup",
+    "queries": ["HNSW algorithm", "Hierarchical Navigable Small World graph", "approximate nearest neighbor HNSW"],
+    "since_days": null,
+    "retriever": "hybrid",
+    "decay_days": null
+  },
+  "answer": "HNSW is a graph-based approximate nearest-neighbor index [1] that builds...",
+  "sources": [...],
+  "model": "gpt-4o-mini",
+  "took": "3.1s"
+}
+```
+
+SSE streaming event sequence: `phase: plan_start` (sending question to planner) → `phase: plan` (carries `intent`, `queries`, `retriever`, optional `since_days`/`decay_days`) → `phase: expand` per sub-query (carries the sub-query string and hit count) → `phase: fuse` (`unique_urls` after RRF dedupe) → `phase: materialize` (`candidates` after enrich + since filter) → `sources` (final ranked list, with `retriever: "query:planner+hybrid+rrf"`) → `phase: synth_start` → `answer_chunk` (per delta) → `done`. Empty-source path: `sources` event with an empty array followed by an explanatory `answer_chunk` then `done`. On error: `error` event with the message and stream ends.
 
 ## `GET /research` / `POST /research`
 
@@ -280,7 +307,7 @@ curl 'http://127.0.0.1:7777/research?q=compare+raft+and+paxos&k=8'
 }
 ```
 
-SSE streaming event sequence: optional `warnings` → `plan` (payload `{query, plan, model, expand?}`) → `sources` (after rerank if any; payload includes `total_candidates`) → `answer_chunk` (per delta, payload `{"text": "..."}`) → `done` with `took`. On failure: `error` event tagged with `phase: "plan" | "synth"` and stream ends.
+SSE streaming event sequence: optional `warnings` → `phase: plan_start` → legacy `plan` (payload `{query, plan, model, expand?}`; kept alongside the phase event so the CLI client at `cmd/cosift/main.go` stays unaffected) → `phase: plan` (carries `queries`, `retriever`, optional `expand`) → `phase: expand` per sub-query → `phase: fuse` → `phase: materialize` → optional `phase: rerank`/`phase: mmr` → `sources` (after rerank if any; payload includes `total_candidates`) → `phase: synth_start` → `answer_chunk` (per delta, payload `{"text": "..."}`) → `done` with `took` (`empty: true` flag when no sources matched). On failure: `error` event tagged with `phase: "plan" | "synth"` and stream ends.
 
 ---
 
