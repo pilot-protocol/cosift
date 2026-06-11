@@ -361,8 +361,8 @@ func authStatus(configured bool, key string, urlSet bool) string {
 }
 
 // resolveAPIKey returns the first non-empty API key from a slot-specific env
-// var, falling back to OPENAI_API_KEY / OPENAI. Iter: lets operators
-// using a non-OpenAI embedder or chat endpoint name keys for what they
+// var, falling back to OPENAI_API_KEY / OPENAI. Lets operators using a
+// non-OpenAI embedder or chat endpoint name keys for what they
 // actually are. Empty result is "use anonymously" — valid for local
 // self-hosted endpoints.
 //
@@ -524,9 +524,9 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		return fmt.Errorf("crawl: unknown -backend %q (want: sqlite | pebble)", *backend)
 	}
 
-	// Iter: auto-wire embedder when configured. For the
-	// Pebble backend, also build and persist an HNSW graph via the
-	// hnswPassageWriter bridge — that's the path /search?retriever=dense
+	// Auto-wire embedder when configured. For the Pebble backend, also
+	// build and persist an HNSW graph via the hnswPassageWriter bridge
+	// — that's the path /search?retriever=dense
 	// needs and that pre was a documented no-op.
 	// API key is OPTIONAL when cfg.Embeddings.URL points at a
 	// custom endpoint (Ollama / vLLM / TEI / etc — local self-hosted
@@ -1286,7 +1286,7 @@ func runResearchCLI(ctx context.Context, cfg *config.Config, q string, args []st
 	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
 	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
-	// expose the Iter quality + scope flags on the CLI.
+	// Expose the quality + scope flags on the CLI.
 	k := fs.Int("k", 0, "number of sources fed to synth (1-20, server default if 0)")
 	expand := fs.String("expand", "", "retrieval expansion: hyde | paraphrase (empty = no expansion)")
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth")
@@ -1788,7 +1788,7 @@ func runAnswerCLI(ctx context.Context, cfg *config.Config, q string, args []stri
 	format := fs.String("format", "text", "human-output format: text | markdown (or md).")
 	stream := fs.Bool("stream", false, "stream progress + token-by-token answer over SSE.")
 	jsonOut := fs.Bool("json", false, "emit raw JSON response instead of human-readable answer+sources")
-	// expose the Iter quality + scope flags on the CLI.
+	// Expose the quality + scope flags on the CLI.
 	rerank := fs.Bool("rerank", false, "rerank retrieved sources before synth (server must have rerank configured)")
 	// Empty
 	// passes nothing → server uses its default (bm25).
@@ -2376,10 +2376,9 @@ func runAdminRecrawlDomain(ctx context.Context, cfg *config.Config, args []strin
 }
 
 // runAdminReembedCLI triggers a server-side reembed via the
-// `/admin/reembed` SSE endpoint. Closes the Iter server-then-CLI arc.
-// Requires `-y` to commit (reembed costs LLM credits; same destructive-op
-// guard pattern as Iter). `-drop-old` propagates to the server's
-// `DropPassagesNotModel` step.
+// `/admin/reembed` SSE endpoint. Requires `-y` to commit (reembed costs
+// LLM credits; same destructive-op guard pattern as other admin verbs).
+// `-drop-old` propagates to the server's `DropPassagesNotModel` step.
 func runAdminReembedCLI(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("admin reembed", flag.ExitOnError)
 	defaultServer := "http://" + cfg.Server.Addr
@@ -2659,7 +2658,7 @@ func runEval(ctx context.Context, args []string) error {
 	autoParaphrase := fs.Bool("auto-paraphrase", false, "generate N paraphrases per query via the chat client at eval time + RRF-fuse results")
 	paraphraseN := fs.Int("paraphrase-n", 2, "number of paraphrases per query")
 	paraphraseModel := fs.String("paraphrase-model", "gpt-4o-mini", "chat model for paraphrase generation")
-	mainWeight := fs.Float64("main-weight", 0, "Iter: main-query weight in -auto-paraphrase OR -planner RRF fusion (paraphrases / sub-queries each weight 1.0); 0 = equal-weight (standard RRF); mirrors server-side Defaults.ExpandMainWeight for offline measurement")
+	mainWeight := fs.Float64("main-weight", 0, "main-query weight in -auto-paraphrase OR -planner RRF fusion (paraphrases / sub-queries each weight 1.0); 0 = equal-weight (standard RRF); mirrors server-side Defaults.ExpandMainWeight for offline measurement")
 	usePlanner := fs.Bool("planner", false, "decompose each query into 2-3 sub-queries via the /research planner prompt + RRF-fuse results (mirror /research retrieval, no synth)")
 	plannerModel := fs.String("planner-model", "gpt-4o-mini", "chat model for the planner decomposition")
 	if err := fs.Parse(args); err != nil {

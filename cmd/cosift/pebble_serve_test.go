@@ -189,9 +189,9 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 
 	// /find_similar?retriever=hybrid without a loaded HNSW graph
 	// must silently fall through to BM25-MLT and emit a warning. Parallel
-	// to the /search?retriever=dense fallback contract — locks in
-	// the Iter behavior so a future refactor can't regress it
-	// to a 5xx or a dropped warning.
+	// to the /search?retriever=dense fallback contract — locks in the
+	// fallback behavior so a future refactor can't regress it to a 5xx
+	// or a dropped warning.
 	hr := mustGet(t, base+"/find_similar?url="+url.QueryEscape("https://x/raft")+"&retriever=hybrid&k=5")
 	if rt, _ := hr["retriever"].(string); rt != "bm25-mlt" {
 		t.Errorf("/find_similar?retriever=hybrid without graph: want fallback 'bm25-mlt', got %q", rt)
@@ -357,7 +357,7 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 	}
 
 	// /search?mmr=nope: unparseable values warn instead of silently
-	// being ignored. Mirrors the Iter sort=/k= warning pattern.
+	// being ignored. Mirrors the sort=/k= warning pattern.
 	mbres := mustGet(t, base+"/search?q=raft&mmr=nope")
 	sawBadMMR := false
 	for _, w := range mbres["warnings"].([]any) {
@@ -370,8 +370,8 @@ func TestPebbleServeEndToEnd(t *testing.T) {
 		t.Errorf("/search?mmr=nope: want warning mentioning the bad value, got %v", mbres["warnings"])
 	}
 
-	// /search with a malformed sort value must surface a warning
-	// in the response. Covers the Iter warnings machinery.
+	// /search with a malformed sort value must surface a warning in
+	// the response. Covers the warnings machinery.
 	wresp := mustGet(t, base+"/search?q=raft&sort=newest")
 	warnings, ok := wresp["warnings"].([]any)
 	if !ok || len(warnings) == 0 {

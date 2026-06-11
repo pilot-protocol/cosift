@@ -218,7 +218,7 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
-// TestParseDecayHalfLife — Iter. Valid positive floats pass; "0"
+// TestParseDecayHalfLife — valid positive floats pass; "0"
 // explicitly disables; empty now returns the default (180 days,
 // overridable via COSIFT_DEFAULT_DECAY_DAYS env).
 func TestParseDecayHalfLife(t *testing.T) {
@@ -367,9 +367,9 @@ func TestMMRSelect(t *testing.T) {
 	}
 }
 
-// TestPebbleInfoJSON locks down the Iter jq-friendly shape so future
-// changes to the offline pebble-info path can't silently drop a field or
-// regress the retrievers list. /stats reads the same shape — broken parity
+// TestPebbleInfoJSON locks down the jq-friendly shape so future changes
+// to the offline pebble-info path can't silently drop a field or regress
+// the retrievers list. /stats reads the same shape — broken parity
 // would silently break dashboards that consume both.
 func TestPebbleInfoJSON(t *testing.T) {
 	// Empty store: hnswOK=false, no doc length math.

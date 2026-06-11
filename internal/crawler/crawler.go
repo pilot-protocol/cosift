@@ -402,7 +402,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 }
 
 // statusDumper writes a JSON snapshot of crawl progress every 10s to path.
-// Cheap: just reads the Iter running counters from the store.
+// Cheap: just reads the running counters from the store.
 // Stops when ctx is cancelled.
 func (c *Crawler) statusDumper(ctx context.Context, path string) {
 	defer func() {

@@ -75,9 +75,10 @@ fi
 ok "stats shows $DOCS documents"
 
 step "ingest a tmp corpus.json (3 docs)"
-# Iter 184: covers the offline-ingestion path (different code than crawl: no
-# fetcher, no robots, no frontier). Uses smoke.invalid URLs so we can't collide
-# with the crawled seed and can attribute the doc-count delta cleanly.
+# Covers the offline-ingestion path (different code than crawl: no
+# fetcher, no robots, no frontier). Uses smoke.invalid URLs so we can't
+# collide with the crawled seed and can attribute the doc-count delta
+# cleanly.
 CORPUS="$(dirname "$BIN")/corpus.json"
 cat > "$CORPUS" <<'EOF'
 {"docs":[
@@ -123,8 +124,8 @@ ok "/contents returned doc payload"
 
 step "verify /admin/stats with bearer token"
 STATS=$(curl -sS -H "Authorization: Bearer smoketoken" "http://127.0.0.1:$PORT/admin/stats")
-# Iter-171 LLM-cache fields must be present in the response shape (value
-# may be 0 for fresh deployments). Catches schema regressions silently.
+# LLM-cache fields must be present in the response shape (value may be
+# 0 for fresh deployments). Catches schema regressions silently.
 for field in '"documents"' '"frontier"' '"paraphrases"' '"hyde_cache"'; do
   if ! grep -q "$field" <<<"$STATS"; then
     fail "/admin/stats missing $field — response: $STATS"

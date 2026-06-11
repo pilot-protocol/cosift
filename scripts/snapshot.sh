@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tarball + gzip a Pebble checkpoint + config, upload to GCS, prune old.
-# Iter 426 — uses /admin/checkpoint to avoid racing the compactor.
+# Uses /admin/checkpoint to avoid racing the compactor.
 #
 # Env / defaults:
 #   COSIFT_ADMIN_URL    http://127.0.0.1:7777

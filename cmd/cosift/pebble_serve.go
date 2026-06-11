@@ -1028,7 +1028,7 @@ type endpointMetrics struct {
 	sumNanos atomic.Int64
 }
 
-// count is the Iter request-counting middleware. Bumps a per-path
+// count is the request-counting middleware. Bumps a per-path
 // {count, sumNanos} struct, lazily created on first request to a path. Hot
 // path is sync.Map.Load + two atomic Adds — no contention even under high
 // RPS. Duration is sampled after the handler returns so streaming endpoints
@@ -2824,7 +2824,7 @@ func (s *pebbleHTTP) handleRSSImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDomains returns indexed hosts by doc count. Iter.
+// handleDomains returns indexed hosts by doc count.
 //
 // Query params:
 //   - top:    legacy alias for limit (capped at 500). Preserved for the
@@ -4789,7 +4789,7 @@ func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q s
 }
 
 // buildRetrieverLabel produces the human-readable retriever string
-// surfaced on /search, /answer, /research responses. Mirrors the Iter
+// surfaced on /search, /answer, /research responses. Mirrors the
 // /search inline switch so all three endpoints report the same vocabulary.
 // expansionFired is the post-hoc "did expand=hyde/paraphrase actually run"
 // signal (effectiveQuery != q for /search & /answer; chat-present for
@@ -5025,10 +5025,10 @@ func (s *pebbleHTTP) expandQuery(ctx context.Context, q string) string {
 }
 
 type answerSource struct {
-	// Matches the [N] tokens the synth
-	// prompt produces in the answer text. SQLite-side AnswerSource has had
-	// this since; pebble's was missing, which caused the CLI to
-	// render every source as '[0]' before Iter's i+1 fallback.
+	// Matches the [N] tokens the synth prompt produces in the answer
+	// text. SQLite-side AnswerSource has had this; pebble's was missing,
+	// which caused the CLI to render every source as '[0]' before the
+	// i+1 fallback landed.
 	ID          int        `json:"id"`
 	URL         string     `json:"url"`
 	Title       string     `json:"title"`

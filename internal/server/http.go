@@ -794,9 +794,9 @@ type AdminReembedRequest struct {
 // handleAdminReembed re-embeds every document via SSE-streamed progress. Long-
 // running op — synchronous in the request goroutine but emits `progress`
 // events every ~2s so clients see liveness. ctx cancellation (client
-// disconnect) aborts cleanly. Server side of the Iter arc.
+// disconnect) aborts cleanly. Server side of the admin reembed flow.
 //
-// Event types (same shape as Iter streaming pattern):
+// Event types (same shape as the streaming admin-op pattern):
 //   - "started":  { "total_docs": N, "target_model": "..." }
 //   - "progress": { "docs_processed": N, "passages_written": N }
 //   - "done":     { "docs_processed": N, "passages_written": N, "dropped_old": N, "took": "..." }
@@ -2686,8 +2686,8 @@ type AnswerSource struct {
 	ID    int    `json:"id"`
 	URL   string `json:"url"`
 	Title string `json:"title"`
-	// Mirrors Iter
-	// SearchHit additions so /research callers see the same metadata shape
+	// Mirrors SearchHit's metadata fields so /research callers see the
+	// same shape
 	// /search callers do. All omitempty — undated docs and empty domains
 	// emit clean JSON without nulls or empty strings.
 	Domain      string     `json:"domain,omitempty"`
@@ -3049,8 +3049,8 @@ func writeProblem(w http.ResponseWriter, status int, detail string) {
 //     sseHandler has already written a 500 problem response and the caller should
 //     just return
 //
-// extracted from Iter streamResearch, streamAnswer,
-// and handleAdminReembed which all wrote the same ~18-line boilerplate.
+// Extracted from streamResearch, streamAnswer, and handleAdminReembed
+// which all wrote the same ~18-line boilerplate.
 // Three callsites is where the duplication starts costing more than the
 // abstraction (matches the client-side extraction's threshold).
 func sseHandler(w http.ResponseWriter) (emit func(event string, data any), bail func(detail string), ok bool) {

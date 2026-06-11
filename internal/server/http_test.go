@@ -338,8 +338,8 @@ func TestMMRFromQueryParsing(t *testing.T) {
 }
 
 // Smoke test: /answer?mmr=true and /research?mmr=true must reach the
-// handlers without error. The algorithm runs inside runDense; effects are
-// algorithm-tested in Iter already.
+// handlers without error. The MMR algorithm itself is covered by
+// dedicated tests in internal/index; this just guards the wiring.
 func TestMMRWiringOnAnswerAndResearchSmoke(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })
@@ -2098,8 +2098,8 @@ func TestSearchExpandMainWeightPerRequestOverride(t *testing.T) {
 	}
 }
 
-// /admin/config surfaces the Iter weight knobs so operators
-// can verify their config without restarting the server.
+// /admin/config surfaces the RRF weight knobs so operators can verify
+// their config without restarting the server.
 func TestAdminConfigSurfacesWeightKnobs(t *testing.T) {
 	s, _ := store.OpenMemory()
 	t.Cleanup(func() { s.Close() })

@@ -24,7 +24,7 @@ correct (or at least, that its top-cited sources are relevant). Today's
 cosine, or RRF reciprocal depending on retriever, and the absolute values
 shift with corpus size, query length, and retriever choice.
 
-Iter 164 shipped within-result normalization (`?calibrate=true` populates
+Within-result normalization already exists (`?calibrate=true` populates
 `score_calibrated = score / max_score`). That makes scores comparable
 WITHIN one response (top hit always 1.0, others as fractions). It does
 NOT make scores comparable across responses — and that's the gap real
@@ -34,7 +34,7 @@ calibration would close.
 
 ## The data flow that's already in place
 
-Iter 87 added `/feedback`:
+`/feedback` already ships and records the per-result outcome:
 
 ```bash
 POST /feedback

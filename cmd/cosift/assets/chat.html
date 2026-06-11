@@ -234,8 +234,8 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 }
 @keyframes blink { 50% { opacity: 0; } }
 
-/* Iter 478b: typography for markdown-rendered answer bodies. Tight defaults
-   that read like prose, no extra vertical air. Citation badges stay inline. */
+/* Typography for markdown-rendered answer bodies. Tight defaults that
+   read like prose, no extra vertical air. Citation badges stay inline. */
 .msg-body h1, .msg-body h2, .msg-body h3, .msg-body h4 {
   font-weight: 600; margin: 14px 0 6px; line-height: 1.25;
 }
@@ -272,8 +272,9 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 .msg-body a:not(.cite) { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .msg-body hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
 </style>
-<!-- Iter 478b: marked.js for markdown rendering. ~25KB minified, no auth.
-     Falls back to plain text+citations if CDN unreachable (offline self-host). -->
+<!-- marked.js for markdown rendering. ~25KB minified, no auth. Falls
+     back to plain text + citations if the CDN is unreachable (offline
+     self-host). -->
 <script src="https://cdn.jsdelivr.net/npm/marked@14/marked.min.js"></script>
 </head>
 <body>
@@ -452,9 +453,10 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   }
 
   function renderCitedHTML(text) {
-    // Iter 478b: render markdown if marked.js is available, else fall back
-    // to plain-text escape. Either path runs the [n] / [n,m] citation rewrite
-    // afterward. marked is loaded via CDN in <head>; if it fails (offline) we
+    // Render markdown if marked.js is available, else fall back to
+    // plain-text escape. Either path runs the [n] / [n,m] citation
+    // rewrite afterward. marked is loaded via CDN in <head>; if it
+    // fails (offline) we
     // degrade gracefully to text + citations.
     var html;
     if (typeof marked !== 'undefined' && marked.parse) {
@@ -577,8 +579,8 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
                 asst.contentEl.appendChild(meta);
               }
             } else if (ev.type === 'suggest_escalation') {
-              // Iter 489: when /answer bails with no-info, surface a button
-              // to retry via /research?strategy=planner. The eval showed
+              // When /answer bails with no-info, surface a button to retry
+              // via /research?strategy=planner. The eval showed
               // planner-decomposition recovers ~40% of these misses.
               var hint = document.createElement('div');
               hint.style.cssText = 'margin-top: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 13px;';

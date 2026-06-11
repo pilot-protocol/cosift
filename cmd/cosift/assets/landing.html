@@ -420,7 +420,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       var retr = d.retrievers || [];
       setText('stat-retrievers', retr.length);
       setText('stat-rate', d.crawl_active ? (d.docs_per_minute || 0).toFixed(1) : '—');
-      // Iter 469: % of indexed web. Use 'auto' precision: 0.00001 % if tiny.
+      // % of indexed web. Auto precision: down to 0.00001 % if tiny.
       if (typeof d.web_pct === 'number') {
         var p = d.web_pct;
         var formatted = p < 0.0001 ? p.toExponential(2) : p < 1 ? p.toFixed(4) : p.toFixed(2);
@@ -462,7 +462,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
       setHTML('hc-retrievers', '<span class="pill">server temporarily busy — indexing</span>');
     });
   }
-  // Iter 457: paginated + searchable domains list.
+  // Paginated + searchable domains list.
   var domState = { q: '', offset: 0, limit: 24 };
   function loadDomains() {
     var p = new URLSearchParams();
@@ -513,7 +513,7 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
     loadDomains();
   });
 
-  // Iter 457: queue visibility — frontier counts + top queued hosts.
+  // Queue visibility — frontier counts + top queued hosts.
   function loadQueue() {
     fetch('/queue?top=24').then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
