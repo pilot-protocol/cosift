@@ -40,6 +40,7 @@ type openaiMock struct {
 	embedCalls       int
 	embedCallTexts   [][]string
 	chatRespOverride string
+	chatRespQueue    []string // popped from the front per call; falls back to override/default when empty
 	embedDim         int
 }
 
@@ -60,7 +61,13 @@ func openaiTestServer(t *testing.T) *openaiMock {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		m.chatCalls++
-		resp := m.chatRespOverride
+		var resp string
+		if len(m.chatRespQueue) > 0 {
+			resp = m.chatRespQueue[0]
+			m.chatRespQueue = m.chatRespQueue[1:]
+		} else {
+			resp = m.chatRespOverride
+		}
 		m.mu.Unlock()
 		if resp == "" {
 			resp = "fake response"
@@ -115,6 +122,16 @@ func (m *openaiMock) SetChatResponse(s string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.chatRespOverride = s
+}
+
+// SetChatResponses queues a sequence of responses returned one per chat call.
+// When the queue empties, subsequent calls fall back to the override (or the
+// default "fake response"). Use for handlers that issue multiple chat calls
+// in series (e.g. /research's planner + per-pass synth + self-eval cycle).
+func (m *openaiMock) SetChatResponses(seq ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chatRespQueue = append([]string{}, seq...)
 }
 
 // SetEmbedDim swaps the embedding vector dimensionality.

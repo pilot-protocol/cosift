@@ -385,7 +385,7 @@
             "description": "OK",
             "content": {
               "application/json": {"schema": {"$ref": "#/components/schemas/ResearchResponse"}},
-              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: phase (plan_start, plan with sub-queries+retriever, expand per sub-query, fuse, materialize, rerank, mmr, synth_start), warnings, plan (legacy — same data as the phase event but kept for CLI back-compat), sources, answer_chunk, done, error"}}
+              "text/event-stream": {"schema": {"type": "string", "description": "SSE events: phase (plan_start, plan with sub-queries+retriever, pass_start per pass with pass number, expand per sub-query, fuse, materialize, rerank, mmr, synth_start, self_eval_start, self_eval with sufficient flag + missing-field + refine_queries, blurb with the model's between-pass reasoning), warnings, plan (legacy — same data as the phase event but kept for CLI back-compat), sources, answer_chunk, done, error. ?max_passes=N (1-5, default 3) caps the self-eval loop."}}
             }
           }
         }

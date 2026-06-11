@@ -162,6 +162,11 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
 .phase-meta { color: var(--ink); opacity: 0.7; flex: 1; }
 .phase-queries { margin: 2px 0 4px 98px; color: var(--ink); opacity: 0.65; }
 .phase-subq { padding: 1px 0; }
+.phase-blurb {
+  margin: 4px 0 4px 98px;
+  font-family: var(--sans); font-size: 12px; font-style: italic;
+  color: var(--accent); opacity: 0.85;
+}
 
 .sources {
   margin-top: 14px;
@@ -560,7 +565,27 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
             var ev = JSON.parse(payload);
             if (ev.type === 'phase') {
               renderPhase(asst.phasesEl, ev);
-              if (ev.name) statusBadge.innerHTML = '<span class="dot"></span> ' + esc(ev.name) + '…';
+              if (ev.name === 'pass_start' && ev.pass && ev.pass > 1) {
+                // Multi-pass /research: the model judged the prior draft
+                // insufficient and is rewriting using the expanded source
+                // pool. Clear the answer container so the new pass replaces
+                // it rather than appending. accumulated is reset so the
+                // next chunks render fresh.
+                accumulated = '';
+                asst.contentEl.innerHTML = '';
+                asst.contentEl.classList.add('cursor');
+                statusBadge.innerHTML = '<span class="dot"></span> refining (pass ' + ev.pass + ')…';
+              } else if (ev.name === 'blurb' && ev.text) {
+                // The model's reasoning between passes — what gap it saw and
+                // what it's searching for next. Render inline so it reads
+                // like a thinking-aloud note, not just another phase row.
+                var blurb = document.createElement('div');
+                blurb.className = 'phase-blurb';
+                blurb.textContent = '↳ ' + ev.text;
+                asst.phasesEl.appendChild(blurb);
+              } else if (ev.name) {
+                statusBadge.innerHTML = '<span class="dot"></span> ' + esc(ev.name) + '…';
+              }
             } else if (ev.type === 'sources') {
               sources = ev.sources || [];
               renderSources(asst.sourcesEl, sources);

@@ -1570,6 +1570,81 @@ func TestStreamResearchSSE(t *testing.T) {
 	}
 }
 
+// TestStreamResearchMultiPass exercises the self-eval escalation path. The
+// mock returns:
+//
+//	call 1 = planner JSON      → 2 sub-queries
+//	call 2 = pass-1 synth      → draft answer
+//	call 3 = pass-1 self-eval  → sufficient=false, refine_queries=[...]
+//	call 4 = pass-2 synth      → revised answer
+//	call 5 = pass-2 self-eval  → sufficient=true
+//
+// The test asserts pass_start fires twice, the self_eval phase exposes the
+// sufficient flag, a blurb event lands between passes, and the loop stops
+// at pass 2.
+func TestStreamResearchMultiPass(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
+	mock := openaiTestServer(t)
+	mock.SetChatResponses(
+		`["raft basics","raft leader election"]`,
+		"Pass 1 draft answer about Raft consensus [1].",
+		`{"sufficient": false, "missing": "no coverage of multi-Raft", "refine_queries": ["multi-Raft", "Raft groups"]}`,
+		"Pass 2 revised answer covering multi-Raft [1][2].",
+		`{"sufficient": true, "missing": "", "refine_queries": []}`,
+	)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/research", srv.handleResearch)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/research?q=raft&k=2&stream=true&max_passes=3")
+	if err != nil {
+		t.Fatalf("GET /research: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for sb.Len() < 64<<10 {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if strings.Contains(sb.String(), "\"type\":\"done\"") {
+			break
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	body := sb.String()
+
+	// pass_start must fire exactly twice (pass 1 + pass 2; pass 3 would not
+	// happen because self-eval returned sufficient=true after pass 2).
+	if got := strings.Count(body, "\"name\":\"pass_start\""); got != 2 {
+		t.Errorf("pass_start count: got %d, want 2 (mock self-evals as false then true)", got)
+	}
+	// self_eval phase fires once per non-final pass — pass 1 only here.
+	if got := strings.Count(body, "\"name\":\"self_eval\""); got != 2 {
+		t.Errorf("self_eval count: got %d, want 2 (pass_start triggered an eval each non-final pass)", got)
+	}
+	// One blurb lands between pass 1 and pass 2.
+	if got := strings.Count(body, "\"name\":\"blurb\""); got != 1 {
+		t.Errorf("blurb count: got %d, want 1", got)
+	}
+	// The blurb text incorporates the model's "missing" field.
+	if !strings.Contains(body, "no coverage of multi-Raft") {
+		t.Errorf("blurb body should include the model's missing-field reasoning; got %q", body)
+	}
+}
+
 // TestStreamQuerySSE asserts /query?stream=true emits the expected phase
 // event sequence (plan_start → plan → expand → fuse → materialize →
 // synth_start → done). Catches regressions in handleQuery's SSE branch,

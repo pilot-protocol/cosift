@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -5938,6 +5939,85 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 - If the sources don't cover something, say so plainly — do not invent.
 - Keep the answer focused on what the sources actually say.`
 
+// researchRefineSynthPrompt is the system prompt for pass 2+ of a multi-pass
+// /research call. The user message includes the prior draft answer alongside
+// the expanded source pool. The instruction shape mirrors the standard synth
+// prompt but explicitly directs the model to revise rather than start fresh.
+const researchRefineSynthPrompt = `You are a research assistant. You have a draft answer from a prior research pass plus additional sources that were gathered to close gaps. Produce a REVISED answer using all the sources now available.
+- Cite sources by their numeric id, e.g. [1] or [2,3]. Every factual claim needs a citation.
+- Keep correct claims from the draft. Correct or extend where the new sources change the picture.
+- If sources still don't cover something, say so plainly — do not invent.
+- Output the FULL revised answer, not a delta.`
+
+// selfEvalPrompt asks the model to judge whether its own draft answer is
+// sufficient given the question and sources. JSON-only output keeps parsing
+// deterministic. The "missing" + "refine_queries" fields drive the next
+// research pass when sufficient=false.
+const selfEvalPrompt = `You wrote a research answer. Judge whether it's sufficient given the question and sources.
+
+Output ONLY a JSON object (no markdown, no prose):
+{"sufficient": true|false, "missing": "<one-line gap, empty if sufficient>", "refine_queries": ["<query>", ...]}
+
+Rules:
+- "sufficient": true ONLY if the answer fully addresses the question with current sources.
+- "missing": one short sentence describing what would strengthen the answer (empty string if sufficient).
+- "refine_queries": 1-3 specific search queries that would close the gap (empty array if sufficient). Make them concrete — entity + concept + qualifier — not vague paraphrases.
+- Be honest. Most first-pass answers benefit from one more pass on a specific gap.`
+
+// selfEval is the parsed shape of the JSON the self-eval LLM call emits.
+type selfEval struct {
+	Sufficient    bool     `json:"sufficient"`
+	Missing       string   `json:"missing"`
+	RefineQueries []string `json:"refine_queries"`
+}
+
+// parseSelfEval extracts the {sufficient, missing, refine_queries} JSON from
+// the LLM response. Tolerates leading/trailing prose and markdown fences. On
+// any parse failure returns ok=false so the caller can treat as "stop and
+// keep the current answer" instead of crashing the stream.
+func parseSelfEval(s string) (selfEval, bool) {
+	s = strings.TrimSpace(s)
+	s = jsonFenceRE.ReplaceAllString(s, "$1")
+	// Find the first '{' and last '}' to skip any preamble.
+	i := strings.IndexByte(s, '{')
+	j := strings.LastIndexByte(s, '}')
+	if i < 0 || j <= i {
+		return selfEval{}, false
+	}
+	var ev selfEval
+	if err := json.Unmarshal([]byte(s[i:j+1]), &ev); err != nil {
+		return selfEval{}, false
+	}
+	if len(ev.RefineQueries) > 3 {
+		ev.RefineQueries = ev.RefineQueries[:3]
+	}
+	return ev, true
+}
+
+// jsonFenceRE strips ```json fences and bare ``` fences from LLM output. The
+// judge package has its own copy with the same intent; not worth pulling into
+// a shared package for two callers.
+var jsonFenceRE = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
+
+// researchMaxPasses parses ?max_passes from the request. Default 3, valid
+// range 1-5 (clamped). 1 disables the self-eval loop entirely (single-pass
+// /research, today's behavior).
+func researchMaxPasses(r *http.Request) int {
+	const defaultMax = 3
+	v := r.URL.Query().Get("max_passes")
+	if v == "" {
+		return defaultMax
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return defaultMax
+	}
+	if n > 5 {
+		return 5
+	}
+	return n
+}
+
 type researchResponse struct {
 	Query  string   `json:"query"`
 	Plan   []string `json:"plan"`
@@ -6270,35 +6350,27 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		score float64
 		hit   index.Hit
 	}
-	best := make(map[string]ranked, k*len(subs))
+	type cand struct {
+		src        answerSource
+		excerpt    string
+		rerankText string
+		score      float64
+	}
+
+	// Multi-pass research loop. Each pass: retrieve for the current subs →
+	// fuse → materialize → rerank → mmr → synth → self-eval. Cumulative URL
+	// set across passes; new passes skip URLs already seen so retrieval
+	// widens rather than re-fetching the same docs. After synth, the model
+	// judges whether its draft is sufficient. If not, we use its
+	// refine_queries to drive the next pass. Cap at maxPasses to bound
+	// latency + LLM cost.
+	maxPasses := researchMaxPasses(r)
+	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
+	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
 	perSub := k * 2
 	if perSub > 40 {
 		perSub = 40
 	}
-	for _, sq := range subs {
-		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
-		if err != nil {
-			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
-			sse.phase("expand", map[string]any{"query": sq, "error": err.Error()})
-			continue
-		}
-		for _, h := range hits {
-			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
-				best[h.URL] = ranked{score: h.Score, hit: h}
-			}
-		}
-		sse.phase("expand", map[string]any{"query": sq, "hits": len(hits)})
-	}
-	pooled := make([]ranked, 0, len(best))
-	for _, v := range best {
-		pooled = append(pooled, v)
-	}
-	sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
-	sse.phase("fuse", map[string]any{"unique_urls": len(pooled)})
-	// Pool widens to
-	// rerankCandK, rerank reorders, then truncate to k before SSE 'sources'
-	// fires so the client sees the final rank-ordered list. wantRerank was
-	// hoisted to the top of streamResearch in for the plan label.
 	keepCap := k
 	if wantRerank {
 		keepCap = s.rerankCandK
@@ -6306,126 +6378,248 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			keepCap = k
 		}
 	}
-	if len(pooled) > keepCap {
-		pooled = pooled[:keepCap]
-	}
 
-	type cand struct {
-		src        answerSource
-		excerpt    string
-		rerankText string
-		score      float64 //
-	}
-	cands := make([]cand, 0, len(pooled))
-	for _, p := range pooled {
-		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
-		if derr != nil || doc == nil {
-			continue
-		}
-		if !filt.allow(doc.URL, doc.PublishedAt) {
-			continue
-		}
-		excerpt := textExcerpt(doc.Text, 1200)
-		src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
-		if !doc.PublishedAt.IsZero() {
-			t := doc.PublishedAt
-			src.PublishedAt = &t
-		}
-		if includeText {
-			src.Text = doc.Text
-		}
-		c := cand{src: src, excerpt: excerpt, score: p.score}
-		if wantRerank {
-			c.rerankText = doc.Title + "\n" + doc.Text
-		}
-		cands = append(cands, c)
-	}
-	sse.phase("materialize", map[string]any{"candidates": len(cands)})
-	// time-decay on /research stream — same placement as sync.
-	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
-	if decaySet && len(cands) > 0 {
-		now := time.Now()
-		for i := range cands {
-			cands[i].score *= decayMultiplier(cands[i].src.PublishedAt, now, decayHalfLife)
-		}
-		sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
-		retrieverLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
-	}
-	if wantRerank && len(cands) > 1 {
-		rc := make([]rerank.Candidate, len(cands))
-		for i := range cands {
-			rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: cands[i].rerankText}
-		}
-		if order, rerr := s.doRerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
-			reordered := make([]cand, 0, len(cands))
-			seen := make(map[int]bool, len(cands))
-			for _, id := range order {
-				if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(cands) && !seen[n] {
-					reordered = append(reordered, cands[n])
-					seen[n] = true
+	seenURLs := make(map[string]bool)
+	allCands := make([]cand, 0, k*maxPasses)
+	totalCandidates := 0 // counts URL contributions across passes for the sources event
+	var lastAnswer string
+	var finalRetrieverLabel string
+
+	for pass := 1; pass <= maxPasses; pass++ {
+		sse.phase("pass_start", map[string]any{"pass": pass, "queries": subs})
+
+		// Retrieval round for this pass. Skip URLs we've already promoted.
+		best := make(map[string]ranked, k*len(subs))
+		for _, sq := range subs {
+			hits, _, rerr := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
+			if rerr != nil {
+				log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, rerr)
+				sse.phase("expand", map[string]any{"pass": pass, "query": sq, "error": rerr.Error()})
+				continue
+			}
+			for _, h := range hits {
+				if seenURLs[h.URL] {
+					continue
+				}
+				if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+					best[h.URL] = ranked{score: h.Score, hit: h}
 				}
 			}
-			for i, c := range cands {
-				if !seen[i] {
-					reordered = append(reordered, c)
+			sse.phase("expand", map[string]any{"pass": pass, "query": sq, "hits": len(hits)})
+		}
+		totalCandidates += len(best)
+		pooled := make([]ranked, 0, len(best))
+		for _, v := range best {
+			pooled = append(pooled, v)
+		}
+		sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
+		sse.phase("fuse", map[string]any{"pass": pass, "unique_urls": len(pooled)})
+		if len(pooled) > keepCap {
+			pooled = pooled[:keepCap]
+		}
+
+		// Materialize this pass's new candidates (filt-aware).
+		newCands := make([]cand, 0, len(pooled))
+		for _, p := range pooled {
+			doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
+			if derr != nil || doc == nil {
+				continue
+			}
+			if !filt.allow(doc.URL, doc.PublishedAt) {
+				continue
+			}
+			excerpt := textExcerpt(doc.Text, 1200)
+			src := answerSource{URL: doc.URL, Title: doc.Title, Excerpt: excerpt, Author: doc.Author}
+			if !doc.PublishedAt.IsZero() {
+				t := doc.PublishedAt
+				src.PublishedAt = &t
+			}
+			if includeText {
+				src.Text = doc.Text
+			}
+			c := cand{src: src, excerpt: excerpt, score: p.score}
+			if wantRerank {
+				c.rerankText = doc.Title + "\n" + doc.Text
+			}
+			newCands = append(newCands, c)
+		}
+		sse.phase("materialize", map[string]any{"pass": pass, "candidates": len(newCands)})
+
+		// Optional time-decay on this pass's new candidates.
+		passLabel := retrieverLabel
+		if decaySet && len(newCands) > 0 {
+			now := time.Now()
+			for i := range newCands {
+				newCands[i].score *= decayMultiplier(newCands[i].src.PublishedAt, now, decayHalfLife)
+			}
+			sort.SliceStable(newCands, func(i, j int) bool { return newCands[i].score > newCands[j].score })
+			passLabel += fmt.Sprintf("+decay:%gd", decayHalfLife)
+		}
+		if wantRerank && len(newCands) > 1 {
+			rc := make([]rerank.Candidate, len(newCands))
+			for i := range newCands {
+				rc[i] = rerank.Candidate{ID: strconv.Itoa(i), Text: newCands[i].rerankText}
+			}
+			if order, rerr := s.doRerank(r.Context(), q, rc); rerr == nil && len(order) > 0 {
+				reordered := make([]cand, 0, len(newCands))
+				seenIdx := make(map[int]bool, len(newCands))
+				for _, id := range order {
+					if n, perr := strconv.Atoi(id); perr == nil && n >= 0 && n < len(newCands) && !seenIdx[n] {
+						reordered = append(reordered, newCands[n])
+						seenIdx[n] = true
+					}
 				}
+				for i, c := range newCands {
+					if !seenIdx[i] {
+						reordered = append(reordered, c)
+					}
+				}
+				newCands = reordered
 			}
-			cands = reordered
+			sse.phase("rerank", map[string]any{"pass": pass, "reranker": s.reranker.Name(), "candidates": len(newCands)})
 		}
-		sse.phase("rerank", map[string]any{"reranker": s.reranker.Name(), "candidates": len(cands)})
-	}
-	// MMR diversification on /research stream — same pattern as sync.
-	// Updates retrieverLabel so the retriever field on the sources
-	// SSE event reflects what actually fired (planEvent's label, emitted
-	// earlier, says what was requested — usually identical when MMR succeeds).
-	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
-	if mmrSet && len(cands) > 1 {
-		urls := make([]string, len(cands))
-		for i := range cands {
-			urls[i] = cands[i].src.URL
-		}
-		if order := s.applyMMRPermutation(r.Context(), urls, q, mmrLambda); order != nil {
-			reordered := make([]cand, len(order))
-			for i, idx := range order {
-				reordered[i] = cands[idx]
+		if mmrSet && len(newCands) > 1 {
+			urls := make([]string, len(newCands))
+			for i := range newCands {
+				urls[i] = newCands[i].src.URL
 			}
-			cands = reordered
-			retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
-			sse.phase("mmr", map[string]any{"lambda": mmrLambda, "candidates": len(cands)})
+			if order := s.applyMMRPermutation(r.Context(), urls, q, mmrLambda); order != nil {
+				reordered := make([]cand, len(order))
+				for i, idx := range order {
+					reordered[i] = newCands[idx]
+				}
+				newCands = reordered
+				passLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
+				sse.phase("mmr", map[string]any{"pass": pass, "lambda": mmrLambda, "candidates": len(newCands)})
+			}
 		}
-	}
-	if len(cands) > k {
-		cands = cands[:k]
-	}
-	sources := make([]answerSource, 0, len(cands))
-	var promptSources strings.Builder
-	for i, c := range cands {
-		// stamp ID = i+1 so the JSON response matches the [N]
-		// citation tokens we emit in the synth prompt below.
-		c.src.ID = i + 1
-		sources = append(sources, c.src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
-	}
-	srcEvt := map[string]any{"type": "sources", "sources": sources, "total_candidates": len(best)}
-	if retrieverLabel != "" {
-		srcEvt["retriever"] = retrieverLabel
-	}
-	sse.send(srcEvt)
-	if len(sources) == 0 {
-		sse.send(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
-		return
+		if len(newCands) > k {
+			newCands = newCands[:k]
+		}
+		// Promote into the cumulative pool.
+		for _, c := range newCands {
+			seenURLs[c.src.URL] = true
+			allCands = append(allCands, c)
+		}
+		finalRetrieverLabel = passLabel
+
+		// First-pass-empty path mirrors today's behavior: if pass 1 finds
+		// no usable sources at all, bail with empty=true.
+		if pass == 1 && len(allCands) == 0 {
+			sse.send(map[string]any{"type": "done", "took": time.Since(start).String(), "empty": true})
+			return
+		}
+		// Later-pass empty (no new sources added): synth would just rewrite
+		// the prior answer with no new signal. Stop and keep lastAnswer.
+		if pass > 1 && len(newCands) == 0 {
+			break
+		}
+
+		// Build the cumulative sources slice + prompt block, stamping IDs
+		// 1..N in the order URLs were promoted.
+		cumulativeSources := make([]answerSource, 0, len(allCands))
+		var promptSources strings.Builder
+		for i, c := range allCands {
+			c.src.ID = i + 1
+			cumulativeSources = append(cumulativeSources, c.src)
+			fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
+		}
+		srcEvt := map[string]any{
+			"type": "sources", "sources": cumulativeSources,
+			"total_candidates": totalCandidates, "pass": pass,
+		}
+		if finalRetrieverLabel != "" {
+			srcEvt["retriever"] = finalRetrieverLabel
+		}
+		sse.send(srcEvt)
+
+		// Synth. Pass 1 uses the standard prompt; pass 2+ uses the refine
+		// prompt with the prior draft injected.
+		sse.phase("synth_start", map[string]any{
+			"pass": pass, "sources": len(cumulativeSources), "model": sc.Model(),
+		})
+		var synthMsgs []embed.ChatMsg
+		userMsg := "Sources:\n\n" + promptSources.String() + "Original question: " + q
+		if pass == 1 {
+			synthMsgs = []embed.ChatMsg{
+				{Role: "system", Content: researchSynthPrompt},
+				{Role: "user", Content: userMsg},
+			}
+		} else {
+			synthMsgs = []embed.ChatMsg{
+				{Role: "system", Content: researchRefineSynthPrompt},
+				{Role: "user", Content: userMsg + "\n\nYour prior draft answer:\n" + lastAnswer},
+			}
+		}
+		full, serr := s.doChatStream(r.Context(), sc, synthMsgs, sse.chunk)
+		if serr != nil {
+			sse.send(map[string]any{"type": "error", "phase": "synth", "error": serr.Error()})
+			return
+		}
+		lastAnswer = full
+
+		// On the final pass, skip self-eval — nothing to escalate to.
+		if pass == maxPasses {
+			break
+		}
+
+		// Self-evaluate. The model decides whether to escalate.
+		sse.phase("self_eval_start", map[string]any{"pass": pass})
+		evalUserMsg := fmt.Sprintf(
+			"Question: %s\n\nYour answer:\n%s\n\nSources used (id — title — url):\n%s",
+			q, lastAnswer, summarizeSourceList(cumulativeSources),
+		)
+		evalRaw, eerr := s.doChat(r.Context(), sc, []embed.ChatMsg{
+			{Role: "system", Content: selfEvalPrompt},
+			{Role: "user", Content: evalUserMsg},
+		})
+		if eerr != nil {
+			log.Printf("pebble-serve: /research self-eval pass %d failed: %v", pass, eerr)
+			sse.phase("self_eval", map[string]any{"pass": pass, "error": eerr.Error()})
+			break
+		}
+		ev, ok := parseSelfEval(evalRaw)
+		if !ok {
+			sse.phase("self_eval", map[string]any{"pass": pass, "parse_failed": true})
+			break
+		}
+		sse.phase("self_eval", map[string]any{
+			"pass": pass, "sufficient": ev.Sufficient,
+			"missing": ev.Missing, "refine_queries": ev.RefineQueries,
+		})
+		if ev.Sufficient {
+			break
+		}
+		// Blurb summarizing why we're escalating; UI renders inline.
+		blurbText := strings.TrimSpace(ev.Missing)
+		if blurbText == "" {
+			blurbText = "More depth needed"
+		}
+		blurbText += " — searching deeper."
+		sse.phase("blurb", map[string]any{"pass": pass, "text": blurbText})
+
+		// Drive the next pass with the refined queries the model proposed.
+		if len(ev.RefineQueries) == 0 {
+			break
+		}
+		subs = ev.RefineQueries
+		if len(subs) > 5 {
+			subs = subs[:5]
+		}
 	}
 
-	sse.phase("synth_start", map[string]any{"sources": len(sources), "model": sc.Model()})
-	_, err = s.doChatStream(r.Context(), sc, []embed.ChatMsg{
-		{Role: "system", Content: researchSynthPrompt},
-		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
-	}, sse.chunk)
-	if err != nil {
-		sse.send(map[string]any{"type": "error", "phase": "synth", "error": err.Error()})
-		return
-	}
 	sse.done()
+}
+
+// summarizeSourceList formats sources into compact "[id] title — url" lines
+// for the self-eval user message. Avoids piping the full excerpts back into
+// the eval prompt — the eval is about coverage, not re-reading.
+func summarizeSourceList(srcs []answerSource) string {
+	var sb strings.Builder
+	for _, s := range srcs {
+		fmt.Fprintf(&sb, "[%d] %s — %s\n", s.ID, s.Title, s.URL)
+	}
+	return sb.String()
 }
 
 // retrievalFilters bundles the four post-retrieval predicates /search,
