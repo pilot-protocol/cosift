@@ -5903,9 +5903,9 @@ func recomputeSummary(r savedAnswerEvalReport) map[string]struct {
 
 // runAnswerEvalCompare loads two saved answer-eval JSON reports and prints
 // side-by-side coverage/grounding/combined deltas + per-query moves above a
-// configurable threshold. No LLM calls; pure file-to-file diff. The pattern
-// emerged across iters 58/60/62/63/64 of ad-hoc python one-liners; this iter
-// makes it first-class.
+// configurable threshold. No LLM calls; pure file-to-file diff —
+// first-class replacement for the ad-hoc python one-liners operators
+// previously chained for the same report.
 func runAnswerEvalCompare(_ context.Context, args []string) error {
 	fs := flag.NewFlagSet("answer-eval-compare", flag.ExitOnError)
 	threshold := fs.Int("query-threshold", 2, "report per-query moves of |Δgrounding| or |Δcoverage| ≥ this value (1-5 scale)")

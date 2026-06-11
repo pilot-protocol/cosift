@@ -2232,7 +2232,7 @@ const researchSynthPrompt = `You are a research assistant. Synthesize an answer 
 - When a source has an Author line, you may attribute claims to them inline ("Jane Doe argues that…") — only when the attribution is supported by the content.`
 
 // expandForResearch produces the query variants /research uses to retrieve
-// sources, plus the strategy label. Two strategies measured in iters 52-53:
+// sources, plus the strategy label. Two strategies are supported:
 //
 //   - "planner" (default, original behavior): LLM decomposes q into 2-3 sub-queries.
 //   - "paraphrase": paraphraser produces N rewordings of q (uses L1+L2 cache).
@@ -2275,7 +2275,7 @@ func (s *Server) expandForResearch(ctx context.Context, q, strategy string) ([]s
 //   - planner: iterate variants, top-3 each, dedup by URL, cap at 10 (preserves
 //     behavior).
 //   - paraphrase: RRF-fuse top-10 of (q ⊕ variants) into a single ranked URL list,
-//     truncate to 10 (matches the iters 46/52/53 measurement methodology).
+//     truncate to 10 (matches the eval measurement methodology).
 //
 // onRetrieved is invoked for SSE transparency — called with (variant, urls) per
 // retrieval call in planner mode, or once with ("rrf-fused", urls) in paraphrase
