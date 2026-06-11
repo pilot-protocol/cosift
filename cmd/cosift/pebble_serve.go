@@ -5537,6 +5537,13 @@ type answerSSE struct {
 // newAnswerSSE opens an SSE stream. Returns nil if the writer can't flush.
 // Caller is responsible for not calling writeProblem after this point —
 // the response status (200) and headers are committed here.
+//
+// Disables the server-wide WriteTimeout (60s) via ResponseController.
+// Multi-pass /research can run 90-180s with 3-5 passes against a slow
+// chat model; the deadline would kill the connection mid-stream and
+// the browser fetch would surface a generic "Load failed". SSE handlers
+// flush their own progress, so a stuck handler still gets killed by
+// ctx cancellation when the client disconnects.
 func newAnswerSSE(w http.ResponseWriter, start time.Time) *answerSSE {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -5545,6 +5552,9 @@ func newAnswerSSE(w http.ResponseWriter, start time.Time) *answerSSE {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
 	w.WriteHeader(http.StatusOK)
 	return &answerSSE{w: w, flusher: flusher, start: start, last: start}
 }
@@ -6000,10 +6010,14 @@ func parseSelfEval(s string) (selfEval, bool) {
 var jsonFenceRE = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
 
 // researchMaxPasses parses ?max_passes from the request. Default 3, valid
-// range 1-5 (clamped). 1 disables the self-eval loop entirely (single-pass
-// /research, today's behavior).
+// range 1-10 (clamped). 1 disables the self-eval loop entirely (single-pass
+// /research, today's behavior). The upper cap exists to bound LLM cost +
+// wall-clock: each non-final pass costs 1 synth + 1 self-eval call on top
+// of the per-sub-query retrieval, and the model can in theory loop forever
+// emitting "not yet sufficient" verdicts.
 func researchMaxPasses(r *http.Request) int {
 	const defaultMax = 3
+	const hardCap = 10
 	v := r.URL.Query().Get("max_passes")
 	if v == "" {
 		return defaultMax
@@ -6012,8 +6026,8 @@ func researchMaxPasses(r *http.Request) int {
 	if err != nil || n < 1 {
 		return defaultMax
 	}
-	if n > 5 {
-		return 5
+	if n > hardCap {
+		return hardCap
 	}
 	return n
 }

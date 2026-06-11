@@ -593,7 +593,11 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
             } else if (ev.type === 'answer_chunk' || ev.type === 'chunk') {
               accumulated += (ev.text || ev.delta || '');
               asst.contentEl.innerHTML = renderCitedHTML(accumulated);
-              asst.node.scrollIntoView({ behavior: 'smooth', block: 'end' });
+              // Keep the bottom of the ANSWER text in view, not the bottom
+              // of the message node — the sources card sits below content
+              // and pulled the scroll past the answer on each chunk. Only
+              // scroll if the answer's bottom isn't already visible.
+              asst.contentEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             } else if (ev.type === 'done') {
               statusBadge.remove();
               asst.contentEl.classList.remove('cursor');
