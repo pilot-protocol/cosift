@@ -14,7 +14,7 @@ seed URLs  ───▶  │  crawler  →  index  →  retriever     │  ─�
                                        │
                                        ▼
                               /search   /find_similar
-                              /contents /answer /research
+                              /contents /answer /query /research
 ```
 
 ## Quick start
@@ -28,7 +28,7 @@ go build -o cosift ./cmd/cosift
 ./cosift init -site https://docs.example.com  # pre-populates include_domains
 
 # 3. (optional) put an OpenAI-compatible key in .env to enable dense
-#    retrieval, /answer, /research, paraphrase expansion, HyDE.
+#    retrieval, /answer, /query, /research, paraphrase expansion, HyDE.
 echo 'OPENAI_API_KEY=sk-...' > .env
 
 # 4. Index some content. Either crawl URLs, or ingest a curated corpus.
@@ -64,7 +64,7 @@ Run `./cosift doctor` for a local config sanity check (data dir writable, schema
 | **Crawler** | Goroutine pool, per-host gate, robots.txt + Crawl-delay, sitemap.xml + sitemap index seeding, conditional GET (ETag / If-Modified-Since), content-hash dedup, retries with stored `last_error`, optional PDF parsing |
 | **Index** | BM25 inverted index (k1=1.2, b=0.75) over SQLite postings. Optional dense vector index for OpenAI-compatible embeddings (`text-embedding-3-small`, BGE, GTE, any HTTP-shaped endpoint). |
 | **Retrieval** | BM25 / dense / hybrid (RRF), with optional cross-encoder rerank (Cohere-shape HTTP or LLM listwise). MMR diversification, pseudo-relevance feedback, HyDE, paraphrase + RRF query expansion. All knobs compose. |
-| **Synthesis** | `/answer` does one-shot RAG with numeric citations. `/research` does bounded multi-step research (planner or paraphrase strategy) with SSE token streaming. Every claim cites a source by integer id. |
+| **Synthesis** | `/answer` does one-shot RAG with numeric citations. `/query` adds an LLM planner that expands the question into 3 paraphrases and RRF-fuses them before synth. `/research` does bounded multi-step research (planner or paraphrase strategy). All three SSE-stream phase events + answer tokens. Every claim cites a source by integer id. |
 | **Storage** | One SQLite database in WAL mode. Resumable crawl frontier, content table, postings, optional passage vectors, query outcomes for calibration, paraphrase + HyDE caches. |
 | **Operations** | Bearer-token admin endpoints, Prometheus metrics, static-HTML dashboard, per-IP rate limiting on LLM endpoints, XFF with optional trusted-proxy allowlist. |
 | **Eval** | Built-in retrieval eval (`recall@K`, `MRR`, `nDCG@10`) and LLM-judged answer-quality eval. Diffable JSON reports. |
@@ -77,6 +77,7 @@ Run `./cosift doctor` for a local config sanity check (data dir writable, schema
 | `/find_similar` | GET | k-nearest-neighbor over an already-indexed URL's embedding |
 | `/contents` | GET / POST | GET `?url=` for one doc; POST `{urls:[…]}` for up to 100 in one round-trip. Returns cleaned text from the index; on-demand fetch falls back when a URL isn't indexed |
 | `/answer` | GET | Single-question grounded answer with cited sources. SSE streaming via `?stream=true` |
+| `/query` | GET | LLM-orchestrated query expansion: planner emits intent + 3 paraphrases → RRF fusion → cited synth. SSE streaming via `?stream=true` |
 | `/research` | GET | Bounded multi-step research (planner or paraphrase strategy). SSE streaming via `?stream=true` |
 | `/feedback` | POST | Record a single retrieval outcome for offline calibration |
 | `/stats` | GET | Document / term / frontier counts |
@@ -207,7 +208,7 @@ cosift pebble-serve -dir DIR [-addr HOST:PORT]
                                               HTTP server backed by PebbleStore + PebbleBM25. Endpoints:
                                               /healthz /stats /metrics /verify /contents
                                               /search /find_similar (BM25 + optional rerank + HyDE expand)
-                                              /answer /research (sync + SSE; opt-in via cfg.Chat.Model)
+                                              /answer /query /research (sync + SSE; opt-in via cfg.Chat.Model)
                                               Companion to cosift serve (SQLite-backed) — pick whichever
                                               storage backend fits the deployment scale
 cosift reembed [-drop-old] [-progress 5s]     re-embed every doc with the configured model
