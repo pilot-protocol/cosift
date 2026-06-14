@@ -327,7 +327,19 @@ func (c *Crawler) WithRouter(route RouteFn, forward ForwardFn) *Crawler {
 //
 // `INSERT OR IGNORE` semantics: if the URL is already in the frontier (queued,
 // in-flight, done, or errored), Seed is a no-op. To force a refresh, use Recrawl.
+//
+// Defaults to the discovered lane (organic crawl). For lane-aware seeds
+// (RSS = refresh, sitemap = refresh, publisher-submitted = submitted, WET =
+// bulk), use SeedLane.
 func (c *Crawler) Seed(rawURL string) error {
+	return c.SeedLane(rawURL, 2) // LaneDiscovered
+}
+
+// SeedLane is like Seed but pushes the URL into a specific lane. Used by
+// SeedRSS (refresh), SeedSitemap (refresh), and future publisher-submit
+// paths (submitted) so high-value URLs jump the cloud.google.com bulk
+// backlog via the weighted round-robin in ClaimFrontier.
+func (c *Crawler) SeedLane(rawURL string, lane byte) error {
 	canon, err := canonicalize(rawURL)
 	if err != nil {
 		return err
@@ -335,7 +347,7 @@ func (c *Crawler) Seed(rawURL string) error {
 	if !c.allowedDomain(canon) {
 		return fmt.Errorf("seed %s not allowed by include/exclude rules", canon)
 	}
-	return c.store.PushFrontier(context.Background(), canon, 0, 1.0)
+	return c.store.PushFrontierLane(context.Background(), canon, 0, lane, 1.0)
 }
 
 // Recrawl re-enqueues a URL even if it was previously crawled. Status flips

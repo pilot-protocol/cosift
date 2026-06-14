@@ -2908,13 +2908,35 @@ func (s *pebbleHTTP) handleQueue(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"queued":    fs.Queued,
 		"in_flight": fs.InFlight,
 		"done":      fs.Done,
 		"errored":   fs.Errored,
 		"top_hosts": hosts,
-	})
+	}
+	// Lane breakdown: PebbleStore-only (SQLite Store has no lanes). When the
+	// store is a PebbleStore, surface the per-lane queued/in_flight counts so
+	// operators can see whether the weighted RR is actually draining RSS
+	// (lane 1) ahead of bulk (lane 3).
+	if ps, ok := any(s.store).(*store.PebbleStore); ok {
+		if ls, lerr := ps.GetLaneStats(r.Context()); lerr == nil {
+			laneNames := [4]string{"submitted", "refresh", "discovered", "bulk"}
+			lanesOut := make([]map[string]any, 0, 4)
+			for i, n := range laneNames {
+				lanesOut = append(lanesOut, map[string]any{
+					"lane":      i,
+					"name":      n,
+					"queued":    ls.Lanes[i].Queued,
+					"in_flight": ls.Lanes[i].InFlight,
+				})
+			}
+			body["lanes"] = lanesOut
+			body["legacy_queued"] = ls.LegacyQueued
+			body["legacy_in_flight"] = ls.LegacyInFlight
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleDomainsAudit streams the entire 'h' family as JSONL, one

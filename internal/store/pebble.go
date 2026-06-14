@@ -75,7 +75,9 @@ type PebbleStore struct {
 	// (host, url) tuple; next claim seeks past it so each call resumes
 	// where the previous one stopped, wrapping at the end.
 	frontierCursorMu sync.Mutex
-	frontierCursor   []byte
+	frontierCursor   []byte             // legacy single cursor; pre-lanes scan state.
+	laneCursors      [laneCount][]byte  // per-lane round-robin cursors.
+	laneTick         atomic.Uint64      // monotonic counter driving weighted lane pick.
 
 	// PILOT-190: pebble.DB.Close() panics if called twice. Wrap teardown
 	// in sync.Once so repeated Close() calls (e.g. from layered cleanups
@@ -368,6 +370,9 @@ func frontierKey(url string) []byte {
 // The 0x00 separator keeps the host field prefix-disambiguated so a URL
 // can't slide into a different host's row even if it byte-prefixes a
 // host name.
+//
+// Legacy format (pre-lanes). Reads still walk these so the existing 4.3M
+// queue drains naturally; new pushes go through frontierStatusIndexKeyLane.
 func frontierStatusIndexKey(sub byte, host, url string) []byte {
 	k := make([]byte, 2+len(host)+1+len(url))
 	k[0] = famFrontier
@@ -378,8 +383,8 @@ func frontierStatusIndexKey(sub byte, host, url string) []byte {
 	return k
 }
 
-// frontierStatusIndexHost extracts the host portion of a secondary-index
-// key. Returns "" if the key shape is wrong.
+// frontierStatusIndexHost extracts the host portion of a legacy secondary
+// index key. Returns "" if the key shape is wrong.
 func frontierStatusIndexHost(key []byte) string {
 	if len(key) < 3 || key[0] != famFrontier {
 		return ""
@@ -391,6 +396,64 @@ func frontierStatusIndexHost(key []byte) string {
 		}
 	}
 	return ""
+}
+
+// Lane priority classes for the frontier. Higher-weighted lanes drain
+// proportionally more often via the weighted round-robin in ClaimFrontier.
+// Wire format: one byte per key, valid range 0..3.
+const (
+	LaneSubmitted  byte = 0 // publisher-submitted (e.g. /pub/submit) — weight 50
+	LaneRefresh    byte = 1 // refresh / fresh-content (RSS, sitemap-lastmod) — weight 30
+	LaneDiscovered byte = 2 // crawler outbound-link discovery (default) — weight 15
+	LaneBulk       byte = 3 // bulk import (WET, mass site-pack) — weight 5
+	laneCount           = 4
+)
+
+// frontierStatusIndexKeyLane is the lane-aware secondary index:
+//
+//	'f' + 'q' + lane + host + 0x00 + url → empty   (queued)
+//	'f' + 'i' + lane + host + 0x00 + url → empty   (in_flight)
+//
+// One byte after the status separator carries the lane. Hosts start with
+// printable ASCII (>= 0x21), so a key prefix of [famFrontier, sub, 0..3]
+// is unambiguously lane-format vs legacy (where byte 2 is a host byte).
+func frontierStatusIndexKeyLane(sub, lane byte, host, url string) []byte {
+	k := make([]byte, 3+len(host)+1+len(url))
+	k[0] = famFrontier
+	k[1] = sub
+	k[2] = lane
+	copy(k[3:], host)
+	k[3+len(host)] = 0x00
+	copy(k[3+len(host)+1:], url)
+	return k
+}
+
+// frontierStatusIndexHostLane extracts (host, lane) from a lane-format
+// secondary index key. Returns ("", 0) if the key shape is wrong.
+func frontierStatusIndexHostLane(key []byte) (host string, lane byte) {
+	if len(key) < 4 || key[0] != famFrontier {
+		return "", 0
+	}
+	lane = key[2]
+	rest := key[3:]
+	for i, b := range rest {
+		if b == 0x00 {
+			return string(rest[:i]), lane
+		}
+	}
+	return "", 0
+}
+
+// frontierLanePrefix is the lower bound for an iteration scoped to one
+// (sub, lane) combo.
+func frontierLanePrefix(sub, lane byte) []byte {
+	return []byte{famFrontier, sub, lane}
+}
+
+// frontierLaneUpperBound is the (exclusive) upper bound for an iteration
+// scoped to one (sub, lane) combo.
+func frontierLaneUpperBound(sub, lane byte) []byte {
+	return []byte{famFrontier, sub, lane + 1}
 }
 
 // FrontierStatus is the lifecycle position of a frontier URL.
@@ -411,7 +474,11 @@ const (
 // frontierEntry is the value side of the 'f' + 'u' + url key. Packed
 // little-endian: status (1) + depth (varint) + priority (float64-le) +
 // enqueued_at (varint) + attempts (varint) + host (varint-len + bytes) +
-// last_error (varint-len + bytes).
+// last_error (varint-len + bytes) [+ lane (1)].
+//
+// Lane is appended at the end as one optional byte. Entries written before
+// the lane feature appear without it; the unpacker defaults missing lanes
+// to LaneDiscovered so existing 4.3M queued URLs keep working.
 type frontierEntry struct {
 	Status     FrontierStatus
 	Depth      int64
@@ -420,11 +487,12 @@ type frontierEntry struct {
 	Attempts   int64
 	Host       string
 	LastError  string
+	Lane       byte
 }
 
 func packFrontierEntry(e frontierEntry) []byte {
 	tmp := make([]byte, binary.MaxVarintLen64)
-	out := make([]byte, 0, 1+8+len(e.Host)+len(e.LastError)+30)
+	out := make([]byte, 0, 1+8+len(e.Host)+len(e.LastError)+32)
 	out = append(out, byte(e.Status))
 	n := binary.PutVarint(tmp, e.Depth)
 	out = append(out, tmp[:n]...)
@@ -441,6 +509,7 @@ func packFrontierEntry(e frontierEntry) []byte {
 	n = binary.PutUvarint(tmp, uint64(len(e.LastError)))
 	out = append(out, tmp[:n]...)
 	out = append(out, e.LastError...)
+	out = append(out, e.Lane)
 	return out
 }
 
@@ -487,6 +556,14 @@ func unpackFrontierEntry(buf []byte) (frontierEntry, error) {
 	}
 	buf = buf[n:]
 	e.LastError = string(buf[:errLen])
+	buf = buf[errLen:]
+	// Lane (optional, appended). Pre-lanes entries have no trailing byte
+	// and default to LaneDiscovered.
+	if len(buf) >= 1 {
+		e.Lane = buf[0]
+	} else {
+		e.Lane = LaneDiscovered
+	}
 	return e, nil
 }
 
@@ -1181,12 +1258,24 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	return nil
 }
 
-// PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
-// if the URL already exists in any state, this is a no-op.
-// also writes the 'f'+'q' secondary index for host-fair claim.
+// PushFrontier inserts a URL into the queue at LaneDiscovered (the
+// crawler-default lane). Thin wrapper around PushFrontierLane kept for
+// backwards compat with callers (crawler outbound-link discovery) that
+// don't pick a lane explicitly.
 func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
+	return p.PushFrontierLane(ctx, url, depth, LaneDiscovered, priority)
+}
+
+// PushFrontierLane inserts a URL into a specific lane. INSERT-OR-IGNORE:
+// if the URL already exists in any state (including legacy pre-lane
+// entries), this is a no-op. Writes the lane-aware 'f'+'q'+lane secondary
+// index for the weighted round-robin in ClaimFrontier.
+func (p *PebbleStore) PushFrontierLane(ctx context.Context, url string, depth int, lane byte, priority float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if lane >= laneCount {
+		lane = LaneDiscovered
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1203,30 +1292,69 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 		Priority:   priority,
 		EnqueuedAt: time.Now().Unix(),
 		Host:       host,
+		Lane:       lane,
 	}
 	batch := p.db.NewBatch()
 	defer batch.Close()
 	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
 		return err
 	}
-	if err := batch.Set(frontierStatusIndexKey('q', host, url), nil, nil); err != nil {
+	if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, url), nil, nil); err != nil {
 		return err
 	}
 	return batch.Commit(p.writeOpts)
 }
 
-// ClaimFrontier picks one queued URL, atomically marks it in_flight, and
-// returns the FrontierItem. ok=false when the queue is empty.:
-// host-fair via two secondary-index scans — O(distinct in-flight hosts +
-// distinct queued URLs walked until a free host found). At a healthy
-// crawl where most hosts are NOT in-flight, this is effectively O(1).
+// laneWeights drives weighted round-robin across the four lanes. The
+// integers are relative weights, not absolute caps. ClaimFrontier picks a
+// lane every call based on a global tick counter modded by the sum of
+// weights; the deterministic schedule guarantees fairness without
+// per-call randomness.
 //
-// Tradeoff: priority ordering is no longer enforced across hosts. The
-// implementation traversed every queued URL to honor strict
-// (priority DESC, enqueued ASC) order; trades that for the
-// host-fair scheduling that the SQLite-side Claim provides.
-// Within a host's queued URLs Pebble returns them in URL-byte order,
-// which approximates enqueue order for outbound-link discovery.
+// Default 50/30/15/5: submitted gets half the work, refresh a third, the
+// catch-all discovered lane a sixth, and bulk imports the leftover. An
+// empty lane donates its share to the next non-empty lane in priority
+// order, so a quiet submitted/refresh queue can't slow down discovery.
+var laneWeights = [laneCount]int{50, 30, 15, 5}
+
+// laneOrder is the lane priority for donation when a chosen lane is
+// empty: prefer the higher-priority lanes first, then fall through.
+var laneOrder = [laneCount]byte{LaneSubmitted, LaneRefresh, LaneDiscovered, LaneBulk}
+
+// pickLane returns the lane index for the next claim. Deterministic
+// weighted RR over laneWeights using p.laneTick (monotonic counter).
+func (p *PebbleStore) pickLane() byte {
+	sum := 0
+	for _, w := range laneWeights {
+		sum += w
+	}
+	if sum == 0 {
+		return LaneDiscovered
+	}
+	t := int(p.laneTick.Add(1) % uint64(sum))
+	acc := 0
+	for i, w := range laneWeights {
+		acc += w
+		if t < acc {
+			return byte(i)
+		}
+	}
+	return LaneDiscovered
+}
+
+// ClaimFrontier picks one queued URL, atomically marks it in_flight, and
+// returns the FrontierItem. ok=false when the queue is empty.
+//
+// Lane-weighted: each call picks a lane via pickLane (weighted RR), then
+// scans the lane's queued URLs in host-fair order. Empty lanes fall
+// through to the next non-empty lane in priority order. As a final
+// fallback, the legacy lane-less 'f'+'q'+host+0x00+url index is scanned
+// so the pre-lanes queue (millions of URLs from the cloud.google.com era)
+// keeps draining in parallel with lane-aware pushes.
+//
+// Host-fairness preserved within each lane: in-flight hosts are tracked
+// across ALL lanes so a worker on one lane never piles onto a host
+// another lane is already touching.
 func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return FrontierItem{}, false, err
@@ -1234,10 +1362,11 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Step 1: build the set of hosts currently in-flight. wrap in
-	// closure so iIt.Close() runs even if iteration panics (was explicit
-	// Close after the loop; a panic inside leaked the iterator).
-	inflightHosts := make(map[string]struct{}, 32)
+	// Step 1: build the cross-lane set of in-flight hosts. Scans 'f'+'i'
+	// (both legacy and lane-aware live in the same sub-byte range —
+	// frontierStatusIndexHost handles legacy keys; frontierStatusIndexHostLane
+	// handles lane-aware ones).
+	inflightHosts := make(map[string]struct{}, 64)
 	if err := func() error {
 		iIt, err := p.db.NewIter(&pebble.IterOptions{
 			LowerBound: []byte{famFrontier, 'i'},
@@ -1248,7 +1377,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		}
 		defer iIt.Close()
 		for valid := iIt.First(); valid; valid = iIt.Next() {
-			h := frontierStatusIndexHost(iIt.Key())
+			h := decodeFrontierIndexHost(iIt.Key())
 			if h != "" {
 				inflightHosts[h] = struct{}{}
 			}
@@ -1258,135 +1387,45 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		return FrontierItem{}, false, err
 	}
 
-	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
-	// whose host is NOT in inflightHosts. Start the scan from
-	// the LAST-CLAIMED key (round-robin), wrapping at the end. Previously
-	// we always started at the first queued URL, so hosts late in the
-	// alphabet (e.g. pilotprotocol.network) could be starved indefinitely
-	// when many earlier-alpha hosts had queued URLs.
-	qIt, err := p.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{famFrontier, 'q'},
-		UpperBound: []byte{famFrontier, 'q' + 1},
-	})
-	if err != nil {
-		return FrontierItem{}, false, err
-	}
-	defer qIt.Close()
-
-	p.frontierCursorMu.Lock()
-	cursor := append([]byte(nil), p.frontierCursor...)
-	p.frontierCursorMu.Unlock()
+	// Step 2: lane-weighted pick. Try the chosen lane first; if empty or
+	// no free host found, walk other lanes in priority order; finally
+	// fall back to the legacy lane-less index.
+	chosenLane := p.pickLane()
+	tryLanes := append([]byte{chosenLane}, laneOrderWithout(chosenLane)...)
 
 	var pickedHost, pickedURL string
-	var fallbackHost, fallbackURL string
-	var fallbackFound bool
+	var pickedLane byte
+	var pickedLegacy bool
 
-	scan := func(start func() bool) (found bool) {
-		for valid := start(); valid; valid = qIt.Next() {
-			host := frontierStatusIndexHost(qIt.Key())
-			if host == "" {
-				continue
-			}
-			key := qIt.Key()
-			urlOffset := 2 + len(host) + 1
-			if urlOffset > len(key) {
-				continue
-			}
-			url := string(key[urlOffset:])
-			if !fallbackFound {
-				fallbackHost = host
-				fallbackURL = url
-				fallbackFound = true
-			}
-			if _, busy := inflightHosts[host]; !busy {
-				pickedHost = host
-				pickedURL = url
-				return true
-			}
+	for _, lane := range tryLanes {
+		host, url, ok := p.scanLaneForFreeHost(lane, inflightHosts)
+		if ok {
+			pickedHost, pickedURL, pickedLane = host, url, lane
+			break
 		}
-		return false
-	}
-
-	// First sweep: cursor points to the first key of the next host
-	// (set by the previous claim's skipKey logic), so a plain
-	// SeekGE lands at the first URL of that next host directly.
-	startFromCursor := func() bool {
-		if len(cursor) > 0 {
-			return qIt.SeekGE(cursor)
-		}
-		return qIt.First()
-	}
-	if !scan(startFromCursor) {
-		// Wrap: try from the beginning. fallbackHost will be set from the
-		// first sweep if any URL existed (so we can reuse it without
-		// re-iterating).
-		_ = scan(qIt.First)
 	}
 	if pickedURL == "" {
-		if !fallbackFound {
-			return FrontierItem{}, false, nil
-		}
-		pickedHost = fallbackHost
-		pickedURL = fallbackURL
-	}
-
-	// within the picked host's queued bucket, prefer a URL that
-	// has NO prior doc record. The naive round-robin always picks the first
-	// alphabetical URL per host, which on a saturated link-graph is almost
-	// always already in famDoc — re-crawl with no doc-count growth. RSS- or
-	// sitemap-imported genuinely-novel URLs sit deeper in the host's bucket
-	// and never get picked. Probe up to 32 URLs in the host's block; if
-	// any has no prior doc, take that one. Falls back to pickedURL when
-	// every probed URL is a known doc. Cheap: 32 × ~1ms pebble point-lookups
-	// per claim, vs the alternative of waiting days for the cursor to drain
-	// every host's first-URL.
-	if pickedHost != "" {
-		hostPrefix := make([]byte, 2+len(pickedHost)+1)
-		hostPrefix[0] = famFrontier
-		hostPrefix[1] = 'q'
-		copy(hostPrefix[2:], pickedHost)
-		hostPrefix[2+len(pickedHost)] = 0x00
-		hostUpper := make([]byte, len(hostPrefix))
-		copy(hostUpper, hostPrefix)
-		hostUpper[len(hostUpper)-1] = 0x01
-		probeIt, perr := p.db.NewIter(&pebble.IterOptions{LowerBound: hostPrefix, UpperBound: hostUpper})
-		if perr == nil {
-			const maxProbes = 32
-			probed := 0
-			for valid := probeIt.First(); valid && probed < maxProbes; valid = probeIt.Next() {
-				key := probeIt.Key()
-				urlPart := string(key[len(hostPrefix):])
-				if urlPart == "" {
-					continue
-				}
-				probed++
-				if _, ok, _ := p.lookupIDByURL(urlPart); !ok {
-					pickedURL = urlPart
-					break
-				}
-			}
-			probeIt.Close()
+		// Legacy fall-through: drain the pre-lanes 'f'+'q'+host queue.
+		host, url, ok := p.scanLegacyForFreeHost(inflightHosts)
+		if ok {
+			pickedHost, pickedURL = host, url
+			pickedLegacy = true
 		}
 	}
+	if pickedURL == "" {
+		return FrontierItem{}, false, nil
+	}
 
-	// advance the round-robin cursor PAST the picked host's
-	// entire URL block. Without this, each claim only advances by one URL,
-	// so hosts with thousands of queued URLs (github.com, en.wikipedia.org)
-	// hog the cursor and hosts later in the alphabet take days to reach.
-	// Cursor = {famFrontier, 'q', host, 0xFF} — lex-greater than any real
-	// URL key for this host (URLs are ASCII), so the next SeekGE lands on
-	// the first URL of the NEXT host. also persist to pebble
-	// so a restart resumes where it stopped.
-	var skipKey []byte
+	// Prefer a URL within the picked host's bucket that has no prior doc
+	// record. Same trick as the legacy claim — RSS/sitemap-imported novel
+	// URLs sit deeper in alphabetical order; without this probe, every
+	// claim picks the first URL, which is almost always already-crawled
+	// and re-fetched silently.
 	if pickedHost != "" {
-		skipKey = make([]byte, 2+len(pickedHost)+1)
-		skipKey[0] = famFrontier
-		skipKey[1] = 'q'
-		copy(skipKey[2:], pickedHost)
-		skipKey[2+len(pickedHost)] = 0xFF
-		p.frontierCursorMu.Lock()
-		p.frontierCursor = skipKey
-		p.frontierCursorMu.Unlock()
+		probed := p.probeForNovelURL(pickedHost, pickedURL, pickedLane, pickedLegacy)
+		if probed != "" {
+			pickedURL = probed
+		}
 	}
 
 	// Step 3: atomic transition. Read primary, flip status, swap indexes.
@@ -1406,16 +1445,18 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	if err := batch.Set(frontierKey(pickedURL), packFrontierEntry(entry), nil); err != nil {
 		return FrontierItem{}, false, err
 	}
-	if err := batch.Delete(frontierStatusIndexKey('q', pickedHost, pickedURL), nil); err != nil {
-		return FrontierItem{}, false, err
-	}
-	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
-		return FrontierItem{}, false, err
-	}
-	// persist the cursor in the same atomic batch as the status
-	// transition, so we never desync the state on a crash.
-	if len(skipKey) > 0 {
-		if err := batch.Set(metaKey("frontier_cursor"), skipKey, nil); err != nil {
+	if pickedLegacy {
+		if err := batch.Delete(frontierStatusIndexKey('q', pickedHost, pickedURL), nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+		if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+	} else {
+		if err := batch.Delete(frontierStatusIndexKeyLane('q', pickedLane, pickedHost, pickedURL), nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+		if err := batch.Set(frontierStatusIndexKeyLane('i', pickedLane, pickedHost, pickedURL), nil, nil); err != nil {
 			return FrontierItem{}, false, err
 		}
 	}
@@ -1423,6 +1464,228 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		return FrontierItem{}, false, err
 	}
 	return FrontierItem{URL: pickedURL, Depth: int(entry.Depth), Priority: entry.Priority}, true, nil
+}
+
+// laneOrderWithout returns laneOrder minus the given lane, preserving the
+// priority order of the remainder so weighted-RR donation walks
+// submitted → refresh → discovered → bulk on misses.
+func laneOrderWithout(skip byte) []byte {
+	out := make([]byte, 0, laneCount-1)
+	for _, l := range laneOrder {
+		if l != skip {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// decodeFrontierIndexHost extracts the host from either a legacy
+// 'f'+sub+host+0x00+url key or a lane-aware 'f'+sub+lane+host+0x00+url
+// key. Distinguishes by inspecting byte 2: lane bytes are 0..3 (below
+// the printable-ASCII range any host byte uses), so a byte < 0x04 means
+// lane-format.
+func decodeFrontierIndexHost(key []byte) string {
+	if len(key) < 3 || key[0] != famFrontier {
+		return ""
+	}
+	if key[2] < laneCount {
+		h, _ := frontierStatusIndexHostLane(key)
+		return h
+	}
+	return frontierStatusIndexHost(key)
+}
+
+// scanLaneForFreeHost walks one lane's queued URLs, returning the first
+// URL whose host is not in inflightHosts. Round-robin starts at the
+// per-lane cursor stored in p.laneCursors so each lane has its own
+// fairness state independent of the others.
+func (p *PebbleStore) scanLaneForFreeHost(lane byte, inflightHosts map[string]struct{}) (host, url string, ok bool) {
+	qIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: frontierLanePrefix('q', lane),
+		UpperBound: frontierLaneUpperBound('q', lane),
+	})
+	if err != nil {
+		return "", "", false
+	}
+	defer qIt.Close()
+
+	p.frontierCursorMu.Lock()
+	cursor := append([]byte(nil), p.laneCursors[lane]...)
+	p.frontierCursorMu.Unlock()
+
+	var fallbackHost, fallbackURL string
+	var fallbackFound bool
+
+	scan := func(start func() bool) (found bool) {
+		for valid := start(); valid; valid = qIt.Next() {
+			h, _ := frontierStatusIndexHostLane(qIt.Key())
+			if h == "" {
+				continue
+			}
+			key := qIt.Key()
+			urlOffset := 3 + len(h) + 1
+			if urlOffset > len(key) {
+				continue
+			}
+			u := string(key[urlOffset:])
+			if !fallbackFound {
+				fallbackHost = h
+				fallbackURL = u
+				fallbackFound = true
+			}
+			if _, busy := inflightHosts[h]; !busy {
+				host, url = h, u
+				return true
+			}
+		}
+		return false
+	}
+
+	startFromCursor := func() bool {
+		if len(cursor) > 0 {
+			return qIt.SeekGE(cursor)
+		}
+		return qIt.First()
+	}
+	if !scan(startFromCursor) {
+		_ = scan(qIt.First)
+	}
+	if host == "" {
+		if !fallbackFound {
+			return "", "", false
+		}
+		host, url = fallbackHost, fallbackURL
+	}
+
+	// Advance the per-lane cursor past the picked host's URL block.
+	skipKey := make([]byte, 3+len(host)+1)
+	skipKey[0] = famFrontier
+	skipKey[1] = 'q'
+	skipKey[2] = lane
+	copy(skipKey[3:], host)
+	skipKey[3+len(host)] = 0xFF
+	p.frontierCursorMu.Lock()
+	p.laneCursors[lane] = skipKey
+	p.frontierCursorMu.Unlock()
+	return host, url, true
+}
+
+// scanLegacyForFreeHost is the unchanged pre-lanes scan, used as a final
+// fallback so existing 4.3M queued URLs from before lanes shipped continue
+// to drain.
+func (p *PebbleStore) scanLegacyForFreeHost(inflightHosts map[string]struct{}) (host, url string, ok bool) {
+	qIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'q', laneCount}, // skip lane-aware keys
+		UpperBound: []byte{famFrontier, 'q' + 1},
+	})
+	if err != nil {
+		return "", "", false
+	}
+	defer qIt.Close()
+
+	p.frontierCursorMu.Lock()
+	cursor := append([]byte(nil), p.frontierCursor...)
+	p.frontierCursorMu.Unlock()
+
+	var fallbackHost, fallbackURL string
+	var fallbackFound bool
+
+	scan := func(start func() bool) (found bool) {
+		for valid := start(); valid; valid = qIt.Next() {
+			h := frontierStatusIndexHost(qIt.Key())
+			if h == "" {
+				continue
+			}
+			key := qIt.Key()
+			urlOffset := 2 + len(h) + 1
+			if urlOffset > len(key) {
+				continue
+			}
+			u := string(key[urlOffset:])
+			if !fallbackFound {
+				fallbackHost = h
+				fallbackURL = u
+				fallbackFound = true
+			}
+			if _, busy := inflightHosts[h]; !busy {
+				host, url = h, u
+				return true
+			}
+		}
+		return false
+	}
+
+	startFromCursor := func() bool {
+		if len(cursor) > 0 && cursor[2] >= laneCount {
+			return qIt.SeekGE(cursor)
+		}
+		return qIt.First()
+	}
+	if !scan(startFromCursor) {
+		_ = scan(qIt.First)
+	}
+	if host == "" {
+		if !fallbackFound {
+			return "", "", false
+		}
+		host, url = fallbackHost, fallbackURL
+	}
+
+	skipKey := make([]byte, 2+len(host)+1)
+	skipKey[0] = famFrontier
+	skipKey[1] = 'q'
+	copy(skipKey[2:], host)
+	skipKey[2+len(host)] = 0xFF
+	p.frontierCursorMu.Lock()
+	p.frontierCursor = skipKey
+	p.frontierCursorMu.Unlock()
+	return host, url, true
+}
+
+// probeForNovelURL prefers a URL inside the picked host's bucket that has
+// no prior doc record. Same intent as the legacy code: avoid re-crawling
+// known docs when freshly-imported (RSS/sitemap) URLs sit deeper in the
+// alphabetical block. Returns "" if no novel URL found in maxProbes
+// attempts (caller keeps the original pickedURL).
+func (p *PebbleStore) probeForNovelURL(host, fallback string, lane byte, legacy bool) string {
+	var hostPrefix []byte
+	if legacy {
+		hostPrefix = make([]byte, 2+len(host)+1)
+		hostPrefix[0] = famFrontier
+		hostPrefix[1] = 'q'
+		copy(hostPrefix[2:], host)
+		hostPrefix[2+len(host)] = 0x00
+	} else {
+		hostPrefix = make([]byte, 3+len(host)+1)
+		hostPrefix[0] = famFrontier
+		hostPrefix[1] = 'q'
+		hostPrefix[2] = lane
+		copy(hostPrefix[3:], host)
+		hostPrefix[3+len(host)] = 0x00
+	}
+	hostUpper := make([]byte, len(hostPrefix))
+	copy(hostUpper, hostPrefix)
+	hostUpper[len(hostUpper)-1] = 0x01
+	probeIt, perr := p.db.NewIter(&pebble.IterOptions{LowerBound: hostPrefix, UpperBound: hostUpper})
+	if perr != nil {
+		return ""
+	}
+	defer probeIt.Close()
+	const maxProbes = 32
+	probed := 0
+	for valid := probeIt.First(); valid && probed < maxProbes; valid = probeIt.Next() {
+		key := probeIt.Key()
+		urlPart := string(key[len(hostPrefix):])
+		if urlPart == "" {
+			continue
+		}
+		probed++
+		if _, ok, _ := p.lookupIDByURL(urlPart); !ok {
+			return urlPart
+		}
+	}
+	_ = fallback
+	return ""
 }
 
 // CompleteFrontier marks a URL as successfully processed.
@@ -1474,23 +1737,36 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
 		return err
 	}
+	// blind-delete BOTH legacy and lane-aware secondary keys so transition
+	// works for entries written before lanes shipped (legacy key only) and
+	// for entries pushed after (lane-aware key only). Pebble Delete is a
+	// no-op on missing keys.
 	switch oldStatus {
 	case FrontierStatusQueued:
 		if err := batch.Delete(frontierStatusIndexKey('q', entry.Host, url), nil); err != nil {
+			return err
+		}
+		if err := batch.Delete(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil); err != nil {
 			return err
 		}
 	case FrontierStatusInFlight:
 		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
 			return err
 		}
+		if err := batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil); err != nil {
+			return err
+		}
 	}
+	// New secondary key follows the entry's Lane — recovery into queued
+	// goes back to whatever lane the URL was originally on (defaults to
+	// LaneDiscovered for legacy entries via unpack).
 	switch newStatus {
 	case FrontierStatusQueued:
-		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Set(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	case FrontierStatusInFlight:
-		if err := batch.Set(frontierStatusIndexKey('i', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Set(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	}
@@ -1744,6 +2020,71 @@ func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, erro
 		}
 	}
 	return s, nil
+}
+
+// LaneStats is a per-lane queued/in_flight breakdown of the frontier.
+// LegacyQueued/LegacyInFlight count entries written before lanes shipped
+// (their secondary keys lack a lane byte); they're drained as a fall-through
+// in ClaimFrontier and disappear over time.
+type LaneStats struct {
+	Lanes           [laneCount]LaneCounts
+	LegacyQueued    int
+	LegacyInFlight  int
+}
+
+// LaneCounts is the per-lane summary surfaced in /queue.
+type LaneCounts struct {
+	Queued   int
+	InFlight int
+}
+
+// GetLaneStats walks the 'f'+'q' and 'f'+'i' secondary indexes (key-only,
+// no value reads) and tallies by lane. O(N) over secondary keys; for 4M
+// frontier rows on the GH200 this is sub-second because Pebble iterators
+// stream key bytes directly out of the SST without decoding values.
+func (p *PebbleStore) GetLaneStats(ctx context.Context) (LaneStats, error) {
+	if err := ctx.Err(); err != nil {
+		return LaneStats{}, err
+	}
+	var out LaneStats
+	scan := func(sub byte, addQueued bool) error {
+		it, err := p.db.NewIter(&pebble.IterOptions{
+			LowerBound: []byte{famFrontier, sub},
+			UpperBound: []byte{famFrontier, sub + 1},
+			KeyTypes:   pebble.IterKeyTypePointsOnly,
+		})
+		if err != nil {
+			return err
+		}
+		defer it.Close()
+		for valid := it.First(); valid; valid = it.Next() {
+			k := it.Key()
+			if len(k) < 3 {
+				continue
+			}
+			if k[2] < laneCount {
+				if addQueued {
+					out.Lanes[k[2]].Queued++
+				} else {
+					out.Lanes[k[2]].InFlight++
+				}
+			} else {
+				if addQueued {
+					out.LegacyQueued++
+				} else {
+					out.LegacyInFlight++
+				}
+			}
+		}
+		return nil
+	}
+	if err := scan('q', true); err != nil {
+		return LaneStats{}, err
+	}
+	if err := scan('i', false); err != nil {
+		return LaneStats{}, err
+	}
+	return out, nil
 }
 
 // CountQueuedPerHost returns a host → queued-URL-count map for the given

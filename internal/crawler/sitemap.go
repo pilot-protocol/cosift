@@ -52,8 +52,19 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 	// showed strings.Builder.Write at 107 GB). Streaming bounds heap to
 	// O(current sitemap size) regardless of nesting depth or total URLs.
 	n := 0
+	// Sitemap-imported URLs go into the refresh lane: callers run
+	// sitemap-import to refresh known-good sources (kubernetes.io,
+	// docs.python.org, etc.), so prioritize over generic discovery.
+	//
+	// Bypass include_domains here for the same reason as SeedRSS: the
+	// operator explicitly requested this sitemap, so trust its URLs
+	// regardless of the curated crawler allowlist.
 	err := c.fetchSitemapStream(ctx, sitemapURL, 2, func(u string) {
-		if seedErr := c.Seed(u); seedErr == nil {
+		canon, cerr := canonicalize(u)
+		if cerr != nil {
+			return
+		}
+		if perr := c.store.PushFrontierLane(context.Background(), canon, 0, 1, 1.0); perr == nil { // LaneRefresh
 			n++
 		}
 	})

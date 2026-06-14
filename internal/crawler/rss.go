@@ -78,10 +78,21 @@ func (c *Crawler) SeedRSS(ctx context.Context, feedURL string) (int, error) {
 	}
 	n := 0
 	for _, u := range urls {
-		if err := c.Seed(u); err != nil {
+		// RSS items are fresh-by-definition — push into the refresh lane
+		// so they jump cloud.google.com and other bulk backlog via the
+		// weighted round-robin in PebbleStore.ClaimFrontier.
+		//
+		// Bypass include_domains here: the operator explicitly asked to
+		// import this feed, so its items are trusted regardless of the
+		// curated crawler allowlist. (Crawler outbound-link discovery
+		// still goes through allowedDomain via Seed.)
+		canon, cerr := canonicalize(u)
+		if cerr != nil {
 			continue
 		}
-		n++
+		if perr := c.store.PushFrontierLane(context.Background(), canon, 0, 1, 1.0); perr == nil {
+			n++
+		}
 	}
 	return n, nil
 }
