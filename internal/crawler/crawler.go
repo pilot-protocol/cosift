@@ -68,12 +68,37 @@ type Crawler struct {
 	// an int read on the hot path; not atomic — diagnostic only).
 	zombieDebugLogged int
 
-	// per-host error-rate tracking via sync.Map + atomic
+// per-host error-rate tracking via sync.Map + atomic
 	// counters. With 512 workers we cannot afford a single write lock
 	// on every claim's completion — that bottlenecked and cost
 	// ~25% throughput. sync.Map.LoadOrStore lets us avoid the lock on
 	// the steady-state path (host already in map).
 	hostStats sync.Map // host (string) → *hostFetchStats
+
+	// Decoupled embed pipeline. When non-nil, crawler workers push
+	// (docID, chunks, texts) onto embedQ after UpsertDocument +
+	// IndexDocument and immediately claim the next URL — embedding
+	// + HNSW writes happen in a separate worker pool. Cuts per-doc
+	// crawler-worker cycle time from ~85s (mu contention + synchronous
+	// embed + HNSW lock waits) to fetch+parse+BM25 only.
+	//
+	// Activated when COSIFT_EMBED_DECOUPLE_WORKERS > 0. Bounded buffer
+	// keeps memory predictable; non-blocking send means a slow embedder
+	// can't stall the crawl (dropped jobs land in embed-backfill later,
+	// which the operator runs anyway).
+	embedQ         chan *embedJob
+	embedQueued    atomic.Int64
+	embedDropped   atomic.Int64
+	embedDone      atomic.Int64
+	embedFailed    atomic.Int64
+}
+
+// embedJob is one unit of work for the embed worker pool.
+type embedJob struct {
+	url    string
+	docID  int64
+	chunks []index.Chunk
+	texts  []string
 }
 
 type hostFetchStats struct {
@@ -393,6 +418,26 @@ func (c *Crawler) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Embed worker pool: when COSIFT_EMBED_DECOUPLE_WORKERS > 0 and we
+	// have an embedder + passageWriter wired, spin up the pool BEFORE
+	// crawler workers so the hot-path decoupled branch (processClaimed)
+	// has a non-nil c.embedQ to push onto. Each embed worker is a
+	// dedicated goroutine doing Embed → UpsertPassage[Batch], freeing
+	// crawl workers from synchronous embed + HNSW write latency.
+	var embedWG sync.WaitGroup
+	if c.embedder != nil && c.passageWriter != nil {
+		embedWorkers := envIntCrawler("COSIFT_EMBED_DECOUPLE_WORKERS", 0)
+		if embedWorkers > 0 {
+			bufSize := envIntCrawler("COSIFT_EMBED_DECOUPLE_BUFFER", 4096)
+			c.embedQ = make(chan *embedJob, bufSize)
+			for i := 0; i < embedWorkers; i++ {
+				embedWG.Add(1)
+				go c.embedWorker(runCtx, &embedWG)
+			}
+			log.Printf("crawler: embed decouple ON (%d workers, %d-buf)", embedWorkers, bufSize)
+		}
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -410,7 +455,91 @@ func (c *Crawler) Run(ctx context.Context) error {
 	}
 
 	wg.Wait()
+	// Close embedQ AFTER crawl workers have exited (no more producers),
+	// then wait for embed workers to drain. Otherwise an early close
+	// would race a still-running crawl worker's send and panic.
+	if c.embedQ != nil {
+		close(c.embedQ)
+		embedWG.Wait()
+		log.Printf("crawler: embed pool drained — queued=%d done=%d failed=%d dropped=%d",
+			c.embedQueued.Load(), c.embedDone.Load(), c.embedFailed.Load(), c.embedDropped.Load())
+	}
 	return nil
+}
+
+// envIntCrawler reads an integer env var, falling back to def on parse
+// failure. Used for the embed-decouple knobs so operators can tune
+// without a config-file edit.
+func envIntCrawler(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// embedWorker drains c.embedQ. For each job, embeds the chunk texts and
+// writes passages to the configured PassageWriter. Uses the optional
+// batch writer when available for one HNSW lock per doc instead of
+// one per chunk.
+func (c *Crawler) embedWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for job := range c.embedQ {
+		vecs, err := c.embedder.Embed(ctx, job.texts)
+		if err != nil {
+			c.embedFailed.Add(1)
+			log.Printf("embed-decouple %s: %v", job.url, err)
+			continue
+		}
+		if len(vecs) != len(job.chunks) {
+			c.embedFailed.Add(1)
+			continue
+		}
+		// Mirror the synchronous path's zombie reclaim so re-crawled
+		// URLs don't accumulate generations of vectors in HNSW.
+		if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+			if inv, ok := c.passageWriter.(URLInvalidator); ok {
+				_, _ = inv.MarkURLInvalid(ctx, job.url)
+			}
+		}
+		// Prefer the batch interface (single HNSW lock for the whole
+		// doc) over per-chunk writes.
+		if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
+			ps := make([]*store.Passage, len(job.chunks))
+			for i, ch := range job.chunks {
+				ps[i] = &store.Passage{
+					DocID:     job.docID,
+					Offset:    ch.Offset,
+					Length:    ch.Length,
+					Model:     c.embedder.Model(),
+					Embedding: vecs[i],
+				}
+			}
+			if err := bw.UpsertPassageBatch(ctx, ps); err != nil {
+				c.embedFailed.Add(1)
+				log.Printf("embed-decouple batch %s: %v", job.url, err)
+				continue
+			}
+		} else {
+			for i, ch := range job.chunks {
+				p := &store.Passage{
+					DocID:     job.docID,
+					Offset:    ch.Offset,
+					Length:    ch.Length,
+					Model:     c.embedder.Model(),
+					Embedding: vecs[i],
+				}
+				if err := c.passageWriter.UpsertPassage(ctx, p); err != nil {
+					log.Printf("embed-decouple passage %s offset=%d: %v", job.url, ch.Offset, err)
+				}
+			}
+		}
+		c.embedDone.Add(1)
+	}
 }
 
 // statusDumper writes a JSON snapshot of crawl progress every 10s to path.
@@ -836,6 +965,17 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			texts := make([]string, len(chunks))
 			for i, ch := range chunks {
 				texts[i] = truncateForEmbed(ch.Text, tokenCap)
+			}
+			if c.embedQ != nil {
+				job := &embedJob{url: item.URL, docID: id, chunks: chunks, texts: texts}
+				select {
+				case c.embedQ <- job:
+					c.embedQueued.Add(1)
+				default:
+					c.embedDropped.Add(1)
+				}
+				c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
+				return nil
 			}
 			vecs, embErr := c.embedder.Embed(ctx, texts)
 			if embErr != nil {
