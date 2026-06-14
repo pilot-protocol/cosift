@@ -2230,49 +2230,76 @@ func (p *PebbleStore) PurgeFrontierByHost(ctx context.Context, host string) (int
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Scan the 'f'+'q'+host+0x00+url secondary index for this host.
-	prefix := make([]byte, 2+len(host)+1)
-	prefix[0] = famFrontier
-	prefix[1] = 'q'
-	copy(prefix[2:], host)
-	prefix[2+len(host)] = 0x00
-	upper := make([]byte, len(prefix))
-	copy(upper, prefix)
-	upper[len(upper)-1] = 0x01 // bump past the 0x00 separator block
-
-	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upper})
-	if err != nil {
-		return 0, err
-	}
-	defer it.Close()
-
 	batch := p.db.NewBatch()
 	defer batch.Close()
 	count := 0
-	for valid := it.First(); valid; valid = it.Next() {
-		key := it.Key()
-		// Recover the URL portion (after the 0x00 separator).
-		urlPart := key[len(prefix):]
-		// Delete the secondary index entry...
-		secCopy := make([]byte, len(key))
-		copy(secCopy, key)
-		if err := batch.Delete(secCopy, nil); err != nil {
-			return count, err
+
+	// purgeRange walks one secondary-index prefix range, deleting both the
+	// secondary entry and its primary 'f'+'u'+url counterpart.
+	// urlOffset is the byte position where the URL starts within each
+	// matching key (after host and 0x00 separator).
+	purgeRange := func(prefix, upper []byte, urlOffset int) error {
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upper})
+		if err != nil {
+			return err
 		}
-		// ...and the primary 'f'+'u'+url entry.
-		if err := batch.Delete(frontierKey(string(urlPart)), nil); err != nil {
-			return count, err
-		}
-		count++
-		// Commit in 5k-entry chunks to bound memory.
-		if count%5000 == 0 {
-			if err := batch.Commit(p.writeOpts); err != nil {
-				return count, err
+		defer it.Close()
+		for valid := it.First(); valid; valid = it.Next() {
+			key := it.Key()
+			if len(key) <= urlOffset {
+				continue
 			}
-			batch.Close()
-			batch = p.db.NewBatch()
+			urlPart := key[urlOffset:]
+			secCopy := append([]byte{}, key...)
+			if err := batch.Delete(secCopy, nil); err != nil {
+				return err
+			}
+			if err := batch.Delete(frontierKey(string(urlPart)), nil); err != nil {
+				return err
+			}
+			count++
+			if count%5000 == 0 {
+				if err := batch.Commit(p.writeOpts); err != nil {
+					return err
+				}
+				batch.Close()
+				batch = p.db.NewBatch()
+			}
+		}
+		return nil
+	}
+
+	// 1. Legacy 'f'+'q'+host+0x00+url range (pre-lanes entries).
+	legacyPrefix := make([]byte, 2+len(host)+1)
+	legacyPrefix[0] = famFrontier
+	legacyPrefix[1] = 'q'
+	copy(legacyPrefix[2:], host)
+	legacyPrefix[2+len(host)] = 0x00
+	legacyUpper := append([]byte{}, legacyPrefix...)
+	legacyUpper[len(legacyUpper)-1] = 0x01
+	if err := purgeRange(legacyPrefix, legacyUpper, len(legacyPrefix)); err != nil {
+		return count, err
+	}
+
+	// 2. Lane-aware 'f'+'q'+lane+host+0x00+url range for every lane. This
+	// catches hosts demoted via DemoteHostToLane (which moved the
+	// cloud.google.com 2.8M URL block to lane 3 — the original purge
+	// implementation was lane-blind and silently missed them, returning
+	// "purged: 291" on a host with 2.8M queued entries).
+	for lane := byte(0); lane < laneCount; lane++ {
+		lanePrefix := make([]byte, 3+len(host)+1)
+		lanePrefix[0] = famFrontier
+		lanePrefix[1] = 'q'
+		lanePrefix[2] = lane
+		copy(lanePrefix[3:], host)
+		lanePrefix[3+len(host)] = 0x00
+		laneUpper := append([]byte{}, lanePrefix...)
+		laneUpper[len(laneUpper)-1] = 0x01
+		if err := purgeRange(lanePrefix, laneUpper, len(lanePrefix)); err != nil {
+			return count, err
 		}
 	}
+
 	if err := batch.Commit(p.writeOpts); err != nil {
 		return count, err
 	}

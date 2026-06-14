@@ -61,6 +61,20 @@ type LexicalIndexer interface {
 	IndexDocument(ctx context.Context, docID int64, title, text string) error
 }
 
+// HostFrontierPurger is the optional surface the in-crawler host sweeper
+// uses to drain dead hosts. Pebble satisfies it; the SQLite legacy path
+// doesn't need it (no auto-sweeper there).
+type HostFrontierPurger interface {
+	PurgeFrontierByHost(ctx context.Context, host string) (int, error)
+}
+
+// HostFrontierDemoter lets the sweeper move low-yield hosts to the
+// bulk lane so they keep consuming worker cycles at lane 3's 5% weight
+// instead of crowding lanes 1/2.
+type HostFrontierDemoter interface {
+	DemoteHostToLane(ctx context.Context, host string, lane byte) (int, error)
+}
+
 // PassageWriter is the optional vector-write surface. *store.Store
 // satisfies it via UpsertPassage; *store.PebbleStore does NOT (Pebble's
 // vector path goes through index.HNSW.AddPassage + periodic Persist —

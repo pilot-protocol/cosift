@@ -96,6 +96,12 @@ type Crawler struct {
 	// WriteCrawlResult. The worker checks this set before its own
 	// CompleteFrontier call so we don't pay a redundant mu hop.
 	completedInlineSet sync.Map // url (string) → struct{}
+
+	// Auto-blocked hosts: populated by hostSweeperLoop when a host's
+	// success rate falls below the dead threshold. The link-discovery
+	// path (enqueueLinks) consults this set so we don't keep
+	// re-enqueuing the same dead URLs the sweeper just purged.
+	autoBlocked sync.Map // host (string) → struct{}
 }
 
 // markCompletedInline records that the URL's frontier transition
@@ -462,6 +468,10 @@ func (c *Crawler) Run(ctx context.Context) error {
 		go c.worker(runCtx, &wg, gate)
 	}
 	go c.terminator(runCtx, cancel)
+	// Self-cleaning host sweeper: every 10 min (default), purges hosts
+	// with consistently-failing fetches and demotes low-yield ones.
+	// Eliminates the need for manual /admin/frontier-purge-host calls.
+	go c.hostSweeperLoop(runCtx)
 
 	// Pebble's single-writer lock blocks
 	// `cosift stats -backend=pebble` from any sidecar process during a live
@@ -701,6 +711,132 @@ func (c *Crawler) isHostBlacklisted(host string) bool {
 	}
 	succ := s.successes.Load()
 	return float64(succ)/float64(att) < 0.20
+}
+
+// hostSweeperLoop runs in the background, periodically walking hostStats
+// to find dead (success_rate < 20%) and weak (20–50%) hosts. Dead hosts
+// have their frontier entries purged AND get marked permanently
+// blacklisted in autoBlocked so future link discovery skips them. Weak
+// hosts get demoted to lane 3 (bulk, 5% weight) so they keep draining
+// but don't crowd lane 1 / lane 2.
+//
+// Removes the operator's need to manually invoke /admin/frontier-purge-host
+// and /admin/frontier-demote-host: the crawler keeps its own queue clean.
+//
+// Configurable via env:
+//
+//	COSIFT_HOSTSWEEP_INTERVAL_SEC (default 600 = 10 min)
+//	COSIFT_HOSTSWEEP_MIN_ATTEMPTS (default 100)
+//	COSIFT_HOSTSWEEP_DEAD_RATE    (default 0.20 — purge below this)
+//	COSIFT_HOSTSWEEP_WEAK_RATE    (default 0.50 — demote between dead and weak)
+//	COSIFT_HOSTSWEEP_DISABLED     ("1" disables the sweeper entirely)
+func (c *Crawler) hostSweeperLoop(ctx context.Context) {
+	if os.Getenv("COSIFT_HOSTSWEEP_DISABLED") == "1" {
+		return
+	}
+	interval := time.Duration(envIntCrawler("COSIFT_HOSTSWEEP_INTERVAL_SEC", 600)) * time.Second
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+	minAttempts := int32(envIntCrawler("COSIFT_HOSTSWEEP_MIN_ATTEMPTS", 100))
+	deadRate := envFloatCrawler("COSIFT_HOSTSWEEP_DEAD_RATE", 0.20)
+	weakRate := envFloatCrawler("COSIFT_HOSTSWEEP_WEAK_RATE", 0.50)
+	purger, hasPurger := c.store.(HostFrontierPurger)
+	demoter, hasDemoter := c.store.(HostFrontierDemoter)
+	log.Printf("crawler: host sweeper ON (interval=%s, min_attempts=%d, dead<%.2f, weak<%.2f, purger=%v, demoter=%v)",
+		interval, minAttempts, deadRate, weakRate, hasPurger, hasDemoter)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		c.runHostSweep(ctx, minAttempts, deadRate, weakRate, purger, demoter)
+	}
+}
+
+// runHostSweep is one pass of the host sweeper. Extracted so tests can
+// invoke it deterministically without spinning up the ticker.
+func (c *Crawler) runHostSweep(
+	ctx context.Context,
+	minAttempts int32,
+	deadRate, weakRate float64,
+	purger HostFrontierPurger,
+	demoter HostFrontierDemoter,
+) {
+	type hostJudgement struct {
+		host    string
+		dead    bool
+		attempts int32
+		successes int32
+	}
+	var verdicts []hostJudgement
+	c.hostStats.Range(func(k, v any) bool {
+		host, _ := k.(string)
+		s, _ := v.(*hostFetchStats)
+		if host == "" || s == nil {
+			return true
+		}
+		att := s.attempts.Load()
+		if att < minAttempts {
+			return true
+		}
+		// Skip hosts we already auto-blocked in a prior tick. The block
+		// set is consulted in the link-discovery path so we don't keep
+		// re-enqueuing the same dead URLs.
+		if _, blocked := c.autoBlocked.Load(host); blocked {
+			return true
+		}
+		succ := s.successes.Load()
+		rate := float64(succ) / float64(att)
+		switch {
+		case rate < deadRate:
+			verdicts = append(verdicts, hostJudgement{host: host, dead: true, attempts: att, successes: succ})
+		case rate < weakRate:
+			verdicts = append(verdicts, hostJudgement{host: host, dead: false, attempts: att, successes: succ})
+		}
+		return true
+	})
+	for _, v := range verdicts {
+		rate := float64(v.successes) / float64(v.attempts)
+		if v.dead {
+			if purger != nil {
+				n, err := purger.PurgeFrontierByHost(ctx, v.host)
+				if err != nil {
+					log.Printf("host-sweep: purge %s failed: %v", v.host, err)
+					continue
+				}
+				c.autoBlocked.Store(v.host, struct{}{})
+				log.Printf("host-sweep: PURGED %s (%d urls, %d/%d success_rate=%.2f)", v.host, n, v.successes, v.attempts, rate)
+			}
+		} else {
+			if demoter != nil {
+				n, err := demoter.DemoteHostToLane(ctx, v.host, 3) // LaneBulk
+				if err != nil {
+					log.Printf("host-sweep: demote %s failed: %v", v.host, err)
+					continue
+				}
+				log.Printf("host-sweep: DEMOTED %s to lane 3 (%d urls, success_rate=%.2f)", v.host, n, rate)
+			}
+		}
+	}
+}
+
+// envFloatCrawler reads a float env var, falling back to def on parse
+// failure. Used for the sweeper thresholds (rate values).
+func envFloatCrawler(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		return def
+	}
+	return f
 }
 
 // recordHostResult updates per-host success/attempt counters. Called from
@@ -1156,6 +1292,14 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 			continue
 		}
 		// per-link depth check against the CHILD's host cap.
+		// Skip any host the host sweeper auto-blocked (high error rate
+		// resulted in PurgeFrontierByHost — re-enqueuing it would just
+		// undo that work).
+		if u2, perr := url.Parse(canon); perr == nil {
+			if _, blocked := c.autoBlocked.Load(u2.Host); blocked {
+				continue
+			}
+		}
 		// A child on a host with override=1 is dropped if depth would exceed 1,
 		// even if the default MaxDepth is much higher (and vice versa).
 		u, err := url.Parse(canon)
