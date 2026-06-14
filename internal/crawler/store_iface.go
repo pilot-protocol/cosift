@@ -40,6 +40,21 @@ type CrawlerStore interface {
 	GetDocByURL(ctx context.Context, url string) (*store.Document, error)
 }
 
+// CrawlResultWriter folds UpsertDocument + IndexDocument +
+// CompleteFrontier into a SINGLE mu acquire + SINGLE batch commit. When
+// the store satisfies this interface, the crawler hot path uses it to
+// shave 2/3 of the per-doc lock-queue waits. Optional: stores that don't
+// implement it fall back to the legacy three-call path automatically.
+type CrawlResultWriter interface {
+	WriteCrawlResult(
+		ctx context.Context,
+		d *store.Document,
+		title, text, completeURL string,
+		tokenize func(string) []string,
+		titleBoost int,
+	) (int64, error)
+}
+
 // LexicalIndexer abstracts the BM25 writer. Both *index.BM25 (SQLite) and
 // *index.PebbleBM25 satisfy the single-method signature.
 type LexicalIndexer interface {

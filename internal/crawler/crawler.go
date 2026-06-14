@@ -91,6 +91,24 @@ type Crawler struct {
 	embedDropped   atomic.Int64
 	embedDone      atomic.Int64
 	embedFailed    atomic.Int64
+
+	// URLs whose frontier transition happened inside processClaimed via
+	// WriteCrawlResult. The worker checks this set before its own
+	// CompleteFrontier call so we don't pay a redundant mu hop.
+	completedInlineSet sync.Map // url (string) → struct{}
+}
+
+// markCompletedInline records that the URL's frontier transition
+// happened inside processClaimed (via WriteCrawlResult).
+func (c *Crawler) markCompletedInline(url string) {
+	c.completedInlineSet.Store(url, struct{}{})
+}
+
+// takeCompletedInline returns true and clears the marker if the URL was
+// completed inline. Returns false otherwise.
+func (c *Crawler) takeCompletedInline(url string) bool {
+	_, ok := c.completedInlineSet.LoadAndDelete(url)
+	return ok
 }
 
 // embedJob is one unit of work for the embed worker pool.
@@ -658,7 +676,9 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 			_ = c.store.FailFrontier(ctx, item.URL, err.Error())
 			continue
 		}
-		_ = c.store.CompleteFrontier(ctx, item.URL)
+		if !c.takeCompletedInline(item.URL) {
+			_ = c.store.CompleteFrontier(ctx, item.URL)
+		}
 	}
 }
 
@@ -929,12 +949,34 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		Image:         parsed.Image,       // og:image / twitter:image / JSON-LD image (empty if absent)
 		Favicon:       parsed.Favicon,     // <link rel="icon"> resolved absolute (empty if absent)
 	}
-	id, err := c.store.UpsertDocument(ctx, doc)
-	if err != nil {
-		return err
+	// Prefer the combined-write path when the store supports it: one mu
+	// hop covers Upsert+Index+Complete instead of three separate calls.
+	// Marks frontier Done inline so the worker skips its own
+	// CompleteFrontier call (signalled via c.completedInline pulled off
+	// the item-scoped flag below).
+	var id int64
+	var completedInline bool
+	if w, ok := c.store.(CrawlResultWriter); ok {
+		var err error
+		id, err = w.WriteCrawlResult(ctx, doc, parsed.Title, parsed.Text, item.URL, index.Tokenize, index.TitleBoost)
+		if err != nil {
+			return err
+		}
+		completedInline = true
+	} else {
+		var err error
+		id, err = c.store.UpsertDocument(ctx, doc)
+		if err != nil {
+			return err
+		}
+		if err := c.idx.IndexDocument(ctx, id, parsed.Title, parsed.Text); err != nil {
+			return err
+		}
 	}
-	if err := c.idx.IndexDocument(ctx, id, parsed.Title, parsed.Text); err != nil {
-		return err
+	// Stash on the context-bound item so the worker loop can skip its
+	// own CompleteFrontier call when WriteCrawlResult already did it.
+	if completedInline {
+		c.markCompletedInline(item.URL)
 	}
 
 	// Dense indexing — optional, non-fatal. Multi-passage: chunk into ~512-token

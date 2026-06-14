@@ -1258,6 +1258,222 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	return nil
 }
 
+// WriteCrawlResult combines UpsertDocument + IndexDocument + CompleteFrontier
+// into a SINGLE p.mu acquisition + SINGLE batch commit. This is the fix for
+// the per-doc serialization wall: with 512 crawler workers contending on
+// p.mu, three separate writes per doc means three lock-queue waits per
+// cycle. Folded together, each finished crawl costs ONE mu hop, slashing
+// queue depth at the lock by 3x.
+//
+// Tokenization runs OUTSIDE the lock (CPU-only, no shared state). The
+// term-info / prior-doc-terms reads stay inside because they depend on
+// term IDs allocated under the lock; moving them out would race the ID
+// allocator on cold terms.
+//
+// If completeURL is empty the frontier transition step is skipped — lets
+// the same path serve ingest flows (WET, JSONL) that have no frontier
+// row to clear.
+func (p *PebbleStore) WriteCrawlResult(
+	ctx context.Context,
+	d *Document,
+	title, text, completeURL string,
+	tokenize func(string) []string,
+	titleBoost int,
+) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if d == nil || d.URL == "" {
+		return 0, errors.New("PebbleStore.WriteCrawlResult: nil doc or empty URL")
+	}
+	if titleBoost <= 0 {
+		titleBoost = 1
+	}
+
+	// Tokenize before acquiring the lock so 300+ workers can run their
+	// CPU-bound tokenization in parallel instead of queuing on mu.
+	titleTokens := tokenize(title)
+	bodyTokens := tokenize(text)
+	tf := make(map[string]int, len(titleTokens)+len(bodyTokens))
+	for _, t := range titleTokens {
+		tf[t] += titleBoost
+	}
+	for _, t := range bodyTokens {
+		tf[t]++
+	}
+	docLen := len(titleTokens) + len(bodyTokens)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// ---- Upsert phase ----
+	var id int64
+	var isNew bool
+	if existingID, ok, err := p.lookupIDByURL(d.URL); err != nil {
+		return 0, err
+	} else if ok {
+		id = existingID
+	} else {
+		id = p.nextID.Add(1)
+		isNew = true
+	}
+	d.ID = id
+	if isNew && os.Getenv("COSIFT_DEBUG_UPSERT") == "1" {
+		fmt.Fprintf(os.Stderr, "upsert-new: id=%d url=%s\n", id, d.URL)
+	}
+
+	var docBuf bytes.Buffer
+	if err := gob.NewEncoder(&docBuf).Encode(d); err != nil {
+		return 0, fmt.Errorf("encode doc: %w", err)
+	}
+	idBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(idBuf, uint64(id))
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(docKey(id), docBuf.Bytes(), nil); err != nil {
+		return 0, err
+	}
+	if err := batch.Set(urlKey(d.URL), idBuf, nil); err != nil {
+		return 0, err
+	}
+	if err := batch.Set(docMetaKey(id), packDocMeta(d.URL, d.Title), nil); err != nil {
+		return 0, err
+	}
+	if d.Domain != "" {
+		if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
+			return 0, err
+		}
+	}
+	if isNew {
+		if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
+			return 0, err
+		}
+	}
+
+	// ---- Index phase ----
+	if len(tf) > 0 {
+		lenBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(lenBuf, uint64(docLen))
+
+		oldLen, hadOld, err := p.readDocLenLocked(id)
+		if err != nil {
+			return 0, err
+		}
+		var sumLen, indexedCount int64
+		if p.corpusStatsLoaded.Load() {
+			sumLen = p.corpusSumLen.Load()
+			indexedCount = p.corpusIndexedDocs.Load()
+		} else {
+			sumLen = p.readMetaInt64Locked("sum_doc_len")
+			indexedCount = p.readMetaInt64Locked("indexed_docs")
+		}
+		if hadOld {
+			sumLen -= oldLen
+		} else {
+			indexedCount++
+		}
+		sumLen += int64(docLen)
+
+		if err := batch.Set(docLenKey(id), lenBuf, nil); err != nil {
+			return 0, err
+		}
+		sumBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+		if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+			return 0, err
+		}
+		countBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
+		if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+			return 0, err
+		}
+
+		oldTermIDs, err := p.readDocTermsLocked(id)
+		if err != nil {
+			return 0, err
+		}
+		oldSet := make(map[int64]struct{}, len(oldTermIDs))
+		for _, tid := range oldTermIDs {
+			oldSet[tid] = struct{}{}
+		}
+		newSet := make(map[int64]struct{}, len(tf))
+
+		for term, freq := range tf {
+			info, ok, err := p.getTermInfoLocked(term)
+			if err != nil {
+				return 0, err
+			}
+			if !ok {
+				info.ID = p.nextTermID()
+				info.DocFreq = 1
+			} else if _, alreadyIn := oldSet[info.ID]; !alreadyIn {
+				info.DocFreq++
+			}
+			newSet[info.ID] = struct{}{}
+			if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
+				return 0, err
+			}
+			pvBuf := make([]byte, 16)
+			binary.BigEndian.PutUint64(pvBuf[0:8], uint64(freq))
+			binary.BigEndian.PutUint64(pvBuf[8:16], uint64(docLen))
+			if err := batch.Set(postingKey(info.ID, id), pvBuf, nil); err != nil {
+				return 0, err
+			}
+		}
+		for oldID := range oldSet {
+			if _, stillPresent := newSet[oldID]; stillPresent {
+				continue
+			}
+			if err := batch.Delete(postingKey(oldID, id), nil); err != nil {
+				return 0, err
+			}
+		}
+		newIDs := make([]int64, 0, len(newSet))
+		for tid := range newSet {
+			newIDs = append(newIDs, tid)
+		}
+		if err := batch.Set(docTermsKey(id), packDocTerms(newIDs), nil); err != nil {
+			return 0, err
+		}
+
+		// Mirror counters AFTER commit succeeds.
+		defer func() {
+			p.corpusSumLen.Store(sumLen)
+			p.corpusIndexedDocs.Store(indexedCount)
+			p.corpusStatsLoaded.Store(true)
+		}()
+	}
+
+	// ---- CompleteFrontier phase ----
+	if completeURL != "" {
+		if val, closer, err := p.db.Get(frontierKey(completeURL)); err == nil {
+			entry, uerr := unpackFrontierEntry(val)
+			_ = closer.Close()
+			if uerr == nil {
+				oldStatus := entry.Status
+				entry.Status = FrontierStatusDone
+				if err := batch.Set(frontierKey(completeURL), packFrontierEntry(entry), nil); err != nil {
+					return 0, err
+				}
+				switch oldStatus {
+				case FrontierStatusQueued:
+					_ = batch.Delete(frontierStatusIndexKey('q', entry.Host, completeURL), nil)
+					_ = batch.Delete(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, completeURL), nil)
+				case FrontierStatusInFlight:
+					_ = batch.Delete(frontierStatusIndexKey('i', entry.Host, completeURL), nil)
+					_ = batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, completeURL), nil)
+				}
+			}
+		}
+	}
+
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return 0, fmt.Errorf("WriteCrawlResult commit: %w", err)
+	}
+	return id, nil
+}
+
 // PushFrontier inserts a URL into the queue at LaneDiscovered (the
 // crawler-default lane). Thin wrapper around PushFrontierLane kept for
 // backwards compat with callers (crawler outbound-link discovery) that
