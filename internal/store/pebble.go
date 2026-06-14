@@ -1266,6 +1266,85 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 	return p.PushFrontierLane(ctx, url, depth, LaneDiscovered, priority)
 }
 
+// FrontierPushItem is one entry handed to PushFrontierBatch. Callers
+// typically pass the URL list straight from a parsed feed/sitemap; the
+// store extracts the host and writes both the primary and lane-aware
+// secondary index keys.
+type FrontierPushItem struct {
+	URL      string
+	Depth    int
+	Lane     byte
+	Priority float64
+}
+
+// PushFrontierBatch inserts N URLs in a single Pebble batch + single
+// mu acquire. This is the fix for the "rss-import takes 14 minutes"
+// problem: per-URL PushFrontierLane calls fight 256 crawler workers
+// for p.mu, dragging a 25-URL feed to ~14 minutes wall-clock. Batched,
+// the same feed lands in tens of milliseconds.
+//
+// Dedup semantics match PushFrontierLane: if frontierKey(url) exists
+// in any state, that URL is skipped (no overwrite). Returns the count
+// actually written (new URLs only); duplicates are silently ignored
+// so callers can pre-count for telemetry without double-checking.
+func (p *PebbleStore) PushFrontierBatch(ctx context.Context, items []FrontierPushItem) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+
+	written := 0
+	now := time.Now().Unix()
+	for _, it := range items {
+		if it.URL == "" {
+			continue
+		}
+		lane := it.Lane
+		if lane >= laneCount {
+			lane = LaneDiscovered
+		}
+		// Dedup against existing frontier rows. One Get per URL is the
+		// price of INSERT-OR-IGNORE; cheaper than the post-hoc batch
+		// reconciliation a true bulk-load would need.
+		if _, closer, err := p.db.Get(frontierKey(it.URL)); err == nil {
+			_ = closer.Close()
+			continue
+		} else if !errors.Is(err, pebble.ErrNotFound) {
+			return written, err
+		}
+		host := extractHost(it.URL)
+		entry := frontierEntry{
+			Status:     FrontierStatusQueued,
+			Depth:      int64(it.Depth),
+			Priority:   it.Priority,
+			EnqueuedAt: now,
+			Host:       host,
+			Lane:       lane,
+		}
+		if err := batch.Set(frontierKey(it.URL), packFrontierEntry(entry), nil); err != nil {
+			return written, err
+		}
+		if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, it.URL), nil, nil); err != nil {
+			return written, err
+		}
+		written++
+	}
+	if written == 0 {
+		return 0, nil
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
 // PushFrontierLane inserts a URL into a specific lane. INSERT-OR-IGNORE:
 // if the URL already exists in any state (including legacy pre-lane
 // entries), this is a no-op. Writes the lane-aware 'f'+'q'+lane secondary
@@ -2020,6 +2099,158 @@ func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, erro
 		}
 	}
 	return s, nil
+}
+
+// DemoteHostToLane walks every queued URL for the given host (across
+// both legacy and lane-aware indexes) and rewrites it to the target
+// lane. Used to clear host-fair scheduling bottlenecks where one host
+// (cloud.google.com had 2.8M legacy URLs on the GH200, blocking 65% of
+// the queue with its slow JS-rendered pages) hogs claim slots from
+// fresher content. Re-keys atomically in 1024-URL batches.
+//
+// Returns the count of URLs moved. Safe to re-run — already-demoted
+// URLs (already in target lane) are skipped.
+func (p *PebbleStore) DemoteHostToLane(ctx context.Context, host string, lane byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if lane >= laneCount {
+		return 0, fmt.Errorf("DemoteHostToLane: lane %d out of range 0..%d", lane, laneCount-1)
+	}
+	if host == "" {
+		return 0, fmt.Errorf("DemoteHostToLane: empty host")
+	}
+
+	const batchSize = 1024
+	moved := 0
+	// Walk both the legacy 'q'+host+... and lane-aware 'q'+lane+host+...
+	// keyspaces. For each, collect URLs first (so we don't iterate while
+	// mutating) then re-key in batches.
+	collect := func(legacy bool, srcLane byte) ([]string, error) {
+		var lo, hi []byte
+		if legacy {
+			lo = make([]byte, 2+len(host)+1)
+			lo[0] = famFrontier
+			lo[1] = 'q'
+			copy(lo[2:], host)
+			lo[2+len(host)] = 0x00
+			hi = make([]byte, len(lo))
+			copy(hi, lo)
+			hi[len(hi)-1] = 0x01
+		} else {
+			lo = make([]byte, 3+len(host)+1)
+			lo[0] = famFrontier
+			lo[1] = 'q'
+			lo[2] = srcLane
+			copy(lo[3:], host)
+			lo[3+len(host)] = 0x00
+			hi = make([]byte, len(lo))
+			copy(hi, lo)
+			hi[len(hi)-1] = 0x01
+		}
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		if err != nil {
+			return nil, err
+		}
+		defer it.Close()
+		var urls []string
+		urlOffset := len(lo)
+		for valid := it.First(); valid; valid = it.Next() {
+			k := it.Key()
+			if len(k) <= urlOffset {
+				continue
+			}
+			urls = append(urls, string(k[urlOffset:]))
+		}
+		return urls, nil
+	}
+
+	rekeyBatch := func(urls []string, sourceLegacy bool, srcLane byte) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		batch := p.db.NewBatch()
+		defer batch.Close()
+		for _, u := range urls {
+			val, closer, err := p.db.Get(frontierKey(u))
+			if errors.Is(err, pebble.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			entry, uerr := unpackFrontierEntry(val)
+			_ = closer.Close()
+			if uerr != nil {
+				return uerr
+			}
+			// Skip URLs whose status changed under us (e.g. claimed by a
+			// worker between collect and rekey). Only Queued rows have
+			// secondary 'q' entries to swap.
+			if entry.Status != FrontierStatusQueued {
+				continue
+			}
+			if entry.Lane == lane {
+				continue
+			}
+			// Delete the OLD secondary key (legacy or lane-aware as appropriate).
+			if sourceLegacy {
+				if err := batch.Delete(frontierStatusIndexKey('q', host, u), nil); err != nil {
+					return err
+				}
+			} else {
+				if err := batch.Delete(frontierStatusIndexKeyLane('q', srcLane, host, u), nil); err != nil {
+					return err
+				}
+			}
+			// Insert the NEW lane-aware secondary key.
+			if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, u), nil, nil); err != nil {
+				return err
+			}
+			// Update the primary entry value with the new lane.
+			entry.Lane = lane
+			if err := batch.Set(frontierKey(u), packFrontierEntry(entry), nil); err != nil {
+				return err
+			}
+			moved++
+		}
+		return batch.Commit(p.writeOpts)
+	}
+
+	// Legacy sweep.
+	urls, err := collect(true, 0)
+	if err != nil {
+		return moved, err
+	}
+	for i := 0; i < len(urls); i += batchSize {
+		end := i + batchSize
+		if end > len(urls) {
+			end = len(urls)
+		}
+		if err := rekeyBatch(urls[i:end], true, 0); err != nil {
+			return moved, err
+		}
+	}
+
+	// Lane-aware sweep across every source lane EXCEPT the target.
+	for sl := byte(0); sl < laneCount; sl++ {
+		if sl == lane {
+			continue
+		}
+		urls, err := collect(false, sl)
+		if err != nil {
+			return moved, err
+		}
+		for i := 0; i < len(urls); i += batchSize {
+			end := i + batchSize
+			if end > len(urls) {
+				end = len(urls)
+			}
+			if err := rekeyBatch(urls[i:end], false, sl); err != nil {
+				return moved, err
+			}
+		}
+	}
+	return moved, nil
 }
 
 // LaneStats is a per-lane queued/in_flight breakdown of the frontier.

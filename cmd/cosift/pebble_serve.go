@@ -493,6 +493,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
 	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", wrap(srv.handleFrontierClear))
+	mux.HandleFunc("POST /admin/frontier-demote-host", wrap(srv.handleFrontierDemoteHost))
 	mux.HandleFunc("POST /admin/rss-import", wrap(srv.handleRSSImport))
 	mux.HandleFunc("POST /admin/crawl-now", wrap(srv.handleCrawlNow))
 	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
@@ -2796,6 +2797,56 @@ func (s *pebbleHTTP) handleWETImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wet":     req.URL,
 		"indexed": n,
+		"elapsed": time.Since(t0).String(),
+	})
+}
+
+// handleFrontierDemoteHost re-keys every queued URL for a host into a
+// different lane. The escape hatch for the cloud.google.com problem:
+// 2.8M queued URLs on one host (65% of the queue) starve host-fair
+// claim slots from fresher lanes. Demote to lane 3 (bulk, 5% weight)
+// and lane 1/2 actually get the work.
+//
+// POST body: {"host": "cloud.google.com", "lane": 3}
+type frontierDemoteHostReq struct {
+	Host string `json:"host"`
+	Lane int    `json:"lane"`
+}
+
+func (s *pebbleHTTP) handleFrontierDemoteHost(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	ps, ok := any(s.store).(*store.PebbleStore)
+	if !ok {
+		writeProblem(w, http.StatusNotImplemented, "lanes are PebbleStore-only")
+		return
+	}
+	var req frontierDemoteHostReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.Host == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"host\":\"foo.com\",\"lane\":0..3}")
+		return
+	}
+	if req.Lane < 0 || req.Lane > 3 {
+		writeProblem(w, http.StatusBadRequest, "lane must be 0..3")
+		return
+	}
+	t0 := time.Now()
+	n, err := ps.DemoteHostToLane(r.Context(), req.Host, byte(req.Lane))
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("frontier-demote-host: moved %d URLs (%s -> lane %d) in %s", n, req.Host, req.Lane, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":    req.Host,
+		"lane":    req.Lane,
+		"moved":   n,
 		"elapsed": time.Since(t0).String(),
 	})
 }

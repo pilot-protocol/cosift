@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // Sitemap parser, intentionally minimal: handles the standard urlset shape,
@@ -59,15 +61,34 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 	// Bypass include_domains here for the same reason as SeedRSS: the
 	// operator explicitly requested this sitemap, so trust its URLs
 	// regardless of the curated crawler allowlist.
+	//
+	// Buffer URLs into 1024-item batches and flush via PushFrontierBatch.
+	// Single mu acquire per batch instead of per URL — at scale (MDN,
+	// kubernetes.io sitemaps with 100K+ URLs) this is the difference
+	// between a sitemap-import that returns in seconds vs an hour.
+	const batchSize = 1024
+	buf := make([]store.FrontierPushItem, 0, batchSize)
+	flush := func() {
+		if len(buf) == 0 {
+			return
+		}
+		w, perr := c.store.PushFrontierBatch(context.Background(), buf)
+		if perr == nil {
+			n += w
+		}
+		buf = buf[:0]
+	}
 	err := c.fetchSitemapStream(ctx, sitemapURL, 2, func(u string) {
 		canon, cerr := canonicalize(u)
 		if cerr != nil {
 			return
 		}
-		if perr := c.store.PushFrontierLane(context.Background(), canon, 0, 1, 1.0); perr == nil { // LaneRefresh
-			n++
+		buf = append(buf, store.FrontierPushItem{URL: canon, Depth: 0, Lane: 1, Priority: 1.0})
+		if len(buf) >= batchSize {
+			flush()
 		}
 	})
+	flush()
 	return n, err
 }
 

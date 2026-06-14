@@ -26,6 +26,7 @@ type CrawlerStore interface {
 	// Frontier
 	PushFrontier(ctx context.Context, url string, depth int, priority float64) error
 	PushFrontierLane(ctx context.Context, url string, depth int, lane byte, priority float64) error
+	PushFrontierBatch(ctx context.Context, items []store.FrontierPushItem) (int, error)
 	ClaimFrontier(ctx context.Context) (store.FrontierItem, bool, error)
 	CompleteFrontier(ctx context.Context, url string) error
 	FailFrontier(ctx context.Context, url, errMsg string) error
