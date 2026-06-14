@@ -494,6 +494,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", wrap(srv.handleFrontierClear))
 	mux.HandleFunc("POST /admin/frontier-demote-host", wrap(srv.handleFrontierDemoteHost))
+	mux.HandleFunc("POST /admin/frontier-purge-stale-inflight", wrap(srv.handleFrontierPurgeStaleInFlight))
 	mux.HandleFunc("POST /admin/rss-import", wrap(srv.handleRSSImport))
 	mux.HandleFunc("POST /admin/crawl-now", wrap(srv.handleCrawlNow))
 	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
@@ -2849,6 +2850,35 @@ func (s *pebbleHTTP) handleFrontierDemoteHost(w http.ResponseWriter, r *http.Req
 		"moved":   n,
 		"elapsed": time.Since(t0).String(),
 	})
+}
+
+// handleFrontierPurgeStaleInFlight clears the stale 'i' secondary keys
+// left over from the pre-fix RecoverInFlight bug. Pre-fix, every restart
+// re-queued in-flight URLs via the LEGACY 'q' index only and skipped the
+// lane-aware 'i' delete, so each restart leaked the URL's lane-aware 'i'
+// key. GetLaneStats then reported impossibly-high in_flight counts
+// (>max_concurrent). Idempotent — re-running is a no-op once clean.
+func (s *pebbleHTTP) handleFrontierPurgeStaleInFlight(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	ps, ok := any(s.store).(*store.PebbleStore)
+	if !ok {
+		writeProblem(w, http.StatusNotImplemented, "PebbleStore-only")
+		return
+	}
+	t0 := time.Now()
+	n, err := ps.PurgeStaleInFlight(r.Context())
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("frontier-purge-stale-inflight: purged %d keys in %s", n, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{"purged": n, "elapsed": time.Since(t0).String()})
 }
 
 // handleRSSImport fetches an RSS 2.0 or Atom feed and pushes every <item>/

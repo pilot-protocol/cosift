@@ -2416,15 +2416,101 @@ func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
 		if err := batch.Set(key, packFrontierEntry(entry), nil); err != nil {
 			return err
 		}
-		// rebuild secondary indexes for the transition.
+		// rebuild secondary indexes for the transition. Blind-delete BOTH
+		// formats so stale 'i' keys from prior code revisions (or from a
+		// crash that landed mid-transition) are cleaned up — without this
+		// the lane-aware 'i' index leaked across restarts and GetLaneStats
+		// reported impossibly-high in_flight counts.
 		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
 			return err
 		}
-		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil); err != nil {
+			return err
+		}
+		// Re-queue in the lane that the entry already belongs to — keeps
+		// recovered work in its original priority class instead of all
+		// reverting to the legacy fallback (which was the silent
+		// regression on every restart before this fix).
+		if err := batch.Set(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	}
 	return batch.Commit(p.writeOpts)
+}
+
+// PurgeStaleInFlight scans both legacy and lane-aware 'f'+'i'+... keys
+// and drops any without a matching primary entry in InFlight status. Use
+// after a code upgrade that fixed an 'i'-cleanup bug: the new code will
+// no longer leak keys, but pre-fix leftovers remain until this sweep.
+// Cheap key-only iteration; returns the count purged.
+func (p *PebbleStore) PurgeStaleInFlight(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'i'},
+		UpperBound: []byte{famFrontier, 'i' + 1},
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	purged := 0
+	for valid := it.First(); valid; valid = it.Next() {
+		k := it.Key()
+		if len(k) < 3 {
+			continue
+		}
+		var host, url string
+		if k[2] < laneCount {
+			host, _ = frontierStatusIndexHostLane(k)
+			urlOffset := 3 + len(host) + 1
+			if urlOffset > len(k) {
+				continue
+			}
+			url = string(k[urlOffset:])
+		} else {
+			host = frontierStatusIndexHost(k)
+			urlOffset := 2 + len(host) + 1
+			if urlOffset > len(k) {
+				continue
+			}
+			url = string(k[urlOffset:])
+		}
+		// Look up the primary; if missing OR not InFlight, the secondary
+		// key is stale.
+		val, closer, gerr := p.db.Get(frontierKey(url))
+		if errors.Is(gerr, pebble.ErrNotFound) {
+			keyCopy := append([]byte{}, k...)
+			if err := batch.Delete(keyCopy, nil); err != nil {
+				return purged, err
+			}
+			purged++
+			continue
+		}
+		if gerr != nil {
+			return purged, gerr
+		}
+		entry, uerr := unpackFrontierEntry(val)
+		_ = closer.Close()
+		if uerr != nil || entry.Status != FrontierStatusInFlight {
+			keyCopy := append([]byte{}, k...)
+			if err := batch.Delete(keyCopy, nil); err != nil {
+				return purged, err
+			}
+			purged++
+		}
+	}
+	if purged > 0 {
+		if err := batch.Commit(p.writeOpts); err != nil {
+			return purged, err
+		}
+	}
+	return purged, nil
 }
 
 // readDocTermsLocked reads the 'g' family entry for docID under p.mu.
