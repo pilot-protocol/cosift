@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -75,9 +76,9 @@ type PebbleStore struct {
 	// (host, url) tuple; next claim seeks past it so each call resumes
 	// where the previous one stopped, wrapping at the end.
 	frontierCursorMu sync.Mutex
-	frontierCursor   []byte             // legacy single cursor; pre-lanes scan state.
-	laneCursors      [laneCount][]byte  // per-lane round-robin cursors.
-	laneTick         atomic.Uint64      // monotonic counter driving weighted lane pick.
+	frontierCursor   []byte            // legacy single cursor; pre-lanes scan state.
+	laneCursors      [laneCount][]byte // per-lane round-robin cursors.
+	laneTick         atomic.Uint64     // monotonic counter driving weighted lane pick.
 
 	// PILOT-190: pebble.DB.Close() panics if called twice. Wrap teardown
 	// in sync.Once so repeated Close() calls (e.g. from layered cleanups
@@ -129,6 +130,19 @@ const (
 // climbs higher (compaction, write batches, block readers) but the
 // OOM-prone block cache growth is bounded.
 func OpenPebble(path string) (*PebbleStore, error) {
+	return openPebble(path, false)
+}
+
+// OpenPebbleReadOnly opens the store WITHOUT acquiring the directory write
+// lock, so it can run alongside a live pebble-serve process (zero downtime).
+// Reads see a consistent snapshot taken at open time; any write method
+// (UpsertDocument, SoftDeleteDocument, …) will fail. Use for offline
+// inspection / dry-run sweeps over a production corpus.
+func OpenPebbleReadOnly(path string) (*PebbleStore, error) {
+	return openPebble(path, true)
+}
+
+func openPebble(path string, readOnly bool) (*PebbleStore, error) {
 	cacheMB := envInt("COSIFT_PEBBLE_CACHE_MB", 128)
 	memtableMB := envInt("COSIFT_PEBBLE_MEMTABLE_MB", 32)
 	memtables := envInt("COSIFT_PEBBLE_MEMTABLES", 2)
@@ -139,6 +153,7 @@ func OpenPebble(path string) (*PebbleStore, error) {
 		Cache:                       cache,
 		MemTableSize:                uint64(memtableMB) << 20,
 		MemTableStopWritesThreshold: memtables + 2,
+		ReadOnly:                    readOnly,
 	}
 	db, err := pebble.Open(path, opts)
 	if err != nil {
@@ -2214,6 +2229,154 @@ func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url
 	return nil
 }
 
+// IterDocMeta is like IterDocsLite but also yields the document title from
+// the cheap 'i' side-blob (no full gob decode). Used by content sweeps
+// (e.g. purge-adult) that classify on URL + title across the whole corpus.
+func (p *PebbleStore) IterDocMeta(ctx context.Context, fn func(docID int64, url, title string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famDocMeta},
+		UpperBound: []byte{famDocMeta + 1},
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := it.Key()
+		if len(key) != 9 {
+			continue
+		}
+		docID := int64(binary.BigEndian.Uint64(key[1:]))
+		val, err := it.ValueAndErr()
+		if err != nil {
+			continue
+		}
+		url, title, ok, err := unpackDocMeta(val)
+		if err != nil || !ok || url == "" {
+			continue
+		}
+		if err := fn(docID, url, title); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SoftDeleteDocument removes a document from retrieval without rewriting the
+// posting lists. It deletes the doc record ('d'), the URL→ID index ('u'), the
+// cheap meta side-blob ('i'), the host index entry ('h') and the doc-length
+// entry ('l'), then decrements the corpus counters (indexed_docs, sum_doc_len)
+// so BM25 IDF/avgdl stay accurate.
+//
+// The term postings ('p') and doc-terms list ('g') are intentionally LEFT in
+// place as orphans: the retrieval path resolves every scored docID through
+// GetDocMeta and skips any whose meta is missing (pebble_bm25.go), so an
+// orphaned posting can never surface a deleted doc — it only carries a small,
+// bounded DocFreq inaccuracy that the next reindex/compaction reconciles. This
+// makes deletion a handful of point-deletes instead of a full inverted-index
+// rewrite, which is what makes a multi-million-doc purge tractable.
+//
+// rawURL must be the document's stored URL (the caller has it from the meta
+// scan); the host index key is derived from it. Returns ok=false when the
+// document was already absent (idempotent — safe to re-run a purge).
+func (p *PebbleStore) SoftDeleteDocument(ctx context.Context, docID int64, rawURL string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Confirm the doc exists via its meta blob; bail idempotently if gone.
+	if _, _, ok, err := func() (string, string, bool, error) {
+		val, closer, err := p.db.Get(docMetaKey(docID))
+		if errors.Is(err, pebble.ErrNotFound) {
+			return "", "", false, nil
+		}
+		if err != nil {
+			return "", "", false, err
+		}
+		defer closer.Close()
+		return unpackDocMeta(val)
+	}(); err != nil {
+		return false, err
+	} else if !ok {
+		return false, nil
+	}
+
+	docLen, hadLen, err := p.readDocLenLocked(docID)
+	if err != nil {
+		return false, err
+	}
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete(docKey(docID), nil); err != nil {
+		return false, err
+	}
+	if rawURL != "" {
+		if err := batch.Delete(urlKey(rawURL), nil); err != nil {
+			return false, err
+		}
+		if u, e := url.Parse(rawURL); e == nil && u.Host != "" {
+			if err := batch.Delete(hostKey(u.Host, docID), nil); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := batch.Delete(docMetaKey(docID), nil); err != nil {
+		return false, err
+	}
+	if hadLen {
+		if err := batch.Delete(docLenKey(docID), nil); err != nil {
+			return false, err
+		}
+	}
+
+	// Decrement corpus counters, mirroring IndexDocument's accounting.
+	var sumLen, indexedCount int64
+	if p.corpusStatsLoaded.Load() {
+		sumLen = p.corpusSumLen.Load()
+		indexedCount = p.corpusIndexedDocs.Load()
+	} else {
+		sumLen = p.readMetaInt64Locked("sum_doc_len")
+		indexedCount = p.readMetaInt64Locked("indexed_docs")
+	}
+	if hadLen {
+		sumLen -= docLen
+		if sumLen < 0 {
+			sumLen = 0
+		}
+	}
+	indexedCount--
+	if indexedCount < 0 {
+		indexedCount = 0
+	}
+	sumBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+		return false, err
+	}
+	countBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
+	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+		return false, err
+	}
+
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return false, err
+	}
+	p.corpusSumLen.Store(sumLen)
+	p.corpusIndexedDocs.Store(indexedCount)
+	p.corpusStatsLoaded.Store(true)
+	return true, nil
+}
+
 // PurgeFrontierByHost deletes every QUEUED frontier entry for the given
 // host (both the secondary 'f'+'q'+host index and the primary 'f'+'u'+url
 // entry). Returns the count purged. In-flight and done/errored entries
@@ -2501,9 +2664,9 @@ func (p *PebbleStore) DemoteHostToLane(ctx context.Context, host string, lane by
 // (their secondary keys lack a lane byte); they're drained as a fall-through
 // in ClaimFrontier and disappear over time.
 type LaneStats struct {
-	Lanes           [laneCount]LaneCounts
-	LegacyQueued    int
-	LegacyInFlight  int
+	Lanes          [laneCount]LaneCounts
+	LegacyQueued   int
+	LegacyInFlight int
 }
 
 // LaneCounts is the per-lane summary surfaced in /queue.

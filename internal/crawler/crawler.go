@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/adultfilter"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
@@ -1036,6 +1037,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// deployments keep current behavior.
 	if c.cfg.MinTextLen > 0 && len(parsed.Text) < c.cfg.MinTextLen {
 		return errors.New("text below min_text_len")
+	}
+	// Adult-content gate. High-precision classifier (host + lexical
+	// signals) — refuse to index pornographic pages so they never enter
+	// the corpus. Off by default; enabled via crawler.filter_adult.
+	if c.cfg.FilterAdult && adultfilter.IsAdult(parsed.Title, parsed.Text, finalURL) {
+		return errors.New("adult content filtered")
 	}
 
 	finalU, _ := url.Parse(finalURL)
