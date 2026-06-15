@@ -338,6 +338,10 @@ func run(cfgPath string) error {
 		if err := runPurgeAdult(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("purge-adult: %w", err)
 		}
+	case "purge-domain":
+		if err := runPurgeDomain(ctx, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("purge-domain: %w", err)
+		}
 	case "verify":
 		if err := runVerifyPebble(ctx, cfg, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("verify: %w", err)
