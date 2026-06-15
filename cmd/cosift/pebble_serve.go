@@ -500,6 +500,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
 	mux.HandleFunc("POST /admin/wet-import-bulk", wrap(srv.handleWETImportBulk))
 	mux.HandleFunc("POST /admin/site-pack", wrap(srv.handleSitePack))
+	mux.HandleFunc("POST /admin/site-submit", wrap(srv.handleSiteSubmit))
 	mux.HandleFunc("POST /admin/embed-backfill", wrap(srv.handleEmbedBackfill))
 	mux.HandleFunc("GET /admin/eval-quick", wrap(srv.handleEvalQuick))
 	mux.HandleFunc("POST /admin/hnsw-compact", wrap(srv.handleHNSWCompact))
@@ -774,6 +775,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// expose SeedSitemap so /admin/sitemap-import can push
 	// sitemap-discovered URLs into the live frontier.
 	s.crawlSeedSitemap = c.SeedSitemap
+	// expose SeedSitemapLane so /admin/site-submit can push a whole site's
+	// URLs into a chosen priority lane (default: submitted/priority).
+	s.crawlSeedSitemapLane = c.SeedSitemapLane
 	s.crawlSeedRSS = c.SeedRSS
 	s.crawlFetchNow = c.FetchAndIndexNow
 	s.crawlSeedWET = c.SeedWET
@@ -937,9 +941,13 @@ type pebbleHTTP struct {
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)
-	crawlSeedRSS     func(ctx context.Context, url string) (int, error)
-	crawlFetchNow    func(ctx context.Context, url string) error
-	crawlSeedWET     func(ctx context.Context, url string, dedupeFresh, lexicalOnly bool) (int, error)
+	// crawlSeedSitemapLane is like crawlSeedSitemap but lets the caller pick
+	// the frontier lane — used by /admin/site-submit to land a site's URLs
+	// in the high-priority submitted lane.
+	crawlSeedSitemapLane func(ctx context.Context, url string, lane byte) (int, error)
+	crawlSeedRSS         func(ctx context.Context, url string) (int, error)
+	crawlFetchNow        func(ctx context.Context, url string) error
+	crawlSeedWET         func(ctx context.Context, url string, dedupeFresh, lexicalOnly bool) (int, error)
 
 	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -2527,11 +2535,8 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "expected {\"host\":\"example.com\"}")
 		return
 	}
-	host := strings.TrimSpace(req.Host)
-	host = strings.TrimPrefix(host, "https://")
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.TrimSuffix(host, "/")
-	if host == "" || strings.Contains(host, "/") {
+	host, ok := normalizeBareHost(req.Host)
+	if !ok {
 		writeProblem(w, http.StatusBadRequest, "host must be a bare hostname like example.com")
 		return
 	}
@@ -2547,46 +2552,11 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 	results := make([]result, 0, 8)
 	t0 := time.Now()
 
-	// Step 1: robots.txt for Sitemap: directives.
-	sitemapsFromRobots := []string{}
-	if rresp, err := hc.Get(base + "/robots.txt"); err == nil && rresp.StatusCode < 400 {
-		rbody, _ := io.ReadAll(io.LimitReader(rresp.Body, 2<<20))
-		rresp.Body.Close()
-		for _, line := range strings.Split(string(rbody), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(strings.ToLower(line), "sitemap:") {
-				val := strings.TrimSpace(line[len("sitemap:"):])
-				if val != "" {
-					sitemapsFromRobots = append(sitemapsFromRobots, val)
-				}
-			}
-		}
-	}
-	// Step 2: if robots.txt gave nothing, try canonical paths.
-	candidateSitemaps := sitemapsFromRobots
-	if len(candidateSitemaps) == 0 {
-		// /sitemap.xml is the canonical
-		// spec but many CMSes (WordPress, Yoast, Ghost, Hugo themes) ship
-		// at non-canonical paths. Try a small ordered list before giving up.
-		// Stops on first successful fetch — the order matters: /sitemap.xml
-		// first (most common), then WordPress's /wp-sitemap.xml + Yoast's
-		// per-content-type splits, then index variants.
-		for _, p := range []string{
-			"/sitemap.xml",
-			"/wp-sitemap.xml",    // WordPress 5.5+
-			"/sitemap_index.xml", // Yoast SEO
-			"/post-sitemap.xml",  // Yoast posts
-			"/page-sitemap.xml",  // Yoast pages
-			"/sitemap-index.xml", // some CMSes hyphenate
-			"/sitemap.xml.gz",    // gzipped variant (sitemap.go handles .gz)
-		} {
-			candidateSitemaps = append(candidateSitemaps, base+p)
-		}
-	}
+	candidateSitemaps, fromRobots := discoverSitemaps(r.Context(), hc, base)
 	for _, su := range candidateSitemaps {
 		n, err := s.crawlSeedSitemap(r.Context(), su)
 		res := result{URL: su, Indexed: n}
-		if len(sitemapsFromRobots) > 0 {
+		if fromRobots {
 			res.Source = "robots-sitemap"
 		} else {
 			res.Source = "fallback-sitemap"
@@ -2620,6 +2590,173 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 		"total_indexed": total,
 		"elapsed":       time.Since(t0).String(),
 		"results":       results,
+	})
+}
+
+// normalizeBareHost strips scheme/trailing-slash from a host or URL and
+// returns the bare hostname. ok is false when the result still contains a
+// path segment (so callers can reject "example.com/foo" as a host).
+func normalizeBareHost(s string) (host string, ok bool) {
+	host = strings.TrimSpace(s)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimSuffix(host, "/")
+	host = strings.ToLower(host)
+	if host == "" || strings.Contains(host, "/") {
+		return "", false
+	}
+	return host, true
+}
+
+// discoverSitemaps returns candidate sitemap URLs for a site, given its base
+// origin (e.g. "https://example.com"). It prefers Sitemap: directives in
+// robots.txt; when robots.txt yields none it falls back to a small ordered
+// list of canonical/CMS paths. fromRobots reports which source was used.
+func discoverSitemaps(ctx context.Context, hc *http.Client, base string) (sitemaps []string, fromRobots bool) {
+	if hc == nil {
+		hc = &http.Client{Timeout: 20 * time.Second}
+	}
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/robots.txt", nil); err == nil {
+		if rresp, err := hc.Do(req); err == nil {
+			if rresp.StatusCode < 400 {
+				rbody, _ := io.ReadAll(io.LimitReader(rresp.Body, 2<<20))
+				for _, line := range strings.Split(string(rbody), "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(strings.ToLower(line), "sitemap:") {
+						if val := strings.TrimSpace(line[len("sitemap:"):]); val != "" {
+							sitemaps = append(sitemaps, val)
+						}
+					}
+				}
+			}
+			rresp.Body.Close()
+		}
+	}
+	if len(sitemaps) > 0 {
+		return sitemaps, true
+	}
+	// /sitemap.xml is the canonical spec but many CMSes (WordPress, Yoast,
+	// Ghost, Hugo themes) ship at non-canonical paths. Try a small ordered
+	// list before giving up: /sitemap.xml (most common), then WordPress's
+	// /wp-sitemap.xml + Yoast's per-content-type splits, then index variants.
+	for _, p := range []string{
+		"/sitemap.xml",
+		"/wp-sitemap.xml",    // WordPress 5.5+
+		"/sitemap_index.xml", // Yoast SEO
+		"/post-sitemap.xml",  // Yoast posts
+		"/page-sitemap.xml",  // Yoast pages
+		"/sitemap-index.xml", // some CMSes hyphenate
+		"/sitemap.xml.gz",    // gzipped variant (sitemap.go handles .gz)
+	} {
+		sitemaps = append(sitemaps, base+p)
+	}
+	return sitemaps, false
+}
+
+// parseLaneName maps a friendly lane name to a frontier lane byte. The empty
+// string and unknown values default to the high-priority submitted lane,
+// which is the point of /admin/site-submit: jump a site to the front.
+func parseLaneName(s string) byte {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "refresh":
+		return store.LaneRefresh
+	case "discovered":
+		return store.LaneDiscovered
+	case "bulk":
+		return store.LaneBulk
+	default: // "", "priority", "submitted", or anything unrecognized
+		return store.LaneSubmitted
+	}
+}
+
+func laneName(lane byte) string {
+	switch lane {
+	case store.LaneSubmitted:
+		return "submitted"
+	case store.LaneRefresh:
+		return "refresh"
+	case store.LaneDiscovered:
+		return "discovered"
+	case store.LaneBulk:
+		return "bulk"
+	default:
+		return "submitted"
+	}
+}
+
+// handleSiteSubmit discovers every URL of a website (via robots.txt sitemaps,
+// then canonical fallbacks) and pushes them all onto the live crawl frontier
+// in a chosen priority lane — by default the high-priority "submitted" lane,
+// so the whole site jumps ahead of the generic discovery backlog. Same auth
+// as the other admin endpoints. Synchronous; large sitemaps take seconds.
+//
+// Body: {"host":"pilotprotocol.network", "lane":"priority"}
+//
+//	lane: "priority" (default) | "refresh" | "discovered" | "bulk"
+type siteSubmitReq struct {
+	Host string `json:"host"`
+	Lane string `json:"lane,omitempty"`
+}
+
+func (s *pebbleHTTP) handleSiteSubmit(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlSeedSitemapLane == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
+		return
+	}
+	var req siteSubmitReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.Host == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"host\":\"example.com\", \"lane\":\"priority\"}")
+		return
+	}
+	host, ok := normalizeBareHost(req.Host)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "host must be a bare hostname like example.com")
+		return
+	}
+	lane := parseLaneName(req.Lane)
+	base := "https://" + host
+	hc := &http.Client{Timeout: 20 * time.Second}
+	t0 := time.Now()
+
+	type result struct {
+		Source string `json:"source"` // "robots-sitemap" | "fallback-sitemap"
+		URL    string `json:"url"`
+		Queued int    `json:"queued"`
+		Error  string `json:"error,omitempty"`
+	}
+	candidateSitemaps, fromRobots := discoverSitemaps(r.Context(), hc, base)
+	source := "fallback-sitemap"
+	if fromRobots {
+		source = "robots-sitemap"
+	}
+	results := make([]result, 0, len(candidateSitemaps))
+	total := 0
+	for _, su := range candidateSitemaps {
+		n, err := s.crawlSeedSitemapLane(r.Context(), su, lane)
+		res := result{Source: source, URL: su, Queued: n}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		total += n
+		results = append(results, res)
+	}
+	log.Printf("site-submit: %s → lane=%s discovered %d sitemap(s), queued %d URLs in %s",
+		host, laneName(lane), len(results), total, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":         host,
+		"lane":         laneName(lane),
+		"sitemaps":     len(results),
+		"total_queued": total,
+		"elapsed":      time.Since(t0).String(),
+		"results":      results,
 	})
 }
 
@@ -3552,6 +3689,7 @@ type searchRequest struct {
 	K              int    `json:"k,omitempty"`
 	IncludeDomains string `json:"include_domains,omitempty"`
 	ExcludeDomains string `json:"exclude_domains,omitempty"`
+	Site           string `json:"site,omitempty"`
 	Since          string `json:"since,omitempty"`
 	Until          string `json:"until,omitempty"`
 	Sort           string `json:"sort,omitempty"`
@@ -3579,6 +3717,9 @@ func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ExcludeDomains != "" {
 		v.Set("exclude_domains", req.ExcludeDomains)
+	}
+	if req.Site != "" {
+		v.Set("site", req.Site)
 	}
 	if req.Since != "" {
 		v.Set("since", req.Since)
@@ -3673,6 +3814,7 @@ type synthRequest struct {
 	K              int    `json:"k,omitempty"`
 	IncludeDomains string `json:"include_domains,omitempty"`
 	ExcludeDomains string `json:"exclude_domains,omitempty"`
+	Site           string `json:"site,omitempty"`
 	Since          string `json:"since,omitempty"`
 	Until          string `json:"until,omitempty"`
 	IncludeText    bool   `json:"include_text,omitempty"`
@@ -3694,6 +3836,9 @@ func (req synthRequest) toValues() url.Values {
 	}
 	if req.ExcludeDomains != "" {
 		v.Set("exclude_domains", req.ExcludeDomains)
+	}
+	if req.Site != "" {
+		v.Set("site", req.Site)
 	}
 	if req.Since != "" {
 		v.Set("since", req.Since)
@@ -3776,6 +3921,12 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateFilter := !since.IsZero() || !until.IsZero()
+	// site — scope results to one or more host[/path] sections, e.g.
+	// ?site=pilotprotocol.network/docs. Host-suffix + path-prefix match,
+	// ANDed with include/exclude. Applied post-retrieval like the domain
+	// filters, so it widens the over-fetch below.
+	sites := parseSiteScopes(r.URL.Query().Get("site"))
+	siteFilter := len(sites) > 0
 	// rerank widens both the fetch and the keep-cap before filtering,
 	// so the reranker sees a healthy candidate pool even with restrictive filters.
 	wantRerank := r.URL.Query().Get("rerank") == "true" && s.reranker != nil
@@ -3787,7 +3938,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fetchK := keepCap
-	if len(include) > 0 || len(exclude) > 0 || dateFilter {
+	if len(include) > 0 || len(exclude) > 0 || dateFilter || siteFilter {
 		mult := 5
 		if dateFilter {
 			mult = 10
@@ -3845,6 +3996,9 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if len(exclude) > 0 && matchesAnyDomain(host, exclude) {
 				continue
 			}
+		}
+		if siteFilter && !matchesAnySite(h.URL, sites) {
+			continue
 		}
 		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
 		if enrich || dateFilter || includeText {
@@ -5315,6 +5469,8 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	// scoping research to a domain or date window is the common EXA shape.
 	include := splitDomainsCSV(r.URL.Query().Get("include_domains"))
 	exclude := splitDomainsCSV(r.URL.Query().Get("exclude_domains"))
+	sites := parseSiteScopes(r.URL.Query().Get("site"))
+	siteFilter := len(sites) > 0
 	since, sinceErr := parseDateBound(r.URL.Query().Get("since"))
 	if sinceErr != nil {
 		writeProblem(w, http.StatusBadRequest, "since: "+sinceErr.Error())
@@ -5341,7 +5497,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 	fetchK := keepCap
-	if len(include) > 0 || len(exclude) > 0 || dateFilter {
+	if len(include) > 0 || len(exclude) > 0 || dateFilter || siteFilter {
 		mult := 5
 		if dateFilter {
 			mult = 10
@@ -5411,6 +5567,9 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 			if len(exclude) > 0 && matchesAnyDomain(host, exclude) {
 				continue
 			}
+		}
+		if siteFilter && !matchesAnySite(h.URL, sites) {
+			continue
 		}
 		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 		if derr != nil || doc == nil {
@@ -6845,6 +7004,7 @@ func summarizeSourceList(srcs []answerSource) string {
 type retrievalFilters struct {
 	include    []string
 	exclude    []string
+	sites      []siteScope
 	since      time.Time
 	until      time.Time
 	dateActive bool
@@ -6854,6 +7014,7 @@ func parseRetrievalFilters(r *http.Request) (retrievalFilters, error) {
 	f := retrievalFilters{
 		include: splitDomainsCSV(r.URL.Query().Get("include_domains")),
 		exclude: splitDomainsCSV(r.URL.Query().Get("exclude_domains")),
+		sites:   parseSiteScopes(r.URL.Query().Get("site")),
 	}
 	since, err := parseDateBound(r.URL.Query().Get("since"))
 	if err != nil {
@@ -6881,6 +7042,9 @@ func (f retrievalFilters) allow(rawURL string, publishedAt time.Time) bool {
 		if len(f.exclude) > 0 && matchesAnyDomain(host, f.exclude) {
 			return false
 		}
+	}
+	if len(f.sites) > 0 && !matchesAnySite(rawURL, f.sites) {
+		return false
 	}
 	if f.dateActive {
 		if publishedAt.IsZero() {
@@ -6945,6 +7109,72 @@ func hostOf(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// siteScope is one entry of the `site` search filter: a host (suffix-matched
+// on dot boundaries, same as include_domains) plus an optional URL path
+// prefix. A zero path matches the whole host; a non-empty path scopes results
+// to a section of the site (e.g. host "pilotprotocol.network" + path "/docs").
+type siteScope struct {
+	host string
+	path string // normalized, no trailing slash; "" = any path
+}
+
+// parseSiteScopes parses the `site` parameter — a CSV of host or host/path
+// (or full-URL) entries — into scopes. Examples of a single entry:
+//
+//	pilotprotocol.network              → whole host (and subdomains)
+//	pilotprotocol.network/docs         → only URLs under /docs
+//	https://pilotprotocol.network/docs → same (scheme tolerated)
+func parseSiteScopes(csv string) []siteScope {
+	if csv == "" {
+		return nil
+	}
+	var out []siteScope
+	for _, raw := range strings.Split(csv, ",") {
+		t := strings.TrimSpace(raw)
+		if t == "" {
+			continue
+		}
+		t = strings.TrimPrefix(t, "https://")
+		t = strings.TrimPrefix(t, "http://")
+		host, path := t, ""
+		if i := strings.IndexByte(t, '/'); i >= 0 {
+			host, path = t[:i], t[i:]
+		}
+		host = strings.ToLower(strings.TrimSpace(host))
+		path = strings.TrimRight(strings.TrimSpace(path), "/")
+		if host == "" {
+			continue
+		}
+		out = append(out, siteScope{host: host, path: path})
+	}
+	return out
+}
+
+// matchesAnySite reports whether rawURL falls within any of the scopes. Host
+// matching reuses include_domains semantics (exact or dot-boundary suffix);
+// path matching is a segment-boundary prefix so "/docs" matches "/docs" and
+// "/docs/x" but not "/docsearch".
+func matchesAnySite(rawURL string, scopes []siteScope) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	p := u.Path
+	for _, sc := range scopes {
+		if host != sc.host && !strings.HasSuffix(host, "."+sc.host) {
+			continue
+		}
+		if sc.path == "" || p == sc.path || strings.HasPrefix(p, sc.path+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseDateBound accepts the same forms as the SQLite-side server: empty

@@ -45,7 +45,23 @@ import (
 // directly — it's expected this runs at startup, not in a hot loop.
 //
 // Returns the number of URLs enqueued.
+//
+// Sitemap-imported URLs go into the refresh lane: callers run sitemap-import
+// to refresh known-good sources (kubernetes.io, docs.python.org, etc.), so
+// prioritize over generic discovery. Use SeedSitemapLane to land them in a
+// different lane (e.g. store.LaneSubmitted for an operator-driven priority
+// site submission).
 func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, error) {
+	return c.SeedSitemapLane(ctx, sitemapURL, store.LaneRefresh)
+}
+
+// SeedSitemapLane fetches a sitemap (or sitemap-index, two levels of
+// recursion) and pushes every <loc> URL into the given priority lane.
+//
+// Bypass include_domains the same way SeedRSS does: the operator explicitly
+// requested this sitemap, so trust its URLs regardless of the curated crawler
+// allowlist.
+func (c *Crawler) SeedSitemapLane(ctx context.Context, sitemapURL string, lane byte) (int, error) {
 	// stream URLs into the frontier via callback instead of
 	// materializing the full URL list. The prior approach accumulated
 	// every URL across the entire recursive sitemap-index walk into a
@@ -54,14 +70,6 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 	// showed strings.Builder.Write at 107 GB). Streaming bounds heap to
 	// O(current sitemap size) regardless of nesting depth or total URLs.
 	n := 0
-	// Sitemap-imported URLs go into the refresh lane: callers run
-	// sitemap-import to refresh known-good sources (kubernetes.io,
-	// docs.python.org, etc.), so prioritize over generic discovery.
-	//
-	// Bypass include_domains here for the same reason as SeedRSS: the
-	// operator explicitly requested this sitemap, so trust its URLs
-	// regardless of the curated crawler allowlist.
-	//
 	// Buffer URLs into 1024-item batches and flush via PushFrontierBatch.
 	// Single mu acquire per batch instead of per URL — at scale (MDN,
 	// kubernetes.io sitemaps with 100K+ URLs) this is the difference
@@ -83,7 +91,7 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 		if cerr != nil {
 			return
 		}
-		buf = append(buf, store.FrontierPushItem{URL: canon, Depth: 0, Lane: 1, Priority: 1.0})
+		buf = append(buf, store.FrontierPushItem{URL: canon, Depth: 0, Lane: lane, Priority: 1.0})
 		if len(buf) >= batchSize {
 			flush()
 		}
