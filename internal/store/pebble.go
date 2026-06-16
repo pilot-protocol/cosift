@@ -2734,36 +2734,58 @@ func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (m
 		return nil, err
 	}
 	out := make(map[string]int, len(hosts))
+	// countRange counts the keys in one secondary-index prefix range. Wrapped
+	// in a closure so defer it.Close() runs per call, not stacked until the
+	// enclosing function returns (Go defers fire on FUNCTION return).
+	countRange := func(lo, hi []byte) (int, error) {
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		if err != nil {
+			return 0, err
+		}
+		defer it.Close()
+		var count int
+		for valid := it.First(); valid; valid = it.Next() {
+			count++
+		}
+		return count, nil
+	}
 	for _, host := range hosts {
 		if host == "" {
 			continue
 		}
-		// Prefix bound: 'f' + 'q' + host + 0x00 .. 'f' + 'q' + host + 0x01
-		lo := make([]byte, 2+len(host)+1)
-		lo[0] = famFrontier
-		lo[1] = 'q'
-		copy(lo[2:], host)
-		lo[2+len(host)] = 0x00
-		hi := append([]byte{}, lo...)
-		hi[2+len(host)] = 0x01
-		// per-iteration closure so defer it.Close() runs at each
-		// host's end, not at the enclosing function's return. Without the
-		// closure a `defer` here would stack iterators until function exit
-		// (Go defers fire on FUNCTION return, not on loop iteration).
-		n, err := func() (int, error) {
-			it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
-			if err != nil {
-				return 0, err
-			}
-			defer it.Close()
-			var count int
-			for valid := it.First(); valid; valid = it.Next() {
-				count++
-			}
-			return count, nil
-		}()
+		n := 0
+		// Legacy range: 'f' + 'q' + host + 0x00 .. 0x01 (pre-lanes entries).
+		legacyLo := make([]byte, 2+len(host)+1)
+		legacyLo[0] = famFrontier
+		legacyLo[1] = 'q'
+		copy(legacyLo[2:], host)
+		legacyLo[2+len(host)] = 0x00
+		legacyHi := append([]byte{}, legacyLo...)
+		legacyHi[2+len(host)] = 0x01
+		c, err := countRange(legacyLo, legacyHi)
 		if err != nil {
 			return nil, err
+		}
+		n += c
+		// Lane-aware ranges: 'f' + 'q' + lane + host + 0x00 .. 0x01 for every
+		// lane. The legacy prefix never matches these (the lane byte sits
+		// between 'q' and the host), so without this loop hosts whose queued
+		// URLs live in lanes — i.e. everything pushed after the lane migration —
+		// would count as 0.
+		for lane := byte(0); lane < laneCount; lane++ {
+			laneLo := make([]byte, 3+len(host)+1)
+			laneLo[0] = famFrontier
+			laneLo[1] = 'q'
+			laneLo[2] = lane
+			copy(laneLo[3:], host)
+			laneLo[3+len(host)] = 0x00
+			laneHi := append([]byte{}, laneLo...)
+			laneHi[3+len(host)] = 0x01
+			c, err := countRange(laneLo, laneHi)
+			if err != nil {
+				return nil, err
+			}
+			n += c
 		}
 		if n > 0 {
 			out[host] = n
@@ -3257,7 +3279,11 @@ func (p *PebbleStore) TopQueuedHosts(ctx context.Context, topN int) ([]DomainCou
 	defer it.Close()
 	counts := make(map[string]int, 256)
 	for valid := it.First(); valid; valid = it.Next() {
-		host := frontierStatusIndexHost(it.Key())
+		// decodeFrontierIndexHost handles both the legacy
+		// 'f'+'q'+host+0x00+url keys and the lane-aware
+		// 'f'+'q'+lane+host+0x00+url keys. The legacy frontierStatusIndexHost
+		// reads from byte 2, which on a lane key is the lane byte, not the host.
+		host := decodeFrontierIndexHost(it.Key())
 		if host == "" {
 			continue
 		}

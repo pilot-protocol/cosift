@@ -58,9 +58,9 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 // SeedSitemapLane fetches a sitemap (or sitemap-index, two levels of
 // recursion) and pushes every <loc> URL into the given priority lane.
 //
-// Bypass include_domains the same way SeedRSS does: the operator explicitly
-// requested this sitemap, so trust its URLs regardless of the curated crawler
-// allowlist.
+// URLs are filtered through allowedDomain so the operator's include/exclude
+// domain lists (and ExcludeURLPatterns) are honored — a sitemap pointing at a
+// blocked host must not slip URLs past the curated allowlist.
 func (c *Crawler) SeedSitemapLane(ctx context.Context, sitemapURL string, lane byte) (int, error) {
 	// stream URLs into the frontier via callback instead of
 	// materializing the full URL list. The prior approach accumulated
@@ -89,6 +89,9 @@ func (c *Crawler) SeedSitemapLane(ctx context.Context, sitemapURL string, lane b
 	err := c.fetchSitemapStream(ctx, sitemapURL, 2, func(u string) {
 		canon, cerr := canonicalize(u)
 		if cerr != nil {
+			return
+		}
+		if !c.allowedDomain(canon) {
 			return
 		}
 		buf = append(buf, store.FrontierPushItem{URL: canon, Depth: 0, Lane: lane, Priority: 1.0})
