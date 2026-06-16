@@ -5484,6 +5484,8 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	embModel := fs.String("embed-model", "text-embedding-3-small", "embedding model name")
 	embDim := fs.Int("embed-dim", 1536, "embedding dimensionality")
 	embCacheDir := fs.String("embed-cache", "./eval-embed-cache", "embedding cache dir (set empty to disable)")
+	embURL := fs.String("embed-url", "", "embedding endpoint URL (leave empty for OpenAI default)")
+	chatURL := fs.String("chat-url", "", "chat endpoint URL for synth+judge models")
 	answerChunkSize := fs.Int("chunk-size", 0, "passage chunker target words (0 = default 320)")
 	answerChunkOverlap := fs.Int("chunk-overlap", 0, "passage chunker overlap words (0 = default 64)")
 	dryRun := fs.Bool("dry-run", false, "build the harness + print the plan, but issue NO LLM calls")
@@ -5498,8 +5500,11 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI")
 	}
-	if apiKey == "" && !*dryRun {
-		return errors.New("OPENAI_API_KEY (or OPENAI) not set; pass -dry-run to inspect the plan without spending")
+	if apiKey == "" && *embURL == "" && *chatURL == "" && !*dryRun {
+		return errors.New("OPENAI_API_KEY (or OPENAI) not set; pass -embed-url/-chat-url for a local endpoint, or -dry-run to inspect")
+	}
+	if apiKey == "" {
+		apiKey = "local"
 	}
 
 	corpus, err := eval.LoadCorpus(*corpusPath)
@@ -5532,7 +5537,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	}()
 
 	bm := index.NewBM25(st)
-	oai := embed.NewOpenAIClient(apiKey, "", *embModel, *embDim)
+	oai := embed.NewOpenAIClient(apiKey, *embURL, *embModel, *embDim)
 	var emb embed.Embedder = oai
 	if *embCacheDir != "" {
 		emb = embed.NewCachedEmbedder(oai, *embCacheDir)
@@ -5572,8 +5577,8 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		}
 	}
 
-	chat := embed.NewOpenAIChat(apiKey, "", *synthModel)
-	judge := embed.NewOpenAIChat(apiKey, "", *judgeModel)
+	chat := embed.NewOpenAIChat(apiKey, *chatURL, *synthModel)
+	judge := embed.NewOpenAIChat(apiKey, *chatURL, *judgeModel)
 
 	srv := server.New(st).
 		WithVector(vi, emb).
