@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // Sitemap parser, intentionally minimal: handles the standard urlset shape,
@@ -43,7 +45,23 @@ import (
 // directly — it's expected this runs at startup, not in a hot loop.
 //
 // Returns the number of URLs enqueued.
+//
+// Sitemap-imported URLs go into the refresh lane: callers run sitemap-import
+// to refresh known-good sources (kubernetes.io, docs.python.org, etc.), so
+// prioritize over generic discovery. Use SeedSitemapLane to land them in a
+// different lane (e.g. store.LaneSubmitted for an operator-driven priority
+// site submission).
 func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, error) {
+	return c.SeedSitemapLane(ctx, sitemapURL, store.LaneRefresh)
+}
+
+// SeedSitemapLane fetches a sitemap (or sitemap-index, two levels of
+// recursion) and pushes every <loc> URL into the given priority lane.
+//
+// URLs are filtered through allowedDomain so the operator's include/exclude
+// domain lists (and ExcludeURLPatterns) are honored — a sitemap pointing at a
+// blocked host must not slip URLs past the curated allowlist.
+func (c *Crawler) SeedSitemapLane(ctx context.Context, sitemapURL string, lane byte) (int, error) {
 	// stream URLs into the frontier via callback instead of
 	// materializing the full URL list. The prior approach accumulated
 	// every URL across the entire recursive sitemap-index walk into a
@@ -52,11 +70,36 @@ func (c *Crawler) SeedSitemap(ctx context.Context, sitemapURL string) (int, erro
 	// showed strings.Builder.Write at 107 GB). Streaming bounds heap to
 	// O(current sitemap size) regardless of nesting depth or total URLs.
 	n := 0
+	// Buffer URLs into 1024-item batches and flush via PushFrontierBatch.
+	// Single mu acquire per batch instead of per URL — at scale (MDN,
+	// kubernetes.io sitemaps with 100K+ URLs) this is the difference
+	// between a sitemap-import that returns in seconds vs an hour.
+	const batchSize = 1024
+	buf := make([]store.FrontierPushItem, 0, batchSize)
+	flush := func() {
+		if len(buf) == 0 {
+			return
+		}
+		w, perr := c.store.PushFrontierBatch(context.Background(), buf)
+		if perr == nil {
+			n += w
+		}
+		buf = buf[:0]
+	}
 	err := c.fetchSitemapStream(ctx, sitemapURL, 2, func(u string) {
-		if seedErr := c.Seed(u); seedErr == nil {
-			n++
+		canon, cerr := canonicalize(u)
+		if cerr != nil {
+			return
+		}
+		if !c.allowedDomain(canon) {
+			return
+		}
+		buf = append(buf, store.FrontierPushItem{URL: canon, Depth: 0, Lane: lane, Priority: 1.0})
+		if len(buf) >= batchSize {
+			flush()
 		}
 	})
+	flush()
 	return n, err
 }
 

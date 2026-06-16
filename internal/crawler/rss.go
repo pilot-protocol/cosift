@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // RSS / Atom feed seeding. Parallel to sitemap.go in spirit: fetch a feed,
@@ -76,14 +78,29 @@ func (c *Crawler) SeedRSS(ctx context.Context, feedURL string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	n := 0
+	// Batch the URL push: one Pebble write transaction + one global mu
+	// acquire for the whole feed. Pre-batch, each PushFrontierLane fought
+	// 256 crawler workers for p.mu and feeds took 8-17min wall-clock.
+	// Batched, the same call returns in milliseconds.
+	//
+	// Bypass include_domains: the operator explicitly asked to import
+	// this feed, so its items are trusted regardless of the curated
+	// crawler allowlist. (Crawler outbound-link discovery still goes
+	// through allowedDomain via Seed.)
+	items := make([]store.FrontierPushItem, 0, len(urls))
 	for _, u := range urls {
-		if err := c.Seed(u); err != nil {
+		canon, cerr := canonicalize(u)
+		if cerr != nil {
 			continue
 		}
-		n++
+		items = append(items, store.FrontierPushItem{
+			URL:      canon,
+			Depth:    0,
+			Lane:     1, // LaneRefresh
+			Priority: 1.0,
+		})
 	}
-	return n, nil
+	return c.store.PushFrontierBatch(context.Background(), items)
 }
 
 // fetchRSS pulls the feed body and parses either RSS2 or Atom. Returns the

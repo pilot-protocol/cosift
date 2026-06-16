@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -75,7 +76,9 @@ type PebbleStore struct {
 	// (host, url) tuple; next claim seeks past it so each call resumes
 	// where the previous one stopped, wrapping at the end.
 	frontierCursorMu sync.Mutex
-	frontierCursor   []byte
+	frontierCursor   []byte            // legacy single cursor; pre-lanes scan state.
+	laneCursors      [laneCount][]byte // per-lane round-robin cursors.
+	laneTick         atomic.Uint64     // monotonic counter driving weighted lane pick.
 
 	// PILOT-190: pebble.DB.Close() panics if called twice. Wrap teardown
 	// in sync.Once so repeated Close() calls (e.g. from layered cleanups
@@ -127,6 +130,19 @@ const (
 // climbs higher (compaction, write batches, block readers) but the
 // OOM-prone block cache growth is bounded.
 func OpenPebble(path string) (*PebbleStore, error) {
+	return openPebble(path, false)
+}
+
+// OpenPebbleReadOnly opens the store WITHOUT acquiring the directory write
+// lock, so it can run alongside a live pebble-serve process (zero downtime).
+// Reads see a consistent snapshot taken at open time; any write method
+// (UpsertDocument, SoftDeleteDocument, …) will fail. Use for offline
+// inspection / dry-run sweeps over a production corpus.
+func OpenPebbleReadOnly(path string) (*PebbleStore, error) {
+	return openPebble(path, true)
+}
+
+func openPebble(path string, readOnly bool) (*PebbleStore, error) {
 	cacheMB := envInt("COSIFT_PEBBLE_CACHE_MB", 128)
 	memtableMB := envInt("COSIFT_PEBBLE_MEMTABLE_MB", 32)
 	memtables := envInt("COSIFT_PEBBLE_MEMTABLES", 2)
@@ -137,6 +153,7 @@ func OpenPebble(path string) (*PebbleStore, error) {
 		Cache:                       cache,
 		MemTableSize:                uint64(memtableMB) << 20,
 		MemTableStopWritesThreshold: memtables + 2,
+		ReadOnly:                    readOnly,
 	}
 	db, err := pebble.Open(path, opts)
 	if err != nil {
@@ -368,6 +385,9 @@ func frontierKey(url string) []byte {
 // The 0x00 separator keeps the host field prefix-disambiguated so a URL
 // can't slide into a different host's row even if it byte-prefixes a
 // host name.
+//
+// Legacy format (pre-lanes). Reads still walk these so the existing 4.3M
+// queue drains naturally; new pushes go through frontierStatusIndexKeyLane.
 func frontierStatusIndexKey(sub byte, host, url string) []byte {
 	k := make([]byte, 2+len(host)+1+len(url))
 	k[0] = famFrontier
@@ -378,8 +398,8 @@ func frontierStatusIndexKey(sub byte, host, url string) []byte {
 	return k
 }
 
-// frontierStatusIndexHost extracts the host portion of a secondary-index
-// key. Returns "" if the key shape is wrong.
+// frontierStatusIndexHost extracts the host portion of a legacy secondary
+// index key. Returns "" if the key shape is wrong.
 func frontierStatusIndexHost(key []byte) string {
 	if len(key) < 3 || key[0] != famFrontier {
 		return ""
@@ -391,6 +411,64 @@ func frontierStatusIndexHost(key []byte) string {
 		}
 	}
 	return ""
+}
+
+// Lane priority classes for the frontier. Higher-weighted lanes drain
+// proportionally more often via the weighted round-robin in ClaimFrontier.
+// Wire format: one byte per key, valid range 0..3.
+const (
+	LaneSubmitted  byte = 0 // publisher-submitted (e.g. /pub/submit) — weight 50
+	LaneRefresh    byte = 1 // refresh / fresh-content (RSS, sitemap-lastmod) — weight 30
+	LaneDiscovered byte = 2 // crawler outbound-link discovery (default) — weight 15
+	LaneBulk       byte = 3 // bulk import (WET, mass site-pack) — weight 5
+	laneCount           = 4
+)
+
+// frontierStatusIndexKeyLane is the lane-aware secondary index:
+//
+//	'f' + 'q' + lane + host + 0x00 + url → empty   (queued)
+//	'f' + 'i' + lane + host + 0x00 + url → empty   (in_flight)
+//
+// One byte after the status separator carries the lane. Hosts start with
+// printable ASCII (>= 0x21), so a key prefix of [famFrontier, sub, 0..3]
+// is unambiguously lane-format vs legacy (where byte 2 is a host byte).
+func frontierStatusIndexKeyLane(sub, lane byte, host, url string) []byte {
+	k := make([]byte, 3+len(host)+1+len(url))
+	k[0] = famFrontier
+	k[1] = sub
+	k[2] = lane
+	copy(k[3:], host)
+	k[3+len(host)] = 0x00
+	copy(k[3+len(host)+1:], url)
+	return k
+}
+
+// frontierStatusIndexHostLane extracts (host, lane) from a lane-format
+// secondary index key. Returns ("", 0) if the key shape is wrong.
+func frontierStatusIndexHostLane(key []byte) (host string, lane byte) {
+	if len(key) < 4 || key[0] != famFrontier {
+		return "", 0
+	}
+	lane = key[2]
+	rest := key[3:]
+	for i, b := range rest {
+		if b == 0x00 {
+			return string(rest[:i]), lane
+		}
+	}
+	return "", 0
+}
+
+// frontierLanePrefix is the lower bound for an iteration scoped to one
+// (sub, lane) combo.
+func frontierLanePrefix(sub, lane byte) []byte {
+	return []byte{famFrontier, sub, lane}
+}
+
+// frontierLaneUpperBound is the (exclusive) upper bound for an iteration
+// scoped to one (sub, lane) combo.
+func frontierLaneUpperBound(sub, lane byte) []byte {
+	return []byte{famFrontier, sub, lane + 1}
 }
 
 // FrontierStatus is the lifecycle position of a frontier URL.
@@ -411,7 +489,11 @@ const (
 // frontierEntry is the value side of the 'f' + 'u' + url key. Packed
 // little-endian: status (1) + depth (varint) + priority (float64-le) +
 // enqueued_at (varint) + attempts (varint) + host (varint-len + bytes) +
-// last_error (varint-len + bytes).
+// last_error (varint-len + bytes) [+ lane (1)].
+//
+// Lane is appended at the end as one optional byte. Entries written before
+// the lane feature appear without it; the unpacker defaults missing lanes
+// to LaneDiscovered so existing 4.3M queued URLs keep working.
 type frontierEntry struct {
 	Status     FrontierStatus
 	Depth      int64
@@ -420,11 +502,12 @@ type frontierEntry struct {
 	Attempts   int64
 	Host       string
 	LastError  string
+	Lane       byte
 }
 
 func packFrontierEntry(e frontierEntry) []byte {
 	tmp := make([]byte, binary.MaxVarintLen64)
-	out := make([]byte, 0, 1+8+len(e.Host)+len(e.LastError)+30)
+	out := make([]byte, 0, 1+8+len(e.Host)+len(e.LastError)+32)
 	out = append(out, byte(e.Status))
 	n := binary.PutVarint(tmp, e.Depth)
 	out = append(out, tmp[:n]...)
@@ -441,6 +524,7 @@ func packFrontierEntry(e frontierEntry) []byte {
 	n = binary.PutUvarint(tmp, uint64(len(e.LastError)))
 	out = append(out, tmp[:n]...)
 	out = append(out, e.LastError...)
+	out = append(out, e.Lane)
 	return out
 }
 
@@ -487,6 +571,14 @@ func unpackFrontierEntry(buf []byte) (frontierEntry, error) {
 	}
 	buf = buf[n:]
 	e.LastError = string(buf[:errLen])
+	buf = buf[errLen:]
+	// Lane (optional, appended). Pre-lanes entries have no trailing byte
+	// and default to LaneDiscovered.
+	if len(buf) >= 1 {
+		e.Lane = buf[0]
+	} else {
+		e.Lane = LaneDiscovered
+	}
 	return e, nil
 }
 
@@ -1181,12 +1273,319 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	return nil
 }
 
-// PushFrontier inserts a URL into the queue. INSERT-OR-IGNORE semantics:
-// if the URL already exists in any state, this is a no-op.
-// also writes the 'f'+'q' secondary index for host-fair claim.
+// WriteCrawlResult combines UpsertDocument + IndexDocument + CompleteFrontier
+// into a SINGLE p.mu acquisition + SINGLE batch commit. This is the fix for
+// the per-doc serialization wall: with 512 crawler workers contending on
+// p.mu, three separate writes per doc means three lock-queue waits per
+// cycle. Folded together, each finished crawl costs ONE mu hop, slashing
+// queue depth at the lock by 3x.
+//
+// Tokenization runs OUTSIDE the lock (CPU-only, no shared state). The
+// term-info / prior-doc-terms reads stay inside because they depend on
+// term IDs allocated under the lock; moving them out would race the ID
+// allocator on cold terms.
+//
+// If completeURL is empty the frontier transition step is skipped — lets
+// the same path serve ingest flows (WET, JSONL) that have no frontier
+// row to clear.
+func (p *PebbleStore) WriteCrawlResult(
+	ctx context.Context,
+	d *Document,
+	title, text, completeURL string,
+	tokenize func(string) []string,
+	titleBoost int,
+) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if d == nil || d.URL == "" {
+		return 0, errors.New("PebbleStore.WriteCrawlResult: nil doc or empty URL")
+	}
+	if titleBoost <= 0 {
+		titleBoost = 1
+	}
+
+	// Tokenize before acquiring the lock so 300+ workers can run their
+	// CPU-bound tokenization in parallel instead of queuing on mu.
+	titleTokens := tokenize(title)
+	bodyTokens := tokenize(text)
+	tf := make(map[string]int, len(titleTokens)+len(bodyTokens))
+	for _, t := range titleTokens {
+		tf[t] += titleBoost
+	}
+	for _, t := range bodyTokens {
+		tf[t]++
+	}
+	docLen := len(titleTokens) + len(bodyTokens)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// ---- Upsert phase ----
+	var id int64
+	var isNew bool
+	if existingID, ok, err := p.lookupIDByURL(d.URL); err != nil {
+		return 0, err
+	} else if ok {
+		id = existingID
+	} else {
+		id = p.nextID.Add(1)
+		isNew = true
+	}
+	d.ID = id
+	if isNew && os.Getenv("COSIFT_DEBUG_UPSERT") == "1" {
+		fmt.Fprintf(os.Stderr, "upsert-new: id=%d url=%s\n", id, d.URL)
+	}
+
+	var docBuf bytes.Buffer
+	if err := gob.NewEncoder(&docBuf).Encode(d); err != nil {
+		return 0, fmt.Errorf("encode doc: %w", err)
+	}
+	idBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(idBuf, uint64(id))
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(docKey(id), docBuf.Bytes(), nil); err != nil {
+		return 0, err
+	}
+	if err := batch.Set(urlKey(d.URL), idBuf, nil); err != nil {
+		return 0, err
+	}
+	if err := batch.Set(docMetaKey(id), packDocMeta(d.URL, d.Title), nil); err != nil {
+		return 0, err
+	}
+	if d.Domain != "" {
+		if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
+			return 0, err
+		}
+	}
+	if isNew {
+		if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
+			return 0, err
+		}
+	}
+
+	// ---- Index phase ----
+	if len(tf) > 0 {
+		lenBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(lenBuf, uint64(docLen))
+
+		oldLen, hadOld, err := p.readDocLenLocked(id)
+		if err != nil {
+			return 0, err
+		}
+		var sumLen, indexedCount int64
+		if p.corpusStatsLoaded.Load() {
+			sumLen = p.corpusSumLen.Load()
+			indexedCount = p.corpusIndexedDocs.Load()
+		} else {
+			sumLen = p.readMetaInt64Locked("sum_doc_len")
+			indexedCount = p.readMetaInt64Locked("indexed_docs")
+		}
+		if hadOld {
+			sumLen -= oldLen
+		} else {
+			indexedCount++
+		}
+		sumLen += int64(docLen)
+
+		if err := batch.Set(docLenKey(id), lenBuf, nil); err != nil {
+			return 0, err
+		}
+		sumBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+		if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+			return 0, err
+		}
+		countBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
+		if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+			return 0, err
+		}
+
+		oldTermIDs, err := p.readDocTermsLocked(id)
+		if err != nil {
+			return 0, err
+		}
+		oldSet := make(map[int64]struct{}, len(oldTermIDs))
+		for _, tid := range oldTermIDs {
+			oldSet[tid] = struct{}{}
+		}
+		newSet := make(map[int64]struct{}, len(tf))
+
+		for term, freq := range tf {
+			info, ok, err := p.getTermInfoLocked(term)
+			if err != nil {
+				return 0, err
+			}
+			if !ok {
+				info.ID = p.nextTermID()
+				info.DocFreq = 1
+			} else if _, alreadyIn := oldSet[info.ID]; !alreadyIn {
+				info.DocFreq++
+			}
+			newSet[info.ID] = struct{}{}
+			if err := batch.Set(termKey(term), packTermInfo(info), nil); err != nil {
+				return 0, err
+			}
+			pvBuf := make([]byte, 16)
+			binary.BigEndian.PutUint64(pvBuf[0:8], uint64(freq))
+			binary.BigEndian.PutUint64(pvBuf[8:16], uint64(docLen))
+			if err := batch.Set(postingKey(info.ID, id), pvBuf, nil); err != nil {
+				return 0, err
+			}
+		}
+		for oldID := range oldSet {
+			if _, stillPresent := newSet[oldID]; stillPresent {
+				continue
+			}
+			if err := batch.Delete(postingKey(oldID, id), nil); err != nil {
+				return 0, err
+			}
+		}
+		newIDs := make([]int64, 0, len(newSet))
+		for tid := range newSet {
+			newIDs = append(newIDs, tid)
+		}
+		if err := batch.Set(docTermsKey(id), packDocTerms(newIDs), nil); err != nil {
+			return 0, err
+		}
+
+		// Mirror counters AFTER commit succeeds.
+		defer func() {
+			p.corpusSumLen.Store(sumLen)
+			p.corpusIndexedDocs.Store(indexedCount)
+			p.corpusStatsLoaded.Store(true)
+		}()
+	}
+
+	// ---- CompleteFrontier phase ----
+	if completeURL != "" {
+		if val, closer, err := p.db.Get(frontierKey(completeURL)); err == nil {
+			entry, uerr := unpackFrontierEntry(val)
+			_ = closer.Close()
+			if uerr == nil {
+				oldStatus := entry.Status
+				entry.Status = FrontierStatusDone
+				if err := batch.Set(frontierKey(completeURL), packFrontierEntry(entry), nil); err != nil {
+					return 0, err
+				}
+				switch oldStatus {
+				case FrontierStatusQueued:
+					_ = batch.Delete(frontierStatusIndexKey('q', entry.Host, completeURL), nil)
+					_ = batch.Delete(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, completeURL), nil)
+				case FrontierStatusInFlight:
+					_ = batch.Delete(frontierStatusIndexKey('i', entry.Host, completeURL), nil)
+					_ = batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, completeURL), nil)
+				}
+			}
+		}
+	}
+
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return 0, fmt.Errorf("WriteCrawlResult commit: %w", err)
+	}
+	return id, nil
+}
+
+// PushFrontier inserts a URL into the queue at LaneDiscovered (the
+// crawler-default lane). Thin wrapper around PushFrontierLane kept for
+// backwards compat with callers (crawler outbound-link discovery) that
+// don't pick a lane explicitly.
 func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
+	return p.PushFrontierLane(ctx, url, depth, LaneDiscovered, priority)
+}
+
+// FrontierPushItem is one entry handed to PushFrontierBatch. Callers
+// typically pass the URL list straight from a parsed feed/sitemap; the
+// store extracts the host and writes both the primary and lane-aware
+// secondary index keys.
+type FrontierPushItem struct {
+	URL      string
+	Depth    int
+	Lane     byte
+	Priority float64
+}
+
+// PushFrontierBatch inserts N URLs in a single Pebble batch + single
+// mu acquire. This is the fix for the "rss-import takes 14 minutes"
+// problem: per-URL PushFrontierLane calls fight 256 crawler workers
+// for p.mu, dragging a 25-URL feed to ~14 minutes wall-clock. Batched,
+// the same feed lands in tens of milliseconds.
+//
+// Dedup semantics match PushFrontierLane: if frontierKey(url) exists
+// in any state, that URL is skipped (no overwrite). Returns the count
+// actually written (new URLs only); duplicates are silently ignored
+// so callers can pre-count for telemetry without double-checking.
+func (p *PebbleStore) PushFrontierBatch(ctx context.Context, items []FrontierPushItem) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+
+	written := 0
+	now := time.Now().Unix()
+	for _, it := range items {
+		if it.URL == "" {
+			continue
+		}
+		lane := it.Lane
+		if lane >= laneCount {
+			lane = LaneDiscovered
+		}
+		// Dedup against existing frontier rows. One Get per URL is the
+		// price of INSERT-OR-IGNORE; cheaper than the post-hoc batch
+		// reconciliation a true bulk-load would need.
+		if _, closer, err := p.db.Get(frontierKey(it.URL)); err == nil {
+			_ = closer.Close()
+			continue
+		} else if !errors.Is(err, pebble.ErrNotFound) {
+			return written, err
+		}
+		host := extractHost(it.URL)
+		entry := frontierEntry{
+			Status:     FrontierStatusQueued,
+			Depth:      int64(it.Depth),
+			Priority:   it.Priority,
+			EnqueuedAt: now,
+			Host:       host,
+			Lane:       lane,
+		}
+		if err := batch.Set(frontierKey(it.URL), packFrontierEntry(entry), nil); err != nil {
+			return written, err
+		}
+		if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, it.URL), nil, nil); err != nil {
+			return written, err
+		}
+		written++
+	}
+	if written == 0 {
+		return 0, nil
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
+// PushFrontierLane inserts a URL into a specific lane. INSERT-OR-IGNORE:
+// if the URL already exists in any state (including legacy pre-lane
+// entries), this is a no-op. Writes the lane-aware 'f'+'q'+lane secondary
+// index for the weighted round-robin in ClaimFrontier.
+func (p *PebbleStore) PushFrontierLane(ctx context.Context, url string, depth int, lane byte, priority float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if lane >= laneCount {
+		lane = LaneDiscovered
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1203,30 +1602,69 @@ func (p *PebbleStore) PushFrontier(ctx context.Context, url string, depth int, p
 		Priority:   priority,
 		EnqueuedAt: time.Now().Unix(),
 		Host:       host,
+		Lane:       lane,
 	}
 	batch := p.db.NewBatch()
 	defer batch.Close()
 	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
 		return err
 	}
-	if err := batch.Set(frontierStatusIndexKey('q', host, url), nil, nil); err != nil {
+	if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, url), nil, nil); err != nil {
 		return err
 	}
 	return batch.Commit(p.writeOpts)
 }
 
-// ClaimFrontier picks one queued URL, atomically marks it in_flight, and
-// returns the FrontierItem. ok=false when the queue is empty.:
-// host-fair via two secondary-index scans — O(distinct in-flight hosts +
-// distinct queued URLs walked until a free host found). At a healthy
-// crawl where most hosts are NOT in-flight, this is effectively O(1).
+// laneWeights drives weighted round-robin across the four lanes. The
+// integers are relative weights, not absolute caps. ClaimFrontier picks a
+// lane every call based on a global tick counter modded by the sum of
+// weights; the deterministic schedule guarantees fairness without
+// per-call randomness.
 //
-// Tradeoff: priority ordering is no longer enforced across hosts. The
-// implementation traversed every queued URL to honor strict
-// (priority DESC, enqueued ASC) order; trades that for the
-// host-fair scheduling that the SQLite-side Claim provides.
-// Within a host's queued URLs Pebble returns them in URL-byte order,
-// which approximates enqueue order for outbound-link discovery.
+// Default 50/30/15/5: submitted gets half the work, refresh a third, the
+// catch-all discovered lane a sixth, and bulk imports the leftover. An
+// empty lane donates its share to the next non-empty lane in priority
+// order, so a quiet submitted/refresh queue can't slow down discovery.
+var laneWeights = [laneCount]int{50, 30, 15, 5}
+
+// laneOrder is the lane priority for donation when a chosen lane is
+// empty: prefer the higher-priority lanes first, then fall through.
+var laneOrder = [laneCount]byte{LaneSubmitted, LaneRefresh, LaneDiscovered, LaneBulk}
+
+// pickLane returns the lane index for the next claim. Deterministic
+// weighted RR over laneWeights using p.laneTick (monotonic counter).
+func (p *PebbleStore) pickLane() byte {
+	sum := 0
+	for _, w := range laneWeights {
+		sum += w
+	}
+	if sum == 0 {
+		return LaneDiscovered
+	}
+	t := int(p.laneTick.Add(1) % uint64(sum))
+	acc := 0
+	for i, w := range laneWeights {
+		acc += w
+		if t < acc {
+			return byte(i)
+		}
+	}
+	return LaneDiscovered
+}
+
+// ClaimFrontier picks one queued URL, atomically marks it in_flight, and
+// returns the FrontierItem. ok=false when the queue is empty.
+//
+// Lane-weighted: each call picks a lane via pickLane (weighted RR), then
+// scans the lane's queued URLs in host-fair order. Empty lanes fall
+// through to the next non-empty lane in priority order. As a final
+// fallback, the legacy lane-less 'f'+'q'+host+0x00+url index is scanned
+// so the pre-lanes queue (millions of URLs from the cloud.google.com era)
+// keeps draining in parallel with lane-aware pushes.
+//
+// Host-fairness preserved within each lane: in-flight hosts are tracked
+// across ALL lanes so a worker on one lane never piles onto a host
+// another lane is already touching.
 func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return FrontierItem{}, false, err
@@ -1234,10 +1672,11 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Step 1: build the set of hosts currently in-flight. wrap in
-	// closure so iIt.Close() runs even if iteration panics (was explicit
-	// Close after the loop; a panic inside leaked the iterator).
-	inflightHosts := make(map[string]struct{}, 32)
+	// Step 1: build the cross-lane set of in-flight hosts. Scans 'f'+'i'
+	// (both legacy and lane-aware live in the same sub-byte range —
+	// frontierStatusIndexHost handles legacy keys; frontierStatusIndexHostLane
+	// handles lane-aware ones).
+	inflightHosts := make(map[string]struct{}, 64)
 	if err := func() error {
 		iIt, err := p.db.NewIter(&pebble.IterOptions{
 			LowerBound: []byte{famFrontier, 'i'},
@@ -1248,7 +1687,7 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		}
 		defer iIt.Close()
 		for valid := iIt.First(); valid; valid = iIt.Next() {
-			h := frontierStatusIndexHost(iIt.Key())
+			h := decodeFrontierIndexHost(iIt.Key())
 			if h != "" {
 				inflightHosts[h] = struct{}{}
 			}
@@ -1258,135 +1697,45 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		return FrontierItem{}, false, err
 	}
 
-	// Step 2: walk queued URLs in key order (host-then-URL). Pick the first
-	// whose host is NOT in inflightHosts. Start the scan from
-	// the LAST-CLAIMED key (round-robin), wrapping at the end. Previously
-	// we always started at the first queued URL, so hosts late in the
-	// alphabet (e.g. pilotprotocol.network) could be starved indefinitely
-	// when many earlier-alpha hosts had queued URLs.
-	qIt, err := p.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{famFrontier, 'q'},
-		UpperBound: []byte{famFrontier, 'q' + 1},
-	})
-	if err != nil {
-		return FrontierItem{}, false, err
-	}
-	defer qIt.Close()
-
-	p.frontierCursorMu.Lock()
-	cursor := append([]byte(nil), p.frontierCursor...)
-	p.frontierCursorMu.Unlock()
+	// Step 2: lane-weighted pick. Try the chosen lane first; if empty or
+	// no free host found, walk other lanes in priority order; finally
+	// fall back to the legacy lane-less index.
+	chosenLane := p.pickLane()
+	tryLanes := append([]byte{chosenLane}, laneOrderWithout(chosenLane)...)
 
 	var pickedHost, pickedURL string
-	var fallbackHost, fallbackURL string
-	var fallbackFound bool
+	var pickedLane byte
+	var pickedLegacy bool
 
-	scan := func(start func() bool) (found bool) {
-		for valid := start(); valid; valid = qIt.Next() {
-			host := frontierStatusIndexHost(qIt.Key())
-			if host == "" {
-				continue
-			}
-			key := qIt.Key()
-			urlOffset := 2 + len(host) + 1
-			if urlOffset > len(key) {
-				continue
-			}
-			url := string(key[urlOffset:])
-			if !fallbackFound {
-				fallbackHost = host
-				fallbackURL = url
-				fallbackFound = true
-			}
-			if _, busy := inflightHosts[host]; !busy {
-				pickedHost = host
-				pickedURL = url
-				return true
-			}
+	for _, lane := range tryLanes {
+		host, url, ok := p.scanLaneForFreeHost(lane, inflightHosts)
+		if ok {
+			pickedHost, pickedURL, pickedLane = host, url, lane
+			break
 		}
-		return false
-	}
-
-	// First sweep: cursor points to the first key of the next host
-	// (set by the previous claim's skipKey logic), so a plain
-	// SeekGE lands at the first URL of that next host directly.
-	startFromCursor := func() bool {
-		if len(cursor) > 0 {
-			return qIt.SeekGE(cursor)
-		}
-		return qIt.First()
-	}
-	if !scan(startFromCursor) {
-		// Wrap: try from the beginning. fallbackHost will be set from the
-		// first sweep if any URL existed (so we can reuse it without
-		// re-iterating).
-		_ = scan(qIt.First)
 	}
 	if pickedURL == "" {
-		if !fallbackFound {
-			return FrontierItem{}, false, nil
-		}
-		pickedHost = fallbackHost
-		pickedURL = fallbackURL
-	}
-
-	// within the picked host's queued bucket, prefer a URL that
-	// has NO prior doc record. The naive round-robin always picks the first
-	// alphabetical URL per host, which on a saturated link-graph is almost
-	// always already in famDoc — re-crawl with no doc-count growth. RSS- or
-	// sitemap-imported genuinely-novel URLs sit deeper in the host's bucket
-	// and never get picked. Probe up to 32 URLs in the host's block; if
-	// any has no prior doc, take that one. Falls back to pickedURL when
-	// every probed URL is a known doc. Cheap: 32 × ~1ms pebble point-lookups
-	// per claim, vs the alternative of waiting days for the cursor to drain
-	// every host's first-URL.
-	if pickedHost != "" {
-		hostPrefix := make([]byte, 2+len(pickedHost)+1)
-		hostPrefix[0] = famFrontier
-		hostPrefix[1] = 'q'
-		copy(hostPrefix[2:], pickedHost)
-		hostPrefix[2+len(pickedHost)] = 0x00
-		hostUpper := make([]byte, len(hostPrefix))
-		copy(hostUpper, hostPrefix)
-		hostUpper[len(hostUpper)-1] = 0x01
-		probeIt, perr := p.db.NewIter(&pebble.IterOptions{LowerBound: hostPrefix, UpperBound: hostUpper})
-		if perr == nil {
-			const maxProbes = 32
-			probed := 0
-			for valid := probeIt.First(); valid && probed < maxProbes; valid = probeIt.Next() {
-				key := probeIt.Key()
-				urlPart := string(key[len(hostPrefix):])
-				if urlPart == "" {
-					continue
-				}
-				probed++
-				if _, ok, _ := p.lookupIDByURL(urlPart); !ok {
-					pickedURL = urlPart
-					break
-				}
-			}
-			probeIt.Close()
+		// Legacy fall-through: drain the pre-lanes 'f'+'q'+host queue.
+		host, url, ok := p.scanLegacyForFreeHost(inflightHosts)
+		if ok {
+			pickedHost, pickedURL = host, url
+			pickedLegacy = true
 		}
 	}
+	if pickedURL == "" {
+		return FrontierItem{}, false, nil
+	}
 
-	// advance the round-robin cursor PAST the picked host's
-	// entire URL block. Without this, each claim only advances by one URL,
-	// so hosts with thousands of queued URLs (github.com, en.wikipedia.org)
-	// hog the cursor and hosts later in the alphabet take days to reach.
-	// Cursor = {famFrontier, 'q', host, 0xFF} — lex-greater than any real
-	// URL key for this host (URLs are ASCII), so the next SeekGE lands on
-	// the first URL of the NEXT host. also persist to pebble
-	// so a restart resumes where it stopped.
-	var skipKey []byte
+	// Prefer a URL within the picked host's bucket that has no prior doc
+	// record. Same trick as the legacy claim — RSS/sitemap-imported novel
+	// URLs sit deeper in alphabetical order; without this probe, every
+	// claim picks the first URL, which is almost always already-crawled
+	// and re-fetched silently.
 	if pickedHost != "" {
-		skipKey = make([]byte, 2+len(pickedHost)+1)
-		skipKey[0] = famFrontier
-		skipKey[1] = 'q'
-		copy(skipKey[2:], pickedHost)
-		skipKey[2+len(pickedHost)] = 0xFF
-		p.frontierCursorMu.Lock()
-		p.frontierCursor = skipKey
-		p.frontierCursorMu.Unlock()
+		probed := p.probeForNovelURL(pickedHost, pickedURL, pickedLane, pickedLegacy)
+		if probed != "" {
+			pickedURL = probed
+		}
 	}
 
 	// Step 3: atomic transition. Read primary, flip status, swap indexes.
@@ -1406,16 +1755,18 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 	if err := batch.Set(frontierKey(pickedURL), packFrontierEntry(entry), nil); err != nil {
 		return FrontierItem{}, false, err
 	}
-	if err := batch.Delete(frontierStatusIndexKey('q', pickedHost, pickedURL), nil); err != nil {
-		return FrontierItem{}, false, err
-	}
-	if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
-		return FrontierItem{}, false, err
-	}
-	// persist the cursor in the same atomic batch as the status
-	// transition, so we never desync the state on a crash.
-	if len(skipKey) > 0 {
-		if err := batch.Set(metaKey("frontier_cursor"), skipKey, nil); err != nil {
+	if pickedLegacy {
+		if err := batch.Delete(frontierStatusIndexKey('q', pickedHost, pickedURL), nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+		if err := batch.Set(frontierStatusIndexKey('i', pickedHost, pickedURL), nil, nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+	} else {
+		if err := batch.Delete(frontierStatusIndexKeyLane('q', pickedLane, pickedHost, pickedURL), nil); err != nil {
+			return FrontierItem{}, false, err
+		}
+		if err := batch.Set(frontierStatusIndexKeyLane('i', pickedLane, pickedHost, pickedURL), nil, nil); err != nil {
 			return FrontierItem{}, false, err
 		}
 	}
@@ -1423,6 +1774,228 @@ func (p *PebbleStore) ClaimFrontier(ctx context.Context) (FrontierItem, bool, er
 		return FrontierItem{}, false, err
 	}
 	return FrontierItem{URL: pickedURL, Depth: int(entry.Depth), Priority: entry.Priority}, true, nil
+}
+
+// laneOrderWithout returns laneOrder minus the given lane, preserving the
+// priority order of the remainder so weighted-RR donation walks
+// submitted → refresh → discovered → bulk on misses.
+func laneOrderWithout(skip byte) []byte {
+	out := make([]byte, 0, laneCount-1)
+	for _, l := range laneOrder {
+		if l != skip {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// decodeFrontierIndexHost extracts the host from either a legacy
+// 'f'+sub+host+0x00+url key or a lane-aware 'f'+sub+lane+host+0x00+url
+// key. Distinguishes by inspecting byte 2: lane bytes are 0..3 (below
+// the printable-ASCII range any host byte uses), so a byte < 0x04 means
+// lane-format.
+func decodeFrontierIndexHost(key []byte) string {
+	if len(key) < 3 || key[0] != famFrontier {
+		return ""
+	}
+	if key[2] < laneCount {
+		h, _ := frontierStatusIndexHostLane(key)
+		return h
+	}
+	return frontierStatusIndexHost(key)
+}
+
+// scanLaneForFreeHost walks one lane's queued URLs, returning the first
+// URL whose host is not in inflightHosts. Round-robin starts at the
+// per-lane cursor stored in p.laneCursors so each lane has its own
+// fairness state independent of the others.
+func (p *PebbleStore) scanLaneForFreeHost(lane byte, inflightHosts map[string]struct{}) (host, url string, ok bool) {
+	qIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: frontierLanePrefix('q', lane),
+		UpperBound: frontierLaneUpperBound('q', lane),
+	})
+	if err != nil {
+		return "", "", false
+	}
+	defer qIt.Close()
+
+	p.frontierCursorMu.Lock()
+	cursor := append([]byte(nil), p.laneCursors[lane]...)
+	p.frontierCursorMu.Unlock()
+
+	var fallbackHost, fallbackURL string
+	var fallbackFound bool
+
+	scan := func(start func() bool) (found bool) {
+		for valid := start(); valid; valid = qIt.Next() {
+			h, _ := frontierStatusIndexHostLane(qIt.Key())
+			if h == "" {
+				continue
+			}
+			key := qIt.Key()
+			urlOffset := 3 + len(h) + 1
+			if urlOffset > len(key) {
+				continue
+			}
+			u := string(key[urlOffset:])
+			if !fallbackFound {
+				fallbackHost = h
+				fallbackURL = u
+				fallbackFound = true
+			}
+			if _, busy := inflightHosts[h]; !busy {
+				host, url = h, u
+				return true
+			}
+		}
+		return false
+	}
+
+	startFromCursor := func() bool {
+		if len(cursor) > 0 {
+			return qIt.SeekGE(cursor)
+		}
+		return qIt.First()
+	}
+	if !scan(startFromCursor) {
+		_ = scan(qIt.First)
+	}
+	if host == "" {
+		if !fallbackFound {
+			return "", "", false
+		}
+		host, url = fallbackHost, fallbackURL
+	}
+
+	// Advance the per-lane cursor past the picked host's URL block.
+	skipKey := make([]byte, 3+len(host)+1)
+	skipKey[0] = famFrontier
+	skipKey[1] = 'q'
+	skipKey[2] = lane
+	copy(skipKey[3:], host)
+	skipKey[3+len(host)] = 0xFF
+	p.frontierCursorMu.Lock()
+	p.laneCursors[lane] = skipKey
+	p.frontierCursorMu.Unlock()
+	return host, url, true
+}
+
+// scanLegacyForFreeHost is the unchanged pre-lanes scan, used as a final
+// fallback so existing 4.3M queued URLs from before lanes shipped continue
+// to drain.
+func (p *PebbleStore) scanLegacyForFreeHost(inflightHosts map[string]struct{}) (host, url string, ok bool) {
+	qIt, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'q', laneCount}, // skip lane-aware keys
+		UpperBound: []byte{famFrontier, 'q' + 1},
+	})
+	if err != nil {
+		return "", "", false
+	}
+	defer qIt.Close()
+
+	p.frontierCursorMu.Lock()
+	cursor := append([]byte(nil), p.frontierCursor...)
+	p.frontierCursorMu.Unlock()
+
+	var fallbackHost, fallbackURL string
+	var fallbackFound bool
+
+	scan := func(start func() bool) (found bool) {
+		for valid := start(); valid; valid = qIt.Next() {
+			h := frontierStatusIndexHost(qIt.Key())
+			if h == "" {
+				continue
+			}
+			key := qIt.Key()
+			urlOffset := 2 + len(h) + 1
+			if urlOffset > len(key) {
+				continue
+			}
+			u := string(key[urlOffset:])
+			if !fallbackFound {
+				fallbackHost = h
+				fallbackURL = u
+				fallbackFound = true
+			}
+			if _, busy := inflightHosts[h]; !busy {
+				host, url = h, u
+				return true
+			}
+		}
+		return false
+	}
+
+	startFromCursor := func() bool {
+		if len(cursor) > 0 && cursor[2] >= laneCount {
+			return qIt.SeekGE(cursor)
+		}
+		return qIt.First()
+	}
+	if !scan(startFromCursor) {
+		_ = scan(qIt.First)
+	}
+	if host == "" {
+		if !fallbackFound {
+			return "", "", false
+		}
+		host, url = fallbackHost, fallbackURL
+	}
+
+	skipKey := make([]byte, 2+len(host)+1)
+	skipKey[0] = famFrontier
+	skipKey[1] = 'q'
+	copy(skipKey[2:], host)
+	skipKey[2+len(host)] = 0xFF
+	p.frontierCursorMu.Lock()
+	p.frontierCursor = skipKey
+	p.frontierCursorMu.Unlock()
+	return host, url, true
+}
+
+// probeForNovelURL prefers a URL inside the picked host's bucket that has
+// no prior doc record. Same intent as the legacy code: avoid re-crawling
+// known docs when freshly-imported (RSS/sitemap) URLs sit deeper in the
+// alphabetical block. Returns "" if no novel URL found in maxProbes
+// attempts (caller keeps the original pickedURL).
+func (p *PebbleStore) probeForNovelURL(host, fallback string, lane byte, legacy bool) string {
+	var hostPrefix []byte
+	if legacy {
+		hostPrefix = make([]byte, 2+len(host)+1)
+		hostPrefix[0] = famFrontier
+		hostPrefix[1] = 'q'
+		copy(hostPrefix[2:], host)
+		hostPrefix[2+len(host)] = 0x00
+	} else {
+		hostPrefix = make([]byte, 3+len(host)+1)
+		hostPrefix[0] = famFrontier
+		hostPrefix[1] = 'q'
+		hostPrefix[2] = lane
+		copy(hostPrefix[3:], host)
+		hostPrefix[3+len(host)] = 0x00
+	}
+	hostUpper := make([]byte, len(hostPrefix))
+	copy(hostUpper, hostPrefix)
+	hostUpper[len(hostUpper)-1] = 0x01
+	probeIt, perr := p.db.NewIter(&pebble.IterOptions{LowerBound: hostPrefix, UpperBound: hostUpper})
+	if perr != nil {
+		return ""
+	}
+	defer probeIt.Close()
+	const maxProbes = 32
+	probed := 0
+	for valid := probeIt.First(); valid && probed < maxProbes; valid = probeIt.Next() {
+		key := probeIt.Key()
+		urlPart := string(key[len(hostPrefix):])
+		if urlPart == "" {
+			continue
+		}
+		probed++
+		if _, ok, _ := p.lookupIDByURL(urlPart); !ok {
+			return urlPart
+		}
+	}
+	_ = fallback
+	return ""
 }
 
 // CompleteFrontier marks a URL as successfully processed.
@@ -1474,23 +2047,36 @@ func (p *PebbleStore) transitionFrontier(ctx context.Context, url string, newSta
 	if err := batch.Set(frontierKey(url), packFrontierEntry(entry), nil); err != nil {
 		return err
 	}
+	// blind-delete BOTH legacy and lane-aware secondary keys so transition
+	// works for entries written before lanes shipped (legacy key only) and
+	// for entries pushed after (lane-aware key only). Pebble Delete is a
+	// no-op on missing keys.
 	switch oldStatus {
 	case FrontierStatusQueued:
 		if err := batch.Delete(frontierStatusIndexKey('q', entry.Host, url), nil); err != nil {
+			return err
+		}
+		if err := batch.Delete(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil); err != nil {
 			return err
 		}
 	case FrontierStatusInFlight:
 		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
 			return err
 		}
+		if err := batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil); err != nil {
+			return err
+		}
 	}
+	// New secondary key follows the entry's Lane — recovery into queued
+	// goes back to whatever lane the URL was originally on (defaults to
+	// LaneDiscovered for legacy entries via unpack).
 	switch newStatus {
 	case FrontierStatusQueued:
-		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Set(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	case FrontierStatusInFlight:
-		if err := batch.Set(frontierStatusIndexKey('i', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Set(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	}
@@ -1643,6 +2229,154 @@ func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url
 	return nil
 }
 
+// IterDocMeta is like IterDocsLite but also yields the document title from
+// the cheap 'i' side-blob (no full gob decode). Used by content sweeps
+// (e.g. purge-adult) that classify on URL + title across the whole corpus.
+func (p *PebbleStore) IterDocMeta(ctx context.Context, fn func(docID int64, url, title string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famDocMeta},
+		UpperBound: []byte{famDocMeta + 1},
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := it.Key()
+		if len(key) != 9 {
+			continue
+		}
+		docID := int64(binary.BigEndian.Uint64(key[1:]))
+		val, err := it.ValueAndErr()
+		if err != nil {
+			continue
+		}
+		url, title, ok, err := unpackDocMeta(val)
+		if err != nil || !ok || url == "" {
+			continue
+		}
+		if err := fn(docID, url, title); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SoftDeleteDocument removes a document from retrieval without rewriting the
+// posting lists. It deletes the doc record ('d'), the URL→ID index ('u'), the
+// cheap meta side-blob ('i'), the host index entry ('h') and the doc-length
+// entry ('l'), then decrements the corpus counters (indexed_docs, sum_doc_len)
+// so BM25 IDF/avgdl stay accurate.
+//
+// The term postings ('p') and doc-terms list ('g') are intentionally LEFT in
+// place as orphans: the retrieval path resolves every scored docID through
+// GetDocMeta and skips any whose meta is missing (pebble_bm25.go), so an
+// orphaned posting can never surface a deleted doc — it only carries a small,
+// bounded DocFreq inaccuracy that the next reindex/compaction reconciles. This
+// makes deletion a handful of point-deletes instead of a full inverted-index
+// rewrite, which is what makes a multi-million-doc purge tractable.
+//
+// rawURL must be the document's stored URL (the caller has it from the meta
+// scan); the host index key is derived from it. Returns ok=false when the
+// document was already absent (idempotent — safe to re-run a purge).
+func (p *PebbleStore) SoftDeleteDocument(ctx context.Context, docID int64, rawURL string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Confirm the doc exists via its meta blob; bail idempotently if gone.
+	if _, _, ok, err := func() (string, string, bool, error) {
+		val, closer, err := p.db.Get(docMetaKey(docID))
+		if errors.Is(err, pebble.ErrNotFound) {
+			return "", "", false, nil
+		}
+		if err != nil {
+			return "", "", false, err
+		}
+		defer closer.Close()
+		return unpackDocMeta(val)
+	}(); err != nil {
+		return false, err
+	} else if !ok {
+		return false, nil
+	}
+
+	docLen, hadLen, err := p.readDocLenLocked(docID)
+	if err != nil {
+		return false, err
+	}
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete(docKey(docID), nil); err != nil {
+		return false, err
+	}
+	if rawURL != "" {
+		if err := batch.Delete(urlKey(rawURL), nil); err != nil {
+			return false, err
+		}
+		if u, e := url.Parse(rawURL); e == nil && u.Host != "" {
+			if err := batch.Delete(hostKey(u.Host, docID), nil); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := batch.Delete(docMetaKey(docID), nil); err != nil {
+		return false, err
+	}
+	if hadLen {
+		if err := batch.Delete(docLenKey(docID), nil); err != nil {
+			return false, err
+		}
+	}
+
+	// Decrement corpus counters, mirroring IndexDocument's accounting.
+	var sumLen, indexedCount int64
+	if p.corpusStatsLoaded.Load() {
+		sumLen = p.corpusSumLen.Load()
+		indexedCount = p.corpusIndexedDocs.Load()
+	} else {
+		sumLen = p.readMetaInt64Locked("sum_doc_len")
+		indexedCount = p.readMetaInt64Locked("indexed_docs")
+	}
+	if hadLen {
+		sumLen -= docLen
+		if sumLen < 0 {
+			sumLen = 0
+		}
+	}
+	indexedCount--
+	if indexedCount < 0 {
+		indexedCount = 0
+	}
+	sumBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sumBuf, uint64(sumLen))
+	if err := batch.Set(metaKey("sum_doc_len"), sumBuf, nil); err != nil {
+		return false, err
+	}
+	countBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(countBuf, uint64(indexedCount))
+	if err := batch.Set(metaKey("indexed_docs"), countBuf, nil); err != nil {
+		return false, err
+	}
+
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return false, err
+	}
+	p.corpusSumLen.Store(sumLen)
+	p.corpusIndexedDocs.Store(indexedCount)
+	p.corpusStatsLoaded.Store(true)
+	return true, nil
+}
+
 // PurgeFrontierByHost deletes every QUEUED frontier entry for the given
 // host (both the secondary 'f'+'q'+host index and the primary 'f'+'u'+url
 // entry). Returns the count purged. In-flight and done/errored entries
@@ -1659,49 +2393,76 @@ func (p *PebbleStore) PurgeFrontierByHost(ctx context.Context, host string) (int
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Scan the 'f'+'q'+host+0x00+url secondary index for this host.
-	prefix := make([]byte, 2+len(host)+1)
-	prefix[0] = famFrontier
-	prefix[1] = 'q'
-	copy(prefix[2:], host)
-	prefix[2+len(host)] = 0x00
-	upper := make([]byte, len(prefix))
-	copy(upper, prefix)
-	upper[len(upper)-1] = 0x01 // bump past the 0x00 separator block
-
-	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upper})
-	if err != nil {
-		return 0, err
-	}
-	defer it.Close()
-
 	batch := p.db.NewBatch()
 	defer batch.Close()
 	count := 0
-	for valid := it.First(); valid; valid = it.Next() {
-		key := it.Key()
-		// Recover the URL portion (after the 0x00 separator).
-		urlPart := key[len(prefix):]
-		// Delete the secondary index entry...
-		secCopy := make([]byte, len(key))
-		copy(secCopy, key)
-		if err := batch.Delete(secCopy, nil); err != nil {
-			return count, err
+
+	// purgeRange walks one secondary-index prefix range, deleting both the
+	// secondary entry and its primary 'f'+'u'+url counterpart.
+	// urlOffset is the byte position where the URL starts within each
+	// matching key (after host and 0x00 separator).
+	purgeRange := func(prefix, upper []byte, urlOffset int) error {
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upper})
+		if err != nil {
+			return err
 		}
-		// ...and the primary 'f'+'u'+url entry.
-		if err := batch.Delete(frontierKey(string(urlPart)), nil); err != nil {
-			return count, err
-		}
-		count++
-		// Commit in 5k-entry chunks to bound memory.
-		if count%5000 == 0 {
-			if err := batch.Commit(p.writeOpts); err != nil {
-				return count, err
+		defer it.Close()
+		for valid := it.First(); valid; valid = it.Next() {
+			key := it.Key()
+			if len(key) <= urlOffset {
+				continue
 			}
-			batch.Close()
-			batch = p.db.NewBatch()
+			urlPart := key[urlOffset:]
+			secCopy := append([]byte{}, key...)
+			if err := batch.Delete(secCopy, nil); err != nil {
+				return err
+			}
+			if err := batch.Delete(frontierKey(string(urlPart)), nil); err != nil {
+				return err
+			}
+			count++
+			if count%5000 == 0 {
+				if err := batch.Commit(p.writeOpts); err != nil {
+					return err
+				}
+				batch.Close()
+				batch = p.db.NewBatch()
+			}
+		}
+		return nil
+	}
+
+	// 1. Legacy 'f'+'q'+host+0x00+url range (pre-lanes entries).
+	legacyPrefix := make([]byte, 2+len(host)+1)
+	legacyPrefix[0] = famFrontier
+	legacyPrefix[1] = 'q'
+	copy(legacyPrefix[2:], host)
+	legacyPrefix[2+len(host)] = 0x00
+	legacyUpper := append([]byte{}, legacyPrefix...)
+	legacyUpper[len(legacyUpper)-1] = 0x01
+	if err := purgeRange(legacyPrefix, legacyUpper, len(legacyPrefix)); err != nil {
+		return count, err
+	}
+
+	// 2. Lane-aware 'f'+'q'+lane+host+0x00+url range for every lane. This
+	// catches hosts demoted via DemoteHostToLane (which moved the
+	// cloud.google.com 2.8M URL block to lane 3 — the original purge
+	// implementation was lane-blind and silently missed them, returning
+	// "purged: 291" on a host with 2.8M queued entries).
+	for lane := byte(0); lane < laneCount; lane++ {
+		lanePrefix := make([]byte, 3+len(host)+1)
+		lanePrefix[0] = famFrontier
+		lanePrefix[1] = 'q'
+		lanePrefix[2] = lane
+		copy(lanePrefix[3:], host)
+		lanePrefix[3+len(host)] = 0x00
+		laneUpper := append([]byte{}, lanePrefix...)
+		laneUpper[len(laneUpper)-1] = 0x01
+		if err := purgeRange(lanePrefix, laneUpper, len(lanePrefix)); err != nil {
+			return count, err
 		}
 	}
+
 	if err := batch.Commit(p.writeOpts); err != nil {
 		return count, err
 	}
@@ -1746,6 +2507,223 @@ func (p *PebbleStore) GetFrontierStats(ctx context.Context) (FrontierStats, erro
 	return s, nil
 }
 
+// DemoteHostToLane walks every queued URL for the given host (across
+// both legacy and lane-aware indexes) and rewrites it to the target
+// lane. Used to clear host-fair scheduling bottlenecks where one host
+// (cloud.google.com had 2.8M legacy URLs on the GH200, blocking 65% of
+// the queue with its slow JS-rendered pages) hogs claim slots from
+// fresher content. Re-keys atomically in 1024-URL batches.
+//
+// Returns the count of URLs moved. Safe to re-run — already-demoted
+// URLs (already in target lane) are skipped.
+func (p *PebbleStore) DemoteHostToLane(ctx context.Context, host string, lane byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if lane >= laneCount {
+		return 0, fmt.Errorf("DemoteHostToLane: lane %d out of range 0..%d", lane, laneCount-1)
+	}
+	if host == "" {
+		return 0, fmt.Errorf("DemoteHostToLane: empty host")
+	}
+
+	const batchSize = 1024
+	moved := 0
+	// Walk both the legacy 'q'+host+... and lane-aware 'q'+lane+host+...
+	// keyspaces. For each, collect URLs first (so we don't iterate while
+	// mutating) then re-key in batches.
+	collect := func(legacy bool, srcLane byte) ([]string, error) {
+		var lo, hi []byte
+		if legacy {
+			lo = make([]byte, 2+len(host)+1)
+			lo[0] = famFrontier
+			lo[1] = 'q'
+			copy(lo[2:], host)
+			lo[2+len(host)] = 0x00
+			hi = make([]byte, len(lo))
+			copy(hi, lo)
+			hi[len(hi)-1] = 0x01
+		} else {
+			lo = make([]byte, 3+len(host)+1)
+			lo[0] = famFrontier
+			lo[1] = 'q'
+			lo[2] = srcLane
+			copy(lo[3:], host)
+			lo[3+len(host)] = 0x00
+			hi = make([]byte, len(lo))
+			copy(hi, lo)
+			hi[len(hi)-1] = 0x01
+		}
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		if err != nil {
+			return nil, err
+		}
+		defer it.Close()
+		var urls []string
+		urlOffset := len(lo)
+		for valid := it.First(); valid; valid = it.Next() {
+			k := it.Key()
+			if len(k) <= urlOffset {
+				continue
+			}
+			urls = append(urls, string(k[urlOffset:]))
+		}
+		return urls, nil
+	}
+
+	rekeyBatch := func(urls []string, sourceLegacy bool, srcLane byte) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		batch := p.db.NewBatch()
+		defer batch.Close()
+		for _, u := range urls {
+			val, closer, err := p.db.Get(frontierKey(u))
+			if errors.Is(err, pebble.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			entry, uerr := unpackFrontierEntry(val)
+			_ = closer.Close()
+			if uerr != nil {
+				return uerr
+			}
+			// Skip URLs whose status changed under us (e.g. claimed by a
+			// worker between collect and rekey). Only Queued rows have
+			// secondary 'q' entries to swap.
+			if entry.Status != FrontierStatusQueued {
+				continue
+			}
+			if entry.Lane == lane {
+				continue
+			}
+			// Delete the OLD secondary key (legacy or lane-aware as appropriate).
+			if sourceLegacy {
+				if err := batch.Delete(frontierStatusIndexKey('q', host, u), nil); err != nil {
+					return err
+				}
+			} else {
+				if err := batch.Delete(frontierStatusIndexKeyLane('q', srcLane, host, u), nil); err != nil {
+					return err
+				}
+			}
+			// Insert the NEW lane-aware secondary key.
+			if err := batch.Set(frontierStatusIndexKeyLane('q', lane, host, u), nil, nil); err != nil {
+				return err
+			}
+			// Update the primary entry value with the new lane.
+			entry.Lane = lane
+			if err := batch.Set(frontierKey(u), packFrontierEntry(entry), nil); err != nil {
+				return err
+			}
+			moved++
+		}
+		return batch.Commit(p.writeOpts)
+	}
+
+	// Legacy sweep.
+	urls, err := collect(true, 0)
+	if err != nil {
+		return moved, err
+	}
+	for i := 0; i < len(urls); i += batchSize {
+		end := i + batchSize
+		if end > len(urls) {
+			end = len(urls)
+		}
+		if err := rekeyBatch(urls[i:end], true, 0); err != nil {
+			return moved, err
+		}
+	}
+
+	// Lane-aware sweep across every source lane EXCEPT the target.
+	for sl := byte(0); sl < laneCount; sl++ {
+		if sl == lane {
+			continue
+		}
+		urls, err := collect(false, sl)
+		if err != nil {
+			return moved, err
+		}
+		for i := 0; i < len(urls); i += batchSize {
+			end := i + batchSize
+			if end > len(urls) {
+				end = len(urls)
+			}
+			if err := rekeyBatch(urls[i:end], false, sl); err != nil {
+				return moved, err
+			}
+		}
+	}
+	return moved, nil
+}
+
+// LaneStats is a per-lane queued/in_flight breakdown of the frontier.
+// LegacyQueued/LegacyInFlight count entries written before lanes shipped
+// (their secondary keys lack a lane byte); they're drained as a fall-through
+// in ClaimFrontier and disappear over time.
+type LaneStats struct {
+	Lanes          [laneCount]LaneCounts
+	LegacyQueued   int
+	LegacyInFlight int
+}
+
+// LaneCounts is the per-lane summary surfaced in /queue.
+type LaneCounts struct {
+	Queued   int
+	InFlight int
+}
+
+// GetLaneStats walks the 'f'+'q' and 'f'+'i' secondary indexes (key-only,
+// no value reads) and tallies by lane. O(N) over secondary keys; for 4M
+// frontier rows on the GH200 this is sub-second because Pebble iterators
+// stream key bytes directly out of the SST without decoding values.
+func (p *PebbleStore) GetLaneStats(ctx context.Context) (LaneStats, error) {
+	if err := ctx.Err(); err != nil {
+		return LaneStats{}, err
+	}
+	var out LaneStats
+	scan := func(sub byte, addQueued bool) error {
+		it, err := p.db.NewIter(&pebble.IterOptions{
+			LowerBound: []byte{famFrontier, sub},
+			UpperBound: []byte{famFrontier, sub + 1},
+			KeyTypes:   pebble.IterKeyTypePointsOnly,
+		})
+		if err != nil {
+			return err
+		}
+		defer it.Close()
+		for valid := it.First(); valid; valid = it.Next() {
+			k := it.Key()
+			if len(k) < 3 {
+				continue
+			}
+			if k[2] < laneCount {
+				if addQueued {
+					out.Lanes[k[2]].Queued++
+				} else {
+					out.Lanes[k[2]].InFlight++
+				}
+			} else {
+				if addQueued {
+					out.LegacyQueued++
+				} else {
+					out.LegacyInFlight++
+				}
+			}
+		}
+		return nil
+	}
+	if err := scan('q', true); err != nil {
+		return LaneStats{}, err
+	}
+	if err := scan('i', false); err != nil {
+		return LaneStats{}, err
+	}
+	return out, nil
+}
+
 // CountQueuedPerHost returns a host → queued-URL-count map for the given
 // hosts. Used by crawler.enqueueLinks to enforce the per-host enqueue cap;
 // one prefix-count per host against the 'f'+'q' secondary index.
@@ -1756,36 +2734,58 @@ func (p *PebbleStore) CountQueuedPerHost(ctx context.Context, hosts []string) (m
 		return nil, err
 	}
 	out := make(map[string]int, len(hosts))
+	// countRange counts the keys in one secondary-index prefix range. Wrapped
+	// in a closure so defer it.Close() runs per call, not stacked until the
+	// enclosing function returns (Go defers fire on FUNCTION return).
+	countRange := func(lo, hi []byte) (int, error) {
+		it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+		if err != nil {
+			return 0, err
+		}
+		defer it.Close()
+		var count int
+		for valid := it.First(); valid; valid = it.Next() {
+			count++
+		}
+		return count, nil
+	}
 	for _, host := range hosts {
 		if host == "" {
 			continue
 		}
-		// Prefix bound: 'f' + 'q' + host + 0x00 .. 'f' + 'q' + host + 0x01
-		lo := make([]byte, 2+len(host)+1)
-		lo[0] = famFrontier
-		lo[1] = 'q'
-		copy(lo[2:], host)
-		lo[2+len(host)] = 0x00
-		hi := append([]byte{}, lo...)
-		hi[2+len(host)] = 0x01
-		// per-iteration closure so defer it.Close() runs at each
-		// host's end, not at the enclosing function's return. Without the
-		// closure a `defer` here would stack iterators until function exit
-		// (Go defers fire on FUNCTION return, not on loop iteration).
-		n, err := func() (int, error) {
-			it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
-			if err != nil {
-				return 0, err
-			}
-			defer it.Close()
-			var count int
-			for valid := it.First(); valid; valid = it.Next() {
-				count++
-			}
-			return count, nil
-		}()
+		n := 0
+		// Legacy range: 'f' + 'q' + host + 0x00 .. 0x01 (pre-lanes entries).
+		legacyLo := make([]byte, 2+len(host)+1)
+		legacyLo[0] = famFrontier
+		legacyLo[1] = 'q'
+		copy(legacyLo[2:], host)
+		legacyLo[2+len(host)] = 0x00
+		legacyHi := append([]byte{}, legacyLo...)
+		legacyHi[2+len(host)] = 0x01
+		c, err := countRange(legacyLo, legacyHi)
 		if err != nil {
 			return nil, err
+		}
+		n += c
+		// Lane-aware ranges: 'f' + 'q' + lane + host + 0x00 .. 0x01 for every
+		// lane. The legacy prefix never matches these (the lane byte sits
+		// between 'q' and the host), so without this loop hosts whose queued
+		// URLs live in lanes — i.e. everything pushed after the lane migration —
+		// would count as 0.
+		for lane := byte(0); lane < laneCount; lane++ {
+			laneLo := make([]byte, 3+len(host)+1)
+			laneLo[0] = famFrontier
+			laneLo[1] = 'q'
+			laneLo[2] = lane
+			copy(laneLo[3:], host)
+			laneLo[3+len(host)] = 0x00
+			laneHi := append([]byte{}, laneLo...)
+			laneHi[3+len(host)] = 0x01
+			c, err := countRange(laneLo, laneHi)
+			if err != nil {
+				return nil, err
+			}
+			n += c
 		}
 		if n > 0 {
 			out[host] = n
@@ -1844,15 +2844,101 @@ func (p *PebbleStore) RecoverInFlight(ctx context.Context) error {
 		if err := batch.Set(key, packFrontierEntry(entry), nil); err != nil {
 			return err
 		}
-		// rebuild secondary indexes for the transition.
+		// rebuild secondary indexes for the transition. Blind-delete BOTH
+		// formats so stale 'i' keys from prior code revisions (or from a
+		// crash that landed mid-transition) are cleaned up — without this
+		// the lane-aware 'i' index leaked across restarts and GetLaneStats
+		// reported impossibly-high in_flight counts.
 		if err := batch.Delete(frontierStatusIndexKey('i', entry.Host, url), nil); err != nil {
 			return err
 		}
-		if err := batch.Set(frontierStatusIndexKey('q', entry.Host, url), nil, nil); err != nil {
+		if err := batch.Delete(frontierStatusIndexKeyLane('i', entry.Lane, entry.Host, url), nil); err != nil {
+			return err
+		}
+		// Re-queue in the lane that the entry already belongs to — keeps
+		// recovered work in its original priority class instead of all
+		// reverting to the legacy fallback (which was the silent
+		// regression on every restart before this fix).
+		if err := batch.Set(frontierStatusIndexKeyLane('q', entry.Lane, entry.Host, url), nil, nil); err != nil {
 			return err
 		}
 	}
 	return batch.Commit(p.writeOpts)
+}
+
+// PurgeStaleInFlight scans both legacy and lane-aware 'f'+'i'+... keys
+// and drops any without a matching primary entry in InFlight status. Use
+// after a code upgrade that fixed an 'i'-cleanup bug: the new code will
+// no longer leak keys, but pre-fix leftovers remain until this sweep.
+// Cheap key-only iteration; returns the count purged.
+func (p *PebbleStore) PurgeStaleInFlight(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famFrontier, 'i'},
+		UpperBound: []byte{famFrontier, 'i' + 1},
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	purged := 0
+	for valid := it.First(); valid; valid = it.Next() {
+		k := it.Key()
+		if len(k) < 3 {
+			continue
+		}
+		var host, url string
+		if k[2] < laneCount {
+			host, _ = frontierStatusIndexHostLane(k)
+			urlOffset := 3 + len(host) + 1
+			if urlOffset > len(k) {
+				continue
+			}
+			url = string(k[urlOffset:])
+		} else {
+			host = frontierStatusIndexHost(k)
+			urlOffset := 2 + len(host) + 1
+			if urlOffset > len(k) {
+				continue
+			}
+			url = string(k[urlOffset:])
+		}
+		// Look up the primary; if missing OR not InFlight, the secondary
+		// key is stale.
+		val, closer, gerr := p.db.Get(frontierKey(url))
+		if errors.Is(gerr, pebble.ErrNotFound) {
+			keyCopy := append([]byte{}, k...)
+			if err := batch.Delete(keyCopy, nil); err != nil {
+				return purged, err
+			}
+			purged++
+			continue
+		}
+		if gerr != nil {
+			return purged, gerr
+		}
+		entry, uerr := unpackFrontierEntry(val)
+		_ = closer.Close()
+		if uerr != nil || entry.Status != FrontierStatusInFlight {
+			keyCopy := append([]byte{}, k...)
+			if err := batch.Delete(keyCopy, nil); err != nil {
+				return purged, err
+			}
+			purged++
+		}
+	}
+	if purged > 0 {
+		if err := batch.Commit(p.writeOpts); err != nil {
+			return purged, err
+		}
+	}
+	return purged, nil
 }
 
 // readDocTermsLocked reads the 'g' family entry for docID under p.mu.
@@ -2193,7 +3279,11 @@ func (p *PebbleStore) TopQueuedHosts(ctx context.Context, topN int) ([]DomainCou
 	defer it.Close()
 	counts := make(map[string]int, 256)
 	for valid := it.First(); valid; valid = it.Next() {
-		host := frontierStatusIndexHost(it.Key())
+		// decodeFrontierIndexHost handles both the legacy
+		// 'f'+'q'+host+0x00+url keys and the lane-aware
+		// 'f'+'q'+lane+host+0x00+url keys. The legacy frontierStatusIndexHost
+		// reads from byte 2, which on a lane key is the lane byte, not the host.
+		host := decodeFrontierIndexHost(it.Key())
 		if host == "" {
 			continue
 		}

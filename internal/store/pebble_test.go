@@ -334,6 +334,54 @@ func TestPebblePostingsPersistAcrossReopen(t *testing.T) {
 // terms {alpha, beta, gamma}; re-index with {alpha, delta}; beta and
 // gamma postings for the doc MUST be deleted (or queries for those terms
 // return the doc as a phantom hit).
+// TestSoftDeleteDocument verifies a soft-deleted doc disappears from meta
+// lookups, decrements the corpus counters, and is idempotent on re-delete.
+func TestSoftDeleteDocument(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+
+	d := &Document{URL: "https://spam.example.com/x", Domain: "spam.example.com", Title: "T", Text: "alpha beta gamma", FetchedAt: time.Now()}
+	id, err := p.UpsertDocument(ctx, d)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := p.IndexDocument(ctx, id, "T", "alpha beta gamma", trivialTokenize, 1); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+
+	_, count, _ := p.CorpusStats(ctx)
+	if count != 1 {
+		t.Fatalf("pre-delete count = %d, want 1", count)
+	}
+
+	ok, err := p.SoftDeleteDocument(ctx, id, d.URL)
+	if err != nil || !ok {
+		t.Fatalf("soft delete: ok=%v err=%v", ok, err)
+	}
+
+	if _, _, present, _ := p.GetDocMeta(ctx, id); present {
+		t.Error("doc meta should be gone after soft delete")
+	}
+	if got, _ := p.GetDocByURL(ctx, d.URL); got != nil {
+		t.Errorf("GetDocByURL should miss after soft delete, got %+v", got)
+	}
+	if _, count, _ := p.CorpusStats(ctx); count != 0 {
+		t.Errorf("post-delete count = %d, want 0", count)
+	}
+
+	// Idempotent: deleting again reports not-found, no counter underflow.
+	ok2, err := p.SoftDeleteDocument(ctx, id, d.URL)
+	if err != nil {
+		t.Fatalf("second delete err: %v", err)
+	}
+	if ok2 {
+		t.Error("second delete should report ok=false (already gone)")
+	}
+	if _, count, _ := p.CorpusStats(ctx); count != 0 {
+		t.Errorf("count after redundant delete = %d, want 0 (no underflow)", count)
+	}
+}
+
 func TestPebbleReindexDeletesOrphanedPostings(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()

@@ -25,6 +25,8 @@ import (
 type CrawlerStore interface {
 	// Frontier
 	PushFrontier(ctx context.Context, url string, depth int, priority float64) error
+	PushFrontierLane(ctx context.Context, url string, depth int, lane byte, priority float64) error
+	PushFrontierBatch(ctx context.Context, items []store.FrontierPushItem) (int, error)
 	ClaimFrontier(ctx context.Context) (store.FrontierItem, bool, error)
 	CompleteFrontier(ctx context.Context, url string) error
 	FailFrontier(ctx context.Context, url, errMsg string) error
@@ -38,10 +40,39 @@ type CrawlerStore interface {
 	GetDocByURL(ctx context.Context, url string) (*store.Document, error)
 }
 
+// CrawlResultWriter folds UpsertDocument + IndexDocument +
+// CompleteFrontier into a SINGLE mu acquire + SINGLE batch commit. When
+// the store satisfies this interface, the crawler hot path uses it to
+// shave 2/3 of the per-doc lock-queue waits. Optional: stores that don't
+// implement it fall back to the legacy three-call path automatically.
+type CrawlResultWriter interface {
+	WriteCrawlResult(
+		ctx context.Context,
+		d *store.Document,
+		title, text, completeURL string,
+		tokenize func(string) []string,
+		titleBoost int,
+	) (int64, error)
+}
+
 // LexicalIndexer abstracts the BM25 writer. Both *index.BM25 (SQLite) and
 // *index.PebbleBM25 satisfy the single-method signature.
 type LexicalIndexer interface {
 	IndexDocument(ctx context.Context, docID int64, title, text string) error
+}
+
+// HostFrontierPurger is the optional surface the in-crawler host sweeper
+// uses to drain dead hosts. Pebble satisfies it; the SQLite legacy path
+// doesn't need it (no auto-sweeper there).
+type HostFrontierPurger interface {
+	PurgeFrontierByHost(ctx context.Context, host string) (int, error)
+}
+
+// HostFrontierDemoter lets the sweeper move low-yield hosts to the
+// bulk lane so they keep consuming worker cycles at lane 3's 5% weight
+// instead of crowding lanes 1/2.
+type HostFrontierDemoter interface {
+	DemoteHostToLane(ctx context.Context, host string, lane byte) (int, error)
 }
 
 // PassageWriter is the optional vector-write surface. *store.Store

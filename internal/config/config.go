@@ -279,6 +279,14 @@ type Crawler struct {
 	// or 1000 for research/news corpora where short pages are almost
 	// always navigation cruft.
 	MinTextLen int `json:"min_text_len,omitempty"`
+
+	// FilterAdult, when true, runs each parsed page through the
+	// adultfilter classifier (host + lexical signals) and refuses to
+	// index pornographic content. High-precision by design — see
+	// internal/adultfilter. Default false preserves existing behavior;
+	// the offline `cosift purge-adult` sweep cleans content already
+	// indexed before this was enabled.
+	FilterAdult bool `json:"filter_adult,omitempty"`
 }
 
 // Federation configures upstream search backends used as no-key

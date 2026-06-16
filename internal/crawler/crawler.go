@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/adultfilter"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
@@ -68,12 +69,61 @@ type Crawler struct {
 	// an int read on the hot path; not atomic — diagnostic only).
 	zombieDebugLogged int
 
-	// per-host error-rate tracking via sync.Map + atomic
+// per-host error-rate tracking via sync.Map + atomic
 	// counters. With 512 workers we cannot afford a single write lock
 	// on every claim's completion — that bottlenecked and cost
 	// ~25% throughput. sync.Map.LoadOrStore lets us avoid the lock on
 	// the steady-state path (host already in map).
 	hostStats sync.Map // host (string) → *hostFetchStats
+
+	// Decoupled embed pipeline. When non-nil, crawler workers push
+	// (docID, chunks, texts) onto embedQ after UpsertDocument +
+	// IndexDocument and immediately claim the next URL — embedding
+	// + HNSW writes happen in a separate worker pool. Cuts per-doc
+	// crawler-worker cycle time from ~85s (mu contention + synchronous
+	// embed + HNSW lock waits) to fetch+parse+BM25 only.
+	//
+	// Activated when COSIFT_EMBED_DECOUPLE_WORKERS > 0. Bounded buffer
+	// keeps memory predictable; non-blocking send means a slow embedder
+	// can't stall the crawl (dropped jobs land in embed-backfill later,
+	// which the operator runs anyway).
+	embedQ         chan *embedJob
+	embedQueued    atomic.Int64
+	embedDropped   atomic.Int64
+	embedDone      atomic.Int64
+	embedFailed    atomic.Int64
+
+	// URLs whose frontier transition happened inside processClaimed via
+	// WriteCrawlResult. The worker checks this set before its own
+	// CompleteFrontier call so we don't pay a redundant mu hop.
+	completedInlineSet sync.Map // url (string) → struct{}
+
+	// Auto-blocked hosts: populated by hostSweeperLoop when a host's
+	// success rate falls below the dead threshold. The link-discovery
+	// path (enqueueLinks) consults this set so we don't keep
+	// re-enqueuing the same dead URLs the sweeper just purged.
+	autoBlocked sync.Map // host (string) → struct{}
+}
+
+// markCompletedInline records that the URL's frontier transition
+// happened inside processClaimed (via WriteCrawlResult).
+func (c *Crawler) markCompletedInline(url string) {
+	c.completedInlineSet.Store(url, struct{}{})
+}
+
+// takeCompletedInline returns true and clears the marker if the URL was
+// completed inline. Returns false otherwise.
+func (c *Crawler) takeCompletedInline(url string) bool {
+	_, ok := c.completedInlineSet.LoadAndDelete(url)
+	return ok
+}
+
+// embedJob is one unit of work for the embed worker pool.
+type embedJob struct {
+	url    string
+	docID  int64
+	chunks []index.Chunk
+	texts  []string
 }
 
 type hostFetchStats struct {
@@ -327,7 +377,19 @@ func (c *Crawler) WithRouter(route RouteFn, forward ForwardFn) *Crawler {
 //
 // `INSERT OR IGNORE` semantics: if the URL is already in the frontier (queued,
 // in-flight, done, or errored), Seed is a no-op. To force a refresh, use Recrawl.
+//
+// Defaults to the discovered lane (organic crawl). For lane-aware seeds
+// (RSS = refresh, sitemap = refresh, publisher-submitted = submitted, WET =
+// bulk), use SeedLane.
 func (c *Crawler) Seed(rawURL string) error {
+	return c.SeedLane(rawURL, 2) // LaneDiscovered
+}
+
+// SeedLane is like Seed but pushes the URL into a specific lane. Used by
+// SeedRSS (refresh), SeedSitemap (refresh), and future publisher-submit
+// paths (submitted) so high-value URLs jump the cloud.google.com bulk
+// backlog via the weighted round-robin in ClaimFrontier.
+func (c *Crawler) SeedLane(rawURL string, lane byte) error {
 	canon, err := canonicalize(rawURL)
 	if err != nil {
 		return err
@@ -335,7 +397,7 @@ func (c *Crawler) Seed(rawURL string) error {
 	if !c.allowedDomain(canon) {
 		return fmt.Errorf("seed %s not allowed by include/exclude rules", canon)
 	}
-	return c.store.PushFrontier(context.Background(), canon, 0, 1.0)
+	return c.store.PushFrontierLane(context.Background(), canon, 0, lane, 1.0)
 }
 
 // Recrawl re-enqueues a URL even if it was previously crawled. Status flips
@@ -381,12 +443,36 @@ func (c *Crawler) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Embed worker pool: when COSIFT_EMBED_DECOUPLE_WORKERS > 0 and we
+	// have an embedder + passageWriter wired, spin up the pool BEFORE
+	// crawler workers so the hot-path decoupled branch (processClaimed)
+	// has a non-nil c.embedQ to push onto. Each embed worker is a
+	// dedicated goroutine doing Embed → UpsertPassage[Batch], freeing
+	// crawl workers from synchronous embed + HNSW write latency.
+	var embedWG sync.WaitGroup
+	if c.embedder != nil && c.passageWriter != nil {
+		embedWorkers := envIntCrawler("COSIFT_EMBED_DECOUPLE_WORKERS", 0)
+		if embedWorkers > 0 {
+			bufSize := envIntCrawler("COSIFT_EMBED_DECOUPLE_BUFFER", 4096)
+			c.embedQ = make(chan *embedJob, bufSize)
+			for i := 0; i < embedWorkers; i++ {
+				embedWG.Add(1)
+				go c.embedWorker(runCtx, &embedWG)
+			}
+			log.Printf("crawler: embed decouple ON (%d workers, %d-buf)", embedWorkers, bufSize)
+		}
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go c.worker(runCtx, &wg, gate)
 	}
 	go c.terminator(runCtx, cancel)
+	// Self-cleaning host sweeper: every 10 min (default), purges hosts
+	// with consistently-failing fetches and demotes low-yield ones.
+	// Eliminates the need for manual /admin/frontier-purge-host calls.
+	go c.hostSweeperLoop(runCtx)
 
 	// Pebble's single-writer lock blocks
 	// `cosift stats -backend=pebble` from any sidecar process during a live
@@ -398,7 +484,91 @@ func (c *Crawler) Run(ctx context.Context) error {
 	}
 
 	wg.Wait()
+	// Close embedQ AFTER crawl workers have exited (no more producers),
+	// then wait for embed workers to drain. Otherwise an early close
+	// would race a still-running crawl worker's send and panic.
+	if c.embedQ != nil {
+		close(c.embedQ)
+		embedWG.Wait()
+		log.Printf("crawler: embed pool drained — queued=%d done=%d failed=%d dropped=%d",
+			c.embedQueued.Load(), c.embedDone.Load(), c.embedFailed.Load(), c.embedDropped.Load())
+	}
 	return nil
+}
+
+// envIntCrawler reads an integer env var, falling back to def on parse
+// failure. Used for the embed-decouple knobs so operators can tune
+// without a config-file edit.
+func envIntCrawler(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// embedWorker drains c.embedQ. For each job, embeds the chunk texts and
+// writes passages to the configured PassageWriter. Uses the optional
+// batch writer when available for one HNSW lock per doc instead of
+// one per chunk.
+func (c *Crawler) embedWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for job := range c.embedQ {
+		vecs, err := c.embedder.Embed(ctx, job.texts)
+		if err != nil {
+			c.embedFailed.Add(1)
+			log.Printf("embed-decouple %s: %v", job.url, err)
+			continue
+		}
+		if len(vecs) != len(job.chunks) {
+			c.embedFailed.Add(1)
+			continue
+		}
+		// Mirror the synchronous path's zombie reclaim so re-crawled
+		// URLs don't accumulate generations of vectors in HNSW.
+		if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+			if inv, ok := c.passageWriter.(URLInvalidator); ok {
+				_, _ = inv.MarkURLInvalid(ctx, job.url)
+			}
+		}
+		// Prefer the batch interface (single HNSW lock for the whole
+		// doc) over per-chunk writes.
+		if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
+			ps := make([]*store.Passage, len(job.chunks))
+			for i, ch := range job.chunks {
+				ps[i] = &store.Passage{
+					DocID:     job.docID,
+					Offset:    ch.Offset,
+					Length:    ch.Length,
+					Model:     c.embedder.Model(),
+					Embedding: vecs[i],
+				}
+			}
+			if err := bw.UpsertPassageBatch(ctx, ps); err != nil {
+				c.embedFailed.Add(1)
+				log.Printf("embed-decouple batch %s: %v", job.url, err)
+				continue
+			}
+		} else {
+			for i, ch := range job.chunks {
+				p := &store.Passage{
+					DocID:     job.docID,
+					Offset:    ch.Offset,
+					Length:    ch.Length,
+					Model:     c.embedder.Model(),
+					Embedding: vecs[i],
+				}
+				if err := c.passageWriter.UpsertPassage(ctx, p); err != nil {
+					log.Printf("embed-decouple passage %s offset=%d: %v", job.url, ch.Offset, err)
+				}
+			}
+		}
+		c.embedDone.Add(1)
+	}
 }
 
 // statusDumper writes a JSON snapshot of crawl progress every 10s to path.
@@ -517,7 +687,9 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 			_ = c.store.FailFrontier(ctx, item.URL, err.Error())
 			continue
 		}
-		_ = c.store.CompleteFrontier(ctx, item.URL)
+		if !c.takeCompletedInline(item.URL) {
+			_ = c.store.CompleteFrontier(ctx, item.URL)
+		}
 	}
 }
 
@@ -540,6 +712,132 @@ func (c *Crawler) isHostBlacklisted(host string) bool {
 	}
 	succ := s.successes.Load()
 	return float64(succ)/float64(att) < 0.20
+}
+
+// hostSweeperLoop runs in the background, periodically walking hostStats
+// to find dead (success_rate < 20%) and weak (20–50%) hosts. Dead hosts
+// have their frontier entries purged AND get marked permanently
+// blacklisted in autoBlocked so future link discovery skips them. Weak
+// hosts get demoted to lane 3 (bulk, 5% weight) so they keep draining
+// but don't crowd lane 1 / lane 2.
+//
+// Removes the operator's need to manually invoke /admin/frontier-purge-host
+// and /admin/frontier-demote-host: the crawler keeps its own queue clean.
+//
+// Configurable via env:
+//
+//	COSIFT_HOSTSWEEP_INTERVAL_SEC (default 600 = 10 min)
+//	COSIFT_HOSTSWEEP_MIN_ATTEMPTS (default 100)
+//	COSIFT_HOSTSWEEP_DEAD_RATE    (default 0.20 — purge below this)
+//	COSIFT_HOSTSWEEP_WEAK_RATE    (default 0.50 — demote between dead and weak)
+//	COSIFT_HOSTSWEEP_DISABLED     ("1" disables the sweeper entirely)
+func (c *Crawler) hostSweeperLoop(ctx context.Context) {
+	if os.Getenv("COSIFT_HOSTSWEEP_DISABLED") == "1" {
+		return
+	}
+	interval := time.Duration(envIntCrawler("COSIFT_HOSTSWEEP_INTERVAL_SEC", 600)) * time.Second
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+	minAttempts := int32(envIntCrawler("COSIFT_HOSTSWEEP_MIN_ATTEMPTS", 100))
+	deadRate := envFloatCrawler("COSIFT_HOSTSWEEP_DEAD_RATE", 0.20)
+	weakRate := envFloatCrawler("COSIFT_HOSTSWEEP_WEAK_RATE", 0.50)
+	purger, hasPurger := c.store.(HostFrontierPurger)
+	demoter, hasDemoter := c.store.(HostFrontierDemoter)
+	log.Printf("crawler: host sweeper ON (interval=%s, min_attempts=%d, dead<%.2f, weak<%.2f, purger=%v, demoter=%v)",
+		interval, minAttempts, deadRate, weakRate, hasPurger, hasDemoter)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		c.runHostSweep(ctx, minAttempts, deadRate, weakRate, purger, demoter)
+	}
+}
+
+// runHostSweep is one pass of the host sweeper. Extracted so tests can
+// invoke it deterministically without spinning up the ticker.
+func (c *Crawler) runHostSweep(
+	ctx context.Context,
+	minAttempts int32,
+	deadRate, weakRate float64,
+	purger HostFrontierPurger,
+	demoter HostFrontierDemoter,
+) {
+	type hostJudgement struct {
+		host    string
+		dead    bool
+		attempts int32
+		successes int32
+	}
+	var verdicts []hostJudgement
+	c.hostStats.Range(func(k, v any) bool {
+		host, _ := k.(string)
+		s, _ := v.(*hostFetchStats)
+		if host == "" || s == nil {
+			return true
+		}
+		att := s.attempts.Load()
+		if att < minAttempts {
+			return true
+		}
+		// Skip hosts we already auto-blocked in a prior tick. The block
+		// set is consulted in the link-discovery path so we don't keep
+		// re-enqueuing the same dead URLs.
+		if _, blocked := c.autoBlocked.Load(host); blocked {
+			return true
+		}
+		succ := s.successes.Load()
+		rate := float64(succ) / float64(att)
+		switch {
+		case rate < deadRate:
+			verdicts = append(verdicts, hostJudgement{host: host, dead: true, attempts: att, successes: succ})
+		case rate < weakRate:
+			verdicts = append(verdicts, hostJudgement{host: host, dead: false, attempts: att, successes: succ})
+		}
+		return true
+	})
+	for _, v := range verdicts {
+		rate := float64(v.successes) / float64(v.attempts)
+		if v.dead {
+			if purger != nil {
+				n, err := purger.PurgeFrontierByHost(ctx, v.host)
+				if err != nil {
+					log.Printf("host-sweep: purge %s failed: %v", v.host, err)
+					continue
+				}
+				c.autoBlocked.Store(v.host, struct{}{})
+				log.Printf("host-sweep: PURGED %s (%d urls, %d/%d success_rate=%.2f)", v.host, n, v.successes, v.attempts, rate)
+			}
+		} else {
+			if demoter != nil {
+				n, err := demoter.DemoteHostToLane(ctx, v.host, 3) // LaneBulk
+				if err != nil {
+					log.Printf("host-sweep: demote %s failed: %v", v.host, err)
+					continue
+				}
+				log.Printf("host-sweep: DEMOTED %s to lane 3 (%d urls, success_rate=%.2f)", v.host, n, rate)
+			}
+		}
+	}
+}
+
+// envFloatCrawler reads a float env var, falling back to def on parse
+// failure. Used for the sweeper thresholds (rate values).
+func envFloatCrawler(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		return def
+	}
+	return f
 }
 
 // recordHostResult updates per-host success/attempt counters. Called from
@@ -740,6 +1038,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if c.cfg.MinTextLen > 0 && len(parsed.Text) < c.cfg.MinTextLen {
 		return errors.New("text below min_text_len")
 	}
+	// Adult-content gate. High-precision classifier (host + lexical
+	// signals) — refuse to index pornographic pages so they never enter
+	// the corpus. Off by default; enabled via crawler.filter_adult.
+	if c.cfg.FilterAdult && adultfilter.IsAdult(parsed.Title, parsed.Text, finalURL) {
+		return errors.New("adult content filtered")
+	}
 
 	finalU, _ := url.Parse(finalURL)
 	sha := sha256.Sum256([]byte(parsed.Text))
@@ -788,12 +1092,34 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		Image:         parsed.Image,       // og:image / twitter:image / JSON-LD image (empty if absent)
 		Favicon:       parsed.Favicon,     // <link rel="icon"> resolved absolute (empty if absent)
 	}
-	id, err := c.store.UpsertDocument(ctx, doc)
-	if err != nil {
-		return err
+	// Prefer the combined-write path when the store supports it: one mu
+	// hop covers Upsert+Index+Complete instead of three separate calls.
+	// Marks frontier Done inline so the worker skips its own
+	// CompleteFrontier call (signalled via c.completedInline pulled off
+	// the item-scoped flag below).
+	var id int64
+	var completedInline bool
+	if w, ok := c.store.(CrawlResultWriter); ok {
+		var err error
+		id, err = w.WriteCrawlResult(ctx, doc, parsed.Title, parsed.Text, item.URL, index.Tokenize, index.TitleBoost)
+		if err != nil {
+			return err
+		}
+		completedInline = true
+	} else {
+		var err error
+		id, err = c.store.UpsertDocument(ctx, doc)
+		if err != nil {
+			return err
+		}
+		if err := c.idx.IndexDocument(ctx, id, parsed.Title, parsed.Text); err != nil {
+			return err
+		}
 	}
-	if err := c.idx.IndexDocument(ctx, id, parsed.Title, parsed.Text); err != nil {
-		return err
+	// Stash on the context-bound item so the worker loop can skip its
+	// own CompleteFrontier call when WriteCrawlResult already did it.
+	if completedInline {
+		c.markCompletedInline(item.URL)
 	}
 
 	// Dense indexing — optional, non-fatal. Multi-passage: chunk into ~512-token
@@ -824,6 +1150,17 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			texts := make([]string, len(chunks))
 			for i, ch := range chunks {
 				texts[i] = truncateForEmbed(ch.Text, tokenCap)
+			}
+			if c.embedQ != nil {
+				job := &embedJob{url: item.URL, docID: id, chunks: chunks, texts: texts}
+				select {
+				case c.embedQ <- job:
+					c.embedQueued.Add(1)
+				default:
+					c.embedDropped.Add(1)
+				}
+				c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
+				return nil
 			}
 			vecs, embErr := c.embedder.Embed(ctx, texts)
 			if embErr != nil {
@@ -962,6 +1299,14 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 			continue
 		}
 		// per-link depth check against the CHILD's host cap.
+		// Skip any host the host sweeper auto-blocked (high error rate
+		// resulted in PurgeFrontierByHost — re-enqueuing it would just
+		// undo that work).
+		if u2, perr := url.Parse(canon); perr == nil {
+			if _, blocked := c.autoBlocked.Load(u2.Host); blocked {
+				continue
+			}
+		}
 		// A child on a host with override=1 is dropped if depth would exceed 1,
 		// even if the default MaxDepth is much higher (and vice versa).
 		u, err := url.Parse(canon)

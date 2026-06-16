@@ -1172,6 +1172,29 @@ func extractHost(rawURL string) string {
 
 // PushFrontier inserts a URL into the queue at the given depth/priority.
 // No-op if the URL is already present (regardless of its current status).
+// PushFrontierLane on the SQLite backend ignores the lane (legacy
+// schema has no lane column) and delegates to PushFrontier. Cosift's
+// production crawl runs on PebbleStore; the SQLite backend is the
+// legacy single-node path and retains FIFO semantics.
+func (s *Store) PushFrontierLane(ctx context.Context, url string, depth int, _ byte, priority float64) error {
+	return s.PushFrontier(ctx, url, depth, priority)
+}
+
+// PushFrontierBatch on the SQLite backend loops PushFrontier — there's
+// no single-write-acquire equivalent without a SQL transaction wrapper,
+// and the SQLite backend is only run in test fixtures where this path
+// isn't hot.
+func (s *Store) PushFrontierBatch(ctx context.Context, items []FrontierPushItem) (int, error) {
+	n := 0
+	for _, it := range items {
+		if err := s.PushFrontier(ctx, it.URL, it.Depth, it.Priority); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *Store) PushFrontier(ctx context.Context, url string, depth int, priority float64) error {
 	const q = `INSERT OR IGNORE INTO frontier (url, depth, priority, enqueued_at, host) VALUES (?, ?, ?, ?, ?);`
 	_, err := s.db.ExecContext(ctx, q, url, depth, priority, time.Now().Unix(), extractHost(url))
