@@ -1,0 +1,11 @@
+[Unit]
+Description=Cosift arXiv harvest (enqueue latest papers per category)
+After=cosift-serve.service
+Wants=cosift-serve.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-arxiv-harvest.sh
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift pypi pre-index schedule
+[Timer]
+OnCalendar=Mon *-*-* 07:00:00
+Persistent=true
+AccuracySec=10min
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Cosift RSS refresh (re-import every tracked feed)
+After=cosift-serve.service
+Wants=cosift-serve.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/cosift-rss-refresh.sh
+StandardOutput=journal
+StandardError=journal

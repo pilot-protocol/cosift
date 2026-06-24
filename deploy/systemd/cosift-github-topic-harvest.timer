@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift github-topic pre-index schedule
+[Timer]
+OnCalendar=Wed *-*-* 07:00:00
+Persistent=true
+AccuracySec=10min
+[Install]
+WantedBy=timers.target

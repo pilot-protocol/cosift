@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift hf-task pre-index schedule
+[Timer]
+OnCalendar=Tue *-*-* 07:00:00
+Persistent=true
+AccuracySec=10min
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift Hacker News harvest
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-hn-harvest.py
+StandardOutput=journal
+StandardError=journal

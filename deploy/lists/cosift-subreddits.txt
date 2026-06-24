@@ -1,0 +1,25 @@
+# Quality subreddits for cosift-reddit-harvest. One per line, '#' comments.
+programming
+MachineLearning
+LocalLLaMA
+compsci
+datascience
+science
+askscience
+technology
+hardware
+selfhosted
+devops
+rust
+golang
+python
+cpp
+java
+javascript
+ExperiencedDevs
+ArtificialIntelligence
+AskHistorians
+math
+statistics
+netsec
+cybersecurity

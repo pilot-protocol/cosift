@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift Reddit harvest schedule
+[Timer]
+OnCalendar=*-*-* 04,10,16,22:00:00
+Persistent=true
+AccuracySec=5min
+[Install]
+WantedBy=timers.target

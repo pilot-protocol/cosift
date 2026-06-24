@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift Reddit harvest
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-reddit-harvest.py
+StandardOutput=journal
+StandardError=journal

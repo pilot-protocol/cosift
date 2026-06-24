@@ -1,0 +1,10 @@
+[Unit]
+Description=Run cosift-wet-refresh weekly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=cosift-wet-refresh.service
+
+[Install]
+WantedBy=timers.target

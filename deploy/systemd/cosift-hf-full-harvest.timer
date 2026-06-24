@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift HF full enumeration schedule
+[Timer]
+OnCalendar=*-*-* 00/3:00:00
+Persistent=true
+AccuracySec=10min
+[Install]
+WantedBy=timers.target
