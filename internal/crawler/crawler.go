@@ -103,6 +103,80 @@ type Crawler struct {
 	// path (enqueueLinks) consults this set so we don't keep
 	// re-enqueuing the same dead URLs the sweeper just purged.
 	autoBlocked sync.Map // host (string) → struct{}
+
+	// Dynamic allowlist: runtime-promoted domains that allowedDomain accepts
+	// IN ADDITION to the static cfg.IncludeDomains. Lets curated sources
+	// (HN/Reddit harvesters) grow the crawlable set organically — a domain
+	// that recurs on HN's front page is promoted via AddAllowedDomain and
+	// persisted to dynDomainsFile so it survives restart. Empty file path
+	// (COSIFT_DYNAMIC_DOMAINS_FILE unset) disables the feature.
+	dynDomains    sync.Map // eTLD+1 / host (string) → struct{}
+	dynDomainsFile string
+	dynDomainsMu  sync.Mutex // serializes file appends
+}
+
+// LoadDynamicDomains reads previously-promoted domains from dynDomainsFile into
+// the in-memory set. Called at startup. Missing file is fine (no promotions yet).
+func (c *Crawler) LoadDynamicDomains() {
+	if c.dynDomainsFile == "" {
+		return
+	}
+	b, err := os.ReadFile(c.dynDomainsFile)
+	if err != nil {
+		return
+	}
+	n := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		d := strings.TrimSpace(strings.ToLower(line))
+		if d == "" || strings.HasPrefix(d, "#") {
+			continue
+		}
+		c.dynDomains.Store(d, struct{}{})
+		n++
+	}
+	if n > 0 {
+		log.Printf("crawler: loaded %d dynamically-allowed domains from %s", n, c.dynDomainsFile)
+	}
+}
+
+// AddAllowedDomain promotes a domain into the dynamic allowlist (idempotent) and
+// persists it. Safe for concurrent callers. No-op if the feature is disabled.
+func (c *Crawler) AddAllowedDomain(domain string) error {
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	if domain == "" {
+		return nil
+	}
+	if _, exists := c.dynDomains.LoadOrStore(domain, struct{}{}); exists {
+		return nil // already promoted
+	}
+	if c.dynDomainsFile == "" {
+		return nil // in-memory only (feature persistence disabled)
+	}
+	c.dynDomainsMu.Lock()
+	defer c.dynDomainsMu.Unlock()
+	f, err := os.OpenFile(c.dynDomainsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(domain + "\n")
+	log.Printf("crawler: promoted domain to dynamic allowlist: %s", domain)
+	return err
+}
+
+// dynamicAllowed reports whether host matches any promoted domain
+// (exact or dot-boundary subdomain).
+func (c *Crawler) dynamicAllowed(host string) bool {
+	allowed := false
+	c.dynDomains.Range(func(k, _ any) bool {
+		d := k.(string)
+		if host == d || strings.HasSuffix(host, "."+d) {
+			allowed = true
+			return false // stop
+		}
+		return true
+	})
+	return allowed
 }
 
 // markCompletedInline records that the URL's frontier transition
@@ -255,12 +329,15 @@ func newBare(cfg config.Crawler) *Crawler {
 			sitemapCap = n
 		}
 	}
-	return &Crawler{
-		cfg:        cfg,
-		http:       httpClient,
-		robots:     robots,
-		sitemapSem: make(chan struct{}, sitemapCap),
+	c := &Crawler{
+		cfg:            cfg,
+		http:           httpClient,
+		robots:         robots,
+		sitemapSem:     make(chan struct{}, sitemapCap),
+		dynDomainsFile: os.Getenv("COSIFT_DYNAMIC_DOMAINS_FILE"),
 	}
+	c.LoadDynamicDomains()
+	return c
 }
 
 // maybeAutoSitemap kicks off a background sitemap discovery the first
@@ -492,6 +569,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 		embedWG.Wait()
 		log.Printf("crawler: embed pool drained — queued=%d done=%d failed=%d dropped=%d",
 			c.embedQueued.Load(), c.embedDone.Load(), c.embedFailed.Load(), c.embedDropped.Load())
+		c.embedQ = nil // nil so FetchAndIndexNow doesn't send to closed channel between restarts
 	}
 	return nil
 }
@@ -1420,6 +1498,10 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 		if strings.HasSuffix(h, d) {
 			return true
 		}
+	}
+	// Runtime-promoted domains (HN/Reddit harvesters grow this organically).
+	if c.dynamicAllowed(h) {
+		return true
 	}
 	return false
 }

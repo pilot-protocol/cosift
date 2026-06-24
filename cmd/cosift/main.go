@@ -342,6 +342,10 @@ func run(cfgPath string) error {
 		if err := runPurgeDomain(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("purge-domain: %w", err)
 		}
+	case "backfill-host-postings":
+		if err := runBackfillHostPostings(ctx, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("backfill-host-postings: %w", err)
+		}
 	case "verify":
 		if err := runVerifyPebble(ctx, cfg, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("verify: %w", err)
@@ -5492,6 +5496,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 	useRerank := fs.Bool("rerank", false, "wire the LLM listwise reranker into the in-process server; tests whether rerank cuts the grounding=1 cases on single-doc")
 	rerankModel := fs.String("rerank-model", "gpt-4o-mini", "chat model for the reranker (kept default = synth-model so cost stays predictable)")
 	synthK := fs.Int("synth-k", 0, "cap synth-source count via WithDefaults({ResearchSynthK: N}); 0 = preserve built-in default (10). tests whether K=5 trades coverage for grounding on single-doc workloads.")
+	serverURL := fs.String("server", "", "live server base URL (e.g. https://cosift.pilotprotocol.network); skips in-process build, corpus+embed flags ignored")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -5507,17 +5512,18 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		apiKey = "local"
 	}
 
-	corpus, err := eval.LoadCorpus(*corpusPath)
-	if err != nil {
-		return fmt.Errorf("load corpus: %w", err)
-	}
 	qs, err := eval.LoadQuerySet(*queriesPath)
 	if err != nil {
 		return fmt.Errorf("load queries: %w", err)
 	}
 
+	liveMode := *serverURL != ""
 	fmt.Printf("answer-eval: %d queries × 2 strategies × judge calls\n", len(qs.Queries))
-	fmt.Printf("synth model = %s   judge model = %s   rerank = %v   synth_k = %d   dry-run = %v\n", *synthModel, *judgeModel, *useRerank, *synthK, *dryRun)
+	if liveMode {
+		fmt.Printf("server = %s   judge model = %s   dry-run = %v\n", *serverURL, *judgeModel, *dryRun)
+	} else {
+		fmt.Printf("synth model = %s   judge model = %s   rerank = %v   synth_k = %d   dry-run = %v\n", *synthModel, *judgeModel, *useRerank, *synthK, *dryRun)
+	}
 	if *dryRun {
 		for _, q := range qs.Queries {
 			fmt.Printf("  - %s  (relevant: %d docs)\n", q.Text, len(q.Relevant))
@@ -5525,78 +5531,91 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	// Build an ephemeral store + indexes (in-memory style, but SQLite needs a dir).
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("cosift-answer-eval-%d", time.Now().UnixNano()))
-	st, err := store.Open(tmpDir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		st.Close()
-		_ = os.RemoveAll(tmpDir)
-	}()
+	// researchBaseURL is the base for /research calls — either live server or httptest.
+	var researchBaseURL string
+	judge := embed.NewOpenAIChat(apiKey, *chatURL, *judgeModel)
 
-	bm := index.NewBM25(st)
-	oai := embed.NewOpenAIClient(apiKey, *embURL, *embModel, *embDim)
-	var emb embed.Embedder = oai
-	if *embCacheDir != "" {
-		emb = embed.NewCachedEmbedder(oai, *embCacheDir)
-	}
-	chunker := chunkerWith(*answerChunkSize, *answerChunkOverlap)
-	var allTexts []string
-	for _, d := range corpus.Docs {
-		id, err := st.UpsertDocument(ctx, &store.Document{
-			URL: d.URL, Title: d.Title, Text: d.Text, Source: "answer-eval", FetchedAt: time.Now(),
-		})
+	if liveMode {
+		researchBaseURL = strings.TrimRight(*serverURL, "/")
+	} else {
+		corpus, err := eval.LoadCorpus(*corpusPath)
+		if err != nil {
+			return fmt.Errorf("load corpus: %w", err)
+		}
+
+		// Build an ephemeral store + indexes (in-memory style, but SQLite needs a dir).
+		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("cosift-answer-eval-%d", time.Now().UnixNano()))
+		st, err := store.Open(tmpDir)
 		if err != nil {
 			return err
 		}
-		if err := bm.IndexDocument(ctx, id, d.Title, d.Text); err != nil {
-			return err
+		defer func() {
+			st.Close()
+			_ = os.RemoveAll(tmpDir)
+		}()
+
+		bm := index.NewBM25(st)
+		oai := embed.NewOpenAIClient(apiKey, *embURL, *embModel, *embDim)
+		var emb embed.Embedder = oai
+		if *embCacheDir != "" {
+			emb = embed.NewCachedEmbedder(oai, *embCacheDir)
 		}
-		text := d.Title + "\n\n" + d.Text
-		for _, c := range chunker.Chunk(text) {
-			allTexts = append(allTexts, c.Text)
-		}
-	}
-	fmt.Printf("embedding %d passages across %d docs...\n", len(allTexts), len(corpus.Docs))
-	vecs, err := batchEmbed(ctx, emb, allTexts, 256)
-	if err != nil {
-		return fmt.Errorf("embed: %w", err)
-	}
-	vi := index.NewVectorIndex(*embDim)
-	idx := 0
-	for _, d := range corpus.Docs {
-		text := d.Title + "\n\n" + d.Text
-		for _, c := range chunker.Chunk(text) {
-			if idx >= len(vecs) {
-				break
+		chunker := chunkerWith(*answerChunkSize, *answerChunkOverlap)
+		var allTexts []string
+		for _, d := range corpus.Docs {
+			id, err := st.UpsertDocument(ctx, &store.Document{
+				URL: d.URL, Title: d.Title, Text: d.Text, Source: "answer-eval", FetchedAt: time.Now(),
+			})
+			if err != nil {
+				return err
 			}
-			vi.AddPassage(d.URL, d.Title, c.Offset, c.Length, vecs[idx])
-			idx++
+			if err := bm.IndexDocument(ctx, id, d.Title, d.Text); err != nil {
+				return err
+			}
+			text := d.Title + "\n\n" + d.Text
+			for _, c := range chunker.Chunk(text) {
+				allTexts = append(allTexts, c.Text)
+			}
 		}
-	}
-
-	chat := embed.NewOpenAIChat(apiKey, *chatURL, *synthModel)
-	judge := embed.NewOpenAIChat(apiKey, *chatURL, *judgeModel)
-
-	srv := server.New(st).
-		WithVector(vi, emb).
-		WithChat(chat).
-		WithParaphraser(chat, 2).
-		WithLLMLimiter(0, 0) // disable rate limiter — this is an in-process eval, not a public endpoint. caught this when the 10/min default 429'd after 5 queries.
-	if *useRerank {
-		rerankChat := chat
-		if *rerankModel != *synthModel {
-			rerankChat = embed.NewOpenAIChat(apiKey, "", *rerankModel)
+		fmt.Printf("embedding %d passages across %d docs...\n", len(allTexts), len(corpus.Docs))
+		vecs, err := batchEmbed(ctx, emb, allTexts, 256)
+		if err != nil {
+			return fmt.Errorf("embed: %w", err)
 		}
-		srv = srv.WithReranker(rerank.NewLLMReranker(rerankChat), 20)
+		vi := index.NewVectorIndex(*embDim)
+		idx := 0
+		for _, d := range corpus.Docs {
+			text := d.Title + "\n\n" + d.Text
+			for _, c := range chunker.Chunk(text) {
+				if idx >= len(vecs) {
+					break
+				}
+				vi.AddPassage(d.URL, d.Title, c.Offset, c.Length, vecs[idx])
+				idx++
+			}
+		}
+
+		chat := embed.NewOpenAIChat(apiKey, *chatURL, *synthModel)
+
+		srv := server.New(st).
+			WithVector(vi, emb).
+			WithChat(chat).
+			WithParaphraser(chat, 2).
+			WithLLMLimiter(0, 0) // disable rate limiter — this is an in-process eval, not a public endpoint. caught this when the 10/min default 429'd after 5 queries.
+		if *useRerank {
+			rerankChat := chat
+			if *rerankModel != *synthModel {
+				rerankChat = embed.NewOpenAIChat(apiKey, "", *rerankModel)
+			}
+			srv = srv.WithReranker(rerank.NewLLMReranker(rerankChat), 20)
+		}
+		if *synthK > 0 {
+			srv = srv.WithDefaults(server.Defaults{ResearchSynthK: *synthK})
+		}
+		httpSrv := httptest.NewServer(srv.Handler())
+		defer httpSrv.Close()
+		researchBaseURL = httpSrv.URL
 	}
-	if *synthK > 0 {
-		srv = srv.WithDefaults(server.Defaults{ResearchSynthK: *synthK})
-	}
-	httpSrv := httptest.NewServer(srv.Handler())
-	defer httpSrv.Close()
 
 	type strategyReport struct {
 		Strategy     string   `json:"strategy"`
@@ -5621,7 +5640,7 @@ func runAnswerEval(ctx context.Context, args []string) error {
 
 		for _, strategy := range []string{"planner", "paraphrase"} {
 			// /research call.
-			u := httpSrv.URL + "/research?strategy=" + strategy + "&q=" + url.QueryEscape(q.Text)
+			u := researchBaseURL + "/research?strategy=" + strategy + "&q=" + url.QueryEscape(q.Text)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 			resp, err := httpClient.Do(req)
 			if err != nil {

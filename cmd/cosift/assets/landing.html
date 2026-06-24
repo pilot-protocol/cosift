@@ -340,6 +340,9 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
         <button class="btn primary" type="submit">Search <span class="arr">→</span></button>
       </form>
       <div class="tryit-knobs">
+        <label>site
+          <input type="text" id="tryit-site" placeholder="domain.com" style="width:140px; font-family:monospace" title="Restrict results to a domain, e.g. pilotprotocol.network" autocomplete="off" spellcheck="false"/>
+        </label>
         <label>retriever
           <select id="tryit-retriever">
             <option value="bm25" selected>bm25</option>
@@ -561,6 +564,8 @@ footer { padding: 56px 0 80px; border-top: 1px solid var(--line); color: var(--i
     var p = new URLSearchParams();
     p.set('q', q);
     p.set('k', document.getElementById('tryit-k').value || '5');
+    var site = document.getElementById('tryit-site').value.trim();
+    if (site) p.set('site', site);
     var retr = document.getElementById('tryit-retriever').value;
     if (retr && retr !== 'bm25') p.set('retriever', retr);
     var mmr = document.getElementById('tryit-mmr').value;

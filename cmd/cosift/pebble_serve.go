@@ -323,6 +323,36 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		time.Duration(envIntDefault("COSIFT_ANSWER_CACHE_TTL_SEC", 60))*time.Second,
 		envIntDefault("COSIFT_ANSWER_CACHE_CAP", 1024),
 	)
+	srv.researchCache = answercache.New(
+		time.Duration(envIntDefault("COSIFT_RESEARCH_CACHE_TTL_SEC", 600))*time.Second,
+		envIntDefault("COSIFT_RESEARCH_CACHE_CAP", 256),
+	)
+	// Query log (observability). COSIFT_QUERY_LOG=/path enables JSONL append
+	// of every query-endpoint request. Disabled if unset.
+	if qp := os.Getenv("COSIFT_QUERY_LOG"); qp != "" {
+		if f, err := os.OpenFile(qp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			srv.qlogFile = f
+			log.Printf("pebble-serve: query log enabled → %s", qp)
+		} else {
+			log.Printf("pebble-serve: query log open failed (%s): %v", qp, err)
+		}
+	}
+	// Feedback rate limiter — always on (stricter than global). Per-client via
+	// XFF. Override COSIFT_FEEDBACK_RPM / _BURST.
+	srv.fbRL = &rateLimiter{
+		rpm:       float64(envIntDefault("COSIFT_FEEDBACK_RPM", 20)),
+		burst:     float64(envIntDefault("COSIFT_FEEDBACK_BURST", 5)),
+		whitelist: map[string]bool{},
+	}
+	// Feedback log. COSIFT_FEEDBACK_LOG=/path, or defaults beside the query log.
+	if fp := feedbackLogPath(); fp != "" {
+		if f, err := os.OpenFile(fp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			srv.fbFile = f
+			log.Printf("pebble-serve: feedback log enabled → %s", fp)
+		} else {
+			log.Printf("pebble-serve: feedback log open failed (%s): %v", fp, err)
+		}
+	}
 	// Tries the vLLM /metrics endpoint at the chat origin (works for
 	// self-hosted vLLM, no-op against OpenAI). Threshold default 8 — that
 	// matches the answer-pool cap so when the chat backend is already
@@ -468,6 +498,9 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		log.Printf("pebble-serve: rate limit active (rpm=%.0f burst=%.0f whitelist=%v)", srv.rl.rpm, srv.rl.burst, srv.rl.whitelistList())
 	}
 	wrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(h)) }
+	// qwrap adds query logging (innermost, so it sees the real status+bytes) for
+	// the user-facing query endpoints — the observability substrate we lacked.
+	qwrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.qlog(h))) }
 	// landing page at / and OpenAPI 3.1 spec at /openapi.json.
 	// Both embedded into the binary at build time — operators get a single
 	// self-contained executable, no separate static-asset deployment.
@@ -482,6 +515,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /docs", wrap(srv.handleSwaggerUI))
 	mux.HandleFunc("GET /docs/{file...}", wrap(srv.handleSwaggerAsset))
 	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
+	mux.HandleFunc("GET /find", qwrap(srv.handleFind))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
 	// frontier queue visibility — counts by status + top-N
@@ -491,6 +525,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
+	mux.HandleFunc("POST /admin/allow-domain", wrap(srv.handleAllowDomain))
 	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", wrap(srv.handleFrontierClear))
 	mux.HandleFunc("POST /admin/frontier-demote-host", wrap(srv.handleFrontierDemoteHost))
@@ -502,13 +537,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/site-pack", wrap(srv.handleSitePack))
 	mux.HandleFunc("POST /admin/site-submit", wrap(srv.handleSiteSubmit))
 	mux.HandleFunc("POST /admin/embed-backfill", wrap(srv.handleEmbedBackfill))
+	mux.HandleFunc("POST /admin/host-backfill", wrap(srv.handleHostBackfill))
 	mux.HandleFunc("GET /admin/eval-quick", wrap(srv.handleEvalQuick))
 	mux.HandleFunc("POST /admin/hnsw-compact", wrap(srv.handleHNSWCompact))
-	mux.HandleFunc("GET /query", wrap(srv.handleQuery))
-	mux.HandleFunc("POST /query", wrap(srv.handleQuery))
+	mux.HandleFunc("GET /query", qwrap(srv.handleQuery))
+	mux.HandleFunc("POST /query", qwrap(srv.handleQuery))
 	// import a sitemap.xml (or sitemap-index) and push every
 	// listed URL into the live frontier.
 	mux.HandleFunc("POST /admin/sitemap-import", wrap(srv.handleSitemapImport))
+	mux.HandleFunc("POST /admin/recrawl-sitemap", wrap(srv.handleRecrawlSitemap))
 	// PQ training admin endpoint. Same auth as crawl-enqueue
 	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
 	// 224K-vec corpus we have today it takes ~minutes; operator-only.
@@ -519,20 +556,23 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Creates a hard-linked, consistent
 	// snapshot dir that's safe to tar without racing background compactions.
 	mux.HandleFunc("POST /admin/checkpoint", wrap(srv.handleCheckpoint))
-	mux.HandleFunc("GET /search", wrap(srv.handleSearch))
-	mux.HandleFunc("POST /search", wrap(srv.handleSearchPOST))
+	mux.HandleFunc("GET /search", qwrap(srv.handleSearch))
+	mux.HandleFunc("POST /search", qwrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
 	mux.HandleFunc("POST /contents", wrap(srv.handleContentsBatch))
 	mux.HandleFunc("GET /verify", wrap(srv.handleVerify))
 	mux.HandleFunc("GET /metrics", wrap(srv.handleMetrics))
+	mux.HandleFunc("GET /admin/query-log", wrap(srv.handleQueryLog))
+	mux.HandleFunc("POST /feedback", wrap(srv.handleFeedback))
+	mux.HandleFunc("GET /admin/feedback", wrap(srv.handleFeedbackList))
 	mux.HandleFunc("GET /sla", wrap(srv.handleSLA))
 	mux.HandleFunc("GET /admin/domains-audit", wrap(srv.handleDomainsAudit))
-	mux.HandleFunc("GET /find_similar", wrap(srv.handleFindSimilar))
-	mux.HandleFunc("POST /find_similar", wrap(srv.handleFindSimilarPOST))
-	mux.HandleFunc("GET /answer", wrap(srv.handleAnswer))
-	mux.HandleFunc("POST /answer", wrap(srv.handleAnswerPOST))
-	mux.HandleFunc("GET /research", wrap(srv.handleResearch))
-	mux.HandleFunc("POST /research", wrap(srv.handleResearchPOST))
+	mux.HandleFunc("GET /find_similar", qwrap(srv.handleFindSimilar))
+	mux.HandleFunc("POST /find_similar", qwrap(srv.handleFindSimilarPOST))
+	mux.HandleFunc("GET /answer", qwrap(srv.handleAnswer))
+	mux.HandleFunc("POST /answer", qwrap(srv.handleAnswerPOST))
+	mux.HandleFunc("GET /research", qwrap(srv.handleResearch))
+	mux.HandleFunc("POST /research", qwrap(srv.handleResearchPOST))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -778,9 +818,12 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// expose SeedSitemapLane so /admin/site-submit can push a whole site's
 	// URLs into a chosen priority lane (default: submitted/priority).
 	s.crawlSeedSitemapLane = c.SeedSitemapLane
+	// expose Recrawl so /admin/recrawl-sitemap can reset done/errored URLs.
+	s.crawlRecrawl = c.Recrawl
 	s.crawlSeedRSS = c.SeedRSS
 	s.crawlFetchNow = c.FetchAndIndexNow
 	s.crawlSeedWET = c.SeedWET
+	s.crawlAllowDomain = c.AddAllowedDomain
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -867,16 +910,40 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		}
 	}()
 
-	// Crawler goroutine.
+	// Crawler goroutine — restarts automatically when new items appear in the
+	// frontier after a drain. This ensures that site-submit / recrawl-sitemap
+	// URLs submitted while the crawler is idle are picked up without a service
+	// restart. Poll every 5s after drain; resume as soon as queued > 0.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Printf("in-serve crawler: starting")
-		if err := c.Run(ctx); err != nil {
-			log.Printf("in-serve crawler: exited with error: %v", err)
-			return
+		for {
+			log.Printf("in-serve crawler: starting")
+			if err := c.Run(ctx); err != nil {
+				log.Printf("in-serve crawler: exited with error: %v", err)
+				return
+			}
+			log.Printf("in-serve crawler: frontier drained, waiting for new work…")
+			// Poll until the parent context is cancelled or new items appear.
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				fs, err := s.store.GetFrontierStats(ctx)
+				if err != nil {
+					continue
+				}
+				if fs.Queued > 0 {
+					log.Printf("in-serve crawler: %d new frontier items, restarting", fs.Queued)
+					break
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
 		}
-		log.Printf("in-serve crawler: frontier drained")
 	}()
 	return nil
 }
@@ -907,6 +974,34 @@ type pebbleHTTP struct {
 	// next 100 callers hit the cache in microseconds OR join the
 	// in-flight call (sub-second). Disabled when ttl=0.
 	answerCache *answercache.Cache
+
+	// /research SSE stream cache. Captures and replays the full SSE byte
+	// stream so repeat research queries skip retrieval + LLM entirely.
+	researchCache *answercache.Cache
+
+	// Query log: appends one JSON line per query-endpoint request so we have
+	// real observability into what users ask, what returns empty, and latency.
+	// nil file = disabled (COSIFT_QUERY_LOG unset). See querylog.go.
+	qlogFile *os.File
+	qlogMu   sync.Mutex
+
+	// Feedback log: appends one JSON line per /feedback rating, correlated to a
+	// query by qid. The real usefulness signal (penalize/reward). See feedback.go.
+	fbFile *os.File
+	fbMu   sync.Mutex
+	// fbRL rate-limits /feedback per real client (XFF) — always on, stricter than
+	// the global limiter, since feedback is public/unauthed and abusable.
+	fbRL *rateLimiter
+
+	// Per-site docID boost map cache. key = canonical site string (e.g.
+	// "pilotprotocol.network"). Populated lazily on first site= query;
+	// subsequent calls are sub-microsecond map lookups.
+	siteBoostCache sync.Map // map[string]map[int64]float64
+
+	// Per-site page-title cache for planner context. key = canonical site
+	// string (same scheme as siteBoostCache). value = []string (<=10 titles).
+	// Populated lazily on first site= research query.
+	siteTitleCache sync.Map // map[string][]string
 
 	// Polls vLLM /metrics. When num_requests_waiting exceeds
 	// COSIFT_LLM_DEGRADE_QUEUE, optional LLM stages (rerank, HyDE,
@@ -948,6 +1043,10 @@ type pebbleHTTP struct {
 	crawlSeedRSS         func(ctx context.Context, url string) (int, error)
 	crawlFetchNow        func(ctx context.Context, url string) error
 	crawlSeedWET         func(ctx context.Context, url string, dedupeFresh, lexicalOnly bool) (int, error)
+	// crawlAllowDomain promotes a domain into the crawler's runtime dynamic
+	// allowlist (used by /admin/allow-domain for organic HN/Reddit growth).
+	crawlAllowDomain func(domain string) error
+	crawlRecrawl         func(ctx context.Context, url string) error
 
 	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -1226,6 +1325,7 @@ type statusCapturingWriter struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+	bytes       int64 // response body bytes — used by the query logger as an empty-result proxy
 }
 
 func (s *statusCapturingWriter) WriteHeader(code int) {
@@ -1240,7 +1340,9 @@ func (s *statusCapturingWriter) Write(p []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
 	}
-	return s.ResponseWriter.Write(p)
+	n, err := s.ResponseWriter.Write(p)
+	s.bytes += int64(n)
+	return n, err
 }
 
 // Flush passes through to support SSE / streaming handlers.
@@ -2001,6 +2103,38 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"queued": req.URL})
 }
 
+// handleAllowDomain promotes a domain into the crawler's runtime dynamic
+// allowlist so subsequently-crawled URLs from it pass allowedDomain(). Used by
+// the HN/Reddit harvesters to grow the crawlable set organically once a
+// link-target domain recurs above their frequency threshold. Persisted so it
+// survives restart. Body: {"domain":"example.com"}.
+func (s *pebbleHTTP) handleAllowDomain(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+			return
+		}
+	}
+	if s.crawlAllowDomain == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler")
+		return
+	}
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.Domain == "" {
+		writeProblem(w, http.StatusBadRequest, "expected {\"domain\": \"example.com\"}")
+		return
+	}
+	if err := s.crawlAllowDomain(req.Domain); err != nil {
+		writeProblem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"allowed": strings.ToLower(strings.TrimSpace(req.Domain))})
+}
+
 // handleFrontierClear wipes the entire frontier in a single Pebble
 // DeleteRange — every queued URL, primary + secondary index. Used when
 // the frontier is so polluted by spam-discovery crawls that
@@ -2092,6 +2226,71 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sitemap": req.URL,
 		"queued":  n,
+		"elapsed": time.Since(t0).String(),
+	})
+}
+
+// handleRecrawlSitemap fetches a sitemap.xml and calls Recrawl on every URL,
+// resetting done/errored entries back to queued so the crawler re-visits them.
+// Use this when a domain was previously blocked by include rules and its frontier
+// entries are stuck in errored state — sitemap-import's INSERT OR IGNORE won't
+// re-queue them, but Recrawl will.
+func (s *pebbleHTTP) handleRecrawlSitemap(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.crawlRecrawl == nil {
+		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler")
+		return
+	}
+	var req sitemapImportReq
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err := json.Unmarshal(body, &req); err != nil || req.URL == "" {
+		writeProblem(w, http.StatusBadRequest, `expected {"url": "https://.../sitemap.xml"}`)
+		return
+	}
+	// Fetch and parse the sitemap.
+	hc := &http.Client{Timeout: 20 * time.Second}
+	resp, err := hc.Get(req.URL)
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "fetch sitemap: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	// Extract <loc> entries — simple text scan avoids XML namespace headaches.
+	// Handles both pretty-printed (one tag per line) and compact sitemaps
+	// where <url><loc>…</loc></url> all appear on one line.
+	t0 := time.Now()
+	var reset, skipped int
+	src := string(raw)
+	for {
+		start := strings.Index(src, "<loc>")
+		if start < 0 {
+			break
+		}
+		src = src[start+len("<loc>"):]
+		end := strings.Index(src, "</loc>")
+		if end < 0 {
+			break
+		}
+		u := strings.TrimSpace(src[:end])
+		src = src[end+len("</loc>"):]
+		if err := s.crawlRecrawl(r.Context(), u); err != nil {
+			skipped++
+		} else {
+			reset++
+		}
+	}
+	log.Printf("recrawl-sitemap: reset %d, skipped %d from %s in %s", reset, skipped, req.URL, time.Since(t0).Round(time.Millisecond))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sitemap": req.URL,
+		"reset":   reset,
+		"skipped": skipped,
 		"elapsed": time.Since(t0).String(),
 	})
 }
@@ -2388,6 +2587,51 @@ func (r *responseRecorder) WriteHeader(c int)           { r.code = c }
 type embedBackfillReq struct {
 	Limit   int `json:"limit,omitempty"`
 	Workers int `json:"workers,omitempty"`
+}
+
+// handleHostBackfill triggers the 'P' host-partition backfill IN-PROCESS, in a
+// detached background goroutine (Pebble is single-writer, so this can't run as
+// a separate process against a live store). Returns immediately; progress is
+// logged. ?host=<host> runs the fast targeted path; omit for the full corpus.
+//
+// Run this with the COSIFT_HOST_PARTITION write flag OFF so the backfill is the
+// sole writer of the 'T'/'next_host_id' families (no race with crawl indexing).
+// After it logs "done", set COSIFT_HOST_PARTITION_READ=1 (and =1 for the write
+// flag to keep it fresh) and restart.
+func (s *pebbleHTTP) handleHostBackfill(w http.ResponseWriter, r *http.Request) {
+	if want := s.cluster.PeerAuthToken; want != "" {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got != want {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+			return
+		}
+	}
+	if s.store == nil {
+		writeProblem(w, http.StatusNotImplemented, "host-backfill requires a PebbleStore")
+		return
+	}
+	host := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("host")))
+	// Detached context so the long backfill survives the request returning.
+	go func() {
+		t0 := time.Now()
+		scope := "full corpus"
+		if host != "" {
+			scope = "host=" + host
+		}
+		log.Printf("host-backfill: starting (%s)", scope)
+		written, err := s.store.BackfillHostPostings(context.Background(), host, func(n int64) {
+			log.Printf("host-backfill: %d postings written (%s elapsed)", n, time.Since(t0).Round(time.Second))
+		})
+		if err != nil {
+			log.Printf("host-backfill: FAILED after %d postings: %v", written, err)
+			return
+		}
+		log.Printf("host-backfill: DONE — %d postings in %s. Set COSIFT_HOST_PARTITION_READ=1 and restart.",
+			written, time.Since(t0).Round(time.Second))
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status": "started", "scope": host, "note": "running in background; watch server logs for progress + 'DONE'",
+	})
 }
 
 func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request) {
@@ -3943,9 +4187,17 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if dateFilter {
 			mult = 10
 		}
-		fetchK = keepCap * mult
-		if fetchK > 500 {
-			fetchK = 500
+		if siteFilter {
+			// site= uses a fixed pool regardless of k — fetching proportionally
+			// (k*100) hits the 2000-cap and spends 20s+ on BM25 for common terms.
+			// 300 candidates is enough to include a small site's relevant pages
+			// while keeping latency under ~3s even for high-frequency query terms.
+			fetchK = 300
+		} else {
+			fetchK = keepCap * mult
+			if fetchK > 500 {
+				fetchK = 500
+			}
 		}
 	} else if wantRerank {
 		fetchK = keepCap * 2
@@ -5184,6 +5436,129 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 	}
 }
 
+// getSiteBoostIDs returns a docID→50× multiplier map for all docs belonging
+// to the given site scopes. Populated lazily on first call; cached in
+// siteBoostCache thereafter. Using the famHost index so the scan is
+// O(site_docs) not O(corpus).
+func (s *pebbleHTTP) getSiteBoostIDs(ctx context.Context, scopes []siteScope) map[int64]float64 {
+	if len(scopes) == 0 || s.store == nil {
+		return nil
+	}
+	key := func() string {
+		parts := make([]string, len(scopes))
+		for i, sc := range scopes {
+			parts[i] = sc.host
+			if sc.path != "" {
+				parts[i] += sc.path
+			}
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "|")
+	}()
+	if cached, ok := s.siteBoostCache.Load(key); ok {
+		return cached.(map[int64]float64)
+	}
+	boost := make(map[int64]float64)
+	for _, sc := range scopes {
+		_ = s.store.IterHostDocIDs(ctx, sc.host, func(id int64) bool {
+			boost[id] = 50.0
+			return true
+		})
+	}
+	if len(boost) > 0 {
+		s.siteBoostCache.Store(key, boost)
+	}
+	return boost
+}
+
+// getSiteTitles returns up to maxSiteTitles real page titles from the given
+// site scopes, for injection into the research planner prompt so the LLM sees
+// the site's actual vocabulary. Bounded and cheap: a single early-stopping
+// famHost scan per scope plus <=10 GetDocMeta side-blob lookups. Cached in
+// siteTitleCache thereafter. Returns nil if nothing usable is found.
+func (s *pebbleHTTP) getSiteTitles(ctx context.Context, scopes []siteScope) []string {
+	if len(scopes) == 0 || s.store == nil {
+		return nil
+	}
+	key := func() string {
+		parts := make([]string, len(scopes))
+		for i, sc := range scopes {
+			parts[i] = sc.host
+			if sc.path != "" {
+				parts[i] += sc.path
+			}
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "|")
+	}()
+	if cached, ok := s.siteTitleCache.Load(key); ok {
+		return cached.([]string)
+	}
+	const maxSiteTitles = 10
+	titles := make([]string, 0, maxSiteTitles)
+	seen := make(map[string]struct{}, maxSiteTitles)
+	for _, sc := range scopes {
+		if len(titles) >= maxSiteTitles {
+			break
+		}
+		_ = s.store.IterHostDocIDs(ctx, sc.host, func(id int64) bool {
+			_, title, ok, err := s.store.GetDocMeta(ctx, id)
+			if err != nil {
+				return false // stop this scope on error
+			}
+			if !ok {
+				return true
+			}
+			t := strings.TrimSpace(title)
+			if t == "" {
+				return true
+			}
+			if _, dup := seen[t]; dup {
+				return true
+			}
+			seen[t] = struct{}{}
+			titles = append(titles, t)
+			return len(titles) < maxSiteTitles // stop once we have 10
+		})
+	}
+	if len(titles) > 0 {
+		s.siteTitleCache.Store(key, titles)
+	}
+	return titles
+}
+
+// hostPartitionReadEnabled reports whether site= queries should route to the
+// 'P'-family host partition via SearchInHost. Gated by
+// COSIFT_HOST_PARTITION_READ=1; off → the 50× boost path is used.
+func hostPartitionReadEnabled() bool {
+	return os.Getenv("COSIFT_HOST_PARTITION_READ") == "1"
+}
+
+// retrieveForSites resolves a site-scoped sub-query. When the host partition
+// is enabled and the scope is a single bare host, it scans only that host's
+// posting partition (O(site_docs)) via SearchInHost — the definitive fix for
+// the global-scan latency + recall problem. Otherwise (multi-site, path-scoped,
+// flag off, or partition not yet backfilled for the host) it falls back to the
+// 50× BM25 boost over the global index.
+func (s *pebbleHTTP) retrieveForSites(ctx context.Context, q string, fetchK int, retrieverParam, expandMode string, boostIDs map[int64]float64, scopes []siteScope) ([]index.Hit, string, error) {
+	if hostPartitionReadEnabled() && len(scopes) == 1 && scopes[0].path == "" && scopes[0].host != "" {
+		hits, err := s.idx.SearchInHost(ctx, q, scopes[0].host, fetchK)
+		if err == nil {
+			return hits, q, nil
+		}
+		if !errors.Is(err, index.ErrHostPartitionEmpty) {
+			return nil, "", err
+		}
+		// partition empty for this host → fall through to the boost path.
+	}
+	if len(boostIDs) == 0 {
+		return s.retrieve(ctx, q, fetchK, retrieverParam, expandMode)
+	}
+	tmp := *s
+	tmp.idx = s.idx.WithBoost(boostIDs)
+	return tmp.retrieve(ctx, q, fetchK, retrieverParam, expandMode)
+}
+
 // retrieveWithExpansion dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
@@ -5502,9 +5877,16 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		if dateFilter {
 			mult = 10
 		}
+		if siteFilter {
+			mult = 50 // site= over-fetches aggressively: small site in a large corpus
+		}
 		fetchK = keepCap * mult
-		if fetchK > 200 {
-			fetchK = 200 // /answer caps tighter than /search — full doc text per source is expensive
+		cap := 200 // /answer caps tighter than /search — full doc text per source is expensive
+		if siteFilter && cap < 500 {
+			cap = 500
+		}
+		if fetchK > cap {
+			fetchK = cap
 		}
 	} else if wantRerank {
 		fetchK = keepCap * 2
@@ -5793,6 +6175,25 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// recordingWriter wraps an http.ResponseWriter and captures every byte
+// written to it. Used to record SSE streams for the research cache — the
+// captured bytes can later be replayed to a new client directly.
+type recordingWriter struct {
+	http.ResponseWriter
+	buf bytes.Buffer
+}
+
+func (r *recordingWriter) Write(b []byte) (int, error) {
+	r.buf.Write(b)
+	return r.ResponseWriter.Write(b)
+}
+
+func (r *recordingWriter) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // wantsSSE reports whether the request opts into Server-Sent Events,
 // either via ?stream=true or an Accept: text/event-stream header. Both
 // /answer, /query, and /research check the same envelope.
@@ -5957,7 +6358,7 @@ func (a *answerSSE) done() {
 // by URL keeping the best score, top-k feed a cited synthesis. Mirrors the
 // SQLite-side /research planner strategy. No streaming, no rerank, no
 // paraphrase strategy yet — those follow once this surface is exercised.
-const researchPlanPrompt = `Decompose the user's research question into 2-3 focused sub-queries that, taken together, would cover the answer. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["sub-query 1", "sub-query 2"]`
+const researchPlanPrompt = `Decompose the user's research question into 2-3 short keyword search phrases (3-6 words each, NOT full sentences). Each phrase MUST target a DIFFERENT facet so the phrases do not overlap: one conceptual/definitional (what it is), one procedural/how-to (steps, configuration, usage), and one edge-case/troubleshooting (errors, limits, gotchas, comparisons). Skip a facet only if it does not apply. Do NOT output near-duplicate rephrasings of the same idea. Output ONLY a JSON array of strings — no prose, no markdown. Example: ["consensus algorithm overview", "configure validator node", "leader election failure recovery"]`
 
 // queryPlanPrompt is the LLM-orchestrator prompt. The model
 // analyzes the user's natural-language query, classifies intent, and
@@ -6378,6 +6779,12 @@ type researchResponse struct {
 	Took            string         `json:"took"`
 }
 
+// researchSubFanOut bounds how many sub-queries retrieve concurrently within
+// a single /research pass. Shared by the sync (handleResearch) and streaming
+// (streamResearch) paths so their latency profiles stay identical. 3 keeps the
+// site= budget at 3 sub-queries × fan-out-3 = one concurrent batch.
+const researchSubFanOut = 3
+
 func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// Planner runs once on gateway,
 	// each sub-query scatters to peers, single synth here.
@@ -6417,23 +6824,63 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	wantStream := wantsSSE(r)
 	if wantStream {
 		if sc, ok := s.chat.(embed.StreamingChatClient); ok {
-			s.streamResearch(w, r, sc, q, k, filt, start)
+			cacheKey := "research|" + q + "|" + r.URL.Query().Get("site") + "|" + strconv.Itoa(k)
+			if r.Header.Get("Cache-Control") != "no-cache" {
+				if cached, ok := s.researchCache.Get(cacheKey); ok {
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.Header().Set("Cache-Control", "no-cache")
+					w.Header().Set("X-Accel-Buffering", "no")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(cached)
+					if f, ok2 := w.(http.Flusher); ok2 {
+						f.Flush()
+					}
+					return
+				}
+			}
+			rec := &recordingWriter{ResponseWriter: w}
+			s.streamResearch(rec, r, sc, q, k, filt, start)
+			if rec.buf.Len() > 0 {
+				s.researchCache.Set(cacheKey, rec.buf.Bytes())
+			}
 			return
 		}
 	}
 
-	// Plan
+	// Plan — include site domain so the LLM generates site-specific sub-queries
+	// rather than generic web queries that miss small-site content.
+	planQ := q
+	if len(filt.sites) > 0 {
+		siteHints := make([]string, len(filt.sites))
+		for si, ss := range filt.sites {
+			siteHints[si] = ss.host
+			if ss.path != "" {
+				siteHints[si] += ss.path
+			}
+		}
+		planQ = q + "\n\nSite filter: " + strings.Join(siteHints, ", ") + ". Generate sub-queries using specific terminology likely found on this site."
+		if titles := s.getSiteTitles(r.Context(), filt.sites); len(titles) > 0 {
+			planQ += "\n\nExample pages on this site: " + strings.Join(titles, ", ") + "."
+		}
+	}
 	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
-		{Role: "user", Content: q},
+		{Role: "user", Content: planQ},
 	})
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "plan: "+err.Error())
 		return
 	}
 	subs := parseSubQueries(planRaw, q)
-	if len(subs) > 5 {
-		subs = subs[:5]
+	maxSubs := 5
+	// site= scope limits the search to a small domain. 3 sub-queries with
+	// fan-out 3 complete in one concurrent batch (~21s each), keeping total
+	// retrieval under 25s so LLM synthesis fits within the 60s budget.
+	if len(filt.sites) > 0 && maxSubs > 3 {
+		maxSubs = 3
+	}
+	if len(subs) > maxSubs {
+		subs = subs[:maxSubs]
 	}
 
 	// Retrieve per sub-query, dedupe by URL keeping best score.
@@ -6442,9 +6889,20 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		hit   index.Hit
 	}
 	best := make(map[string]ranked, k*len(subs))
+	// Build the site boost map first: its length equals the site's doc count,
+	// which drives the adaptive perSub below.
+	syncBoostIDs := s.getSiteBoostIDs(r.Context(), filt.sites)
 	perSub := k * 2
 	if perSub > 40 {
 		perSub = 40
+	}
+	if len(filt.sites) > 0 {
+		// Fetch deep enough to cover the whole site (×1.2 headroom) so the 50×
+		// boost can reorder every site doc into top-k. Floor 200 preserves the
+		// MaxScore-firing window for tiny site-key terms (e.g. "pilotctl");
+		// ceiling 1000 bounds per-sub BM25 latency. Issue #2's MaxScore
+		// pre-check is what keeps the larger fetch affordable.
+		perSub = max(200, min(1000, int(math.Ceil(float64(len(syncBoostIDs))*1.2))))
 	}
 	// each sub-query goes through retrieveWithExpansion, so
 	// ?expand=hyde gives per-sub-query HyDE (was's behavior) and
@@ -6459,20 +6917,38 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get("retriever"),
 		r.URL.Query().Get("rerank"),
 	)
+	// Sub-queries are independent retrieve calls and the per-call cost dominates
+	// total latency, so fan them out with a bounded concurrency identical to the
+	// streaming path. bestMu guards the shared best map; hits and syncBoostIDs
+	// are goroutine-local / read-only respectively. There is no seenURLs set in
+	// the sync path (single pass), so the merge is a plain keep-best-score dedupe.
+	var bestMu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, researchSubFanOut)
 	for _, sq := range subs {
-		hits, _, err := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
-		if err != nil {
-			// log the specific sub-query so operators can diagnose
-			// 'why was this research thin on sources' — previously silent.
-			log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
-			continue
-		}
-		for _, h := range hits {
-			if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
-				best[h.URL] = ranked{score: h.Score, hit: h}
+		sq := sq
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			hits, _, err := s.retrieveForSites(r.Context(), sq, perSub, retrieverParam, expandMode, syncBoostIDs, filt.sites)
+			if err != nil {
+				// log the specific sub-query so operators can diagnose
+				// 'why was this research thin on sources' — previously silent.
+				log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, err)
+				return
 			}
-		}
+			bestMu.Lock()
+			for _, h := range hits {
+				if prev, ok := best[h.URL]; !ok || h.Score > prev.score {
+					best[h.URL] = ranked{score: h.Score, hit: h}
+				}
+			}
+			bestMu.Unlock()
+		}()
 	}
+	wg.Wait()
 	pooled := make([]ranked, 0, len(best))
 	for _, v := range best {
 		pooled = append(pooled, v)
@@ -6488,6 +6964,11 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 			keepCap = k
 		}
 	}
+	// Truncate the sorted pool to keepCap before materialization. For site=
+	// queries the 50x boost (applied in Search before its descending sort)
+	// guarantees the site's matched docs occupy the front of pooled, so this
+	// cut keeps exactly the boosted docs and bounds the rerank candidate count
+	// (was ~138 for site= queries; now keepCap, default rerankCandK=20).
 	if len(pooled) > keepCap {
 		pooled = pooled[:keepCap]
 	}
@@ -6652,17 +7133,39 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	sse.warnings(s.warningsFor(r))
 	sse.phase("plan_start", map[string]any{"q": q, "model": sc.Model()})
 
+	// site= hint: LLM generates site-specific sub-queries with domain terminology
+	// rather than generic queries that miss small-site content in BM25 top-200.
+	planQ := q
+	if len(filt.sites) > 0 {
+		siteHints := make([]string, len(filt.sites))
+		for si, ss := range filt.sites {
+			siteHints[si] = ss.host
+			if ss.path != "" {
+				siteHints[si] += ss.path
+			}
+		}
+		planQ = q + "\n\nSite filter: " + strings.Join(siteHints, ", ") + ". Generate sub-queries using specific terminology likely found on this site."
+		if titles := s.getSiteTitles(r.Context(), filt.sites); len(titles) > 0 {
+			planQ += "\n\nExample pages on this site: " + strings.Join(titles, ", ") + "."
+		}
+	}
 	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
 		{Role: "system", Content: researchPlanPrompt},
-		{Role: "user", Content: q},
+		{Role: "user", Content: planQ},
 	})
 	if err != nil {
 		sse.send(map[string]any{"type": "error", "phase": "plan", "error": err.Error()})
 		return
 	}
 	subs := parseSubQueries(planRaw, q)
-	if len(subs) > 5 {
-		subs = subs[:5]
+	{
+		maxSubs := 5
+		if len(filt.sites) > 0 && maxSubs > 3 {
+			maxSubs = 3 // site= budget: 3 sub-queries × fan-out-3 = one concurrent batch (~21s) + LLM fits in 60s
+		}
+		if len(subs) > maxSubs {
+			subs = subs[:maxSubs]
+		}
 	}
 	// per-sub-query expansion via retrieveWithExpansion.
 	// per-sub-query retriever dispatch (bm25 / dense / hybrid).
@@ -6717,11 +7220,28 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	// refine_queries to drive the next pass. Cap at maxPasses to bound
 	// latency + LLM cost.
 	maxPasses := researchMaxPasses(r)
+	// site= constrains to a small domain: multi-pass BM25 at fetchK=300 costs
+	// 21s × passes beyond the 60s budget. Cap to 1 pass — a small site's corpus
+	// is fully represented in the first retrieval round anyway.
+	if len(filt.sites) > 0 && maxPasses > 1 {
+		maxPasses = 1
+	}
 	decayHalfLife, decaySet := parseDecayHalfLife(r.URL.Query().Get("decay"))
 	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
+	// Pre-build site boost map once per request (O(site_docs) famHost scan,
+	// cached for repeat queries). Nil when site= is absent or store unavailable.
+	// Built before perSub because its length equals the site doc count.
+	siteBoostIDs := s.getSiteBoostIDs(r.Context(), filt.sites)
 	perSub := k * 2
 	if perSub > 40 {
 		perSub = 40
+	}
+	if len(filt.sites) > 0 {
+		// Fetch deep enough to cover the whole site (×1.2 headroom); floor 200
+		// preserves the MaxScore-firing window for tiny site-key terms, ceiling
+		// 1000 bounds per-sub BM25 latency. Mitigated by Issue #2's MaxScore
+		// pre-check.
+		perSub = max(200, min(1000, int(math.Ceil(float64(len(siteBoostIDs))*1.2))))
 	}
 	keepCap := k
 	if wantRerank {
@@ -6753,8 +7273,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		best := make(map[string]ranked, k*len(subs))
 		var bestMu sync.Mutex
 		var wg sync.WaitGroup
-		const subFanOut = 3
-		sem := make(chan struct{}, subFanOut)
+		sem := make(chan struct{}, researchSubFanOut)
 		for _, sq := range subs {
 			sq := sq
 			wg.Add(1)
@@ -6763,7 +7282,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				sse.phase("retrieving", map[string]any{"pass": pass, "query": sq})
-				hits, _, rerr := s.retrieve(r.Context(), sq, perSub, retrieverParam, expandMode)
+				hits, _, rerr := s.retrieveForSites(r.Context(), sq, perSub, retrieverParam, expandMode, siteBoostIDs, filt.sites)
 				if rerr != nil {
 					log.Printf("pebble-serve: /research sub-query %q failed: %v", sq, rerr)
 					sse.phase("expand", map[string]any{"pass": pass, "query": sq, "error": rerr.Error()})
@@ -6790,6 +7309,10 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		}
 		sort.Slice(pooled, func(i, j int) bool { return pooled[i].score > pooled[j].score })
 		sse.phase("fuse", map[string]any{"pass": pass, "unique_urls": len(pooled)})
+		// Truncate the sorted pool to keepCap before materialization. For site=
+		// queries the 50x boost (applied in Search before its descending sort)
+		// puts the site's matched docs at the front of pooled, so this cut keeps
+		// the boosted docs and bounds the LLM rerank candidate count to keepCap.
 		if len(pooled) > keepCap {
 			pooled = pooled[:keepCap]
 		}
@@ -6893,12 +7416,22 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 
 		// Build the cumulative sources slice + prompt block, stamping IDs
 		// 1..N in the order URLs were promoted.
+		// For site= queries trim excerpts to 600 chars — reduces synthesis
+		// context from ~9.6k to ~4.8k chars, cutting synthesis latency ~40%.
+		synthExcerptLen := 1200
+		if len(filt.sites) > 0 {
+			synthExcerptLen = 600
+		}
 		cumulativeSources := make([]answerSource, 0, len(allCands))
 		var promptSources strings.Builder
 		for i, c := range allCands {
 			c.src.ID = i + 1
 			cumulativeSources = append(cumulativeSources, c.src)
-			fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
+			ex := c.excerpt
+			if len(ex) > synthExcerptLen {
+				ex = ex[:synthExcerptLen]
+			}
+			fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, ex)
 		}
 		srcEvt := map[string]any{
 			"type": "sources", "sources": cumulativeSources,
