@@ -1,0 +1,16 @@
+[Unit]
+Description=Poll for a newer signed cosift release every ~5 min
+
+[Timer]
+# First poll 2 min after boot (let cosift-serve finish its HNSW load), then
+# every 5 min. RandomizedDelaySec smears load off the GitHub API and avoids
+# a thundering-herd if multiple boxes ever run this.
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=60
+AccuracySec=30s
+Persistent=true
+Unit=cosift-self-update.service
+
+[Install]
+WantedBy=timers.target

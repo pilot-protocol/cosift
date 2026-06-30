@@ -22,7 +22,7 @@ smoke:
 	@./scripts/smoke-test.sh
 
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X github.com/calinteodor/cosift/internal/server.Version=$(VERSION)" -o $(BINARY) $(PKG)
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION) -X github.com/pilot-protocol/cosift/internal/server.Version=$(VERSION)" -o $(BINARY) $(PKG)
 
 # Light-touch verification: compile + vet + unit tests on packages that
 # don't need OPENAI/COHERE keys or live network. Catches latent compile

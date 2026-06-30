@@ -20,6 +20,16 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: go vet
+        run: go vet ./...
+
+      - name: Cross-compile for prod target (linux/arm64)
+        # Production runs on a GH200 (linux/arm64). Pure-Go + CGO_ENABLED=0
+        # means this is a clean cross-compile on the amd64 runner — no QEMU,
+        # no self-hosted runner. Catches a compile break on the prod arch
+        # that the host-arch test build would miss.
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/cosift
+
       - name: Run tests with coverage
         # cosift's internal/crawler hits ~25s; allow 5m total headroom.
         run: go test -race -coverprofile=coverage.out -covermode=atomic -timeout 5m ./...

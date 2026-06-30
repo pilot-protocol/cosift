@@ -1,0 +1,148 @@
+name: deploy
+
+# Build + sign + publish a release artifact. PULL-BASED deploy:
+# this workflow never touches the production box and never holds an SSH key.
+# The box runs cosift-self-update.timer, which polls the latest GitHub Release,
+# verifies sha256 + minisign signature against a public key baked on the box,
+# snapshots, atomically swaps the binary, restarts, and health-gates with
+# auto-rollback. See deploy/scripts/README.md.
+#
+# Triggers:
+#   - push of a version tag (v*)         → cut a release for that tag
+#   - manual workflow_dispatch           → build from a chosen ref (no release
+#                                          unless a tag is also present)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the GitHub Release + upload assets
+
+jobs:
+  # (a) verify — gate the release on vet + race tests + a smoke subset.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Tests (race)
+        run: go test -race -timeout 5m ./...
+
+      - name: Smoke subset (build + serve roundtrip)
+        # make smoke builds the binary, crawls, and asserts /healthz + /search.
+        # Guarded with a timeout so a hung crawl can't wedge the release.
+        run: timeout 300 make smoke
+
+  # (b) build — reproducible static arm64 binary, sha256, minisign signature.
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history so version stamping is meaningful
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Resolve version stamp
+        id: ver
+        # Tag name when triggered by a tag push; otherwise the short SHA.
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (linux/arm64, static, trimmed)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+          VERSION: ${{ steps.ver.outputs.version }}
+        # Stamp both main.version and internal/server.Version so /healthz and
+        # /metrics report the shipped version. Matches the Makefile `build`
+        # target's ldflags exactly (kept in sync deliberately).
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X github.com/pilot-protocol/cosift/internal/server.Version=${VERSION}" \
+            -o cosift-linux-arm64 ./cmd/cosift
+
+      - name: sha256
+        run: sha256sum cosift-linux-arm64 | tee cosift-linux-arm64.sha256
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Sign with minisign
+        env:
+          # Repo secret. The matching PUBLIC key is baked on the box at
+          # /etc/cosift/minisign.pub. Generate with `minisign -G` (see
+          # deploy/scripts/README.md). NEVER commit the secret key.
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY secret is not set" >&2
+            exit 1
+          fi
+          printf '%s' "${MINISIGN_SECRET_KEY}" > minisign.key
+          # -W: secret key is unencrypted (no interactive passphrase prompt).
+          # Trusted comment carries the version so the box can sanity-check it.
+          minisign -S -W -s minisign.key \
+            -m cosift-linux-arm64 \
+            -t "cosift ${{ steps.ver.outputs.version }} linux/arm64"
+          rm -f minisign.key
+          # Verification against the embedded public key is done on the box;
+          # here we just confirm the .minisig was produced.
+          test -f cosift-linux-arm64.minisig
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cosift-release-artifacts
+          path: |
+            cosift-linux-arm64
+            cosift-linux-arm64.sha256
+            cosift-linux-arm64.minisig
+          retention-days: 30
+
+  # (c) release — publish the signed binary as a GitHub Release asset.
+  # Only on a tag push (workflow_dispatch builds the artifact but does not
+  # cut a release).
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: cosift-release-artifacts
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: cosift ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            cosift-linux-arm64
+            cosift-linux-arm64.sha256
+            cosift-linux-arm64.minisig

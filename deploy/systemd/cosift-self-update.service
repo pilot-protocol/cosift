@@ -1,0 +1,33 @@
+[Unit]
+Description=cosift PULL-based self-updater (verify + snapshot + swap + health-gate + rollback)
+# Don't poll until the box is on the network and the serve unit is up; the
+# updater health-gates the same service it restarts.
+After=network-online.target cosift-serve.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+# Public verification key baked on the box. The matching private key lives
+# only as the MINISIGN_SECRET_KEY GitHub Actions secret (CI signs releases).
+Environment=COSIFT_REPO=pilot-protocol/cosift
+Environment=COSIFT_BIN=/home/ubuntu/cosift
+Environment=COSIFT_SERVICE=cosift-serve
+Environment=COSIFT_PUBKEY=/etc/cosift/minisign.pub
+Environment=COSIFT_HEALTH_URL=http://127.0.0.1:7777/healthz
+Environment=COSIFT_SNAPSHOT=/home/ubuntu/scripts/snapshot.sh
+# Optional: drop a GITHUB_TOKEN here (or in a drop-in) to raise the API rate
+# limit. Public releases work unauthenticated, so it's not required.
+# Environment=GITHUB_TOKEN=
+ExecStart=/home/ubuntu/scripts/cosift-self-update.sh
+# The health gate plus a possible rollback can each take the full ~10 min
+# HNSW load window; give the unit generous headroom before systemd kills it.
+TimeoutStartSec=1500
+# A failed self-update (non-zero exit) is informational, not fatal for the
+# box — the running service is unaffected (or already rolled back).
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target
