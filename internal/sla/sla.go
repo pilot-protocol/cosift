@@ -26,7 +26,6 @@ package sla
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"sort"
 	"sync"
@@ -51,15 +50,14 @@ type Sample struct {
 
 // Violation is what the evaluator records when a target is breached.
 type Violation struct {
-	Endpoint   string        `json:"endpoint"`
-	At         time.Time     `json:"at"`
-	Metric     string        `json:"metric"`   // "p95", "p99", "error_rate"
-	Observed   float64       `json:"observed"` // ms for latency, ratio for error_rate
-	Target     float64       `json:"target"`
-	WindowSec  int           `json:"window_sec"`
-	SampleSize int           `json:"sample_size"`
-	Severity   string        `json:"severity"` // "warn" / "critical"
-	Latency    time.Duration `json:"-"`
+	Endpoint   string    `json:"endpoint"`
+	At         time.Time `json:"at"`
+	Metric     string    `json:"metric"`   // "p95", "p99", "error_rate"
+	Observed   float64   `json:"observed"` // ms for latency, ratio for error_rate
+	Target     float64   `json:"target"`
+	WindowSec  int       `json:"window_sec"`
+	SampleSize int       `json:"sample_size"`
+	Severity   string    `json:"severity"` // "warn" / "critical"
 }
 
 // Monitor is the in-process SLA tracker.
@@ -124,9 +122,7 @@ func New(targets []Target, window time.Duration, logPath string) (*Monitor, erro
 		m.buckets[t.Endpoint] = newRingBuffer(1024)
 	}
 	if logPath != "" {
-		if err := m.rotateLog(); err != nil {
-			return nil, fmt.Errorf("sla: rotate log: %w", err)
-		}
+		m.rotateLog()
 	}
 	return m, nil
 }
@@ -308,15 +304,14 @@ func (m *Monitor) persist(v Violation) {
 
 // rotateLog moves any pre-existing log aside with a timestamp suffix
 // so the live log file stays bounded.
-func (m *Monitor) rotateLog() error {
+func (m *Monitor) rotateLog() {
 	if m.logPath == "" {
-		return nil
+		return
 	}
 	if _, err := os.Stat(m.logPath); err == nil {
 		ts := time.Now().Format("20060102T150405")
 		_ = os.Rename(m.logPath, m.logPath+"."+ts)
 	}
-	return nil
 }
 
 // Snapshot returns the latest evaluation state.

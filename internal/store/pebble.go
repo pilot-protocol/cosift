@@ -107,7 +107,7 @@ const (
 	//                       reverse index from docID to its term IDs, so
 	//                       re-indexing the same doc can delete orphaned postings
 	//                       for terms that vanished from the new content.
-	famHostTerm    byte = 'T' // 'T' + host-string → uint64-be(hostID)
+	famHostTerm byte = 'T' // 'T' + host-string → uint64-be(hostID)
 	//                          stable per-host id, allocated like termID.
 	famHostPosting byte = 'P' // 'P' + hostID(8) + termID(8) + docID(8) → (tf, docLen)
 	//                          host-partitioned postings: a site= query scans
@@ -450,20 +450,19 @@ func frontierStatusIndexKeyLane(sub, lane byte, host, url string) []byte {
 	return k
 }
 
-// frontierStatusIndexHostLane extracts (host, lane) from a lane-format
-// secondary index key. Returns ("", 0) if the key shape is wrong.
-func frontierStatusIndexHostLane(key []byte) (host string, lane byte) {
+// frontierStatusIndexHostLane extracts the host from a lane-format secondary
+// index key. Returns "" if the key shape is wrong.
+func frontierStatusIndexHostLane(key []byte) (host string) {
 	if len(key) < 4 || key[0] != famFrontier {
-		return "", 0
+		return ""
 	}
-	lane = key[2]
 	rest := key[3:]
 	for i, b := range rest {
 		if b == 0x00 {
-			return string(rest[:i]), lane
+			return string(rest[:i])
 		}
 	}
-	return "", 0
+	return ""
 }
 
 // frontierLanePrefix is the lower bound for an iteration scoped to one
@@ -1897,8 +1896,7 @@ func decodeFrontierIndexHost(key []byte) string {
 		return ""
 	}
 	if key[2] < laneCount {
-		h, _ := frontierStatusIndexHostLane(key)
-		return h
+		return frontierStatusIndexHostLane(key)
 	}
 	return frontierStatusIndexHost(key)
 }
@@ -1926,7 +1924,7 @@ func (p *PebbleStore) scanLaneForFreeHost(lane byte, inflightHosts map[string]st
 
 	scan := func(start func() bool) (found bool) {
 		for valid := start(); valid; valid = qIt.Next() {
-			h, _ := frontierStatusIndexHostLane(qIt.Key())
+			h := frontierStatusIndexHostLane(qIt.Key())
 			if h == "" {
 				continue
 			}
@@ -3035,7 +3033,7 @@ func (p *PebbleStore) PurgeStaleInFlight(ctx context.Context) (int, error) {
 		}
 		var host, url string
 		if k[2] < laneCount {
-			host, _ = frontierStatusIndexHostLane(k)
+			host = frontierStatusIndexHostLane(k)
 			urlOffset := 3 + len(host) + 1
 			if urlOffset > len(k) {
 				continue

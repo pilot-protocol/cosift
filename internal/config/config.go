@@ -22,9 +22,6 @@ type Config struct {
 
 	Crawler Crawler `json:"crawler"`
 
-	// Federation: which external retrieval sources to consult. Each is optional.
-	Federation Federation `json:"federation"`
-
 	// Embeddings: address of an HTTP embedding service. Empty = vector search disabled.
 	Embeddings Embeddings `json:"embeddings"`
 
@@ -287,19 +284,33 @@ type Crawler struct {
 	// the offline `cosift purge-adult` sweep cleans content already
 	// indexed before this was enabled.
 	FilterAdult bool `json:"filter_adult,omitempty"`
-}
 
-// Federation configures upstream search backends used as no-key
-// fallbacks when the local corpus is empty or partial.
-type Federation struct {
-	// DuckDuckGoHTML enables the no-key DDG HTML proxy fallback for /search.
-	DuckDuckGoHTML bool `json:"duckduckgo_html"`
+	// AuthorityPriority, when true, uses domain-authority signals (Tranco
+	// rank, Majestic TrustFlow, embedded whitelist) to set the frontier
+	// priority for every discovered link. High-authority hosts
+	// (arxiv.org, Wikipedia, MDN, …) receive priority ~0.8-1.0; unknown
+	// blogs fall back to 0.5. The priority feeds ClaimFrontier's ORDER BY
+	// so the worker pool naturally crawls the best-known domains first.
+	//
+	// Requires at least one of AuthorityTrancoCSV / AuthorityMajesticCSV
+	// to be populated, or relies on the embedded trusted-host whitelist
+	// alone (still useful for a known-good bootstrap set).
+	//
+	// Default false preserves uniform-priority (0.5) behavior.
+	AuthorityPriority bool `json:"authority_priority,omitempty"`
 
-	// SearXNGURL points at a self-hosted SearXNG instance, if any.
-	SearXNGURL string `json:"searxng_url"`
+	// AuthorityTrancoCSV is the local path to the Tranco top-1M CSV file.
+	// Download: https://tranco-list.eu/ (updated weekly, ~7 MB).
+	// File format: "rank,hostname" per line, no header. Rank 1 = most popular.
+	// Only read at startup; the crawler does not hot-reload it.
+	// Ignored when AuthorityPriority=false.
+	AuthorityTrancoCSV string `json:"authority_tranco_csv,omitempty"`
 
-	// Pilot enables the cosift→Pilot specialist router (requires pilotctl).
-	Pilot bool `json:"pilot"`
+	// AuthorityMajesticCSV is the local path to the Majestic Million CSV.
+	// Download: https://majestic.com/reports/majestic-million (~35 MB).
+	// Columns 2 (Domain) and 9 (TrustFlow 0–100) are used; header is auto-detected.
+	// Ignored when AuthorityPriority=false.
+	AuthorityMajesticCSV string `json:"authority_majestic_csv,omitempty"`
 }
 
 // Embeddings configures the dense-vector backend: model, dimension,
@@ -449,7 +460,6 @@ func Default() *Config {
 			MaxDepth:       2,
 			RespectRobots:  true,
 		},
-		Federation: Federation{},
 		Embeddings: Embeddings{},
 	}
 }

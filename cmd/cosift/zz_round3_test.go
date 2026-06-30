@@ -53,7 +53,7 @@ type openaiMock struct {
 //   - embeddings return one vector of `embedDim` floats per input (a hash of
 //     the text bytes scaled to [0,1])
 //
-// Override per-test via SetChatResponse / SetEmbedDim.
+// Override per-test via SetChatResponse.
 func openaiTestServer(t *testing.T) *openaiMock {
 	t.Helper()
 	m := &openaiMock{embedDim: 8}
@@ -132,13 +132,6 @@ func (m *openaiMock) SetChatResponses(seq ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.chatRespQueue = append([]string{}, seq...)
-}
-
-// SetEmbedDim swaps the embedding vector dimensionality.
-func (m *openaiMock) SetEmbedDim(d int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.embedDim = d
 }
 
 // ChatCalls returns the number of /v1/chat/completions requests served.

@@ -69,7 +69,7 @@ type Crawler struct {
 	// an int read on the hot path; not atomic — diagnostic only).
 	zombieDebugLogged int
 
-// per-host error-rate tracking via sync.Map + atomic
+	// per-host error-rate tracking via sync.Map + atomic
 	// counters. With 512 workers we cannot afford a single write lock
 	// on every claim's completion — that bottlenecked and cost
 	// ~25% throughput. sync.Map.LoadOrStore lets us avoid the lock on
@@ -87,11 +87,11 @@ type Crawler struct {
 	// keeps memory predictable; non-blocking send means a slow embedder
 	// can't stall the crawl (dropped jobs land in embed-backfill later,
 	// which the operator runs anyway).
-	embedQ         chan *embedJob
-	embedQueued    atomic.Int64
-	embedDropped   atomic.Int64
-	embedDone      atomic.Int64
-	embedFailed    atomic.Int64
+	embedQ       chan *embedJob
+	embedQueued  atomic.Int64
+	embedDropped atomic.Int64
+	embedDone    atomic.Int64
+	embedFailed  atomic.Int64
 
 	// URLs whose frontier transition happened inside processClaimed via
 	// WriteCrawlResult. The worker checks this set before its own
@@ -110,9 +110,14 @@ type Crawler struct {
 	// that recurs on HN's front page is promoted via AddAllowedDomain and
 	// persisted to dynDomainsFile so it survives restart. Empty file path
 	// (COSIFT_DYNAMIC_DOMAINS_FILE unset) disables the feature.
-	dynDomains    sync.Map // eTLD+1 / host (string) → struct{}
+	dynDomains     sync.Map // eTLD+1 / host (string) → struct{}
 	dynDomainsFile string
-	dynDomainsMu  sync.Mutex // serializes file appends
+	dynDomainsMu   sync.Mutex // serializes file appends
+
+	// authority provides per-host quality scores used to set frontier
+	// priority on discovered links. nil = uniform 0.5 priority (pre behavior).
+	// Populated via WithAuthority when cfg.AuthorityPriority=true.
+	authority authorityScorer
 }
 
 // LoadDynamicDomains reads previously-promoted domains from dynDomainsFile into
@@ -448,6 +453,56 @@ func (c *Crawler) WithRouter(route RouteFn, forward ForwardFn) *Crawler {
 	c.route = route
 	c.forward = forward
 	return c
+}
+
+// authorityScorer is a narrow interface so the crawler package does not import
+// internal/authority directly — avoids a potential dep-graph cycle and keeps
+// the package boundary clean. internal/authority.Scorer satisfies this.
+type authorityScorer interface {
+	Score(host string) float64
+}
+
+// WithAuthority attaches a domain-authority scorer. When set, links discovered
+// during crawl are pushed to the frontier with a priority derived from the
+// host's authority score instead of the flat 0.5 default. Chaining-style builder.
+//
+// The scorer is read-only after this call (Score is called on the hot path);
+// callers must finish loading Tranco/Majestic data BEFORE calling WithAuthority.
+func (c *Crawler) WithAuthority(s authorityScorer) *Crawler {
+	c.authority = s
+	return c
+}
+
+// linkPriority returns the frontier priority to assign to a discovered link at
+// the given crawl depth. When authority scoring is enabled, high-authority
+// domains (Tranco top-1k, Majestic high-TF, embedded whitelist) receive
+// priority up to 1.0; unknown domains fall back to 0.5.
+//
+// Depth decay keeps shallow-found links from high-authority domains ahead of
+// deep-found links from any domain:
+//
+//	priority = authority_score / (1 + 0.25 * depth)
+//
+// At depth 0 (seed-equivalent): no decay — top-authority host stays at 1.0.
+// At depth 4: divisor = 2.0, so even a top-authority host is at 0.5, equal to
+// an unknown host at depth 0. Deep discoveries from weak domains converge to
+// ~0.25, staying below any shallow discovery.
+//
+// Floor of 0.05 ensures even low-authority deep links are eventually processed
+// when the frontier drains.
+func (c *Crawler) linkPriority(host string, depth int) float64 {
+	base := 0.5
+	if c.authority != nil {
+		base = c.authority.Score(host)
+	}
+	if depth <= 0 {
+		return base
+	}
+	p := base / (1.0 + 0.25*float64(depth))
+	if p < 0.05 {
+		return 0.05
+	}
+	return p
 }
 
 // Seed pushes a URL onto the persistent frontier at depth 0.
@@ -847,9 +902,9 @@ func (c *Crawler) runHostSweep(
 	demoter HostFrontierDemoter,
 ) {
 	type hostJudgement struct {
-		host    string
-		dead    bool
-		attempts int32
+		host      string
+		dead      bool
+		attempts  int32
 		successes int32
 	}
 	var verdicts []hostJudgement
@@ -1464,7 +1519,12 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) {
 			}
 		}
 		// PushFrontier is INSERT OR IGNORE — dedup is at the persistent layer.
-		_ = c.store.PushFrontier(ctx, cand.canon, depth, 0.5)
+		// Priority is authority-weighted when a scorer is attached; otherwise
+		// falls back to flat 0.5 (pre-authority behavior). INSERT OR IGNORE means
+		// we never downgrade the priority of a URL already in the queue — first
+		// writer wins, which is fine since seeds (depth=0, priority≥base) always
+		// arrive before link-discovered copies (depth≥1).
+		_ = c.store.PushFrontier(ctx, cand.canon, depth, c.linkPriority(cand.host, depth))
 		if hostCap > 0 {
 			queuedPerHost[cand.host]++
 		}

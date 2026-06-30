@@ -20,7 +20,7 @@ import (
 // conservative (rotate/truncate the file); don't hoard raw queries indefinitely.
 
 type queryLogRec struct {
-	Qid    string `json:"qid"`              // stable id; returned to caller via X-Cosift-Query-Id so feedback can reference it
+	Qid    string `json:"qid"` // stable id; returned to caller via X-Cosift-Query-Id so feedback can reference it
 	TS     string `json:"ts"`
 	Ep     string `json:"ep"`               // path, e.g. /search
 	Q      string `json:"q"`                // the q= param (empty for POST-body queries)

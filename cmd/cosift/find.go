@@ -67,9 +67,9 @@ func federateHF(ctx context.Context, q string) []findHit {
 			continue
 		}
 		var items []struct {
-			ID       string `json:"id"`
-			Likes    int    `json:"likes"`
-			Downloads int   `json:"downloads"`
+			ID        string `json:"id"`
+			Likes     int    `json:"likes"`
+			Downloads int    `json:"downloads"`
 		}
 		if json.Unmarshal(b, &items) != nil {
 			continue

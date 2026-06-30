@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/authority"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/embed"
@@ -330,6 +331,14 @@ func run(cfgPath string) error {
 		if err := runFrontierClear(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("frontier-clear: %w", err)
 		}
+	case "frontier-trim":
+		if err := runFrontierTrim(ctx, cfg, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("frontier-trim: %w", err)
+		}
+	case "seed-tranco":
+		if err := runSeedTranco(ctx, cfg, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("seed-tranco: %w", err)
+		}
 	case "domain-audit":
 		if err := runDomainAudit(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("domain-audit: %w", err)
@@ -534,6 +543,46 @@ func runCrawl(ctx context.Context, cfg *config.Config, args []string) error {
 		log.Printf("crawler: pebble backend at %s", pebbleDir)
 	default:
 		return fmt.Errorf("crawl: unknown -backend %q (want: sqlite | pebble)", *backend)
+	}
+
+	// Authority-weighted frontier priority: load Tranco / Majestic CSVs when
+	// configured. The scorer is read-only after loading — safe to share with
+	// the crawler's concurrent worker pool.
+	if cfg.Crawler.AuthorityPriority {
+		scorer := authority.New()
+		if cfg.Crawler.AuthorityTrancoCSV != "" {
+			f, ferr := os.Open(cfg.Crawler.AuthorityTrancoCSV)
+			if ferr != nil {
+				log.Printf("crawler: authority: open tranco csv %s: %v (skipping)", cfg.Crawler.AuthorityTrancoCSV, ferr)
+			} else {
+				n, lerr := scorer.LoadTranco(f)
+				_ = f.Close()
+				if lerr != nil {
+					log.Printf("crawler: authority: load tranco: %v (skipping)", lerr)
+				} else {
+					log.Printf("crawler: authority: loaded %d tranco entries from %s", n, cfg.Crawler.AuthorityTrancoCSV)
+				}
+			}
+		}
+		if cfg.Crawler.AuthorityMajesticCSV != "" {
+			f, ferr := os.Open(cfg.Crawler.AuthorityMajesticCSV)
+			if ferr != nil {
+				log.Printf("crawler: authority: open majestic csv %s: %v (skipping)", cfg.Crawler.AuthorityMajesticCSV, ferr)
+			} else {
+				n, lerr := scorer.LoadMajestic(f)
+				_ = f.Close()
+				if lerr != nil {
+					log.Printf("crawler: authority: load majestic: %v (skipping)", lerr)
+				} else {
+					log.Printf("crawler: authority: loaded %d majestic entries from %s", n, cfg.Crawler.AuthorityMajesticCSV)
+				}
+			}
+		}
+		// Even without CSV data the embedded whitelist in authority.New() gives
+		// known-good sites (arxiv, MDN, Wikipedia, kernel.org, …) a priority boost.
+		c = c.WithAuthority(scorer)
+		log.Printf("crawler: authority-weighted frontier priority enabled (tranco=%s majestic=%s)",
+			cfg.Crawler.AuthorityTrancoCSV, cfg.Crawler.AuthorityMajesticCSV)
 	}
 
 	// Auto-wire embedder when configured. For the Pebble backend, also
@@ -4320,6 +4369,194 @@ func runGC(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 		log.Printf("gc: vacuum complete")
 	}
+	return nil
+}
+
+// runFrontierTrim deletes completed (status='done') frontier rows older than a
+// configurable age and optionally VACUUMs the database.
+//
+// Background: the GC command (runGC) only drops status='error' rows. Completed
+// rows accumulate indefinitely — a 500k-URL crawl leaves 500k done rows that
+// serve no purpose once the URL is in the documents table. Over months of
+// continuous crawling this can reach tens of millions of rows, bloating the DB
+// by several GB and slowing ClaimFrontier's ORDER BY scan even with an index.
+//
+// Default -older-than of 168h (7 days) is safe for the default refresh cycle
+// (refresh-due at 24h): a URL that was crawled 7 days ago and whose done row
+// is deleted will re-enter the frontier on the next refresh-due pass, which is
+// the correct behavior. Operators with longer refresh cycles should raise this
+// value accordingly (e.g. -older-than=720h for monthly refreshes).
+func runFrontierTrim(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("frontier-trim", flag.ExitOnError)
+	olderThan := fs.Duration("older-than", 7*24*time.Hour, "delete done rows enqueued more than this long ago (e.g. 168h, 720h)")
+	dryRun := fs.Bool("dry-run", false, "print what would be deleted without actually deleting")
+	vacuum := fs.Bool("vacuum", true, "run VACUUM after deletion to reclaim disk space")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	s, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	stats, serr := s.GetFrontierStats(ctx)
+	if serr != nil {
+		return fmt.Errorf("frontier-trim: stats: %w", serr)
+	}
+	log.Printf("frontier-trim: before — queued=%d in_flight=%d done=%d error=%d",
+		stats.Queued, stats.InFlight, stats.Done, stats.Errored)
+
+	if *dryRun {
+		log.Printf("frontier-trim: dry-run — would delete done rows older than %s (skipping actual delete)", *olderThan)
+		return nil
+	}
+
+	n, derr := s.TrimDoneFrontier(ctx, *olderThan)
+	if derr != nil {
+		return fmt.Errorf("frontier-trim: %w", derr)
+	}
+	log.Printf("frontier-trim: removed %d done rows older than %s", n, *olderThan)
+
+	if *vacuum && n > 0 {
+		log.Printf("frontier-trim: vacuuming (this may take a while on large databases)…")
+		if verr := s.Vacuum(ctx); verr != nil {
+			return fmt.Errorf("frontier-trim: vacuum: %w", verr)
+		}
+		log.Printf("frontier-trim: vacuum complete")
+	}
+	return nil
+}
+
+// runSeedTranco reads a Tranco top-1M CSV and pushes the top-N root URLs into
+// the frontier as depth-0 seeds. This is the fastest way to bootstrap a broad
+// crawl from a high-quality, authority-ranked URL set without having to curate
+// a manual seeds file.
+//
+// Each Tranco entry becomes https://<domain>/ with a priority derived from its
+// rank: rank 1 → priority 1.0, rank 1M → priority 0.1, log-scale in between.
+// The INSERT OR IGNORE semantics of PushFrontier mean this is safe to run
+// repeatedly — it only adds URLs not already in the frontier (regardless of
+// their current status).
+//
+// Download the latest Tranco CSV from https://tranco-list.eu/ (updated weekly,
+// ~7 MB compressed). The format is "rank,hostname" with no header.
+//
+// Example:
+//
+//	cosift seed-tranco -tranco tranco-top1m.csv -top 10000
+func runSeedTranco(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("seed-tranco", flag.ExitOnError)
+	trancoPath := fs.String("tranco", "", "path to Tranco top-1M CSV (required)")
+	topN := fs.Int("top", 10000, "seed only the top-N domains (0 = all)")
+	scheme := fs.String("scheme", "https", "URL scheme to prepend (https or http)")
+	dryRun := fs.Bool("dry-run", false, "print URLs that would be seeded without writing to the frontier")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *trancoPath == "" {
+		return errors.New("seed-tranco: -tranco is required")
+	}
+	if *scheme != "https" && *scheme != "http" {
+		return fmt.Errorf("seed-tranco: -scheme must be https or http, got %q", *scheme)
+	}
+
+	f, ferr := os.Open(*trancoPath)
+	if ferr != nil {
+		return fmt.Errorf("seed-tranco: open %s: %w", *trancoPath, ferr)
+	}
+	defer f.Close()
+
+	// Parse the CSV into (rank, host) pairs up to topN.
+	type entry struct {
+		rank int
+		host string
+	}
+	entries := make([]entry, 0, 10000)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 4096), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		var rankStr, host string
+		if i := strings.IndexAny(line, ",\t"); i > 0 {
+			rankStr = strings.TrimSpace(line[:i])
+			host = strings.ToLower(strings.TrimSpace(line[i+1:]))
+		} else {
+			continue
+		}
+		rank, err := strconv.Atoi(rankStr)
+		if err != nil || rank <= 0 {
+			continue
+		}
+		host = strings.TrimPrefix(host, "www.")
+		if host == "" {
+			continue
+		}
+		if *topN > 0 && rank > *topN {
+			break
+		}
+		entries = append(entries, entry{rank: rank, host: host})
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("seed-tranco: scan: %w", err)
+	}
+	log.Printf("seed-tranco: parsed %d entries from %s (top %d)", len(entries), *trancoPath, *topN)
+
+	if *dryRun {
+		limit := len(entries)
+		if limit > 20 {
+			limit = 20
+		}
+		for _, e := range entries[:limit] {
+			log.Printf("  [dry-run] rank=%d  %s://%s/", e.rank, *scheme, e.host)
+		}
+		if len(entries) > 20 {
+			log.Printf("  … and %d more", len(entries)-20)
+		}
+		return nil
+	}
+
+	s, serr := store.Open(cfg.DataDir)
+	if serr != nil {
+		return serr
+	}
+	defer s.Close()
+
+	// trancoPriority converts a Tranco rank to a frontier priority [0.1, 1.0].
+	// Uses decimal-digit counting as a cheap log10 proxy — good enough for
+	// priority bucketing. rank=1→1.0, rank=10→0.83, rank=100→0.67,
+	// rank=1k→0.50, rank=10k→0.33, rank=100k→0.17, rank=1M→0.10.
+	trancoPriority := func(rank int) float64 {
+		if rank <= 0 {
+			return 0.5
+		}
+		digits := 0
+		r := rank
+		for r >= 10 {
+			r /= 10
+			digits++
+		}
+		p := 1.0 - float64(digits)/6.0
+		if p < 0.1 {
+			p = 0.1
+		}
+		return p
+	}
+
+	pushed := 0
+	for _, e := range entries {
+		rawURL := fmt.Sprintf("%s://%s/", *scheme, e.host)
+		priority := trancoPriority(e.rank)
+		if err := s.PushFrontier(ctx, rawURL, 0, priority); err != nil {
+			log.Printf("seed-tranco: push %s: %v", rawURL, err)
+			continue
+		}
+		pushed++
+	}
+	log.Printf("seed-tranco: pushed %d URLs into frontier (INSERT OR IGNORE — already-present URLs unchanged)", pushed)
 	return nil
 }
 

@@ -1046,7 +1046,7 @@ type pebbleHTTP struct {
 	// crawlAllowDomain promotes a domain into the crawler's runtime dynamic
 	// allowlist (used by /admin/allow-domain for organic HN/Reddit growth).
 	crawlAllowDomain func(domain string) error
-	crawlRecrawl         func(ctx context.Context, url string) error
+	crawlRecrawl     func(ctx context.Context, url string) error
 
 	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
@@ -5202,25 +5202,6 @@ func parseMMRLambda(raw string) (float64, bool) {
 	return v, true
 }
 
-// cosineUnit returns the dot product of two unit-normalized float32 slices.
-// HNSW stores vectors in unit form, so this is equivalent to cosine similarity.
-// Returns 0 on length mismatch — caller is responsible for filtering missing
-// vectors before calling.
-func cosineUnit(a, b []float32) float32 {
-	if len(a) != len(b) {
-		return 0
-	}
-	var s float32
-	i := 0
-	for ; i <= len(a)-4; i += 4 {
-		s += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]
-	}
-	for ; i < len(a); i++ {
-		s += a[i] * b[i]
-	}
-	return s
-}
-
 // mmrOrder computes a permutation of [0..n-1] via Maximal Marginal Relevance
 // (Carbonell & Goldstein '98). At each step picks the candidate maximizing
 //
@@ -5243,7 +5224,7 @@ func mmrOrder(qVec []float32, hitVecs [][]float32, lambda float64) []int {
 	rel := make([]float64, n)
 	for i := range hitVecs {
 		if len(hitVecs[i]) > 0 {
-			rel[i] = float64(cosineUnit(qVec, hitVecs[i]))
+			rel[i] = float64(index.Dot(qVec, hitVecs[i]))
 		}
 	}
 	for len(order) < n {
@@ -5258,7 +5239,7 @@ func mmrOrder(qVec []float32, hitVecs [][]float32, lambda float64) []int {
 				if len(hitVecs[i]) == 0 || len(hitVecs[j]) == 0 {
 					continue
 				}
-				sim := float64(cosineUnit(hitVecs[i], hitVecs[j]))
+				sim := float64(index.Dot(hitVecs[i], hitVecs[j]))
 				if sim > maxSim {
 					maxSim = sim
 				}
@@ -5405,6 +5386,14 @@ func (s *pebbleHTTP) applyAuthorityToDense(vhits []index.VectorHit) []index.Hit 
 }
 
 func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
+	return s.retrieveWith(ctx, s.idx, q, fetchK, retrieverParam, expandMode)
+}
+
+// retrieveWith is retrieve parameterized over the BM25 index, so callers that
+// need a transformed index (e.g. the site-boosted index from WithBoost) can
+// pass it in without shallow-copying the whole pebbleHTTP (which embeds
+// mutexes — copying it trips go vet's lock-copy check and is unsafe).
+func (s *pebbleHTTP) retrieveWith(ctx context.Context, idx *index.PebbleBM25, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
 	denseReady := s.hnsw != nil && s.embedder != nil
 	switch {
 	case retrieverParam == "dense" && denseReady:
@@ -5416,7 +5405,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 		hits := s.applyAuthorityToDense(vhits)
 		return hits, q, nil
 	case retrieverParam == "hybrid" && denseReady:
-		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansion(ctx, q, fetchK, expandMode)
+		bm25Hits, bm25Eff, bm25Err := s.retrieveWithExpansionIdx(ctx, idx, q, fetchK, expandMode)
 		if bm25Err != nil {
 			return nil, "", bm25Err
 		}
@@ -5432,7 +5421,7 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 		}
 		return hits, bm25Eff, nil
 	default:
-		return s.retrieveWithExpansion(ctx, q, fetchK, expandMode)
+		return s.retrieveWithExpansionIdx(ctx, idx, q, fetchK, expandMode)
 	}
 }
 
@@ -5554,27 +5543,28 @@ func (s *pebbleHTTP) retrieveForSites(ctx context.Context, q string, fetchK int,
 	if len(boostIDs) == 0 {
 		return s.retrieve(ctx, q, fetchK, retrieverParam, expandMode)
 	}
-	tmp := *s
-	tmp.idx = s.idx.WithBoost(boostIDs)
-	return tmp.retrieve(ctx, q, fetchK, retrieverParam, expandMode)
+	return s.retrieveWith(ctx, s.idx.WithBoost(boostIDs), q, fetchK, retrieverParam, expandMode)
 }
 
-// retrieveWithExpansion dispatches the BM25 call across the three
+// retrieveWithExpansionIdx dispatches the BM25 call across the three
 // expansion strategies /search and /answer share — bare, HyDE, paraphrase+RRF.
 // Returns (hits, effectiveQuery, err). effectiveQuery == q when no expansion
-// fired (bare path, or expansion no-op'd because chat is down).
-func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK int, expandMode string) ([]index.Hit, string, error) {
+// fired (bare path, or expansion no-op'd because chat is down). It is
+// parameterized over the BM25 index so a transformed index (e.g. the
+// site-boosted one from WithBoost) can be passed in without shallow-copying the
+// whole pebbleHTTP struct (which embeds mutexes).
+func (s *pebbleHTTP) retrieveWithExpansionIdx(ctx context.Context, idx *index.PebbleBM25, q string, fetchK int, expandMode string) ([]index.Hit, string, error) {
 	switch expandMode {
 	case "paraphrase":
 		paras := s.paraphraseQuery(ctx, q, 3)
 		if len(paras) == 0 {
-			hits, err := s.idx.Search(ctx, q, fetchK)
+			hits, err := idx.Search(ctx, q, fetchK)
 			return hits, q, err
 		}
 		queries := append([]string{q}, paras...)
 		lists := make([][]index.Hit, 0, len(queries))
 		for _, qq := range queries {
-			h, lerr := s.idx.Search(ctx, qq, fetchK)
+			h, lerr := idx.Search(ctx, qq, fetchK)
 			if lerr != nil {
 				continue
 			}
@@ -5587,7 +5577,7 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 		return hits, q + " | " + strings.Join(paras, " | "), nil
 	case "true", "hyde":
 		eq := s.expandQuery(ctx, q)
-		hits, err := s.idx.Search(ctx, eq, fetchK)
+		hits, err := idx.Search(ctx, eq, fetchK)
 		return hits, eq, err
 	case "entity":
 		// Rule-based query rewrite for question-form entity lookups
@@ -5601,11 +5591,11 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 		// scoring contributions where biographical pages exist.
 		rewrites := qexpand.RewriteEntity(q)
 		if len(rewrites) == 0 {
-			hits, err := s.idx.Search(ctx, q, fetchK)
+			hits, err := idx.Search(ctx, q, fetchK)
 			return hits, q, err
 		}
 		expanded := q + " " + strings.Join(rewrites, " ")
-		hits, err := s.idx.Search(ctx, expanded, fetchK)
+		hits, err := idx.Search(ctx, expanded, fetchK)
 		return hits, expanded, err
 	default:
 		// Bare path runs entity-expansion when the query matches a
@@ -5621,11 +5611,11 @@ func (s *pebbleHTTP) retrieveWithExpansion(ctx context.Context, q string, fetchK
 		if os.Getenv("COSIFT_DISABLE_ENTITY_EXPAND") == "" {
 			if rewrites := qexpand.RewriteEntity(q); len(rewrites) > 0 {
 				expanded := q + " " + strings.Join(rewrites, " ")
-				hits, err := s.idx.Search(ctx, expanded, fetchK)
+				hits, err := idx.Search(ctx, expanded, fetchK)
 				return hits, expanded, err
 			}
 		}
-		hits, err := s.idx.Search(ctx, q, fetchK)
+		hits, err := idx.Search(ctx, q, fetchK)
 		return hits, q, err
 	}
 }

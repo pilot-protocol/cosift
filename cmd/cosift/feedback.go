@@ -21,11 +21,11 @@ import (
 // aggregated evidence, never absolute truth. caller is logged for dedup/abuse.
 
 type feedbackRec struct {
-	TS      string `json:"ts"`
-	Qid     string `json:"qid"`
-	Rating  int    `json:"rating"`
-	Reason  string `json:"reason,omitempty"`
-	Caller  string `json:"caller,omitempty"`
+	TS     string `json:"ts"`
+	Qid    string `json:"qid"`
+	Rating int    `json:"rating"`
+	Reason string `json:"reason,omitempty"`
+	Caller string `json:"caller,omitempty"`
 }
 
 // feedbackLogPath resolves the feedback log location: explicit env, else beside
