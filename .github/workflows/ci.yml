@@ -20,6 +20,14 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: gofmt (formatting gate)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"
+            echo "Run: gofmt -w ."; exit 1
+          fi
+
       - name: go vet
         run: go vet ./...
 
