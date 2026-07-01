@@ -347,7 +347,7 @@ func newBare(cfg config.Crawler) *Crawler {
 
 // maybeAutoSitemap kicks off a background sitemap discovery the first
 // time we see a host. Subsequent URLs from the same host return
-// immediately. Disabled when COSIFT_AUTO_SITEMAP=false.
+// immediately. Gated by the crawler.auto_sitemap config field (cosift.json).
 func (c *Crawler) maybeAutoSitemap(ctx context.Context, u *url.URL) {
 	if u == nil || u.Host == "" {
 		return
