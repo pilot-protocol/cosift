@@ -1,0 +1,11 @@
+[Unit]
+Description=Cosift sitemap refresh (re-submit curated quality hosts)
+After=cosift-serve.service
+Wants=cosift-serve.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-sitemap-refresh.sh
+StandardOutput=journal
+StandardError=journal

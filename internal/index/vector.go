@@ -96,7 +96,7 @@ func (v *VectorIndex) Search(_ context.Context, query []float32, k int) []Vector
 	}
 	bestByURL := make(map[string]entry, len(v.docs))
 	for i := range v.docs {
-		s := dot(q, v.docs[i].vec)
+		s := Dot(q, v.docs[i].vec)
 		url := v.docs[i].url
 		cur, ok := bestByURL[url]
 		if !ok || s > cur.score {
@@ -229,7 +229,7 @@ func (v *VectorIndex) SearchMMR(ctx context.Context, query []float32, k int, lam
 		maxSimToSel = maxSimToSel[:last]
 		// Update maxSimToSel for the now-shorter remaining slice using picked.vec.
 		for i := range remaining {
-			sim := dot(picked.vec, remaining[i].vec)
+			sim := Dot(picked.vec, remaining[i].vec)
 			if sim > maxSimToSel[i] {
 				maxSimToSel[i] = sim
 			}
@@ -256,12 +256,15 @@ func (v *VectorIndex) Len() int {
 	return len(v.docs)
 }
 
-func dot(a, b []float32) float32 {
+// Dot returns the dot product of two equal-length float32 slices, or 0 on
+// length mismatch. For unit-normalized vectors (as HNSW stores them) this is
+// equivalent to cosine similarity. Hand-unrolled by 4 — modest speed up
+// without going SIMD.
+func Dot(a, b []float32) float32 {
 	if len(a) != len(b) {
 		return 0
 	}
 	var s float32
-	// Hand-unrolled by 4 — modest speed up without going SIMD.
 	i := 0
 	for ; i <= len(a)-4; i += 4 {
 		s += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]

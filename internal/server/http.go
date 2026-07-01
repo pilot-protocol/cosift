@@ -959,11 +959,10 @@ func (s *Server) handleAdminReembed(w http.ResponseWriter, r *http.Request) {
 
 // SearchResponse is the on-the-wire shape of /search results.
 type SearchResponse struct {
-	Query string         `json:"query"`
-	K     int            `json:"k"`
-	Hits  []SearchHit    `json:"hits"`
-	Took  string         `json:"took"`
-	Meta  map[string]any `json:"meta,omitempty"`
+	Query string      `json:"query"`
+	K     int         `json:"k"`
+	Hits  []SearchHit `json:"hits"`
+	Took  string      `json:"took"`
 }
 
 // SearchHit is one result row in /search responses: URL, title, fused score,

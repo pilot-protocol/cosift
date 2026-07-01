@@ -47,16 +47,6 @@ type Hit struct {
 	URL   string
 	Title string
 	Score float64
-
-	// Snippet is a short window of the document body centered on the earliest
-	// query-term match, populated for top-k hits when text is available.
-	// Empty when computation was skipped (text not indexed, or no terms hit).
-	// replaces BM25 hits' generic body-prefix excerpt with a
-	// query-aware passage. Dense/hybrid hits keep their existing per-passage
-	// Highlight (computed from the embedded passage span); this fills the
-	// equivalent gap for BM25-only hits.
-	Snippet       string
-	SnippetOffset int
 }
 
 // NewBM25 returns a BM25 index backed by the SQLite store. Parameters

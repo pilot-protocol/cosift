@@ -899,10 +899,23 @@ func TestRunAnswerEvalNoKey(t *testing.T) {
 func TestRunAnswerEvalBadCorpus(t *testing.T) {
 	_ = os.Unsetenv("OPENAI_API_KEY")
 	_ = os.Unsetenv("OPENAI")
+	// Self-contained: write a valid query set so the queries load (which runs
+	// first) succeeds, then point -corpus at a missing file so the corpus load
+	// is the branch that fails. -chat-url satisfies the API-key gate without a
+	// real key; no -dry-run so execution proceeds past the queries load to the
+	// in-process corpus load.
+	tmp := t.TempDir()
+	queriesPath := filepath.Join(tmp, "queries.json")
+	mustWriteJSON(t, queriesPath, map[string]any{
+		"name": "bad-corpus",
+		"queries": []any{
+			map[string]any{"text": "first query", "relevant": []string{"https://example.com/a"}},
+		},
+	})
 	err := runAnswerEval(context.Background(), []string{
 		"-corpus", "/no/such/corpus.json",
-		"-queries", "testdata/eval/queries.json",
-		"-dry-run",
+		"-queries", queriesPath,
+		"-chat-url", "http://127.0.0.1:1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "load corpus") {
 		t.Errorf("got %v", err)

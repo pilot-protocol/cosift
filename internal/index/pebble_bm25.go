@@ -13,6 +13,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/url"
 	"os"
@@ -53,6 +54,12 @@ type PebbleBM25 struct {
 	// in the long tail without requiring a separate ranking pass. Nil
 	// = passthrough (multiplier = 1.0 for every hit).
 	authority *authority.Scorer
+
+	// boostIDs maps docID → score multiplier. Applied post-scoring so
+	// site-filtered queries can surface small-site docs that BM25 ranks
+	// below top-k globally. Created via WithBoost (returns a shallow copy);
+	// nil = no boost.
+	boostIDs map[int64]float64
 }
 
 // NewPebbleBM25 returns a search-only handle over the given PebbleStore.
@@ -68,6 +75,16 @@ func NewPebbleBM25(s *store.PebbleStore) *PebbleBM25 {
 func (b *PebbleBM25) WithAuthority(a *authority.Scorer) *PebbleBM25 {
 	b.authority = a
 	return b
+}
+
+// WithBoost returns a shallow copy of b with the given docID→multiplier map
+// applied post-scoring. Use this for site= queries: enumerate the site's
+// docIDs, pass a 50× multiplier, and the site's docs will always appear in
+// top-k even when they rank outside the global top-k on raw BM25 score.
+func (b *PebbleBM25) WithBoost(ids map[int64]float64) *PebbleBM25 {
+	c := *b
+	c.boostIDs = ids
+	return &c
 }
 
 // WithBM25Params overrides the default k1 / b for this instance. Values ≤0
@@ -95,6 +112,12 @@ func (b *PebbleBM25) B() float64 { return b.b }
 // having to import internal/store just to plumb those two values.
 func (b *PebbleBM25) IndexDocument(ctx context.Context, docID int64, title, text string) error {
 	return b.store.IndexDocument(ctx, docID, title, text, Tokenize, TitleBoost)
+}
+
+// IndexDocumentBulk is IndexDocument without the host-partition write — the
+// fast path for bulk WET ingest. See PebbleStore.IndexDocumentBulk.
+func (b *PebbleBM25) IndexDocumentBulk(ctx context.Context, docID int64, title, text string) error {
+	return b.store.IndexDocumentBulk(ctx, docID, title, text, Tokenize, TitleBoost)
 }
 
 // Search returns the top-k hits for q from the Pebble-backed index.
@@ -186,6 +209,21 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		}
 	}
 	for i, c := range active {
+		// Pre-scan MaxScore check: decide whether term i (and everything
+		// after it, since active is sorted descending by IDF) can still push
+		// an unseen doc into top-K BEFORE paying to scan term i's postings.
+		// remainingMax here is the sum of max contributions of terms i..end
+		// (idf*(k1+1) each). A doc not yet in `scores` can gain at most
+		// remainingMax from the un-scanned terms; if that's below the current
+		// K-th best score, scanning i..end can only reorder within top-K —
+		// which the reranker fixes — so stop. This catches the common-term
+		// last-term full scan the old post-scan i==len-1 guard always paid.
+		if maxScoreEnabled && i > 0 && len(scores) >= k {
+			theta := kthLargest(scores, k)
+			if remainingMax < theta {
+				break
+			}
+		}
 		err := b.store.IteratePostings(ctx, c.info.ID, func(p store.PostingEntry) bool {
 			// docLen is inline in the posting value — no separate
 			// GetDocLen call. Removed ~25k Pebble Gets per query at N=10k.
@@ -202,17 +240,36 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		if err != nil {
 			return nil, err
 		}
-		if !maxScoreEnabled || i == len(active)-1 || len(scores) < k {
-			continue
+		// Consume term i's max contribution now that it's been scanned, so
+		// remainingMax entering the next iteration covers only un-scanned terms.
+		if maxScoreEnabled {
+			remainingMax -= c.idf * (b.k1 + 1.0)
 		}
-		remainingMax -= c.idf * (b.k1 + 1.0)
-		// Find current K-th best score (threshold for top-K membership).
-		theta := kthLargest(scores, k)
-		// No unseen doc can accumulate more than remainingMax. If that's
-		// below the current threshold, remaining terms can only shuffle
-		// in-top-K ranking — which the reranker fixes — so stop.
-		if remainingMax < theta {
-			break
+	}
+
+	// Apply per-doc boosts (e.g. site= queries) before sorting. Boosted docs
+	// already present in `scores` (i.e. they matched ≥1 query term) get the
+	// full multiplier. Boosted docs with zero term overlap are absent from
+	// `scores`; for small boost sets we seed them with a tiny base score
+	// (boostSeedBase) before multiplying so they still enter the candidate
+	// pool — landing at boostSeedBase*mult (e.g. 0.05), below any genuine
+	// single-term BM25 match but enough for the reranker to judge them. This
+	// also closes the MaxScore early-termination gap: a boosted doc whose only
+	// matching posting list was skipped still gets seeded and surfaced.
+	//
+	// Seeding is gated by boostSeedMaxIDs: large boost sets (big sites) would
+	// inject a GetDocMeta per zero-overlap doc and flood the pool, so above
+	// the threshold we keep the old present-only behavior.
+	const (
+		boostSeedBase   = 0.001
+		boostSeedMaxIDs = 256
+	)
+	seedZeroOverlap := len(b.boostIDs) > 0 && len(b.boostIDs) <= boostSeedMaxIDs
+	for id, mult := range b.boostIDs {
+		if cur, ok := scores[id]; ok {
+			scores[id] = cur * mult
+		} else if seedZeroOverlap {
+			scores[id] = boostSeedBase * mult
 		}
 	}
 
@@ -247,6 +304,116 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 			sc *= b.authority.Multiplier(hostFromURL(m.url))
 		}
 		hits = append(hits, Hit{DocID: docID, URL: m.url, Title: m.title, Score: sc})
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+
+	if len(phrases) > 0 {
+		hits = b.filterByPhrasesPebble(ctx, hits, phrases, k)
+	} else if k > 0 && len(hits) > k {
+		hits = hits[:k]
+	}
+	return hits, nil
+}
+
+// ErrHostPartitionEmpty signals that the host has no 'P'-family partition
+// (never indexed under COSIFT_HOST_PARTITION, or backfill pending). Callers
+// fall back to the global Search + post-filter path.
+var ErrHostPartitionEmpty = errors.New("pebble-bm25: host partition empty")
+
+// SearchInHost is Search scoped to a single host via the 'P' posting
+// partition: it scans only that host's posting lists (O(site_docs)) instead of
+// the global lists (O(corpus)). IDF and avgDocLen stay GLOBAL — a host-local
+// IDF would over-weight terms common across the web but rare on the site, and
+// no per-host DocFreq exists. Returns ErrHostPartitionEmpty when the host has
+// no partition so the caller can fall back. MaxScore early-termination is
+// omitted: host lists are tiny, so a full lossless scan is cheap.
+func (b *PebbleBM25) SearchInHost(ctx context.Context, q, host string, k int) ([]Hit, error) {
+	hostID, ok, err := b.store.GetHostID(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrHostPartitionEmpty
+	}
+
+	searchQ, phrases := parsePhrases(q)
+	tokens := Tokenize(searchQ)
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	totalDocs, avgDocLen, err := b.corpusStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if totalDocs == 0 {
+		return nil, nil
+	}
+	if avgDocLen < 1 {
+		avgDocLen = 1
+	}
+
+	scores := make(map[int64]float64)
+	minIDF := bm25MinIDF()
+	type termPost struct {
+		idf  float64
+		info store.TermInfo
+	}
+	uniqTerms := dedupeStrings(tokens)
+	candidates := make([]termPost, 0, len(uniqTerms))
+	for _, term := range uniqTerms {
+		info, ok, err := b.store.GetTermInfo(ctx, term)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || info.DocFreq == 0 {
+			continue
+		}
+		idf := math.Log(1.0 + (float64(totalDocs)-float64(info.DocFreq)+0.5)/(float64(info.DocFreq)+0.5))
+		candidates = append(candidates, termPost{idf: idf, info: info})
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].idf > candidates[j].idf })
+	active := candidates[:0]
+	for _, c := range candidates {
+		if c.idf >= minIDF {
+			active = append(active, c)
+		}
+	}
+	if len(active) == 0 {
+		active = candidates[:1]
+	}
+
+	for _, c := range active {
+		idf := c.idf
+		if err := b.store.IterateHostPostings(ctx, hostID, c.info.ID, func(p store.PostingEntry) bool {
+			docLen := p.DocLen
+			if docLen <= 0 {
+				docLen = 1
+			}
+			tfF := float64(p.TF)
+			lenNorm := 1.0 - b.b + b.b*(float64(docLen)/avgDocLen)
+			scores[p.DocID] += idf * ((tfF * (b.k1 + 1.0)) / (tfF + b.k1*lenNorm))
+			return true
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// Hit resolution mirrors Search: cheap 'i' side-blob, authority multiplier,
+	// phrase filter, sort, top-k. No boostIDs path — the partition already
+	// guarantees host membership, so the 50× site boost is unnecessary here.
+	hits := make([]Hit, 0, len(scores))
+	for docID, sc := range scores {
+		url, title, ok, err := b.store.GetDocMeta(ctx, docID)
+		if err != nil || !ok || url == "" {
+			continue
+		}
+		if b.authority != nil {
+			sc *= b.authority.Multiplier(hostFromURL(url))
+		}
+		hits = append(hits, Hit{DocID: docID, URL: url, Title: title, Score: sc})
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 

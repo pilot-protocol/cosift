@@ -1,0 +1,28 @@
+# cosift-sites.txt — curated quality hosts whose sitemaps are re-submitted
+# periodically by cosift-sitemap-refresh.timer so newly-published pages enter
+# the crawl frontier. Bare hostnames, one per line. '#' comments allowed.
+# Pick hosts with frequently-updated sitemaps (news/tech/docs) that don't
+# hard-block bots.
+#
+# News / journalism
+arstechnica.com
+theverge.com
+techcrunch.com
+wired.com
+theguardian.com
+bbc.com
+apnews.com
+# Tech / engineering blogs
+stackoverflow.blog
+github.blog
+blog.cloudflare.com
+netflixtechblog.com
+# Science / research
+nature.com
+quantamagazine.org
+phys.org
+# AI / ML
+huggingface.co
+# Docs (update regularly, high authority)
+developer.mozilla.org
+kubernetes.io

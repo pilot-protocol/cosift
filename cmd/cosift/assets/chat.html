@@ -213,6 +213,22 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   font-family: var(--mono); font-size: 11px;
   padding: 6px 8px; cursor: pointer;
 }
+.site-input-wrap {
+  display: flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-2); padding: 0 8px;
+}
+.site-input-label {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-dim);
+  white-space: nowrap; user-select: none; flex-shrink: 0;
+}
+.site-input {
+  border: none; background: transparent; color: var(--ink);
+  font-family: var(--mono); font-size: 11px;
+  padding: 5px 0; width: 140px; min-width: 0;
+  outline: none;
+}
+.site-input::placeholder { color: var(--ink-dim); opacity: 0.6; }
 .send-btn {
   padding: 14px 22px;
   background: var(--accent); color: var(--accent-ink);
@@ -324,6 +340,10 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   <div class="composer-row">
     <textarea id="input" class="composer-input" rows="1" placeholder="Ask anything…" autofocus></textarea>
     <div class="composer-controls">
+      <div class="site-input-wrap" title="Restrict results to a specific domain, e.g. pilotprotocol.network or docs.example.com/api">
+        <span class="site-input-label">site:</span>
+        <input id="site-filter" class="site-input" type="text" placeholder="domain.com" autocomplete="off" spellcheck="false">
+      </div>
       <select id="mode" title="query = LLM-planned hybrid (default) · answer = direct RAG · research = multi-step planner">
         <option value="query" selected>query</option>
         <option value="answer">answer</option>
@@ -332,7 +352,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
       <button id="send" class="send-btn">Send →</button>
     </div>
   </div>
-  <div class="composer-hint">Enter to send · Shift+Enter newline · /clear to reset</div>
+  <div class="composer-hint">Enter to send · Shift+Enter newline · /clear to reset · site:domain.com to scope</div>
 </div>
 
 <script>
@@ -349,8 +369,15 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
   var inputEl = document.getElementById('input');
   var sendBtn = document.getElementById('send');
   var modeEl = document.getElementById('mode');
+  var siteEl = document.getElementById('site-filter');
   var emptyEl = document.getElementById('empty-state');
   var clearBtn = document.getElementById('clear-btn');
+
+  // Persist site filter across page loads
+  try { var _s = localStorage.getItem('cosift-site'); if (_s) siteEl.value = _s; } catch(e) {}
+  siteEl.addEventListener('change', function () {
+    try { localStorage.setItem('cosift-site', siteEl.value.trim()); } catch(e) {}
+  });
 
   function esc(s) { return String(s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]); }); }
 
@@ -519,7 +546,19 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
       autoresize();
       return;
     }
-    appendMsg('user', q);
+
+    // Allow inline site:domain.com syntax — strip it from the query and
+    // populate the site filter input. e.g. "pilot tunnels site:pilotprotocol.network"
+    var siteMatch = q.match(/(?:^|\s)site:(\S+)/);
+    var site = siteEl.value.trim();
+    if (siteMatch) {
+      q = q.replace(siteMatch[0], ' ').trim();
+      site = siteMatch[1];
+      siteEl.value = site;
+      try { localStorage.setItem('cosift-site', site); } catch(e) {}
+    }
+
+    appendMsg('user', q + (site ? '  [site: ' + site + ']' : ''));
     inputEl.value = '';
     autoresize();
 
@@ -540,6 +579,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-2); pad
     // progress (planner sub-queries, per-expansion hit counts, judge
     // drops, synth tokens).
     var url = endpoint + '?q=' + encodeURIComponent(q) + '&k=5&stream=true';
+    if (site) url += '&site=' + encodeURIComponent(site);
 
     try {
       var resp = await fetch(url, { headers: { 'Accept': 'text/event-stream' } });

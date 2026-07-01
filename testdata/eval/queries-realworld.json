@@ -1,0 +1,36 @@
+{
+  "name": "realworld-intents",
+  "description": "Representative real-user queries spanning the intents cosift must serve — especially known-item/resource lookup (the failure mode the LPR feedback exposed), which the prior eval sets never tested. relevant[] left empty: this set is for the LLM-judge answer-eval (answer quality/grounding), not recall metrics. Edit/extend freely; this is the definition-of-useful artifact.",
+  "queries": [
+    { "text": "license plate detection model for NVIDIA Jetson aarch64 with OCR", "relevant": [], "intent": "resource" },
+    { "text": "rust async postgres connection pool crate", "relevant": [], "intent": "resource" },
+    { "text": "python library to extract tables from PDF", "relevant": [], "intent": "resource" },
+    { "text": "streaming low-latency speech-to-text model", "relevant": [], "intent": "resource" },
+    { "text": "embeddable vector database for on-device RAG", "relevant": [], "intent": "resource" },
+    { "text": "go library for robust HTML parsing and scraping", "relevant": [], "intent": "resource" },
+    { "text": "open source OCR that handles handwriting", "relevant": [], "intent": "resource" },
+    { "text": "small language model that runs on a raspberry pi", "relevant": [], "intent": "resource" },
+
+    { "text": "how to quantize a model to INT8 with TensorRT on Jetson", "relevant": [], "intent": "howto" },
+    { "text": "how to set up OAuth for the Reddit API", "relevant": [], "intent": "howto" },
+    { "text": "how to do retrieval-augmented generation with citations", "relevant": [], "intent": "howto" },
+    { "text": "how to serve an LLM with vLLM behind an API", "relevant": [], "intent": "howto" },
+
+    { "text": "polars vs pandas for large dataframe pipelines", "relevant": [], "intent": "comparison" },
+    { "text": "qwen vs llama for local inference quality and speed", "relevant": [], "intent": "comparison" },
+    { "text": "BM25 vs dense retrieval vs hybrid for search", "relevant": [], "intent": "comparison" },
+    { "text": "gRPC vs REST for internal microservices", "relevant": [], "intent": "comparison" },
+
+    { "text": "how does Raft achieve distributed consensus", "relevant": [], "intent": "explain" },
+    { "text": "what is HNSW and why is it fast for vector search", "relevant": [], "intent": "explain" },
+    { "text": "how does NAT traversal work for peer-to-peer connections", "relevant": [], "intent": "explain" },
+    { "text": "explain the transformer attention mechanism", "relevant": [], "intent": "explain" },
+
+    { "text": "recent advances in small language models 2026", "relevant": [], "intent": "fresh" },
+    { "text": "latest approaches to long-context LLM inference", "relevant": [], "intent": "fresh" },
+    { "text": "state of the art in real-time object detection", "relevant": [], "intent": "fresh" },
+
+    { "text": "build an edge ANPR security camera system end to end", "relevant": [], "intent": "multifaceted" },
+    { "text": "design a self-hosted semantic search engine with reranking", "relevant": [], "intent": "multifaceted" }
+  ]
+}

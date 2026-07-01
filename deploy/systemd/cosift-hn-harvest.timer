@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift Hacker News harvest schedule
+[Timer]
+OnCalendar=*-*-* 02,08,14,20:00:00
+Persistent=true
+AccuracySec=5min
+[Install]
+WantedBy=timers.target

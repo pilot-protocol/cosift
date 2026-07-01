@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift pypi pre-index harvest
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-pypi-harvest.py
+StandardOutput=journal
+StandardError=journal

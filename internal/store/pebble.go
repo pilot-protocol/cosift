@@ -107,6 +107,13 @@ const (
 	//                       reverse index from docID to its term IDs, so
 	//                       re-indexing the same doc can delete orphaned postings
 	//                       for terms that vanished from the new content.
+	famHostTerm byte = 'T' // 'T' + host-string → uint64-be(hostID)
+	//                          stable per-host id, allocated like termID.
+	famHostPosting byte = 'P' // 'P' + hostID(8) + termID(8) + docID(8) → (tf, docLen)
+	//                          host-partitioned postings: a site= query scans
+	//                          only one host's lists (O(site_docs)) instead of
+	//                          the global 'p' family (O(corpus)). Written
+	//                          alongside 'p' when COSIFT_HOST_PARTITION=1.
 	famFrontier byte = 'f' // 'f' + 'u' + url → packed frontier entry
 	//                       Status byte +
 	//                       depth + priority + enqueued_at + attempts + host
@@ -443,20 +450,19 @@ func frontierStatusIndexKeyLane(sub, lane byte, host, url string) []byte {
 	return k
 }
 
-// frontierStatusIndexHostLane extracts (host, lane) from a lane-format
-// secondary index key. Returns ("", 0) if the key shape is wrong.
-func frontierStatusIndexHostLane(key []byte) (host string, lane byte) {
+// frontierStatusIndexHostLane extracts the host from a lane-format secondary
+// index key. Returns "" if the key shape is wrong.
+func frontierStatusIndexHostLane(key []byte) (host string) {
 	if len(key) < 4 || key[0] != famFrontier {
-		return "", 0
+		return ""
 	}
-	lane = key[2]
 	rest := key[3:]
 	for i, b := range rest {
 		if b == 0x00 {
-			return string(rest[:i]), lane
+			return string(rest[:i])
 		}
 	}
-	return "", 0
+	return ""
 }
 
 // frontierLanePrefix is the lower bound for an iteration scoped to one
@@ -796,6 +802,40 @@ func postingPrefixUpper(termID int64) []byte {
 	return k
 }
 
+func hostTermKey(host string) []byte {
+	k := make([]byte, 1+len(host))
+	k[0] = famHostTerm
+	copy(k[1:], host)
+	return k
+}
+
+func hostPostingKey(hostID, termID, docID int64) []byte {
+	k := make([]byte, 1+8+8+8)
+	k[0] = famHostPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(hostID))
+	binary.BigEndian.PutUint64(k[9:], uint64(termID))
+	binary.BigEndian.PutUint64(k[17:], uint64(docID))
+	return k
+}
+
+func hostPostingPrefix(hostID, termID int64) []byte {
+	k := make([]byte, 1+8+8)
+	k[0] = famHostPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(hostID))
+	binary.BigEndian.PutUint64(k[9:], uint64(termID))
+	return k
+}
+
+// hostPostingPrefixUpper is the exclusive upper bound for a (hostID, termID)
+// scan: same hostID, termID+1.
+func hostPostingPrefixUpper(hostID, termID int64) []byte {
+	k := make([]byte, 1+8+8)
+	k[0] = famHostPosting
+	binary.BigEndian.PutUint64(k[1:], uint64(hostID))
+	binary.BigEndian.PutUint64(k[9:], uint64(termID+1))
+	return k
+}
+
 func docLenKey(docID int64) []byte {
 	k := make([]byte, 1+8)
 	k[0] = famDocLen
@@ -1123,6 +1163,20 @@ type TermInfo struct {
 // owns the postings layout. Title tokens contribute the title
 // boost (3x TF). doc_len records raw token count for BM25 length norm.
 func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, text string, tokenize func(string) []string, titleBoost int) error {
+	return p.indexDocumentImpl(ctx, docID, title, text, tokenize, titleBoost, true)
+}
+
+// IndexDocumentBulk is IndexDocument WITHOUT the host-partition ('P' family)
+// write, for bulk ingest paths (e.g. CommonCrawl WET) that index millions of
+// one-off web hosts site= queries never target. Skipping the partition halves
+// the per-doc posting writes — the doubling otherwise saturates IO and starves
+// the box during large imports. Those hosts still resolve via the 50× boost
+// fallback if ever site-scoped.
+func (p *PebbleStore) IndexDocumentBulk(ctx context.Context, docID int64, title, text string, tokenize func(string) []string, titleBoost int) error {
+	return p.indexDocumentImpl(ctx, docID, title, text, tokenize, titleBoost, false)
+}
+
+func (p *PebbleStore) indexDocumentImpl(ctx context.Context, docID int64, title, text string, tokenize func(string) []string, titleBoost int, writeHostPart bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1210,6 +1264,19 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 	}
 	newSet := make(map[int64]struct{}, len(tf))
 
+	// Host-partition write (opt-in). IndexDocument lacks the domain in its
+	// signature, so when enabled we read it from the doc record (cheap Get,
+	// non-hot path) and mirror every posting into the 'P' family keyed by
+	// hostID. hostID==0 (flag off, empty domain, or doc missing) skips it.
+	var hostID int64
+	if writeHostPart && HostPartitionEnabled() {
+		if d, derr := p.GetDocByID(ctx, docID); derr == nil && d != nil && d.Domain != "" {
+			if hid, herr := p.getOrAllocHostIDLocked(d.Domain); herr == nil {
+				hostID = hid
+			}
+		}
+	}
+
 	for term, freq := range tf {
 		info, ok, err := p.getTermInfoLocked(term)
 		if err != nil {
@@ -1236,6 +1303,11 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		if err := batch.Set(postingKey(info.ID, docID), pvBuf, nil); err != nil {
 			return err
 		}
+		if hostID != 0 {
+			if err := batch.Set(hostPostingKey(hostID, info.ID, docID), pvBuf, nil); err != nil {
+				return err
+			}
+		}
 	}
 
 	// delete postings for terms in oldSet \ newSet (vanished from
@@ -1249,6 +1321,11 @@ func (p *PebbleStore) IndexDocument(ctx context.Context, docID int64, title, tex
 		}
 		if err := batch.Delete(postingKey(oldID, docID), nil); err != nil {
 			return err
+		}
+		if hostID != 0 {
+			if err := batch.Delete(hostPostingKey(hostID, oldID, docID), nil); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1414,6 +1491,16 @@ func (p *PebbleStore) WriteCrawlResult(
 		}
 		newSet := make(map[int64]struct{}, len(tf))
 
+		// Host-partition write (opt-in): d.Domain is in hand here, so mirror
+		// every posting into the 'P' family keyed by hostID. hostID==0 (flag
+		// off or empty domain) skips it.
+		var hostID int64
+		if HostPartitionEnabled() && d.Domain != "" {
+			if hid, herr := p.getOrAllocHostIDLocked(d.Domain); herr == nil {
+				hostID = hid
+			}
+		}
+
 		for term, freq := range tf {
 			info, ok, err := p.getTermInfoLocked(term)
 			if err != nil {
@@ -1435,6 +1522,11 @@ func (p *PebbleStore) WriteCrawlResult(
 			if err := batch.Set(postingKey(info.ID, id), pvBuf, nil); err != nil {
 				return 0, err
 			}
+			if hostID != 0 {
+				if err := batch.Set(hostPostingKey(hostID, info.ID, id), pvBuf, nil); err != nil {
+					return 0, err
+				}
+			}
 		}
 		for oldID := range oldSet {
 			if _, stillPresent := newSet[oldID]; stillPresent {
@@ -1442,6 +1534,11 @@ func (p *PebbleStore) WriteCrawlResult(
 			}
 			if err := batch.Delete(postingKey(oldID, id), nil); err != nil {
 				return 0, err
+			}
+			if hostID != 0 {
+				if err := batch.Delete(hostPostingKey(hostID, oldID, id), nil); err != nil {
+					return 0, err
+				}
 			}
 		}
 		newIDs := make([]int64, 0, len(newSet))
@@ -1799,8 +1896,7 @@ func decodeFrontierIndexHost(key []byte) string {
 		return ""
 	}
 	if key[2] < laneCount {
-		h, _ := frontierStatusIndexHostLane(key)
-		return h
+		return frontierStatusIndexHostLane(key)
 	}
 	return frontierStatusIndexHost(key)
 }
@@ -1828,7 +1924,7 @@ func (p *PebbleStore) scanLaneForFreeHost(lane byte, inflightHosts map[string]st
 
 	scan := func(start func() bool) (found bool) {
 		for valid := start(); valid; valid = qIt.Next() {
-			h, _ := frontierStatusIndexHostLane(qIt.Key())
+			h := frontierStatusIndexHostLane(qIt.Key())
 			if h == "" {
 				continue
 			}
@@ -2224,6 +2320,48 @@ func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url
 		}
 		if err := fn(docID, url); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// IterHostDocIDs iterates over all docIDs whose stored Domain equals host
+// (exact match, case-folded). Uses the famHost prefix index — O(site_docs)
+// rather than a full corpus scan. Caller returns false from fn to stop early.
+func (p *PebbleStore) IterHostDocIDs(ctx context.Context, host string, fn func(docID int64) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return nil
+	}
+	// Key layout: [famHost][host bytes][0x00][docID uint64-be]
+	lower := make([]byte, 1+len(host)+1)
+	lower[0] = famHost
+	copy(lower[1:], host)
+	lower[len(lower)-1] = 0x00
+	upper := make([]byte, 1+len(host)+1)
+	upper[0] = famHost
+	copy(upper[1:], host)
+	upper[len(upper)-1] = 0x01 // one past 0x00 → terminates the range
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	prefixLen := len(lower)
+	for valid := it.First(); valid; valid = it.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := it.Key()
+		if len(key) < prefixLen+8 {
+			continue
+		}
+		id := int64(binary.BigEndian.Uint64(key[prefixLen:]))
+		if !fn(id) {
+			return nil
 		}
 	}
 	return nil
@@ -2895,7 +3033,7 @@ func (p *PebbleStore) PurgeStaleInFlight(ctx context.Context) (int, error) {
 		}
 		var host, url string
 		if k[2] < laneCount {
-			host, _ = frontierStatusIndexHostLane(k)
+			host = frontierStatusIndexHostLane(k)
 			urlOffset := 3 + len(host) + 1
 			if urlOffset > len(k) {
 				continue
@@ -3423,6 +3561,319 @@ func (p *PebbleStore) nextTermID() int64 {
 	// counter race with concurrent IndexDocument is held off by p.mu above.
 	_ = p.db.Set(metaKey("next_term_id"), buf, nil)
 	return next
+}
+
+// HostPartitionEnabled reports whether host-partitioned postings should be
+// written on index. Gated by COSIFT_HOST_PARTITION=1 so the ~2x posting
+// write-amplification is opt-in until the backfill has run.
+func HostPartitionEnabled() bool {
+	return os.Getenv("COSIFT_HOST_PARTITION") == "1"
+}
+
+// getOrAllocHostIDLocked returns a stable hostID for host, allocating one on
+// first sight. Called under p.mu; the counter Set mirrors nextTermID's pattern
+// (persist immediately, race held off by p.mu). Returns 0 for empty host.
+func (p *PebbleStore) getOrAllocHostIDLocked(host string) (int64, error) {
+	if host == "" {
+		return 0, nil
+	}
+	val, closer, err := p.db.Get(hostTermKey(host))
+	if err == nil {
+		var id int64
+		if len(val) == 8 {
+			id = int64(binary.BigEndian.Uint64(val))
+		}
+		_ = closer.Close()
+		if id != 0 {
+			return id, nil
+		}
+	} else if !errors.Is(err, pebble.ErrNotFound) {
+		return 0, err
+	}
+	// Allocate.
+	cur, c2, err := p.db.Get(metaKey("next_host_id"))
+	var current int64
+	if err == nil {
+		if len(cur) == 8 {
+			current = int64(binary.BigEndian.Uint64(cur))
+		}
+		_ = c2.Close()
+	} else if !errors.Is(err, pebble.ErrNotFound) {
+		return 0, err
+	}
+	next := current + 1
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(next))
+	if err := p.db.Set(metaKey("next_host_id"), buf, nil); err != nil {
+		return 0, err
+	}
+	if err := p.db.Set(hostTermKey(host), buf, nil); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+// GetHostID resolves an existing hostID. ok=false means the host has no
+// partition (never indexed under COSIFT_HOST_PARTITION, or backfill pending) —
+// callers fall back to the global posting scan.
+func (p *PebbleStore) GetHostID(ctx context.Context, host string) (int64, bool, error) {
+	if host == "" {
+		return 0, false, nil
+	}
+	val, closer, err := p.db.Get(hostTermKey(host))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer closer.Close()
+	if len(val) != 8 {
+		return 0, false, nil
+	}
+	return int64(binary.BigEndian.Uint64(val)), true, nil
+}
+
+// BackfillHostPostings rebuilds the 'P' host-partition family from existing
+// data, for corpora indexed before COSIFT_HOST_PARTITION was enabled. No
+// re-tokenize, no text decode — a pure key reshuffle reusing 'h', 'g' and 'p'.
+// It only writes the new 'P'/'T' families (and the 'next_host_id' counter),
+// never touching 'p'/'d'/'v'. Run it with the COSIFT_HOST_PARTITION WRITE flag
+// OFF so concurrent crawl indexing can't race hostID allocation.
+//
+// onlyHost == "": full-corpus single-pass — build a docID→hostID map from one
+// 'h' scan, then stream the global 'p' family once routing each posting to its
+// host. onlyHost != "": fast targeted path — for just that host's docs, walk
+// the 'g' reverse index (docID→termIDs) and copy each posting. The targeted
+// path is O(host_docs × terms_per_doc) — near-instant for a small site.
+//
+// progress, if non-nil, is called periodically with postingsWritten. Returns
+// the number of host postings written.
+func (p *PebbleStore) BackfillHostPostings(ctx context.Context, onlyHost string, progress func(written int64)) (int64, error) {
+	onlyHost = strings.ToLower(strings.TrimSpace(onlyHost))
+	if onlyHost != "" {
+		return p.backfillHostPostingsTargeted(ctx, onlyHost, progress)
+	}
+	return p.backfillHostPostingsFull(ctx, progress)
+}
+
+// backfillHostPostingsTargeted handles a single host via the 'g' reverse index.
+func (p *PebbleStore) backfillHostPostingsTargeted(ctx context.Context, host string, progress func(int64)) (int64, error) {
+	hostID, err := p.getOrAllocHostIDLocked(host)
+	if err != nil {
+		return 0, err
+	}
+	if hostID == 0 {
+		return 0, nil
+	}
+	// Collect this host's docIDs (exact match on the doc's stored domain;
+	// IterHostDocIDs uses the 'h' index which is keyed by d.Domain).
+	var docIDs []int64
+	if err := p.IterHostDocIDs(ctx, host, func(id int64) bool {
+		docIDs = append(docIDs, id)
+		return true
+	}); err != nil {
+		return 0, err
+	}
+	batch := p.db.NewBatch()
+	defer func() { _ = batch.Close() }()
+	var written, pending int64
+	for _, docID := range docIDs {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		termIDs, err := p.readDocTermsLocked(docID)
+		if err != nil {
+			return written, err
+		}
+		for _, termID := range termIDs {
+			val, closer, gerr := p.db.Get(postingKey(termID, docID))
+			if gerr != nil {
+				continue // posting absent (shouldn't happen) — skip
+			}
+			if len(val) == 16 {
+				vcopy := make([]byte, 16)
+				copy(vcopy, val)
+				if err := batch.Set(hostPostingKey(hostID, termID, docID), vcopy, nil); err != nil {
+					_ = closer.Close()
+					return written, err
+				}
+				written++
+				pending++
+			}
+			_ = closer.Close()
+			if pending >= 10000 {
+				if err := batch.Commit(p.writeOpts); err != nil {
+					return written, err
+				}
+				_ = batch.Close()
+				batch = p.db.NewBatch()
+				pending = 0
+				if progress != nil {
+					progress(written)
+				}
+			}
+		}
+	}
+	if pending > 0 {
+		if err := batch.Commit(p.writeOpts); err != nil {
+			return written, err
+		}
+	}
+	if progress != nil {
+		progress(written)
+	}
+	return written, nil
+}
+
+// backfillHostPostingsFull is the full-corpus single-pass variant.
+func (p *PebbleStore) backfillHostPostingsFull(ctx context.Context, progress func(written int64)) (int64, error) {
+	// Phase 1: docID → hostID, allocating a stable hostID per distinct host.
+	docToHost := make(map[int64]int64, 1<<20)
+	hostToID := make(map[string]int64, 1<<16)
+	{
+		it, err := p.db.NewIter(&pebble.IterOptions{
+			LowerBound: []byte{famHost},
+			UpperBound: []byte{famHost + 1},
+		})
+		if err != nil {
+			return 0, err
+		}
+		for valid := it.First(); valid; valid = it.Next() {
+			if err := ctx.Err(); err != nil {
+				_ = it.Close()
+				return 0, err
+			}
+			key := it.Key()
+			if len(key) < 1+1+8 { // 'h' + host(≥0) + 0x00 + docID(8) — need ≥10
+				continue
+			}
+			docID := int64(binary.BigEndian.Uint64(key[len(key)-8:]))
+			host := string(key[1 : len(key)-9]) // drop trailing 0x00 + docID
+			if host == "" {
+				continue
+			}
+			hid, ok := hostToID[host]
+			if !ok {
+				hid, err = p.getOrAllocHostIDLocked(host)
+				if err != nil {
+					_ = it.Close()
+					return 0, err
+				}
+				hostToID[host] = hid
+			}
+			docToHost[docID] = hid
+		}
+		if err := it.Close(); err != nil {
+			return 0, err
+		}
+	}
+
+	// Phase 2: stream the global 'p' family; mirror each posting into 'P'.
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famPosting},
+		UpperBound: []byte{famPosting + 1},
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+	batch := p.db.NewBatch()
+	defer func() { _ = batch.Close() }()
+	const batchFlush = 10000
+	var written, pending int64
+	for valid := it.First(); valid; valid = it.Next() {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		key := it.Key()
+		if len(key) != 17 { // 'p' + termID(8) + docID(8)
+			continue
+		}
+		termID := int64(binary.BigEndian.Uint64(key[1:9]))
+		docID := int64(binary.BigEndian.Uint64(key[9:17]))
+		hid, ok := docToHost[docID]
+		if !ok {
+			continue // doc has no host index entry — skip
+		}
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return written, err
+		}
+		if len(val) != 16 {
+			continue
+		}
+		vcopy := make([]byte, 16)
+		copy(vcopy, val)
+		if err := batch.Set(hostPostingKey(hid, termID, docID), vcopy, nil); err != nil {
+			return written, err
+		}
+		written++
+		pending++
+		if pending >= batchFlush {
+			if err := batch.Commit(p.writeOpts); err != nil {
+				return written, err
+			}
+			_ = batch.Close()
+			batch = p.db.NewBatch()
+			pending = 0
+			if progress != nil {
+				progress(written)
+			}
+		}
+	}
+	if pending > 0 {
+		if err := batch.Commit(p.writeOpts); err != nil {
+			return written, err
+		}
+	}
+	if progress != nil {
+		progress(written)
+	}
+	return written, nil
+}
+
+// IterateHostPostings scans the host-partitioned posting list for one
+// (hostID, termID). Mirrors IteratePostings but over the 'P' family, so the
+// scan is bounded by the host's docs that contain termID — not the global
+// posting list. Caller returns false from fn to stop early.
+func (p *PebbleStore) IterateHostPostings(ctx context.Context, hostID, termID int64, fn func(PostingEntry) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: hostPostingPrefix(hostID, termID),
+		UpperBound: hostPostingPrefixUpper(hostID, termID),
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := it.Key()
+		if len(key) != 25 { // 'P' + hostID(8) + termID(8) + docID(8)
+			continue
+		}
+		val, err := it.ValueAndErr()
+		if err != nil {
+			return err
+		}
+		if len(val) != 16 {
+			continue
+		}
+		entry := PostingEntry{
+			DocID:  int64(binary.BigEndian.Uint64(key[17:])),
+			TF:     int64(binary.BigEndian.Uint64(val[0:8])),
+			DocLen: int64(binary.BigEndian.Uint64(val[8:16])),
+		}
+		if !fn(entry) {
+			return nil
+		}
+	}
+	return nil
 }
 
 func packTermInfo(t TermInfo) []byte {

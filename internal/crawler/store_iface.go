@@ -61,6 +61,15 @@ type LexicalIndexer interface {
 	IndexDocument(ctx context.Context, docID int64, title, text string) error
 }
 
+// BulkLexicalIndexer is the optional fast path for bulk ingest (WET): index
+// BM25 postings WITHOUT the host-partition write, halving write amplification
+// for one-off web hosts that site= queries don't target. *index.PebbleBM25
+// implements it; backends that don't are transparently handled by the caller
+// falling back to IndexDocument.
+type BulkLexicalIndexer interface {
+	IndexDocumentBulk(ctx context.Context, docID int64, title, text string) error
+}
+
 // HostFrontierPurger is the optional surface the in-crawler host sweeper
 // uses to drain dead hosts. Pebble satisfies it; the SQLite legacy path
 // doesn't need it (no auto-sweeper there).

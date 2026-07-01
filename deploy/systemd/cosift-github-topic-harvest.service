@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift github-topic pre-index harvest
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-github-topic-harvest.py
+StandardOutput=journal
+StandardError=journal

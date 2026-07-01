@@ -273,7 +273,15 @@ func (c *Crawler) indexWetRecord(ctx context.Context, rec *WetRecord, lexicalOnl
 	if err != nil {
 		return err
 	}
-	if err := c.idx.IndexDocument(ctx, id, title, text); err != nil {
+	// Bulk WET ingest pulls millions of one-off web hosts that site= queries
+	// never target, so use the host-partition-skipping fast path when the
+	// backend offers it — halves posting writes and prevents the import from
+	// saturating IO. Falls back to the normal write if unsupported.
+	if bulk, ok := c.idx.(BulkLexicalIndexer); ok {
+		if err := bulk.IndexDocumentBulk(ctx, id, title, text); err != nil {
+			return err
+		}
+	} else if err := c.idx.IndexDocument(ctx, id, title, text); err != nil {
 		return err
 	}
 	if lexicalOnly {

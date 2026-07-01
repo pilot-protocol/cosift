@@ -185,7 +185,7 @@ func (h *HNSW) PQStatus() PQStatus {
 //     over reconstructed (uncompressed) approximation. For unit-normalized
 //     vectors this is monotonic with cosine distance, so HNSW pruning
 //     thresholds stay coherent.
-//   - Raw branch: -dot(q, h.nodes[idx].vec). Identical to the
+//   - Raw branch: -Dot(q, h.nodes[idx].vec). Identical to the
 //     baseline.
 //
 // pqTable is the M*K-element lookup precomputed once per search via
@@ -209,7 +209,7 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 	if len(h.nodes[idx].vec) == 0 {
 		return math.MaxFloat64 // skip zombie nodes
 	}
-	return -float64(dot(q, h.nodes[idx].vec))
+	return -float64(Dot(q, h.nodes[idx].vec))
 }
 
 // BruteForceTopK performs an exact O(N) scan over every valid node and
@@ -240,7 +240,7 @@ func (h *HNSW) BruteForceTopK(query []float32, k int) []VectorHit {
 		if len(h.nodes[i].vec) == 0 {
 			continue // zombie / partial-persisted
 		}
-		s := dot(q, h.nodes[i].vec)
+		s := Dot(q, h.nodes[i].vec)
 		url := h.nodes[i].url
 		cur, ok := bestByURL[url]
 		if !ok || s > cur.score {
@@ -806,7 +806,7 @@ func (h *HNSW) addBackLink(neighbor, newIdx, lvl int) {
 		if nb < 0 || nb >= len(h.nodes) {
 			continue // drop oob neighbor entries silently
 		}
-		cands = append(cands, candEntry{idx: nb, dist: -dot(nbVec, h.nodes[nb].vec)})
+		cands = append(cands, candEntry{idx: nb, dist: -Dot(nbVec, h.nodes[nb].vec)})
 	}
 	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
 	if len(cands) > mCap {

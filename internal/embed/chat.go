@@ -100,12 +100,15 @@ func chatMaxTokens() int {
 	return 2048
 }
 
-// chatTemplateKwargs is the per-call extra args dict vLLM forwards into the
-// model's Jinja chat template. Today the only consumer is qwen3/qwen3.5
-// `enable_thinking` toggle — emitting "Thinking Process:" prose mid-answer
-// is a quality + latency regression for /answer. Disable by default; iter
-// 477e. Operators wanting to inspect reasoning can flip COSIFT_THINKING=1.
-func chatTemplateKwargs() map[string]interface{} {
+// chatTemplateKwargs returns the per-call extra args dict vLLM forwards into
+// the model's Jinja chat template. Only sent for Qwen3/Qwen3.5 models —
+// OpenAI and other backends reject unknown fields. Disables the thinking mode
+// by default (quality + latency regression for /answer); COSIFT_THINKING=1
+// re-enables it.
+func chatTemplateKwargs(model string) map[string]interface{} {
+	if !strings.Contains(strings.ToLower(model), "qwen3") {
+		return nil
+	}
 	if os.Getenv("COSIFT_THINKING") == "1" {
 		return nil
 	}
@@ -159,7 +162,7 @@ func (c *OpenAIChatClient) Chat(ctx context.Context, msgs []ChatMsg) (string, er
 	if len(msgs) == 0 {
 		return "", errors.New("chat: no messages")
 	}
-	body, err := json.Marshal(chatReq{Model: c.model, Messages: msgs, Temperature: 0, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs()})
+	body, err := json.Marshal(chatReq{Model: c.model, Messages: msgs, Temperature: 0, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs(c.model)})
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +222,7 @@ func (c *OpenAIChatClient) ChatStream(ctx context.Context, msgs []ChatMsg, onChu
 	if len(msgs) == 0 {
 		return "", errors.New("chat: no messages")
 	}
-	body, err := json.Marshal(chatStreamReq{Model: c.model, Messages: msgs, Temperature: 0, Stream: true, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs()})
+	body, err := json.Marshal(chatStreamReq{Model: c.model, Messages: msgs, Temperature: 0, Stream: true, MaxTokens: chatMaxTokens(), ChatTemplateKwargs: chatTemplateKwargs(c.model)})
 	if err != nil {
 		return "", err
 	}

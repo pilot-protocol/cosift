@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift HuggingFace harvest schedule
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+AccuracySec=5min
+[Install]
+WantedBy=timers.target

@@ -1084,6 +1084,29 @@ func (s *Store) GCErroredFrontier(ctx context.Context, minAttempts int) (int64, 
 	return res.RowsAffected()
 }
 
+// TrimDoneFrontier deletes completed (status='done') frontier rows that were
+// enqueued more than maxAge ago. Long-lived crawls accumulate millions of done
+// rows that serve no purpose — dedup is handled by INSERT OR IGNORE so a done
+// row is only useful for the IsKnownURL fast-path, which already falls through
+// to the documents table. Trimming done rows reclaims disk space and keeps
+// ClaimFrontier's ORDER BY scan fast.
+//
+// Rows younger than maxAge are kept because a short-TTL re-crawl (refresh-due
+// at 24 h) may re-enqueue them; dropping them would lose the dedup guard
+// and cause redundant fetches. Pass maxAge ≥ your refresh interval
+// (e.g. 7*24*time.Hour for a weekly refresh cycle).
+//
+// Returns the number of rows deleted.
+func (s *Store) TrimDoneFrontier(ctx context.Context, maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-maxAge).Unix()
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM frontier WHERE status = 'done' AND enqueued_at < ?;`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // Vacuum reclaims disk space after large deletes. Cheap on small DBs, can
 // take minutes on multi-GB ones — caller's responsibility to schedule.
 func (s *Store) Vacuum(ctx context.Context) error {
@@ -1391,7 +1414,6 @@ func (s *Store) RecrawlURL(ctx context.Context, url string) error {
 
 // Passage is one (doc_id, offset, length, model, vec) row.
 type Passage struct {
-	ID        int64
 	DocID     int64
 	Offset    int
 	Length    int

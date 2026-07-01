@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift arXiv harvest — daily (arXiv announces ~once/day on weekdays)
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

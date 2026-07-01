@@ -1,0 +1,11 @@
+[Unit]
+Description=Cosift HF FULL Hub enumeration harvest
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+Environment=COSIFT_HF_FULL_BUDGET=50000
+ExecStart=/usr/local/bin/cosift-hf-full-harvest.py
+StandardOutput=journal
+StandardError=journal
