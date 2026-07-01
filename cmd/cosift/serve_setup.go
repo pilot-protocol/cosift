@@ -477,6 +477,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// qwrap adds query logging (innermost, so it sees the real status+bytes) for
 	// the user-facing query endpoints — the observability substrate we lacked.
 	qwrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.qlog(h))) }
+	// awrap = wrap + admin auth. All /admin/* routes go through this so the
+	// peer-token gate is enforced at the mux level (belt-and-suspenders with any
+	// per-handler check), closing gaps where a handler forgets to inline it.
+	awrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.requireAdmin(h))) }
 	// landing page at / and OpenAPI 3.1 spec at /openapi.json.
 	// Both embedded into the binary at build time — operators get a single
 	// self-contained executable, no separate static-asset deployment.
@@ -500,49 +504,49 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Single-node deployments still expose
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
-	mux.HandleFunc("POST /admin/crawl-enqueue", wrap(srv.handleCrawlEnqueue))
-	mux.HandleFunc("POST /admin/allow-domain", wrap(srv.handleAllowDomain))
-	mux.HandleFunc("POST /admin/frontier-purge-host", wrap(srv.handleFrontierPurgeHost))
-	mux.HandleFunc("POST /admin/frontier-clear", wrap(srv.handleFrontierClear))
-	mux.HandleFunc("POST /admin/frontier-demote-host", wrap(srv.handleFrontierDemoteHost))
-	mux.HandleFunc("POST /admin/frontier-purge-stale-inflight", wrap(srv.handleFrontierPurgeStaleInFlight))
-	mux.HandleFunc("POST /admin/rss-import", wrap(srv.handleRSSImport))
-	mux.HandleFunc("POST /admin/crawl-now", wrap(srv.handleCrawlNow))
-	mux.HandleFunc("POST /admin/wet-import", wrap(srv.handleWETImport))
-	mux.HandleFunc("POST /admin/wet-import-bulk", wrap(srv.handleWETImportBulk))
-	mux.HandleFunc("POST /admin/site-pack", wrap(srv.handleSitePack))
-	mux.HandleFunc("POST /admin/site-submit", wrap(srv.handleSiteSubmit))
-	mux.HandleFunc("POST /admin/embed-backfill", wrap(srv.handleEmbedBackfill))
-	mux.HandleFunc("POST /admin/host-backfill", wrap(srv.handleHostBackfill))
-	mux.HandleFunc("GET /admin/eval-quick", wrap(srv.handleEvalQuick))
-	mux.HandleFunc("POST /admin/hnsw-compact", wrap(srv.handleHNSWCompact))
+	mux.HandleFunc("POST /admin/crawl-enqueue", awrap(srv.handleCrawlEnqueue))
+	mux.HandleFunc("POST /admin/allow-domain", awrap(srv.handleAllowDomain))
+	mux.HandleFunc("POST /admin/frontier-purge-host", awrap(srv.handleFrontierPurgeHost))
+	mux.HandleFunc("POST /admin/frontier-clear", awrap(srv.handleFrontierClear))
+	mux.HandleFunc("POST /admin/frontier-demote-host", awrap(srv.handleFrontierDemoteHost))
+	mux.HandleFunc("POST /admin/frontier-purge-stale-inflight", awrap(srv.handleFrontierPurgeStaleInFlight))
+	mux.HandleFunc("POST /admin/rss-import", awrap(srv.handleRSSImport))
+	mux.HandleFunc("POST /admin/crawl-now", awrap(srv.handleCrawlNow))
+	mux.HandleFunc("POST /admin/wet-import", awrap(srv.handleWETImport))
+	mux.HandleFunc("POST /admin/wet-import-bulk", awrap(srv.handleWETImportBulk))
+	mux.HandleFunc("POST /admin/site-pack", awrap(srv.handleSitePack))
+	mux.HandleFunc("POST /admin/site-submit", awrap(srv.handleSiteSubmit))
+	mux.HandleFunc("POST /admin/embed-backfill", awrap(srv.handleEmbedBackfill))
+	mux.HandleFunc("POST /admin/host-backfill", awrap(srv.handleHostBackfill))
+	mux.HandleFunc("GET /admin/eval-quick", awrap(srv.handleEvalQuick))
+	mux.HandleFunc("POST /admin/hnsw-compact", awrap(srv.handleHNSWCompact))
 	mux.HandleFunc("GET /query", qwrap(srv.handleQuery))
 	mux.HandleFunc("POST /query", qwrap(srv.handleQuery))
 	// import a sitemap.xml (or sitemap-index) and push every
 	// listed URL into the live frontier.
-	mux.HandleFunc("POST /admin/sitemap-import", wrap(srv.handleSitemapImport))
-	mux.HandleFunc("POST /admin/recrawl-sitemap", wrap(srv.handleRecrawlSitemap))
+	mux.HandleFunc("POST /admin/sitemap-import", awrap(srv.handleSitemapImport))
+	mux.HandleFunc("POST /admin/recrawl-sitemap", awrap(srv.handleRecrawlSitemap))
 	// PQ training admin endpoint. Same auth as crawl-enqueue
 	// (Bearer cfg.Cluster.PeerAuthToken). Runs synchronously — for the
 	// 224K-vec corpus we have today it takes ~minutes; operator-only.
-	mux.HandleFunc("POST /admin/pq-train", wrap(srv.handlePQTrain))
+	mux.HandleFunc("POST /admin/pq-train", awrap(srv.handlePQTrain))
 	// backfill-only — re-encode every node that doesn't have a
 	// code yet against the existing codebook. No retrain. Fast.
-	mux.HandleFunc("POST /admin/pq-encode", wrap(srv.handlePQEncode))
+	mux.HandleFunc("POST /admin/pq-encode", awrap(srv.handlePQEncode))
 	// Creates a hard-linked, consistent
 	// snapshot dir that's safe to tar without racing background compactions.
-	mux.HandleFunc("POST /admin/checkpoint", wrap(srv.handleCheckpoint))
+	mux.HandleFunc("POST /admin/checkpoint", awrap(srv.handleCheckpoint))
 	mux.HandleFunc("GET /search", qwrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", qwrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
 	mux.HandleFunc("POST /contents", wrap(srv.handleContentsBatch))
 	mux.HandleFunc("GET /verify", wrap(srv.handleVerify))
 	mux.HandleFunc("GET /metrics", wrap(srv.handleMetrics))
-	mux.HandleFunc("GET /admin/query-log", wrap(srv.handleQueryLog))
+	mux.HandleFunc("GET /admin/query-log", awrap(srv.handleQueryLog))
 	mux.HandleFunc("POST /feedback", wrap(srv.handleFeedback))
-	mux.HandleFunc("GET /admin/feedback", wrap(srv.handleFeedbackList))
+	mux.HandleFunc("GET /admin/feedback", awrap(srv.handleFeedbackList))
 	mux.HandleFunc("GET /sla", wrap(srv.handleSLA))
-	mux.HandleFunc("GET /admin/domains-audit", wrap(srv.handleDomainsAudit))
+	mux.HandleFunc("GET /admin/domains-audit", awrap(srv.handleDomainsAudit))
 	mux.HandleFunc("GET /find_similar", qwrap(srv.handleFindSimilar))
 	mux.HandleFunc("POST /find_similar", qwrap(srv.handleFindSimilarPOST))
 	mux.HandleFunc("GET /answer", qwrap(srv.handleAnswer))
@@ -1255,6 +1259,24 @@ func stripPort(remoteAddr string) string {
 // limiter. Returns 429 with a JSON problem doc + Retry-After hint when the
 // bucket is empty. No-op when s.rl is nil.
 //
+// requireAdmin gates a handler on the peer auth token (cfg.Cluster.PeerAuthToken,
+// sent as "Authorization: Bearer <token>"). When the token is empty — the
+// single-node default — the check is skipped and any caller is accepted. Applied
+// at the mux level via awrap to every /admin/* route so no admin handler can ship
+// without auth, even if it forgets the per-handler check.
+func (s *pebbleHTTP) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if want := s.cluster.PeerAuthToken; want != "" {
+			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if got != want {
+				writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+				return
+			}
+		}
+		h(w, r)
+	}
+}
+
 // X-Forwarded-For is honored ONLY when the request came from a configured
 // trusted proxy; otherwise clients could spoof their IP by setting the header.
 // For self-host with cosift directly on the public network, leave
