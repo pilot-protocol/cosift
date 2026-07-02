@@ -183,8 +183,10 @@ mv -f "$new" "$BIN"         # atomic rename over the live path
 log "swapped in $latest_tag (previous kept at $prev)"
 
 # --- Restart -------------------------------------------------------------
+# Runs as an unprivileged user (User=ubuntu); systemctl needs privilege, and
+# ubuntu has passwordless sudo on the box.
 log "restarting $SERVICE"
-systemctl restart "$SERVICE"
+sudo systemctl restart "$SERVICE"
 
 # --- HEALTH GATE ---------------------------------------------------------
 # The listener only binds AFTER the ~4-5 min synchronous HNSW load, so a
@@ -209,7 +211,7 @@ fi
 err "new version $latest_tag did not become healthy within ${HEALTH_TIMEOUT_S}s — rolling back to $running"
 if [[ -f "$prev" ]]; then
   mv -f "$prev" "$BIN"
-  systemctl restart "$SERVICE"
+  sudo systemctl restart "$SERVICE"
   # Give the rolled-back process a chance to come back so the box isn't
   # left dark. Best-effort; we still exit non-zero to flag the failure.
   rb_deadline=$(( $(date +%s) + HEALTH_TIMEOUT_S ))
