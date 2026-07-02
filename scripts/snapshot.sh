@@ -11,8 +11,14 @@
 set -euo pipefail
 
 ADMIN_URL="${COSIFT_ADMIN_URL:-http://127.0.0.1:7777}"
-ADMIN_TOKEN="${COSIFT_ADMIN_TOKEN:-}"
 CONFIG="${COSIFT_CONFIG:-/home/ubuntu/cosift.json}"
+ADMIN_TOKEN="${COSIFT_ADMIN_TOKEN:-}"
+# /admin/checkpoint is gated by cluster.peer_auth_token. When the token isn't
+# passed via env, read it from the config so scheduled snapshots keep working
+# once the token is set (matches the harvesters + cosift-compact.sh).
+if [[ -z "$ADMIN_TOKEN" ]]; then
+  ADMIN_TOKEN="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('cluster',{}).get('peer_auth_token',''))" "$CONFIG" 2>/dev/null || true)"
+fi
 BUCKET="${COSIFT_GCS_BUCKET:-gs://pilot-cosift-index}"
 KEEP="${COSIFT_KEEP:-14}"
 
