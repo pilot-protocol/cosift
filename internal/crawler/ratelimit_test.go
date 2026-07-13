@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,6 +89,79 @@ func TestRateLimitedURLGivesUpAfterMaxRequeues(t *testing.T) {
 	}
 	if doc, _ := c.store.GetDocByURL(context.Background(), srv.URL); doc != nil {
 		t.Error("doc should not be indexed for a permanently throttled URL")
+	}
+}
+
+func TestRateLimitedBackoffWithoutRetryAfter(t *testing.T) {
+	// No Retry-After header → the exponential fallback paces the host.
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(rateLimitSampleHTML))
+	}))
+	defer srv.Close()
+
+	cfg := config.Default().Crawler
+	cfg.MaxDepth = 0
+	cfg.PerHostDelayMs = 0
+	cfg.MaxConcurrent = 1
+	cfg.RespectRobots = false
+	c := New(cfg, newStoreT(t)).WithEmbedder(&stubEmbedder{dim: 8})
+
+	if err := c.Seed(srv.URL); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	start := time.Now()
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// backoffDelay floors at 1s; first 429 defers the host 1s<<1 = 2s.
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Errorf("fallback backoff not applied: recovered in %v, want ≥2s", elapsed)
+	}
+	if doc, _ := c.store.GetDocByURL(context.Background(), srv.URL); doc == nil {
+		t.Error("doc not indexed after fallback backoff")
+	}
+}
+
+func TestFetch503RetryAfterSemantics(t *testing.T) {
+	// 503 WITH Retry-After is a throttle; without the header it stays a
+	// generic failure.
+	for _, withHeader := range []bool{true, false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if withHeader {
+				w.Header().Set("Retry-After", "3")
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		cfg := config.Default().Crawler
+		c := New(cfg, newStoreT(t))
+		_, err := c.fetch(context.Background(), srv.URL, nil)
+		var rle *rateLimitedError
+		if got := errors.As(err, &rle); got != withHeader {
+			t.Errorf("503 withHeader=%v: rateLimitedError=%v (err %v)", withHeader, got, err)
+		}
+		if withHeader && rle.retryAfter != 3*time.Second {
+			t.Errorf("retryAfter: got %v want 3s", rle.retryAfter)
+		}
+		srv.Close()
+	}
+}
+
+func TestMaxCrawlDelayDefaultAndOverride(t *testing.T) {
+	cfg := config.Default().Crawler
+	c := New(cfg, newStoreT(t))
+	if d := c.maxCrawlDelay(); d != 2*time.Minute {
+		t.Errorf("default clamp: got %v want 2m", d)
+	}
+	cfg.MaxCrawlDelayMs = 500
+	c = New(cfg, newStoreT(t))
+	if d := c.maxCrawlDelay(); d != 500*time.Millisecond {
+		t.Errorf("configured clamp: got %v want 500ms", d)
 	}
 }
 

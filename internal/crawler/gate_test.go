@@ -152,6 +152,7 @@ func TestHostGateDeferPushesNextSlot(t *testing.T) {
 	ctx := context.Background()
 
 	_ = g.Wait(ctx, "backoff.com") // burn the free first slot
+	g.Defer("backoff.com", 0)      // no-op
 	g.Defer("backoff.com", 150*time.Millisecond)
 
 	start := time.Now()
