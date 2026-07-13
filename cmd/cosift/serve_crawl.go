@@ -21,10 +21,8 @@ import (
 // PeerAuthToken Bearer header.
 type crawlEnqueueReq struct {
 	URL string `json:"url"`
-	// Lane optionally targets a frontier lane ("submitted", "refresh",
-	// "discovered", "bulk"). Empty keeps the historical default
-	// (discovered) — note parseLaneName("") would mean submitted, so the
-	// empty case must not be routed through it.
+	// Lane optionally targets a frontier lane. Empty keeps the historical
+	// default (discovered) — parseLaneName("") would mean submitted.
 	Lane string `json:"lane,omitempty"`
 }
 

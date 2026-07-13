@@ -104,16 +104,11 @@ type Crawler struct {
 	// re-enqueuing the same dead URLs the sweeper just purged.
 	autoBlocked sync.Map // host (string) → struct{}
 
-	// Rate-limit bookkeeping. consec429 counts consecutive 429/503
-	// responses per host (reset on any success) and drives the exponential
-	// backoff when the server sends no Retry-After. rateRequeues bounds the
-	// retry loop per URL — a host-level bound would fail every URL claimed
-	// during one sustained throttle burst, even though the host recovers;
-	// entries are removed on success or give-up, so the map only holds
-	// currently-throttled URLs. rateDeferrals and droppedDisallowed feed
-	// /stats; without the drop counter, allowlist fast-skips are invisible
-	// to operators (imports appear to succeed while every item is
-	// discarded at claim time).
+	// Rate-limit bookkeeping. consec429 (per host, reset on success) drives
+	// the no-Retry-After exponential backoff. rateRequeues bounds retries
+	// per URL — a host-level bound would fail every URL claimed during one
+	// sustained throttle burst; entries drop on any terminal outcome, so
+	// the map only holds currently-throttled URLs.
 	consec429         sync.Map // host (string) → *atomic.Int32
 	rateRequeues      sync.Map // url (string) → *atomic.Int32
 	rateDeferrals     atomic.Int64
@@ -549,8 +544,7 @@ func (c *Crawler) SeedLane(rawURL string, lane byte) error {
 }
 
 // PolitenessStats reports claim-time allowlist drops and rate-limit host
-// deferrals since start. Surfaced via /stats and /metrics — allowlist drops
-// are otherwise invisible (imports report success while items vanish).
+// deferrals since start, for /stats and /metrics.
 func (c *Crawler) PolitenessStats() (droppedDisallowed, rateDeferrals int64) {
 	return c.droppedDisallowed.Load(), c.rateDeferrals.Load()
 }
@@ -841,11 +835,9 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 		}
 		var rle *rateLimitedError
 		if errors.As(err, &rle) && host != "" {
-			// A throttling host is not a failing host. Back the whole host
-			// off and requeue the URL (bounded per URL) instead of erroring
-			// it — errored entries are terminal, and it stays out of
-			// hostStats so the success-ratio blacklist can't be poisoned by
-			// a healthy-but-busy server.
+			// Defer the host and requeue instead of erroring: errored
+			// entries are terminal, and throttles stay out of hostStats so
+			// the success-ratio blacklist isn't poisoned by a busy server.
 			d := rle.retryAfter
 			if d == 0 {
 				d = c.backoffDelay(c.bumpConsec429(host))
@@ -869,8 +861,7 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 			}
 			continue
 		}
-		// Any non-throttled outcome (success or terminal error) ends the
-		// URL's requeue budget tracking.
+		// Any non-throttled outcome ends the URL's requeue budget.
 		c.rateRequeues.Delete(item.URL)
 		if host != "" {
 			c.recordHostResult(host, err == nil)
@@ -1054,12 +1045,9 @@ func (c *Crawler) recordHostResult(host string, success bool) {
 }
 
 const (
-	// maxRateLimitRequeues bounds how many times one URL rides the
-	// 429-requeue loop before it errors out like any other failure.
+	// maxRateLimitRequeues bounds one URL's trips through the 429 loop.
 	maxRateLimitRequeues = 3
-	// maxRateLimitDefer caps a host backoff regardless of what
-	// Retry-After asks for — a worker slot blocked behind a deferred
-	// host must not stall for hours.
+	// maxRateLimitDefer caps a host backoff regardless of Retry-After.
 	maxRateLimitDefer = 5 * time.Minute
 )
 
@@ -1075,7 +1063,7 @@ func (c *Crawler) resetConsec429(host string) {
 }
 
 // backoffDelay is the no-Retry-After fallback: per-host delay doubled per
-// consecutive 429, from a 1s floor (tests run with PerHostDelayMs=0).
+// consecutive 429, from a 1s floor.
 func (c *Crawler) backoffDelay(n int32) time.Duration {
 	base := time.Duration(c.cfg.PerHostDelayMs) * time.Millisecond
 	if base < time.Second {
@@ -1165,12 +1153,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if u != nil && c.isHostBlacklisted(u.Host) {
 		return nil
 	}
-	// robots.txt before the gate: the Crawl-delay verdict must be known when
-	// the slot is reserved so it can widen the reservation itself. Sleeping
-	// after Wait (the previous approach) only shifted each worker's fetch by
-	// a constant while slots kept being granted at the configured interval —
-	// the effective per-host rate ignored Crawl-delay entirely. Cache hits
-	// are a map read; a miss fetches robots.txt once per host per TTL.
+	// robots.txt before the gate: Crawl-delay must widen the slot
+	// reservation itself — sleeping after Wait leaves the effective
+	// per-host rate at the gate interval. Cache hits are a map read.
 	var robotsDelay time.Duration
 	if c.robots != nil {
 		allowed, d, err := c.robots.Allowed(ctx, item.URL)
@@ -1180,8 +1165,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		if !allowed {
 			return errors.New("blocked by robots.txt")
 		}
-		// Clamp: a misconfigured "Crawl-delay: 86400" must not wedge the
-		// host for the whole robots-cache TTL.
+		// A misconfigured "Crawl-delay: 86400" must not wedge the host.
 		if maxDelay := c.maxCrawlDelay(); d > maxDelay {
 			d = maxDelay
 		}
@@ -1678,10 +1662,9 @@ func (c *Crawler) maxCrawlDelay() time.Duration {
 	return 2 * time.Minute
 }
 
-// rateLimitedError marks a 429 (or 503 with Retry-After) so the worker can
-// back the host off and requeue instead of erroring the frontier entry —
-// errored entries are terminal, and treating throttles as failures is what
-// turns them into IP bans. retryAfter is 0 when the server sent no header.
+// rateLimitedError marks a 429 (or 503 with Retry-After) so the worker backs
+// the host off and requeues instead of erroring the frontier entry.
+// retryAfter is 0 when the server sent no header.
 type rateLimitedError struct {
 	code       int
 	retryAfter time.Duration

@@ -56,11 +56,8 @@ func (g *hostGate) Wait(ctx context.Context, host string) error {
 }
 
 // WaitFor is Wait with a per-call minimum delay: the slot is reserved using
-// max(delayFor(host), min). This is how robots.txt Crawl-delay actually gets
-// enforced — a sleep after Wait would only shift each worker's fetch by a
-// constant while slots keep being granted at the configured interval, so the
-// effective request rate would be unchanged. The delay has to widen the
-// reservation itself.
+// max(delayFor(host), min). robots.txt Crawl-delay is enforced here — a sleep
+// after Wait would leave the effective per-host rate at the gate interval.
 func (g *hostGate) WaitFor(ctx context.Context, host string, min time.Duration) error {
 	d := g.delayFor(host)
 	if min > d {
@@ -91,9 +88,8 @@ func (g *hostGate) WaitFor(ctx context.Context, host string, min time.Duration) 
 	}
 }
 
-// Defer pushes the host's next slot at least d into the future. Used when a
-// host answers 429/503: already-reserved slots keep their spacing, but no new
-// fetch starts before the server-requested backoff has passed.
+// Defer pushes the host's next slot at least d into the future — the 429/503
+// backoff hook. It never shortens an existing reservation.
 func (g *hostGate) Defer(host string, d time.Duration) {
 	if d <= 0 {
 		return
