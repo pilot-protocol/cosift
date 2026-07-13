@@ -109,6 +109,73 @@ func TestHostGateOverrideSerializesAtOverrideRate(t *testing.T) {
 	}
 }
 
+func TestHostGateWaitForWidensReservation(t *testing.T) {
+	// The HN failure mode: gate at 10ms, robots Crawl-delay at 100ms, several
+	// concurrent workers. WaitFor must space same-host grants at the robots
+	// interval — a post-Wait sleep would leave grants at the 10ms gate rate.
+	g := newHostGate(10*time.Millisecond, nil)
+	ctx := context.Background()
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = g.WaitFor(ctx, "throttled.com", 100*time.Millisecond)
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// 4 grants at 100ms spacing: slot 0 immediate, slot 3 at +300ms.
+	if elapsed < 290*time.Millisecond {
+		t.Errorf("Crawl-delay not enforced under concurrency: 4 grants in %v, want ≥290ms", elapsed)
+	}
+}
+
+func TestHostGateWaitForZeroMinIsWait(t *testing.T) {
+	g := newHostGate(20*time.Millisecond, nil)
+	ctx := context.Background()
+
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		_ = g.WaitFor(ctx, "plain.com", 0)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Errorf("min=0 should behave like Wait (~40ms), took %v", elapsed)
+	}
+}
+
+func TestHostGateDeferPushesNextSlot(t *testing.T) {
+	g := newHostGate(5*time.Millisecond, nil)
+	ctx := context.Background()
+
+	_ = g.Wait(ctx, "backoff.com") // burn the free first slot
+	g.Defer("backoff.com", 150*time.Millisecond)
+
+	start := time.Now()
+	_ = g.Wait(ctx, "backoff.com")
+	if elapsed := time.Since(start); elapsed < 120*time.Millisecond {
+		t.Errorf("Defer ignored: next grant after %v, want ≥120ms", elapsed)
+	}
+}
+
+func TestHostGateDeferNeverShortens(t *testing.T) {
+	g := newHostGate(200*time.Millisecond, nil)
+	ctx := context.Background()
+
+	_ = g.Wait(ctx, "h.com")
+	_ = g.Wait(ctx, "h.com") // next slot now ~200ms out
+	g.Defer("h.com", 10*time.Millisecond)
+
+	start := time.Now()
+	_ = g.Wait(ctx, "h.com")
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Errorf("Defer shortened an existing reservation: %v", elapsed)
+	}
+}
+
 func TestHostGateNilOverridesIsSafe(t *testing.T) {
 	// Constructing with nil overrides should work exactly like the single-arg
 	// constructor — every host uses the default. This is the path the

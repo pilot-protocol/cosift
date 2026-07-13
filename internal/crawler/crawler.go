@@ -104,6 +104,22 @@ type Crawler struct {
 	// re-enqueuing the same dead URLs the sweeper just purged.
 	autoBlocked sync.Map // host (string) → struct{}
 
+	// Rate-limit bookkeeping. consec429 counts consecutive 429/503
+	// responses per host (reset on any success) and drives the exponential
+	// backoff when the server sends no Retry-After. rateRequeues bounds the
+	// retry loop per URL — a host-level bound would fail every URL claimed
+	// during one sustained throttle burst, even though the host recovers;
+	// entries are removed on success or give-up, so the map only holds
+	// currently-throttled URLs. rateDeferrals and droppedDisallowed feed
+	// /stats; without the drop counter, allowlist fast-skips are invisible
+	// to operators (imports appear to succeed while every item is
+	// discarded at claim time).
+	consec429         sync.Map // host (string) → *atomic.Int32
+	rateRequeues      sync.Map // url (string) → *atomic.Int32
+	rateDeferrals     atomic.Int64
+	droppedDisallowed atomic.Int64
+	dropLoggedHosts   sync.Map // host (string) → struct{}, log once per host
+
 	// Dynamic allowlist: runtime-promoted domains that allowedDomain accepts
 	// IN ADDITION to the static cfg.IncludeDomains. Lets curated sources
 	// (HN/Reddit harvesters) grow the crawlable set organically — a domain
@@ -532,6 +548,13 @@ func (c *Crawler) SeedLane(rawURL string, lane byte) error {
 	return c.store.PushFrontierLane(context.Background(), canon, 0, lane, 1.0)
 }
 
+// PolitenessStats reports claim-time allowlist drops and rate-limit host
+// deferrals since start. Surfaced via /stats and /metrics — allowlist drops
+// are otherwise invisible (imports report success while items vanish).
+func (c *Crawler) PolitenessStats() (droppedDisallowed, rateDeferrals int64) {
+	return c.droppedDisallowed.Load(), c.rateDeferrals.Load()
+}
+
 // Recrawl re-enqueues a URL even if it was previously crawled. Status flips
 // to 'queued', attempts resets. Combined with the content-hash dedup in
 // processClaimed, an unchanged page costs one HTTP request and zero embedding
@@ -812,8 +835,48 @@ func (c *Crawler) worker(ctx context.Context, wg *sync.WaitGroup, gate *hostGate
 			continue
 		}
 		err = c.processClaimed(ctx, item, gate)
-		if u, perr := url.Parse(item.URL); perr == nil && u.Host != "" {
-			c.recordHostResult(u.Host, err == nil)
+		host := ""
+		if u, perr := url.Parse(item.URL); perr == nil {
+			host = u.Host
+		}
+		var rle *rateLimitedError
+		if errors.As(err, &rle) && host != "" {
+			// A throttling host is not a failing host. Back the whole host
+			// off and requeue the URL (bounded per URL) instead of erroring
+			// it — errored entries are terminal, and it stays out of
+			// hostStats so the success-ratio blacklist can't be poisoned by
+			// a healthy-but-busy server.
+			d := rle.retryAfter
+			if d == 0 {
+				d = c.backoffDelay(c.bumpConsec429(host))
+			} else {
+				c.bumpConsec429(host)
+			}
+			if d > maxRateLimitDefer {
+				d = maxRateLimitDefer
+			}
+			gate.Defer(host, d)
+			c.rateDeferrals.Add(1)
+			rv, _ := c.rateRequeues.LoadOrStore(item.URL, &atomic.Int32{})
+			if n := rv.(*atomic.Int32).Add(1); n <= maxRateLimitRequeues {
+				log.Printf("crawl %s: %v — host deferred %s, requeued (%d/%d)",
+					item.URL, err, d, n, maxRateLimitRequeues)
+				_ = c.store.RecrawlURL(ctx, item.URL)
+			} else {
+				log.Printf("crawl %s: %v — giving up after %d requeues", item.URL, err, maxRateLimitRequeues)
+				c.rateRequeues.Delete(item.URL)
+				_ = c.store.FailFrontier(ctx, item.URL, err.Error())
+			}
+			continue
+		}
+		// Any non-throttled outcome (success or terminal error) ends the
+		// URL's requeue budget tracking.
+		c.rateRequeues.Delete(item.URL)
+		if host != "" {
+			c.recordHostResult(host, err == nil)
+			if err == nil {
+				c.resetConsec429(host)
+			}
 		}
 		if err != nil {
 			log.Printf("crawl %s: %v", item.URL, err)
@@ -990,6 +1053,40 @@ func (c *Crawler) recordHostResult(host string, success bool) {
 	}
 }
 
+const (
+	// maxRateLimitRequeues bounds how many times one URL rides the
+	// 429-requeue loop before it errors out like any other failure.
+	maxRateLimitRequeues = 3
+	// maxRateLimitDefer caps a host backoff regardless of what
+	// Retry-After asks for — a worker slot blocked behind a deferred
+	// host must not stall for hours.
+	maxRateLimitDefer = 5 * time.Minute
+)
+
+func (c *Crawler) bumpConsec429(host string) int32 {
+	v, _ := c.consec429.LoadOrStore(host, &atomic.Int32{})
+	return v.(*atomic.Int32).Add(1)
+}
+
+func (c *Crawler) resetConsec429(host string) {
+	if v, ok := c.consec429.Load(host); ok {
+		v.(*atomic.Int32).Store(0)
+	}
+}
+
+// backoffDelay is the no-Retry-After fallback: per-host delay doubled per
+// consecutive 429, from a 1s floor (tests run with PerHostDelayMs=0).
+func (c *Crawler) backoffDelay(n int32) time.Duration {
+	base := time.Duration(c.cfg.PerHostDelayMs) * time.Millisecond
+	if base < time.Second {
+		base = time.Second
+	}
+	if n > 8 {
+		n = 8
+	}
+	return base << uint(n)
+}
+
 // terminator cancels runCtx once the frontier has stayed empty (no queued, no
 // in-flight) across several polls. Three empties at 500ms = ~1.5s of quiet.
 func (c *Crawler) terminator(ctx context.Context, cancel context.CancelFunc) {
@@ -1053,6 +1150,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// the cursor to reach quality hosts. Returning nil signals success
 	// to the worker so the frontier entry transitions queued → done.
 	if !c.allowedDomain(item.URL) {
+		c.droppedDisallowed.Add(1)
+		if u != nil {
+			if _, logged := c.dropLoggedHosts.LoadOrStore(u.Host, struct{}{}); !logged {
+				log.Printf("crawl: dropping %s (domain not allowlisted; further drops for this host not logged)", item.URL)
+			}
+		}
 		return nil
 	}
 	// After we've tried a host N times
@@ -1062,33 +1165,35 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if u != nil && c.isHostBlacklisted(u.Host) {
 		return nil
 	}
-	if u != nil {
-		// first time we see a host, fire-and-forget a sitemap
-		// discovery. Compounds: each new host typically brings hundreds-
-		// to-thousands of URLs in one batch.
-		c.maybeAutoSitemap(ctx, u)
-		if err := gate.Wait(ctx, u.Host); err != nil {
-			return err
-		}
-	}
+	// robots.txt before the gate: the Crawl-delay verdict must be known when
+	// the slot is reserved so it can widen the reservation itself. Sleeping
+	// after Wait (the previous approach) only shifted each worker's fetch by
+	// a constant while slots kept being granted at the configured interval —
+	// the effective per-host rate ignored Crawl-delay entirely. Cache hits
+	// are a map read; a miss fetches robots.txt once per host per TTL.
+	var robotsDelay time.Duration
 	if c.robots != nil {
-		allowed, robotsDelay, err := c.robots.Allowed(ctx, item.URL)
+		allowed, d, err := c.robots.Allowed(ctx, item.URL)
 		if err != nil {
 			return fmt.Errorf("robots: %w", err)
 		}
 		if !allowed {
 			return errors.New("blocked by robots.txt")
 		}
-		// Honor Crawl-delay if it exceeds our per-host gate's interval.
-		// use the effective per-host delay (gate's override or
-		// default), not the global default — operators who set a longer
-		// override for a host should have that override compared against
-		// robots.txt's Crawl-delay, not the global setting.
-		if robotsDelay > 0 && u != nil {
-			gateDelay := gate.delayFor(u.Host)
-			if robotsDelay > gateDelay {
-				sleepCtx(ctx, robotsDelay-gateDelay)
-			}
+		// Clamp: a misconfigured "Crawl-delay: 86400" must not wedge the
+		// host for the whole robots-cache TTL.
+		if maxDelay := c.maxCrawlDelay(); d > maxDelay {
+			d = maxDelay
+		}
+		robotsDelay = d
+	}
+	if u != nil {
+		// first time we see a host, fire-and-forget a sitemap
+		// discovery. Compounds: each new host typically brings hundreds-
+		// to-thousands of URLs in one batch.
+		c.maybeAutoSitemap(ctx, u)
+		if err := gate.WaitFor(ctx, u.Host, robotsDelay); err != nil {
+			return err
 		}
 	}
 
@@ -1566,6 +1671,42 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 	return false
 }
 
+func (c *Crawler) maxCrawlDelay() time.Duration {
+	if c.cfg.MaxCrawlDelayMs > 0 {
+		return time.Duration(c.cfg.MaxCrawlDelayMs) * time.Millisecond
+	}
+	return 2 * time.Minute
+}
+
+// rateLimitedError marks a 429 (or 503 with Retry-After) so the worker can
+// back the host off and requeue instead of erroring the frontier entry —
+// errored entries are terminal, and treating throttles as failures is what
+// turns them into IP bans. retryAfter is 0 when the server sent no header.
+type rateLimitedError struct {
+	code       int
+	retryAfter time.Duration
+}
+
+func (e *rateLimitedError) Error() string { return fmt.Sprintf("http %d (rate limited)", e.code) }
+
+// parseRetryAfter handles both forms the header allows: delta-seconds and
+// HTTP-date. Returns 0 for anything unparseable or in the past.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 // fetchResult bundles the fetch outcome so processClaimed can distinguish
 // "fresh body to parse" from "server said 304, nothing changed".
 type fetchResult struct {
@@ -1612,6 +1753,11 @@ func (c *Crawler) fetch(ctx context.Context, u string, prior *store.Document) (*
 			etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified")}, nil
 	}
 	if resp.StatusCode >= 400 {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusServiceUnavailable && retryAfter > 0) {
+			return nil, &rateLimitedError{code: resp.StatusCode, retryAfter: retryAfter}
+		}
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")

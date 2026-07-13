@@ -21,6 +21,11 @@ import (
 // PeerAuthToken Bearer header.
 type crawlEnqueueReq struct {
 	URL string `json:"url"`
+	// Lane optionally targets a frontier lane ("submitted", "refresh",
+	// "discovered", "bulk"). Empty keeps the historical default
+	// (discovered) — note parseLaneName("") would mean submitted, so the
+	// empty case must not be routed through it.
+	Lane string `json:"lane,omitempty"`
 }
 
 func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +47,13 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, http.StatusBadRequest, "expected {\"url\": \"...\"}")
 		return
 	}
-	if err := s.crawlSeed(req.URL); err != nil {
+	var err error
+	if req.Lane != "" && s.crawlSeedLane != nil {
+		err = s.crawlSeedLane(req.URL, parseLaneName(req.Lane))
+	} else {
+		err = s.crawlSeed(req.URL)
+	}
+	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return
 	}

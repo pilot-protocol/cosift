@@ -792,6 +792,10 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 	// Expose Seed so /admin/crawl-enqueue can hand off forwarded URLs.
 	s.crawlSeed = c.Seed
+	// expose SeedLane so /admin/crawl-enqueue can honor an explicit lane
+	// (harvester bulk feeds shouldn't compete with discovery).
+	s.crawlSeedLane = c.SeedLane
+	s.crawlPoliteness = c.PolitenessStats
 	// expose SeedSitemap so /admin/sitemap-import can push
 	// sitemap-discovered URLs into the live frontier.
 	s.crawlSeedSitemap = c.SeedSitemap
@@ -1027,6 +1031,11 @@ type pebbleHTTP struct {
 	// allowlist (used by /admin/allow-domain for organic HN/Reddit growth).
 	crawlAllowDomain func(domain string) error
 	crawlRecrawl     func(ctx context.Context, url string) error
+	// crawlSeedLane backs the optional "lane" field on /admin/crawl-enqueue.
+	crawlSeedLane func(url string, lane byte) error
+	// crawlPoliteness feeds the allowlist-drop / rate-limit-deferral
+	// counters into /stats and /metrics.
+	crawlPoliteness func() (droppedDisallowed, rateDeferrals int64)
 
 	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,
