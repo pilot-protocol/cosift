@@ -52,7 +52,17 @@ func (g *hostGate) delayFor(host string) time.Duration {
 // Wait blocks until this worker's reserved slot for the host arrives.
 // Returns ctx.Err() if ctx fires first.
 func (g *hostGate) Wait(ctx context.Context, host string) error {
+	return g.WaitFor(ctx, host, 0)
+}
+
+// WaitFor is Wait with a per-call minimum delay: the slot is reserved using
+// max(delayFor(host), min). robots.txt Crawl-delay is enforced here — a sleep
+// after Wait would leave the effective per-host rate at the gate interval.
+func (g *hostGate) WaitFor(ctx context.Context, host string, min time.Duration) error {
 	d := g.delayFor(host)
+	if min > d {
+		d = min
+	}
 	g.mu.Lock()
 	now := time.Now()
 	slot, ok := g.next[host]
@@ -76,4 +86,18 @@ func (g *hostGate) Wait(ctx context.Context, host string) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// Defer pushes the host's next slot at least d into the future — the 429/503
+// backoff hook. It never shortens an existing reservation.
+func (g *hostGate) Defer(host string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	g.mu.Lock()
+	earliest := time.Now().Add(d)
+	if g.next[host].Before(earliest) {
+		g.next[host] = earliest
+	}
+	g.mu.Unlock()
 }
