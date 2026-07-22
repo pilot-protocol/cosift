@@ -742,11 +742,26 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// ollama to starve interactive /search?retriever=dense calls.
 	// Default cap = 8 (well under OLLAMA_NUM_PARALLEL=32); operator
 	// override via COSIFT_CRAWL_EMBED_CONCURRENCY.
-	crawlEmbedCap := 8
+	const crawlEmbedDefault = 8
+	crawlEmbedCap := crawlEmbedDefault
 	if v := os.Getenv("COSIFT_CRAWL_EMBED_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			crawlEmbedCap = n
 		}
+	}
+	// The throttle exists specifically so bulk-crawl embeds can't starve
+	// interactive /search. Overriding it far above the safe range silently
+	// defeats that protection, so warn loudly — but never clamp, since an
+	// operator on a large box may legitimately want more. Safe ceiling tracks
+	// OLLAMA_NUM_PARALLEL when set, else 4x the default.
+	safeCrawlEmbed := 4 * crawlEmbedDefault
+	if v := os.Getenv("OLLAMA_NUM_PARALLEL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			safeCrawlEmbed = n
+		}
+	}
+	if crawlEmbedCap > safeCrawlEmbed {
+		log.Printf("WARNING: COSIFT_CRAWL_EMBED_CONCURRENCY=%d is far above the safe ceiling (%d); bulk-crawl embeds at this concurrency can starve interactive /search — lower it if search latency spikes", crawlEmbedCap, safeCrawlEmbed)
 	}
 	// Coalesces many
 	// per-doc embed calls into one larger inner.Embed per ~20 ms window
