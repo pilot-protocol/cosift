@@ -118,6 +118,10 @@ type Crawler struct {
 	//   "per_host_overrides": {"slow-server.example.com": 5000, "fast-cdn.com": 50}
 	PerHostOverrides map[string]int `json:"per_host_overrides,omitempty"`
 
+	// MaxCrawlDelayMs caps the robots.txt Crawl-delay we honor, so a
+	// misconfigured robots.txt can't wedge its host. 0 = default (2 min).
+	MaxCrawlDelayMs int `json:"max_crawl_delay_ms,omitempty"`
+
 	// MaxBodyBytes caps the response size. Bigger pages get truncated.
 	MaxBodyBytes int64 `json:"max_body_bytes"`
 

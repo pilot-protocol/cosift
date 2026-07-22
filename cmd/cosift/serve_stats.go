@@ -455,6 +455,11 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		out["crawl_active"] = true
 		out["docs_added_since_start"] = added
 		out["docs_per_minute"] = rate
+		if s.crawlPoliteness != nil {
+			dropped, deferred := s.crawlPoliteness()
+			out["crawl_dropped_disallowed"] = dropped
+			out["crawl_rate_limited_deferrals"] = deferred
+		}
 	}
 	return json.Marshal(out)
 }
@@ -515,6 +520,15 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# HELP cosift_crawl_docs_per_minute Recent crawl rate (docs added per minute, averaged since process start).\n")
 		fmt.Fprintf(w, "# TYPE cosift_crawl_docs_per_minute gauge\n")
 		fmt.Fprintf(w, "cosift_crawl_docs_per_minute %.2f\n", rate)
+		if s.crawlPoliteness != nil {
+			dropped, deferred := s.crawlPoliteness()
+			fmt.Fprintf(w, "# HELP cosift_crawl_dropped_disallowed_total Frontier claims skipped because the domain is not allowlisted.\n")
+			fmt.Fprintf(w, "# TYPE cosift_crawl_dropped_disallowed_total counter\n")
+			fmt.Fprintf(w, "cosift_crawl_dropped_disallowed_total %d\n", dropped)
+			fmt.Fprintf(w, "# HELP cosift_crawl_rate_limited_deferrals_total Host backoffs triggered by 429/503 rate-limit responses.\n")
+			fmt.Fprintf(w, "# TYPE cosift_crawl_rate_limited_deferrals_total counter\n")
+			fmt.Fprintf(w, "cosift_crawl_rate_limited_deferrals_total %d\n", deferred)
+		}
 	}
 	// HyDE cache effectiveness. Hits/misses both monotonic so
 	// Prometheus rate() over these gives cache pressure under load.
