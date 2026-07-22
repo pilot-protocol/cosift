@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,5 +47,57 @@ func TestTailLines(t *testing.T) {
 func TestTailLinesMissingFile(t *testing.T) {
 	if got := tailLines("/nonexistent/path/q.jsonl", 5); got != nil {
 		t.Errorf("missing file should return nil, got %v", got)
+	}
+}
+
+func TestQlogNoLogHeader(t *testing.T) {
+	const body = "ok"
+	cases := []struct {
+		name     string
+		token    string // s.qlogNoLogToken
+		header   string // X-Cosift-No-Log value ("" = header absent)
+		wantLine bool
+	}{
+		{"no header", "secret", "", true},
+		{"wrong secret", "secret", "wrong", true},
+		{"correct secret", "secret", "secret", false},
+		{"token unset ignores header", "", "secret", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "q.jsonl")
+			f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			s := &pebbleHTTP{qlogFile: f, qlogNoLogToken: tc.token}
+			ran := false
+			h := s.qlog(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+				_, _ = w.Write([]byte(body))
+			})
+			req := httptest.NewRequest(http.MethodGet, "/search?q=test", nil)
+			if tc.header != "" {
+				req.Header.Set("X-Cosift-No-Log", tc.header)
+			}
+			rec := httptest.NewRecorder()
+			h(rec, req)
+
+			if !ran {
+				t.Fatal("wrapped handler did not run")
+			}
+			if got := rec.Body.String(); got != body {
+				t.Errorf("response body = %q, want %q", got, body)
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logged := len(strings.TrimSpace(string(data))) > 0
+			if logged != tc.wantLine {
+				t.Errorf("logged = %v, want %v (qlog=%q)", logged, tc.wantLine, data)
+			}
+		})
 	}
 }
