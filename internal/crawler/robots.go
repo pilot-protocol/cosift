@@ -195,8 +195,9 @@ func parseRobots(body string) *robotsRules {
 			if current == nil {
 				continue
 			}
-			if d, err := strconv.Atoi(val); err == nil && d > 0 {
-				current.crawlDelay = time.Duration(d) * time.Second
+			// Fractional values ("Crawl-delay: 0.5") are common in the wild.
+			if d, err := strconv.ParseFloat(val, 64); err == nil && d > 0 {
+				current.crawlDelay = time.Duration(d * float64(time.Second))
 			}
 		case "sitemap":
 			// Sitemap directive is group-independent per the

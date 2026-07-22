@@ -200,6 +200,14 @@ func answerLooksLikeNoInfo(s string) bool {
 	return false
 }
 
+// rerankText is only populated when a reranker ran; an empty excerpt makes the judge drop the candidate.
+func judgeExcerpt(rerankText, title, excerpt string) string {
+	if rerankText != "" {
+		return rerankText
+	}
+	return title + "\n" + excerpt
+}
+
 func (s *pebbleHTTP) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	// When clustered + gateway mode +
 	// not already serving as a leaf for someone else, fan-out retrieval
@@ -520,7 +528,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		before := len(cands)
 		jCands := make([]judge.Candidate, len(cands))
 		for i, c := range cands {
-			jCands[i] = judge.Candidate{ID: strconv.Itoa(i), Excerpt: c.rerankText}
+			jCands[i] = judge.Candidate{ID: strconv.Itoa(i), Excerpt: judgeExcerpt(c.rerankText, c.src.Title, c.excerpt)}
 		}
 		verdicts := judge.Judge(r.Context(), s.chat, q, jCands, judge.Options{MinScore: 0.3})
 		keep := make([]cand, 0, len(cands))
