@@ -1,0 +1,13 @@
+[Unit]
+Description=cosift snapshot — every 4h
+# Triggers cosift-snapshot.service. 4-hour cadence × KEEP=14 = ~56 hours
+# of recovery history. Tune by changing OnCalendar + COSIFT_KEEP env.
+
+[Timer]
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
+Persistent=true
+RandomizedDelaySec=60
+Unit=cosift-snapshot.service
+
+[Install]
+WantedBy=timers.target
