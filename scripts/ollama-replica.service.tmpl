@@ -1,0 +1,18 @@
+[Unit]
+Description=Ollama Service (replica 1, port 11435)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="OLLAMA_HOST=127.0.0.1:11435"
+Environment="OLLAMA_NUM_PARALLEL=32"
+Environment="OLLAMA_KEEP_ALIVE=24h"
+Environment="HOME=/usr/share/ollama"
+
+[Install]
+WantedBy=default.target
