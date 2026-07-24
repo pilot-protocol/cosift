@@ -1,0 +1,19 @@
+[Unit]
+Description=cosift snapshot — tarball pebble + config, upload to GCS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment=COSIFT_ADMIN_URL=http://127.0.0.1:7777
+Environment=COSIFT_CONFIG=/home/ubuntu/cosift.json
+Environment=COSIFT_GCS_BUCKET=gs://pilot-cosift-index
+Environment=COSIFT_KEEP=14
+# COSIFT_ADMIN_TOKEN — set via /etc/cosift/snapshot.env if cluster.peer_auth_token is configured
+EnvironmentFile=-/etc/cosift/snapshot.env
+ExecStart=/usr/bin/bash /home/ubuntu/snapshot.sh
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,30 @@
+[Unit]
+Description=cosift pebble-serve (with in-process continuous crawler)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment=COSIFT_LOAD_HNSW=true
+Environment=COSIFT_RATELIMIT_RPM=240
+Environment=COSIFT_RATELIMIT_BURST=80
+Environment=COSIFT_RATELIMIT_WHITELIST=104.28.216.88,127.0.0.1
+Environment=COSIFT_PPROF_ADDR=127.0.0.1:6060
+Environment=COSIFT_MUTEX_PROFILE_FRACTION=100
+Environment=COSIFT_DISABLE_PQ=true
+Environment=COSIFT_HNSW_EF_SEARCH=200
+Environment=COSIFT_CRAWL_EMBED_CONCURRENCY=16
+Environment=COSIFT_PEBBLE_CACHE_MB=32768
+ExecStart=/home/ubuntu/cosift -config /home/ubuntu/cosift.json pebble-serve -dir /home/ubuntu/cosift-data/pebble -addr 127.0.0.1:7777 -crawl-seeds-file /home/ubuntu/seeds.txt -crawl-checkpoint 60s
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=131072
+TimeoutStopSec=30
+MemoryMax=262G
+MemoryHigh=240G
+
+[Install]
+WantedBy=multi-user.target
