@@ -49,6 +49,10 @@ func (s *pebbleHTTP) qlog(h http.HandlerFunc) http.HandlerFunc {
 			h(w, r)
 			return
 		}
+		if s.qlogNoLogToken != "" && r.Header.Get("X-Cosift-No-Log") == s.qlogNoLogToken {
+			h(w, r)
+			return
+		}
 		start := time.Now()
 		qid := newQueryID()
 		sw := &statusCapturingWriter{ResponseWriter: w, status: 200}
