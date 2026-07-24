@@ -313,6 +313,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			log.Printf("pebble-serve: query log open failed (%s): %v", qp, err)
 		}
 	}
+	srv.qlogNoLogToken = os.Getenv("COSIFT_QLOG_NOLOG_TOKEN")
 	// Feedback rate limiter — always on (stricter than global). Per-client via
 	// XFF. Override COSIFT_FEEDBACK_RPM / _BURST.
 	srv.fbRL = &rateLimiter{
@@ -967,6 +968,9 @@ type pebbleHTTP struct {
 	// nil file = disabled (COSIFT_QUERY_LOG unset). See querylog.go.
 	qlogFile *os.File
 	qlogMu   sync.Mutex
+	// Requests bearing X-Cosift-No-Log equal to this secret are served but not
+	// logged (demand-loop replay traffic). Empty = feature off. See querylog.go.
+	qlogNoLogToken string
 
 	// Feedback log: appends one JSON line per /feedback rating, correlated to a
 	// query by qid. The real usefulness signal (penalize/reward). See feedback.go.
