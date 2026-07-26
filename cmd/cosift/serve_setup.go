@@ -1292,12 +1292,9 @@ func stripPort(remoteAddr string) string {
 // without auth, even if it forgets the per-handler check.
 func (s *pebbleHTTP) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if want := s.cluster.PeerAuthToken; want != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if got != want {
-				writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
-				return
-			}
+		if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+			return
 		}
 		h(w, r)
 	}

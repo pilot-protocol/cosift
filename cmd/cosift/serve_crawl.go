@@ -28,12 +28,9 @@ type crawlEnqueueReq struct {
 
 func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {
 	// Auth
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+		return
 	}
 	if s.crawlSeed == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -64,12 +61,9 @@ func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) 
 // link-target domain recurs above their frequency threshold. Persisted so it
 // survives restart. Body: {"domain":"example.com"}.
 func (s *pebbleHTTP) handleAllowDomain(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+		return
 	}
 	if s.crawlAllowDomain == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler")
@@ -100,12 +94,9 @@ func (s *pebbleHTTP) handleAllowDomain(w http.ResponseWriter, r *http.Request) {
 // approximate count of deleted entries (DeleteRange is O(tombstones),
 // not O(N), so the count is reported as -1 to signal "swept range").
 func (s *pebbleHTTP) handleFrontierClear(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+		return
 	}
 	if err := s.store.ClearFrontier(r.Context()); err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
@@ -124,12 +115,9 @@ type frontierPurgeReq struct {
 }
 
 func (s *pebbleHTTP) handleFrontierPurgeHost(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
+		return
 	}
 	var req frontierPurgeReq
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -154,12 +142,9 @@ type sitemapImportReq struct {
 }
 
 func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedSitemap == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -191,12 +176,9 @@ func (s *pebbleHTTP) handleSitemapImport(w http.ResponseWriter, r *http.Request)
 // entries are stuck in errored state — sitemap-import's INSERT OR IGNORE won't
 // re-queue them, but Recrawl will.
 func (s *pebbleHTTP) handleRecrawlSitemap(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlRecrawl == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler")
@@ -261,12 +243,9 @@ type crawlNowReq struct {
 }
 
 func (s *pebbleHTTP) handleCrawlNow(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlFetchNow == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -319,12 +298,9 @@ type sitePackReq struct {
 }
 
 func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedSitemap == nil || s.crawlSeedRSS == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -500,12 +476,9 @@ type siteSubmitReq struct {
 }
 
 func (s *pebbleHTTP) handleSiteSubmit(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedSitemapLane == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -581,12 +554,9 @@ type wetImportBulkReq struct {
 }
 
 func (s *pebbleHTTP) handleWETImportBulk(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedWET == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -709,12 +679,9 @@ type wetImportReq struct {
 }
 
 func (s *pebbleHTTP) handleWETImport(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedWET == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")
@@ -753,12 +720,9 @@ type frontierDemoteHostReq struct {
 }
 
 func (s *pebbleHTTP) handleFrontierDemoteHost(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	ps, ok := any(s.store).(*store.PebbleStore)
 	if !ok {
@@ -797,12 +761,9 @@ func (s *pebbleHTTP) handleFrontierDemoteHost(w http.ResponseWriter, r *http.Req
 // key. GetLaneStats then reported impossibly-high in_flight counts
 // (>max_concurrent). Idempotent — re-running is a no-op once clean.
 func (s *pebbleHTTP) handleFrontierPurgeStaleInFlight(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	ps, ok := any(s.store).(*store.PebbleStore)
 	if !ok {
@@ -828,12 +789,9 @@ type rssImportReq struct {
 }
 
 func (s *pebbleHTTP) handleRSSImport(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.crawlSeedRSS == nil {
 		writeProblem(w, http.StatusNotImplemented, "this shard has no in-serve crawler (-crawl-seeds-file not set)")

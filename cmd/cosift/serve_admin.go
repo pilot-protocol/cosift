@@ -26,12 +26,9 @@ import (
 // against the codebook already loaded on this serve. Order-of-magnitude
 // faster than handlePQTrain because it skips k-means; just encode loop.
 func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.hnsw == nil {
 		writeProblem(w, http.StatusBadRequest, "pq-encode: no HNSW loaded")
@@ -90,12 +87,9 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 // returned path is safe to tar — Pebble's compactor cannot mutate hard-linked
 // SSTs. Caller is responsible for deleting the dir after consuming it.
 func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	base := os.Getenv("COSIFT_CHECKPOINT_DIR")
 	if base == "" {
@@ -127,12 +121,9 @@ type pqTrainReq struct {
 }
 
 func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.hnsw == nil || s.hnsw.Len() == 0 {
 		writeProblem(w, http.StatusBadRequest, "pq-train requires an in-memory HNSW with nodes")
@@ -246,12 +237,9 @@ var evalQuickQueries = []string{
 // in-process (re-uses the same chat/retrieval stack as a real /answer call),
 // so the rate that comes back matches what users see.
 func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.chat == nil {
 		writeProblem(w, http.StatusNotImplemented, "eval-quick requires cfg.Chat.Model")
@@ -361,12 +349,9 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 // ResponseController because compacting a multi-million-node graph routinely
 // runs past 60s. Returns counters so operators can confirm progress.
 func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.hnsw == nil {
 		writeProblem(w, http.StatusNotImplemented, "hnsw-compact requires a loaded HNSW graph")
@@ -474,12 +459,9 @@ type embedBackfillReq struct {
 // After it logs "done", set COSIFT_HOST_PARTITION_READ=1 (and =1 for the write
 // flag to keep it fresh) and restart.
 func (s *pebbleHTTP) handleHostBackfill(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.store == nil {
 		writeProblem(w, http.StatusNotImplemented, "host-backfill requires a PebbleStore")
@@ -510,12 +492,9 @@ func (s *pebbleHTTP) handleHostBackfill(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	if s.embedder == nil || s.hnsw == nil {
 		writeProblem(w, http.StatusNotImplemented, "embed backfill requires both an embedder and HNSW graph to be configured")
@@ -599,14 +578,34 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 	}
 	wg.Wait()
 
-	log.Printf("embed-backfill: scanned=%d missing=%d embedded=%d in %s",
-		scanned.Load(), missing.Load(), embedded.Load(), time.Since(t0).Round(time.Second))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scanned":  scanned.Load(),
-		"missing":  missing.Load(),
-		"embedded": embedded.Load(),
-		"elapsed":  time.Since(t0).String(),
-	})
+	// AddPassage only mutates the in-memory graph. Snapshot it to the store
+	// so the newly-embedded vectors survive a restart; without this the
+	// backfill's work is lost whenever the process exits. Detached context
+	// so a client disconnect can't abort the write.
+	persisted := false
+	var persistErr string
+	if s.store != nil && embedded.Load() > 0 {
+		if err := s.hnsw.Persist(context.Background(), s.store); err != nil {
+			persistErr = err.Error()
+			log.Printf("embed-backfill: hnsw persist FAILED: %v", err)
+		} else {
+			persisted = true
+		}
+	}
+
+	log.Printf("embed-backfill: scanned=%d missing=%d embedded=%d persisted=%v in %s",
+		scanned.Load(), missing.Load(), embedded.Load(), persisted, time.Since(t0).Round(time.Second))
+	resp := map[string]any{
+		"scanned":   scanned.Load(),
+		"missing":   missing.Load(),
+		"embedded":  embedded.Load(),
+		"persisted": persisted,
+		"elapsed":   time.Since(t0).String(),
+	}
+	if persistErr != "" {
+		resp["persist_error"] = persistErr
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // truncateForEmbedLite mirrors the crawler's helper without pulling the
