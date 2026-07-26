@@ -108,11 +108,9 @@ func (s *pebbleHTTP) handleFeedback(w http.ResponseWriter, r *http.Request) {
 // reward/penalty tallies joined to the query log by qid. This is the "make it
 // useful" surface — the labeled signal without an external pipeline.
 func (s *pebbleHTTP) handleFeedbackList(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		if r.Header.Get("Authorization") != "Bearer "+want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	fp := feedbackLogPath()
 	if fp == "" {

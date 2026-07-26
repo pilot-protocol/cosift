@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"flag"
@@ -18,6 +19,25 @@ import (
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
+
+// bearerToken extracts the credential from an "Authorization: Bearer <token>"
+// request header. Returns "" when the header is absent or carries a different
+// scheme.
+func bearerToken(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// peerTokenOK reports whether the request presents the expected peer/admin
+// token. The comparison runs in time independent of how many leading bytes
+// match, and returns 1 only when both lengths and all bytes are equal.
+// An empty want means the endpoint is unauthenticated (single-node default)
+// and every caller is accepted.
+func peerTokenOK(r *http.Request, want string) bool {
+	if want == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(want)) == 1
+}
 
 // retrievalFilters bundles the four post-retrieval predicates /search,
 // /answer, /find_similar, and /research all share. Centralized in

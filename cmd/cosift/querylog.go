@@ -86,12 +86,9 @@ func (s *pebbleHTTP) writeQueryLog(rec queryLogRec) {
 // handleQueryLog tails the query log. ?n=N (default 100, max 5000) returns the
 // last N JSON lines as a JSON array; ?raw=1 returns them as raw JSONL.
 func (s *pebbleHTTP) handleQueryLog(w http.ResponseWriter, r *http.Request) {
-	if want := s.cluster.PeerAuthToken; want != "" {
-		got := r.Header.Get("Authorization")
-		if got != "Bearer "+want {
-			writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
-			return
-		}
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
 	}
 	path := os.Getenv("COSIFT_QUERY_LOG")
 	if path == "" {

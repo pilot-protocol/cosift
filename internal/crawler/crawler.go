@@ -65,9 +65,10 @@ type Crawler struct {
 
 	// bounded diagnostic counter for the zombie-reclaim path.
 	// Logs the first few zero-hit cases so we can confirm the code path
-	// is actually reached even when no prior passages exist. Cheap (just
-	// an int read on the hot path; not atomic — diagnostic only).
-	zombieDebugLogged int
+	// is actually reached even when no prior passages exist. Written from
+	// every crawl worker goroutine, so the read-modify-write goes through
+	// atomic.Int64.
+	zombieDebugLogged atomic.Int64
 
 	// per-host error-rate tracking via sync.Map + atomic
 	// counters. With 512 workers we cannot afford a single write lock
@@ -92,6 +93,13 @@ type Crawler struct {
 	embedDropped atomic.Int64
 	embedDone    atomic.Int64
 	embedFailed  atomic.Int64
+
+	// embedDrainUntil is a unix-nano wall-clock deadline for the post-crawl
+	// drain of embedQ. Zero means "no deadline" (crawl still running). Run
+	// sets it just before closing embedQ; embed workers stop doing work and
+	// count the remainder as dropped once it passes, so shutdown stays
+	// bounded even when the embedder is slow or unreachable.
+	embedDrainUntil atomic.Int64
 
 	// URLs whose frontier transition happened inside processClaimed via
 	// WriteCrawlResult. The worker checks this set before its own
@@ -587,9 +595,15 @@ func (c *Crawler) Run(ctx context.Context) error {
 		if embedWorkers > 0 {
 			bufSize := envIntCrawler("COSIFT_EMBED_DECOUPLE_BUFFER", 4096)
 			c.embedQ = make(chan *embedJob, bufSize)
+			// runCtx is cancelled the moment the frontier drains (see
+			// terminator), while jobs already queued still need a live
+			// context to embed and write. Detach the embed pool from that
+			// cancellation; its wall-clock bound comes from embedDrainUntil
+			// plus the per-job timeout instead.
+			embedCtx := context.WithoutCancel(ctx)
 			for i := 0; i < embedWorkers; i++ {
 				embedWG.Add(1)
-				go c.embedWorker(runCtx, &embedWG)
+				go c.embedWorker(embedCtx, &embedWG)
 			}
 			log.Printf("crawler: embed decouple ON (%d workers, %d-buf)", embedWorkers, bufSize)
 		}
@@ -620,8 +634,14 @@ func (c *Crawler) Run(ctx context.Context) error {
 	// then wait for embed workers to drain. Otherwise an early close
 	// would race a still-running crawl worker's send and panic.
 	if c.embedQ != nil {
+		// Cap the drain so a slow or unreachable embedder can't hold the
+		// crawl open indefinitely. Jobs still queued past the deadline are
+		// counted as dropped and left for embed-backfill.
+		drainSecs := envIntCrawler("COSIFT_EMBED_DRAIN_SECONDS", defaultEmbedDrainSeconds)
+		c.embedDrainUntil.Store(time.Now().Add(time.Duration(drainSecs) * time.Second).UnixNano())
 		close(c.embedQ)
 		embedWG.Wait()
+		c.embedDrainUntil.Store(0)
 		log.Printf("crawler: embed pool drained — queued=%d done=%d failed=%d dropped=%d",
 			c.embedQueued.Load(), c.embedDone.Load(), c.embedFailed.Load(), c.embedDropped.Load())
 		c.embedQ = nil // nil so FetchAndIndexNow doesn't send to closed channel between restarts
@@ -644,64 +664,126 @@ func envIntCrawler(key string, def int) int {
 	return n
 }
 
+// Defaults for the decoupled embed pipeline's wall-clock bounds. Both are
+// overridable via env (COSIFT_EMBED_DRAIN_SECONDS, COSIFT_EMBED_JOB_SECONDS,
+// COSIFT_EMBED_ENQUEUE_WAIT_MS).
+const (
+	defaultEmbedDrainSeconds  = 300
+	defaultEmbedJobSeconds    = 120
+	defaultEmbedEnqueueWaitMs = 5000
+)
+
+// enqueueEmbedJob hands a job to the embed pool. It first tries a
+// non-blocking send, then waits a bounded amount of time for buffer space
+// before giving up. Reports whether the job was accepted; a rejected job's
+// passages are left for embed-backfill.
+func (c *Crawler) enqueueEmbedJob(ctx context.Context, job *embedJob) bool {
+	select {
+	case c.embedQ <- job:
+		return true
+	default:
+	}
+	wait := time.Duration(envIntCrawler("COSIFT_EMBED_ENQUEUE_WAIT_MS", defaultEmbedEnqueueWaitMs)) * time.Millisecond
+	if wait <= 0 {
+		return false
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case c.embedQ <- job:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return false
+	}
+}
+
+// embedJobExpired reports whether the post-crawl drain deadline has passed.
+func (c *Crawler) embedJobExpired() bool {
+	d := c.embedDrainUntil.Load()
+	return d != 0 && time.Now().UnixNano() > d
+}
+
 // embedWorker drains c.embedQ. For each job, embeds the chunk texts and
 // writes passages to the configured PassageWriter. Uses the optional
 // batch writer when available for one HNSW lock per doc instead of
 // one per chunk.
+//
+// ctx is detached from the crawl's cancellation so queued jobs still
+// complete after the frontier drains; each job carries its own timeout and
+// the pool stops working once the drain deadline passes.
 func (c *Crawler) embedWorker(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for job := range c.embedQ {
-		vecs, err := c.embedder.Embed(ctx, job.texts)
-		if err != nil {
-			c.embedFailed.Add(1)
-			log.Printf("embed-decouple %s: %v", job.url, err)
-			continue
-		}
-		if len(vecs) != len(job.chunks) {
-			c.embedFailed.Add(1)
-			continue
-		}
-		// Mirror the synchronous path's zombie reclaim so re-crawled
-		// URLs don't accumulate generations of vectors in HNSW.
-		if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
-			if inv, ok := c.passageWriter.(URLInvalidator); ok {
-				_, _ = inv.MarkURLInvalid(ctx, job.url)
-			}
-		}
-		// Prefer the batch interface (single HNSW lock for the whole
-		// doc) over per-chunk writes.
-		if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
-			ps := make([]*store.Passage, len(job.chunks))
-			for i, ch := range job.chunks {
-				ps[i] = &store.Passage{
-					DocID:     job.docID,
-					Offset:    ch.Offset,
-					Length:    ch.Length,
-					Model:     c.embedder.Model(),
-					Embedding: vecs[i],
-				}
-			}
-			if err := bw.UpsertPassageBatch(ctx, ps); err != nil {
-				c.embedFailed.Add(1)
-				log.Printf("embed-decouple batch %s: %v", job.url, err)
-				continue
-			}
-		} else {
-			for i, ch := range job.chunks {
-				p := &store.Passage{
-					DocID:     job.docID,
-					Offset:    ch.Offset,
-					Length:    ch.Length,
-					Model:     c.embedder.Model(),
-					Embedding: vecs[i],
-				}
-				if err := c.passageWriter.UpsertPassage(ctx, p); err != nil {
-					log.Printf("embed-decouple passage %s offset=%d: %v", job.url, ch.Offset, err)
-				}
-			}
-		}
-		c.embedDone.Add(1)
+	jobTimeout := time.Duration(envIntCrawler("COSIFT_EMBED_JOB_SECONDS", defaultEmbedJobSeconds)) * time.Second
+	if jobTimeout <= 0 {
+		jobTimeout = defaultEmbedJobSeconds * time.Second
 	}
+	for job := range c.embedQ {
+		if c.embedJobExpired() {
+			c.embedDropped.Add(1)
+			continue
+		}
+		c.runEmbedJob(ctx, job, jobTimeout)
+	}
+}
+
+// runEmbedJob embeds one job's chunk texts and writes the resulting passages.
+// The per-job context bounds how long a single document may hold a worker.
+func (c *Crawler) runEmbedJob(parent context.Context, job *embedJob, jobTimeout time.Duration) {
+	ctx, cancel := context.WithTimeout(parent, jobTimeout)
+	defer cancel()
+
+	vecs, err := c.embedder.Embed(ctx, job.texts)
+	if err != nil {
+		c.embedFailed.Add(1)
+		log.Printf("embed-decouple %s: %v", job.url, err)
+		return
+	}
+	if len(vecs) != len(job.chunks) {
+		c.embedFailed.Add(1)
+		return
+	}
+	// Mirror the synchronous path's zombie reclaim so re-crawled
+	// URLs don't accumulate generations of vectors in HNSW.
+	if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+		if inv, ok := c.passageWriter.(URLInvalidator); ok {
+			_, _ = inv.MarkURLInvalid(ctx, job.url)
+		}
+	}
+	// Prefer the batch interface (single HNSW lock for the whole
+	// doc) over per-chunk writes.
+	if bw, ok := c.passageWriter.(PassageWriterBatch); ok {
+		ps := make([]*store.Passage, len(job.chunks))
+		for i, ch := range job.chunks {
+			ps[i] = &store.Passage{
+				DocID:     job.docID,
+				Offset:    ch.Offset,
+				Length:    ch.Length,
+				Model:     c.embedder.Model(),
+				Embedding: vecs[i],
+			}
+		}
+		if err := bw.UpsertPassageBatch(ctx, ps); err != nil {
+			c.embedFailed.Add(1)
+			log.Printf("embed-decouple batch %s: %v", job.url, err)
+			return
+		}
+	} else {
+		for i, ch := range job.chunks {
+			p := &store.Passage{
+				DocID:     job.docID,
+				Offset:    ch.Offset,
+				Length:    ch.Length,
+				Model:     c.embedder.Model(),
+				Embedding: vecs[i],
+			}
+			if err := c.passageWriter.UpsertPassage(ctx, p); err != nil {
+				log.Printf("embed-decouple passage %s offset=%d: %v", job.url, ch.Offset, err)
+			}
+		}
+	}
+	c.embedDone.Add(1)
 }
 
 // statusDumper writes a JSON snapshot of crawl progress every 10s to path.
@@ -1286,10 +1368,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			}
 			if c.embedQ != nil {
 				job := &embedJob{url: item.URL, docID: id, chunks: chunks, texts: texts}
-				select {
-				case c.embedQ <- job:
+				if c.enqueueEmbedJob(ctx, job) {
 					c.embedQueued.Add(1)
-				default:
+				} else {
 					c.embedDropped.Add(1)
 				}
 				c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
@@ -1328,10 +1409,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 								log.Printf("zombie-reclaim %s: %v", item.URL, err)
 							case n > 0:
 								log.Printf("zombie-reclaim %s: invalidated %d stale passages", item.URL, n)
-							case c.zombieDebugLogged < 5:
+							case c.zombieDebugLogged.Add(1) <= 5:
 								// Diagnostic: first few zero-hit cases to confirm code path is reached.
 								log.Printf("zombie-reclaim %s: 0 prior passages (diagnostic)", item.URL)
-								c.zombieDebugLogged++
 							}
 						}
 					}
