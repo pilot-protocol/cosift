@@ -313,6 +313,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			log.Printf("pebble-serve: query log open failed (%s): %v", qp, err)
 		}
 	}
+	srv.qlogNoLogToken = os.Getenv("COSIFT_QLOG_NOLOG_TOKEN")
 	// Feedback rate limiter — always on (stricter than global). Per-client via
 	// XFF. Override COSIFT_FEEDBACK_RPM / _BURST.
 	srv.fbRL = &rateLimiter{
@@ -807,6 +808,9 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	}
 	// Expose Seed so /admin/crawl-enqueue can hand off forwarded URLs.
 	s.crawlSeed = c.Seed
+	// expose SeedLane so /admin/crawl-enqueue can honor an explicit lane.
+	s.crawlSeedLane = c.SeedLane
+	s.crawlPoliteness = c.PolitenessStats
 	// expose SeedSitemap so /admin/sitemap-import can push
 	// sitemap-discovered URLs into the live frontier.
 	s.crawlSeedSitemap = c.SeedSitemap
@@ -979,6 +983,9 @@ type pebbleHTTP struct {
 	// nil file = disabled (COSIFT_QUERY_LOG unset). See querylog.go.
 	qlogFile *os.File
 	qlogMu   sync.Mutex
+	// Requests bearing X-Cosift-No-Log equal to this secret are served but not
+	// logged (demand-loop replay traffic). Empty = feature off. See querylog.go.
+	qlogNoLogToken string
 
 	// Feedback log: appends one JSON line per /feedback rating, correlated to a
 	// query by qid. The real usefulness signal (penalize/reward). See feedback.go.
@@ -1042,6 +1049,10 @@ type pebbleHTTP struct {
 	// allowlist (used by /admin/allow-domain for organic HN/Reddit growth).
 	crawlAllowDomain func(domain string) error
 	crawlRecrawl     func(ctx context.Context, url string) error
+	// crawlSeedLane backs the optional "lane" field on /admin/crawl-enqueue.
+	crawlSeedLane func(url string, lane byte) error
+	// crawlPoliteness feeds the politeness counters into /stats + /metrics.
+	crawlPoliteness func() (droppedDisallowed, rateDeferrals int64)
 
 	// doc count at startup so /stats can report crawl rate
 	// without persistent counter tables. docs_added = current - startup,

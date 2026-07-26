@@ -29,6 +29,23 @@ Allow: /
 	}
 }
 
+func TestParseRobotsFractionalCrawlDelay(t *testing.T) {
+	// "Crawl-delay: 0.5" is common in the wild; the previous integer-only
+	// parse silently dropped it.
+	r := parseRobots("User-agent: *\nCrawl-delay: 0.5\n")
+	if got := r.groups[0].crawlDelay; got != 500*time.Millisecond {
+		t.Errorf("fractional delay: got %v want 500ms", got)
+	}
+	r = parseRobots("User-agent: *\nCrawl-delay: 30\n")
+	if got := r.groups[0].crawlDelay; got != 30*time.Second {
+		t.Errorf("integer delay: got %v want 30s", got)
+	}
+	r = parseRobots("User-agent: *\nCrawl-delay: -3\n")
+	if got := r.groups[0].crawlDelay; got != 0 {
+		t.Errorf("negative delay should be ignored: got %v", got)
+	}
+}
+
 func TestRobotsAllowAndDisallow(t *testing.T) {
 	body := `User-agent: *
 Disallow: /admin/

@@ -98,6 +98,7 @@ not re-enable them without the confidentiality decision in that section.
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
 | `COSIFT_QUERY_LOG` | string (path) | unset → query logging disabled (no-op) | Path to JSONL file; when set, every query-endpoint request is appended. Also gates the feedback log default location and the `/admin/query-log` tail endpoint. **Disabled in prod — see HANDOVER §2.** | `serve_setup.go:308`; `querylog.go:96`; `feedback.go:37,147` |
+| `COSIFT_QLOG_NOLOG_TOKEN` | string (SECRET) | unset → header ignored (all requests logged) | When set, a query request whose `X-Cosift-No-Log` header exactly equals this value is served normally but **not** written to the query log — lets demand-loop replay traffic be excluded. Only effective when `COSIFT_QUERY_LOG` is set. | `serve_setup.go:316`; `querylog.go:52` |
 | `COSIFT_FEEDBACK_LOG` | string (path) | unset → falls back to `feedback-log.jsonl` beside `COSIFT_QUERY_LOG`; if that's also unset → disabled | Path for the feedback JSONL log. **Disabled in prod — see HANDOVER §2.** | `feedback.go:34`; `serve_setup.go` (via `feedbackLogPath()`) |
 | `COSIFT_SLA_LOG_PATH` | string (path) | unset → `<DataDir>/sla-violations.jsonl` (if DataDir set) | Where SLA-violation records are written. | `serve_setup.go:348` |
 | `COSIFT_SLA_SEARCH_P95_MS` | duration (ms) | `1500` (1.5s) | P95 SLA target for `/search`. | `serve_setup.go:353` |
