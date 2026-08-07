@@ -3,8 +3,9 @@
 #
 # Polls the latest GitHub Release for a newer cosift binary, verifies it
 # (sha256 + minisign signature against a public key baked on the box),
-# snapshots the index to GCS, atomically swaps the binary, restarts the
-# service, and HEALTH-GATES the new process with automatic rollback.
+# atomically swaps the binary, restarts the service, and HEALTH-GATES the
+# new process with automatic rollback. Index recovery is covered by the
+# cosift-snapshot timer (4h cadence), not by this script.
 #
 # CI never holds the SSH key: the box pulls, CI only pushes signed releases.
 #
@@ -22,8 +23,7 @@
 #   COSIFT_PUBKEY        /etc/cosift/minisign.pub
 #   COSIFT_HEALTH_URL    http://127.0.0.1:7777/healthz
 #   COSIFT_ASSET         cosift-linux-arm64
-#   COSIFT_SNAPSHOT      /home/ubuntu/scripts/snapshot.sh   (best-effort)
-#   COSIFT_HEALTH_TIMEOUT_S  600   (10 min; HNSW load is ~4-5 min)
+#   COSIFT_HEALTH_TIMEOUT_S  600   (HNSW load grows with the graph; prod sets 1800 via the unit)
 #   COSIFT_HEALTH_INTERVAL_S 10
 #   GITHUB_TOKEN         (optional; raises the GitHub API rate limit)
 set -euo pipefail
@@ -34,7 +34,6 @@ SERVICE="${COSIFT_SERVICE:-cosift-serve}"
 PUBKEY="${COSIFT_PUBKEY:-/etc/cosift/minisign.pub}"
 HEALTH_URL="${COSIFT_HEALTH_URL:-http://127.0.0.1:7777/healthz}"
 ASSET="${COSIFT_ASSET:-cosift-linux-arm64}"
-SNAPSHOT="${COSIFT_SNAPSHOT:-/home/ubuntu/scripts/snapshot.sh}"
 HEALTH_TIMEOUT_S="${COSIFT_HEALTH_TIMEOUT_S:-600}"
 HEALTH_INTERVAL_S="${COSIFT_HEALTH_INTERVAL_S:-10}"
 API="https://api.github.com/repos/${REPO}/releases/latest"
@@ -124,6 +123,8 @@ fi
 tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
+# bash skips the EXIT trap on untrapped TERM — a systemd kill would leak $tmp
+trap 'exit 143' TERM INT
 
 log "downloading $ASSET, .sha256, .minisig"
 curl -fsSL "${auth_args[@]}" -o "$tmp/$ASSET"          "$bin_url"
@@ -157,16 +158,6 @@ dl_version="$("$tmp/$ASSET" version 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ -n "$dl_version" && "$(norm "$dl_version")" != "$(norm "$latest_tag")" ]]; then
   err "downloaded binary reports '$dl_version' but release tag is '$latest_tag' — refusing"
   exit 1
-fi
-
-# --- Pre-restart GCS snapshot (best-effort but logged) -------------------
-if [[ -x "$SNAPSHOT" ]]; then
-  log "taking pre-restart snapshot via $SNAPSHOT"
-  if ! "$SNAPSHOT"; then
-    err "snapshot failed; continuing with update (index is also recoverable from prior snapshot)"
-  fi
-else
-  log "snapshot script not executable at $SNAPSHOT; skipping pre-restart snapshot"
 fi
 
 # --- Atomic swap ---------------------------------------------------------

@@ -1,5 +1,5 @@
 [Unit]
-Description=cosift PULL-based self-updater (verify + snapshot + swap + health-gate + rollback)
+Description=cosift PULL-based self-updater (verify + swap + health-gate + rollback)
 # Don't poll until the box is on the network and the serve unit is up; the
 # updater health-gates the same service it restarts.
 After=network-online.target cosift-serve.service
@@ -17,14 +17,17 @@ Environment=COSIFT_BIN=/home/ubuntu/cosift
 Environment=COSIFT_SERVICE=cosift-serve
 Environment=COSIFT_PUBKEY=/etc/cosift/minisign.pub
 Environment=COSIFT_HEALTH_URL=http://127.0.0.1:7777/healthz
-Environment=COSIFT_SNAPSHOT=/home/ubuntu/scripts/snapshot.sh
+# HNSW load was measured at ~511s on the 2026-07-23 restart and grows ~4s/day;
+# 600 would auto-roll-back healthy releases within weeks.
+Environment=COSIFT_HEALTH_TIMEOUT_S=1800
 # Optional: drop a GITHUB_TOKEN here (or in a drop-in) to raise the API rate
 # limit. Public releases work unauthenticated, so it's not required.
 # Environment=GITHUB_TOKEN=
 ExecStart=/home/ubuntu/scripts/cosift-self-update.sh
-# The health gate plus a possible rollback can each take the full ~10 min
-# HNSW load window; give the unit generous headroom before systemd kills it.
-TimeoutStartSec=1500
+# Worst case is the health gate PLUS the rollback's second health gate
+# (2 × COSIFT_HEALTH_TIMEOUT_S), with headroom — never let systemd kill a
+# run mid-gate, or the new binary is left installed with no rollback.
+TimeoutStartSec=5400
 # A failed self-update (non-zero exit) is informational, not fatal for the
 # box — the running service is unaffected (or already rolled back).
 SuccessExitStatus=0
