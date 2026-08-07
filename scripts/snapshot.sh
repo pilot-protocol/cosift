@@ -8,6 +8,7 @@
 #   COSIFT_CONFIG       /home/ubuntu/cosift.json
 #   COSIFT_GCS_BUCKET   gs://pilot-cosift-index
 #   COSIFT_KEEP         14   (latest N snapshots; older are deleted)
+#   COSIFT_PIGZ_THREADS 8    (pigz compression threads)
 set -euo pipefail
 
 ADMIN_URL="${COSIFT_ADMIN_URL:-http://127.0.0.1:7777}"
@@ -32,6 +33,8 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# bash skips the EXIT trap on untrapped TERM — a systemd kill would orphan the checkpoint
+trap 'exit 143' TERM INT
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) snapshot: $*"; }
 
@@ -50,7 +53,7 @@ log "checkpoint dir: $ckpt"
 
 archive="$tmp/cosift-snapshot.tar.gz"
 log "tarring $ckpt + $CONFIG → $archive"
-tar -C "$(dirname "$ckpt")" -czf "$archive" \
+tar -C "$(dirname "$ckpt")" -I "pigz -p ${COSIFT_PIGZ_THREADS:-8}" -cf "$archive" \
     "$(basename "$ckpt")" \
     -C "$(dirname "$CONFIG")" "$(basename "$CONFIG")"
 size=$(stat -c%s "$archive")
