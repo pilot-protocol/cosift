@@ -129,6 +129,10 @@ func LoadHNSWMeta(ctx context.Context, ps *store.PebbleStore) (HNSWMeta, bool, e
 // (nil, false, nil) when no persisted index exists — callers should
 // build a fresh one in that case. Errors are reserved for actual decode
 // failures or storage I/O problems.
+// loadCheckEvery is the node cadence for the progress + ctx-cancel checks in
+// LoadHNSWProgress; a var (not const) so tests can lower it below the corpus.
+var loadCheckEvery uint64 = 100_000
+
 func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	return LoadHNSWProgress(ctx, ps, nil)
 }
@@ -163,7 +167,6 @@ func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(
 	var loaded, processed uint64
 	var skipped int
 	const logFirst = 5
-	const checkEvery = 100_000
 	err = ps.IterateVectorNodes(ctx, func(nodeID uint64, blob []byte) bool {
 		if int(nodeID) >= len(h.nodes) {
 			return true // out-of-bounds — skip silently
@@ -179,7 +182,7 @@ func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(
 		h.nodes[nodeID] = *n
 		loaded++
 		processed++
-		if processed%checkEvery == 0 {
+		if processed%loadCheckEvery == 0 {
 			if progress != nil {
 				progress(loaded, total)
 			}
