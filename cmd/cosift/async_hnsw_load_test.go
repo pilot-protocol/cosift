@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pilot-protocol/cosift/internal/index"
 )
@@ -107,5 +108,69 @@ func TestHealthzIndependentOfHNSWLoad(t *testing.T) {
 	srv.loadHNSWInto(context.Background(), f.ps, f.dim, f.hnsw.Len())
 	if srv.hnsw() == nil {
 		t.Fatalf("dense unavailable after load completed")
+	}
+}
+
+// The efSearch override and PQ-disabled branches apply cleanly on load.
+func TestLoadHNSWIntoEfSearchPQDisabled(t *testing.T) {
+	f := populatedPebbleStore(t)
+	if err := f.hnsw.Persist(context.Background(), f.ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	t.Setenv("COSIFT_HNSW_EF_SEARCH", "200")
+	t.Setenv("COSIFT_DISABLE_PQ", "true")
+
+	srv := &pebbleHTTP{}
+	srv.loadHNSWInto(context.Background(), f.ps, f.dim, f.hnsw.Len())
+	if srv.hnsw() == nil || srv.hnswLoadState.Load() != 2 {
+		t.Fatalf("expected ready graph, got state=%d", srv.hnswLoadState.Load())
+	}
+}
+
+// A store with no persisted graph resolves to the error state without publishing.
+func TestLoadHNSWIntoNoGraph(t *testing.T) {
+	f := populatedPebbleStore(t) // deliberately NOT persisted → no HNSW meta on disk
+	srv := &pebbleHTTP{}
+	srv.loadHNSWInto(context.Background(), f.ps, f.dim, 0)
+	if srv.hnsw() != nil {
+		t.Fatalf("no graph should be published")
+	}
+	if srv.hnswLoadState.Load() != 3 {
+		t.Fatalf("state = %d, want 3 (error)", srv.hnswLoadState.Load())
+	}
+}
+
+// A cancelled context aborts loadHNSWInto without publishing a graph.
+func TestLoadHNSWIntoAborts(t *testing.T) {
+	f := populatedPebbleStore(t)
+	if err := f.hnsw.Persist(context.Background(), f.ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	srv := &pebbleHTTP{}
+	srv.loadHNSWInto(ctx, f.ps, f.dim, f.hnsw.Len())
+	if srv.hnsw() != nil {
+		t.Fatalf("aborted load must not publish a graph")
+	}
+}
+
+// While loading, the snapshot reports percent and a rate-based ETA.
+func TestHNSWLoadSnapshotLoading(t *testing.T) {
+	srv := &pebbleHTTP{}
+	srv.hnswLoadState.Store(1)
+	srv.hnswLoadStart.Store(time.Now().Add(-10 * time.Second).UnixNano())
+	srv.hnswTotal.Store(1000)
+	srv.hnswLoaded.Store(250)
+
+	snap := srv.hnswLoadSnapshot()
+	if snap["state"] != "loading" {
+		t.Fatalf("state = %v, want loading", snap["state"])
+	}
+	if pct, _ := snap["pct"].(float64); pct != 25 {
+		t.Fatalf("pct = %v, want 25", snap["pct"])
+	}
+	if _, ok := snap["eta_s"].(float64); !ok {
+		t.Fatalf("expected an eta_s while loading")
 	}
 }
