@@ -33,10 +33,10 @@ func (stubReranker) Rerank(_ context.Context, _ string, _ []rerank.Candidate) ([
 // explicit ?retriever / ?rerank overrides always win.
 func TestApplyLLMEndpointDefaults(t *testing.T) {
 	denseReadySrv := &pebbleHTTP{
-		hnsw:     index.NewHNSW(4),
 		embedder: stubEmbedder{},
 		reranker: stubReranker{},
 	}
+	denseReadySrv.hnswAt.Store(index.NewHNSW(4))
 	noDenseSrv := &pebbleHTTP{reranker: stubReranker{}}
 	bareSrv := &pebbleHTTP{}
 

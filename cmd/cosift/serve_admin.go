@@ -30,16 +30,16 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if s.hnsw == nil {
+	if s.hnsw() == nil {
 		writeProblem(w, http.StatusBadRequest, "pq-encode: no HNSW loaded")
 		return
 	}
-	if !s.hnsw.HasPQ() {
+	if !s.hnsw().HasPQ() {
 		writeProblem(w, http.StatusBadRequest, "pq-encode: no codebook loaded — run /admin/pq-train first")
 		return
 	}
 	t0 := time.Now()
-	ids, codes, err := s.hnsw.EncodeMissing()
+	ids, codes, err := s.hnsw().EncodeMissing()
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "encode: "+err.Error())
 		return
@@ -48,14 +48,14 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 	if len(ids) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"encoded":       0,
-			"total":         s.hnsw.Len(),
+			"total":         s.hnsw().Len(),
 			"already_full":  true,
 			"total_elapsed": encodeElapsed.String(),
 		})
 		return
 	}
 	// Persist freshly-encoded codes in a single batch.
-	pq := s.hnsw.PQStatus()
+	pq := s.hnsw().PQStatus()
 	cb := &index.PQCodebook{Dim: pq.Dim, M: pq.M, K: pq.K, SubDim: pq.Dim / pq.M}
 	entries := make([]store.PQCodeEntry, len(ids))
 	for i := range ids {
@@ -67,7 +67,7 @@ func (s *pebbleHTTP) handlePQEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	persistElapsed := time.Since(persistT0)
-	total := s.hnsw.Len()
+	total := s.hnsw().Len()
 	coverage := 100.0 * float64(pq.NodesWithCode+len(ids)) / float64(total)
 	totalElapsed := time.Since(t0)
 	log.Printf("pq-encode: backfilled %d codes in %s (persist %s, total %s) → coverage %.1f%%",
@@ -125,7 +125,7 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if s.hnsw == nil || s.hnsw.Len() == 0 {
+	if s.hnsw() == nil || s.hnsw().Len() == 0 {
 		writeProblem(w, http.StatusBadRequest, "pq-train requires an in-memory HNSW with nodes")
 		return
 	}
@@ -165,8 +165,8 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 	}
 	t0 := time.Now()
 	log.Printf("pq-train: sampling %d / %d vectors (dim=%d, M=%d, K=%d, iters=%d, parallel=%d)",
-		req.SampleSize, s.hnsw.Len(), dim, M, req.K, req.Iters, req.Parallel)
-	sample := s.hnsw.SampleVectors(req.SampleSize, time.Now().UnixNano())
+		req.SampleSize, s.hnsw().Len(), dim, M, req.K, req.Iters, req.Parallel)
+	sample := s.hnsw().SampleVectors(req.SampleSize, time.Now().UnixNano())
 	sampledN := len(sample)
 	log.Printf("pq-train: training codebook on %d samples...", sampledN)
 	cb, err := index.TrainPQCodebookParallel(sample, dim, M, req.K, req.Iters, req.Parallel, time.Now().UnixNano())
@@ -181,8 +181,8 @@ func (s *pebbleHTTP) handlePQTrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encodeT0 := time.Now()
-	log.Printf("pq-train: encoding %d nodes...", s.hnsw.Len())
-	ids, codes, err := s.hnsw.EncodeAll(cb)
+	log.Printf("pq-train: encoding %d nodes...", s.hnsw().Len())
+	ids, codes, err := s.hnsw().EncodeAll(cb)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "encode: "+err.Error())
 		return
@@ -353,7 +353,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if s.hnsw == nil {
+	if s.hnsw() == nil {
 		writeProblem(w, http.StatusNotImplemented, "hnsw-compact requires a loaded HNSW graph")
 		return
 	}
@@ -362,11 +362,11 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	skipPersist := r.URL.Query().Get("skip_persist") == "1"
 
-	before := s.hnsw.Len()
+	before := s.hnsw().Len()
 	t0 := time.Now()
-	removed := s.hnsw.Compact()
+	removed := s.hnsw().Compact()
 	compactDur := time.Since(t0)
-	after := s.hnsw.Len()
+	after := s.hnsw().Len()
 
 	resp := map[string]any{
 		"nodes_before": before,
@@ -397,7 +397,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, resp)
 		return
 	}
-	if err := s.hnsw.Persist(ctx, s.store); err != nil {
+	if err := s.hnsw().Persist(ctx, s.store); err != nil {
 		resp["persist_error"] = "persist: " + err.Error()
 		writeJSON(w, http.StatusInternalServerError, resp)
 		return
@@ -496,7 +496,7 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if s.embedder == nil || s.hnsw == nil {
+	if s.embedder == nil || s.hnsw() == nil {
 		writeProblem(w, http.StatusNotImplemented, "embed backfill requires both an embedder and HNSW graph to be configured")
 		return
 	}
@@ -529,7 +529,7 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 			if req.Limit > 0 && missing.Load() >= int64(req.Limit) {
 				return errors.New("limit reached") // sentinel — stops IterDocsLite
 			}
-			if _, ok := s.hnsw.LookupVectorByURL(url); ok {
+			if _, ok := s.hnsw().LookupVectorByURL(url); ok {
 				return nil // already has vectors
 			}
 			missing.Add(1)
@@ -569,7 +569,7 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 					continue
 				}
 				for j, ch := range chunks {
-					s.hnsw.AddPassage(doc.URL, doc.Title, ch.Offset, ch.Length, vecs[j])
+					s.hnsw().AddPassage(doc.URL, doc.Title, ch.Offset, ch.Length, vecs[j])
 					_ = j
 				}
 				embedded.Add(1)
@@ -585,7 +585,7 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 	persisted := false
 	var persistErr string
 	if s.store != nil && embedded.Load() > 0 {
-		if err := s.hnsw.Persist(context.Background(), s.store); err != nil {
+		if err := s.hnsw().Persist(context.Background(), s.store); err != nil {
 			persistErr = err.Error()
 			log.Printf("embed-backfill: hnsw persist FAILED: %v", err)
 		} else {

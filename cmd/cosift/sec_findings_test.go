@@ -126,7 +126,7 @@ func TestEmbedBackfillPersistsHNSW(t *testing.T) {
 	mock := openaiTestServer(t)
 	srv := f.makeServer(mock)
 	// Start from an empty graph so every corpus doc counts as missing.
-	srv.hnsw = index.NewHNSW(f.dim)
+	srv.hnswAt.Store(index.NewHNSW(f.dim))
 
 	ctx := context.Background()
 	if _, ok, err := index.LoadHNSWMeta(ctx, f.ps); err != nil {
@@ -158,7 +158,7 @@ func TestEmbedBackfillPersistsHNSW(t *testing.T) {
 	if !resp.Persisted {
 		t.Fatalf("handler reported persisted=false (err=%q)", resp.PersistError)
 	}
-	if srv.hnsw.Len() == 0 {
+	if srv.hnsw().Len() == 0 {
 		t.Fatalf("in-memory graph is empty after backfill")
 	}
 
@@ -169,8 +169,8 @@ func TestEmbedBackfillPersistsHNSW(t *testing.T) {
 	if !ok {
 		t.Fatalf("backfilled vectors were not persisted to the store")
 	}
-	if loaded.Len() != srv.hnsw.Len() {
+	if loaded.Len() != srv.hnsw().Len() {
 		t.Fatalf("persisted graph has %d nodes, in-memory has %d",
-			loaded.Len(), srv.hnsw.Len())
+			loaded.Len(), srv.hnsw().Len())
 	}
 }

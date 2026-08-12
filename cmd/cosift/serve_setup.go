@@ -82,73 +82,18 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			return false
 		})
 	}
-	// Loading is
-	// gigabytes of RAM at production scale (10M vectors × 1536 dim ≈ 60GB),
-	// so it's opt-in. When the env var isn't set we just keep the cheap meta
-	// snapshot from and operators see has_vectors=true.
-	var hnswGraph *index.HNSW
-	if hasVectors && os.Getenv("COSIFT_LOAD_HNSW") == "true" {
-		g, ok, err := index.LoadHNSW(ctx, ps)
-		switch {
-		case err != nil:
-			log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but LoadHNSW failed: %v", err)
-		case !ok:
-			log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but no HNSW meta on store")
-		default:
-			hnswGraph = g
-			log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d", g.Len(), vectorDim)
-			// Default 50 from NewHNSW
-			// underfits big graphs grown via AddPassage; raising to ~200
-			// restored Recall@10 from 0.47 to ~0.85 on the 800K-vector
-			// production corpus without a graph rebuild.
-			if v := os.Getenv("COSIFT_HNSW_EF_SEARCH"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					g.SetEfSearch(n)
-					log.Printf("pebble-serve: HNSW efSearch override = %d", n)
-				}
-			}
-			// if a PQ codebook + codes exist in this store, wire
-			// them so /search uses asymmetric PQ distance (much faster on
-			// large graphs). When absent, search falls back to raw vectors.
-			//
-			// bench-pq exposed that PQ on this dim=768 corpus drops
-			// Recall@10 from ~0.89 to ~0.60 — the 32× compression has a
-			// recall cost that may exceed the speed benefit. Operators can
-			// keep the codes on disk but disable the runtime path by setting
-			// COSIFT_DISABLE_PQ=true.
-			if os.Getenv("COSIFT_DISABLE_PQ") == "true" {
-				log.Printf("pebble-serve: PQ disabled via COSIFT_DISABLE_PQ — using raw vectors for search")
-			} else if cb, cbOK, _ := index.LoadPQCodebook(ctx, ps); cbOK {
-				codes := make([][]uint16, g.Len())
-				loaded := 0
-				if err := ps.IteratePQCodes(ctx, func(nodeID uint64, blob []byte) bool {
-					if int(nodeID) >= len(codes) {
-						return true
-					}
-					// codebook-aware decode handles both byte-packed
-					// (new, K≤256) and uint16 LE (legacy) blob shapes.
-					code, err := cb.DecodeCodeBlob(blob)
-					if err != nil || len(code) != cb.M {
-						return true
-					}
-					codes[int(nodeID)] = code
-					loaded++
-					return true
-				}); err != nil {
-					log.Printf("pebble-serve: PQ codes iterate failed: %v — falling back to raw vectors", err)
-				} else {
-					g.UsePQ(cb, codes)
-					log.Printf("pebble-serve: PQ search enabled (codebook: dim=%d M=%d K=%d, codes=%d/%d)",
-						cb.Dim, cb.M, cb.K, loaded, g.Len())
-				}
-			}
-		}
-	}
+	// The full graph is loaded asynchronously (loadHNSWInto, launched after
+	// the listener binds) so the O(N) decode of millions of nodes no longer
+	// blocks startup: search serves BM25 immediately and dense flips on when
+	// the load completes. Loading is opt-in (gigabytes of RAM at production
+	// scale, 10M vectors × 1536 dim ≈ 60GB) via COSIFT_LOAD_HNSW; when unset
+	// we keep only the cheap meta snapshot and operators still see has_vectors.
+	willLoadHNSW := hasVectors && os.Getenv("COSIFT_LOAD_HNSW") == "true"
 	if hasVectors {
 		if vectorNodes > 0 {
 			suffix := "(graph not loaded into memory; set COSIFT_LOAD_HNSW=true to load)"
-			if hnswGraph != nil {
-				suffix = "(graph loaded)"
+			if willLoadHNSW {
+				suffix = "(loading into memory in background)"
 			}
 			log.Printf("pebble-serve: HNSW index present: %d nodes, dim=%d %s", vectorNodes, vectorDim, suffix)
 		} else {
@@ -237,7 +182,6 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		hasVectors:   hasVectors,
 		vectorDim:    vectorDim,
 		vectorNodes:  vectorNodes,
-		hnsw:         hnswGraph,
 		started:      time.Now(),
 		authority:    scorer,
 		// capture doc count at startup so /stats can compute
@@ -681,29 +625,147 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	// Reuses ps + srv.hnsw + srv.embedder. The
-	// crawler.Crawler uses concurrency from cfg.Crawler.MaxConcurrent. Vectors
-	// land into the SAME HNSW pointer that /search reads from, so freshly
-	// crawled content is searchable as soon as AddPassage returns.
-	// Checkpoint goroutine persists the graph every crawlCheckpoint.
-	// collect a WaitGroup of crawler goroutines so the final
-	// HNSW persist runs BEFORE ps.Close() — fixes a 'pebble: closed' panic.
-	var crawlWG sync.WaitGroup
-	if *crawlSeeds != "" {
-		if err := srv.startInProcessCrawl(ctx, ps, *crawlSeeds, *crawlCheckpoint, cfg, &crawlWG); err != nil {
-			log.Printf("pebble-serve: in-process crawler not started: %v", err)
+	// Load the HNSW graph and start the crawler in the background so the
+	// listener (below) binds immediately — the O(N) graph decode used to
+	// block startup for tens of minutes. The crawler starts only AFTER the
+	// load resolves: it mutates and incrementally persists the SAME graph
+	// /search reads, and its fresh-empty fallback (startInProcessCrawl) would
+	// otherwise persist over the real on-disk nodes if it ran mid-load.
+	// bgWG tracks the loader goroutine; crawlWG tracks the crawler goroutines
+	// so their final HNSW persist runs BEFORE the deferred ps.Close() (a
+	// 'pebble: closed' panic otherwise). Waiting bgWG before crawlWG ensures
+	// every crawlWG.Add has happened before crawlWG.Wait observes the count.
+	var crawlWG, bgWG sync.WaitGroup
+	bgWG.Add(1)
+	go func() {
+		defer bgWG.Done()
+		if willLoadHNSW {
+			srv.loadHNSWInto(ctx, ps, vectorDim, vectorNodes)
 		}
-	}
+		if ctx.Err() != nil {
+			return // shutting down — don't start the crawler
+		}
+		if *crawlSeeds != "" {
+			if err := srv.startInProcessCrawl(ctx, ps, *crawlSeeds, *crawlCheckpoint, cfg, &crawlWG); err != nil {
+				log.Printf("pebble-serve: in-process crawler not started: %v", err)
+			}
+		}
+	}()
 
+	log.Printf("pebble-serve: listening on %s — BM25 serving now; HNSW warms in background", *addr)
 	servErr := httpSrv.ListenAndServe()
-	// wait for crawler + checkpoint goroutines to finish their
-	// final persist before the deferred ps.Close() runs. Otherwise Persist
-	// can race ps.Close() and panic.
-	crawlWG.Wait()
+	bgWG.Wait()    // loader goroutine (and its crawler-start decision) done
+	crawlWG.Wait() // crawler final persist before the deferred ps.Close()
 	if servErr != nil && servErr != http.ErrServerClosed {
 		return servErr
 	}
 	return nil
+}
+
+// hnsw returns the loaded HNSW graph, or nil if it is not (yet) loaded. Safe
+// to call from any goroutine; the pointer only ever transitions nil → graph.
+func (s *pebbleHTTP) hnsw() *index.HNSW { return s.hnswAt.Load() }
+
+// hnswLoadSnapshot reports async-load progress for /stats: state plus, while
+// loading, loaded/total nodes, percent, elapsed and a rate-based ETA.
+func (s *pebbleHTTP) hnswLoadSnapshot() map[string]any {
+	state := s.hnswLoadState.Load()
+	names := map[int32]string{0: "none", 1: "loading", 2: "ready", 3: "error"}
+	m := map[string]any{"state": names[state]}
+	loaded, total := s.hnswLoaded.Load(), s.hnswTotal.Load()
+	m["loaded"], m["total"] = loaded, total
+	if total > 0 {
+		m["pct"] = 100 * float64(loaded) / float64(total)
+	}
+	if startN := s.hnswLoadStart.Load(); startN > 0 && state == 1 {
+		elapsed := time.Since(time.Unix(0, startN)).Seconds()
+		m["elapsed_s"] = elapsed
+		if elapsed > 0 && loaded > 0 && total > loaded {
+			m["eta_s"] = (float64(total) - float64(loaded)) / (float64(loaded) / elapsed)
+		}
+	}
+	return m
+}
+
+// loadHNSWInto decodes the persisted graph into memory (with progress logging),
+// wires efSearch/PQ, then atomically publishes it. Runs in a background
+// goroutine after the listener binds. Aborts cleanly if ctx is cancelled.
+func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, vectorDim, vectorNodes int) {
+	s.hnswLoadState.Store(1) // loading
+	s.hnswLoadStart.Store(time.Now().UnixNano())
+	s.hnswTotal.Store(uint64(vectorNodes))
+	start := time.Now()
+	g, ok, err := index.LoadHNSWProgress(ctx, ps, func(loaded, total uint64) {
+		s.hnswLoaded.Store(loaded)
+		if total == 0 {
+			return
+		}
+		el := time.Since(start).Seconds()
+		var rate, eta float64
+		if el > 0 {
+			rate = float64(loaded) / el
+		}
+		if rate > 0 {
+			eta = float64(total-loaded) / rate
+		}
+		log.Printf("pebble-serve: HNSW load: %.1f%% (%d/%d nodes, %.0fs elapsed, %.0f nodes/s, ETA ~%.0fs)",
+			100*float64(loaded)/float64(total), loaded, total, el, rate, eta)
+	})
+	switch {
+	case ctx.Err() != nil:
+		log.Printf("pebble-serve: HNSW load aborted (shutdown): %v", ctx.Err())
+		return
+	case err != nil:
+		s.hnswLoadState.Store(3)
+		log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but LoadHNSW failed: %v", err)
+		return
+	case !ok:
+		s.hnswLoadState.Store(3)
+		log.Printf("pebble-serve: COSIFT_LOAD_HNSW=true but no HNSW meta on store")
+		return
+	}
+	// Default 50 from NewHNSW underfits big graphs grown via AddPassage;
+	// raising to ~200 restored Recall@10 from 0.47 to ~0.85 on the 800K-vector
+	// production corpus without a graph rebuild.
+	if v := os.Getenv("COSIFT_HNSW_EF_SEARCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			g.SetEfSearch(n)
+			log.Printf("pebble-serve: HNSW efSearch override = %d", n)
+		}
+	}
+	// Wire a PQ codebook + codes if present so /search uses asymmetric PQ
+	// distance. bench-pq showed PQ on this dim=768 corpus drops Recall@10 from
+	// ~0.89 to ~0.60, so operators can keep codes on disk but disable the
+	// runtime path via COSIFT_DISABLE_PQ=true.
+	if os.Getenv("COSIFT_DISABLE_PQ") == "true" {
+		log.Printf("pebble-serve: PQ disabled via COSIFT_DISABLE_PQ — using raw vectors for search")
+	} else if cb, cbOK, _ := index.LoadPQCodebook(ctx, ps); cbOK {
+		codes := make([][]uint16, g.Len())
+		loaded := 0
+		if err := ps.IteratePQCodes(ctx, func(nodeID uint64, blob []byte) bool {
+			if int(nodeID) >= len(codes) {
+				return true
+			}
+			code, err := cb.DecodeCodeBlob(blob)
+			if err != nil || len(code) != cb.M {
+				return true
+			}
+			codes[int(nodeID)] = code
+			loaded++
+			return true
+		}); err != nil {
+			log.Printf("pebble-serve: PQ codes iterate failed: %v — falling back to raw vectors", err)
+		} else {
+			g.UsePQ(cb, codes)
+			log.Printf("pebble-serve: PQ search enabled (codebook: dim=%d M=%d K=%d, codes=%d/%d)",
+				cb.Dim, cb.M, cb.K, loaded, g.Len())
+		}
+	}
+	s.hnswAt.Store(g)
+	s.hnswLoaded.Store(uint64(g.Len()))
+	s.hnswLoadState.Store(2) // ready
+	log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d (%.0fs)",
+		g.Len(), vectorDim, time.Since(start).Seconds())
 }
 
 // startInProcessCrawl wires the crawler-inside-serve flow. Bumps
@@ -732,10 +794,14 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 
 	// Ensure HNSW is non-nil so the bridge can call AddPassage. /search reads
 	// the same pointer, so growth is immediately searchable.
-	if s.hnsw == nil {
-		s.hnsw = index.NewHNSW(s.embedder.Dim())
+	if s.hnsw() == nil {
+		s.hnswAt.Store(index.NewHNSW(s.embedder.Dim()))
 		log.Printf("in-serve crawler: created fresh HNSW (dim=%d)", s.embedder.Dim())
 	}
+	// The graph pointer is fixed for the crawler's lifetime (published once by
+	// the loader before this runs, or freshly created just above), so snapshot
+	// it once rather than re-loading the atomic on every checkpoint tick.
+	g := s.hnsw()
 
 	c := crawler.NewWithBackend(cfg.Crawler, ps, index.NewPebbleBM25(ps))
 	// crawler embedder is wrapped in a semaphore-throttled
@@ -788,7 +854,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	log.Printf("pebble-serve: crawler embed = throttle(%d) → batch(max=%d, wait=%s) → round-robin → backends; search bypasses batcher",
 		crawlEmbedCap, batchMax, batchWait)
 	c = c.WithEmbedder(crawlEmbedder)
-	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: s.hnsw})
+	c = c.WithPassageWriter(&hnswPassageWriter{ps: ps, hnsw: g})
 	// Single-node config
 	// (NumShards <= 1) makes route fn a no-op (every URL ownsLocally).
 	// s.cluster was stamped at server-init time so search-only nodes also
@@ -848,18 +914,18 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		defer wg.Done()
 		t := time.NewTicker(ckpEvery)
 		defer t.Stop()
-		lastN := s.hnsw.Len()
+		lastN := g.Len()
 		if lastN > 0 {
 			log.Printf("in-serve crawler: checkpoint baseline = %d nodes (loaded from disk)", lastN)
 		}
 		for {
 			select {
 			case <-ctx.Done():
-				n := s.hnsw.Len()
+				n := g.Len()
 				if n > 0 {
 					t0 := time.Now()
 					log.Printf("in-serve crawler: final HNSW persist at shutdown (%d nodes, full)", n)
-					if err := s.hnsw.Persist(context.Background(), ps); err != nil {
+					if err := g.Persist(context.Background(), ps); err != nil {
 						log.Printf("in-serve crawler: final HNSW persist failed: %v", err)
 					} else {
 						log.Printf("in-serve crawler: final HNSW persist complete in %s", time.Since(t0))
@@ -867,7 +933,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 				}
 				return
 			case <-t.C:
-				n := s.hnsw.Len()
+				n := g.Len()
 				if n == 0 || n == lastN {
 					continue
 				}
@@ -882,7 +948,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 					continue
 				}
 				t0 := time.Now()
-				if err := s.hnsw.PersistFrom(context.Background(), ps, lastN); err != nil {
+				if err := g.PersistFrom(context.Background(), ps, lastN); err != nil {
 					log.Printf("in-serve crawler: HNSW persist (incremental from %d) failed: %v", lastN, err)
 					continue
 				}
@@ -890,8 +956,8 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 				// encoded PQ codes for nodes [lastN, n). Skipped silently
 				// when no codebook is loaded.
 				pqWritten := 0
-				if s.hnsw.HasPQ() {
-					if w, err := s.hnsw.PersistPQCodesFrom(context.Background(), ps, lastN); err != nil {
+				if g.HasPQ() {
+					if w, err := g.PersistPQCodesFrom(context.Background(), ps, lastN); err != nil {
 						log.Printf("in-serve crawler: PQ codes persist failed: %v", err)
 					} else {
 						pqWritten = w
@@ -1110,12 +1176,19 @@ type pebbleHTTP struct {
 	// surface dim + node count too. Cheap 20-byte read at startup.
 	vectorDim   int
 	vectorNodes int
-	// Loaded
-	// only when COSIFT_LOAD_HNSW=true at startup (gigabytes RAM at scale).
-	// Nil = graph not loaded; /search?retriever=dense returns a warning.
-	hnsw *index.HNSW
+	// Loaded only when COSIFT_LOAD_HNSW=true, asynchronously after the
+	// listener binds. Published once (nil → graph) by the loader goroutine
+	// and read concurrently by live search handlers, so access is atomic;
+	// read it via s.hnsw(). Nil = not (yet) loaded; dense degrades to BM25.
+	hnswAt atomic.Pointer[index.HNSW]
+	// Async HNSW load progress, surfaced in /stats and periodic logs.
+	// state: 0=none/disabled, 1=loading, 2=ready, 3=error.
+	hnswLoadState atomic.Int32
+	hnswLoadStart atomic.Int64 // unix nanos; 0 until the load begins
+	hnswLoaded    atomic.Uint64
+	hnswTotal     atomic.Uint64
 	// Required by
-	// /search?retriever=dense alongside s.hnsw. Built at startup when
+	// /search?retriever=dense alongside the HNSW graph. Built at startup when
 	// cfg.Embeddings.Model is set. Nil → ?retriever=dense warns + falls back.
 	embedder embed.Embedder
 

@@ -705,7 +705,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Reranker still scores against the original q regardless of strategy.
 	expandMode := r.URL.Query().Get("expand")
 	retrieverParam := r.URL.Query().Get("retriever")
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	hits, effectiveQuery, err := s.retrieve(r.Context(), q, fetchK, retrieverParam, expandMode)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
@@ -838,7 +838,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// dense/hybrid path. Composes after rerank — rerank gives quality
 	// ordering, MMR diversifies it. warningsFor() handles the silent
 	// fall-through when MMR was requested but couldn't fire.
-	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && len(out) > 1 && s.hnsw != nil {
+	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && len(out) > 1 && s.hnsw() != nil {
 		var qVec []float32
 		// Hybrid/dense path already embedded the query — try to reuse it.
 		// For BM25-only path we need to embed q if an embedder is configured.
@@ -850,7 +850,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if len(qVec) > 0 {
 			hitVecs := make([][]float32, len(out))
 			for i := range out {
-				if v, ok := s.hnsw.LookupVectorByURL(out[i].URL); ok {
+				if v, ok := s.hnsw().LookupVectorByURL(out[i].URL); ok {
 					hitVecs[i] = v
 				}
 			}
@@ -875,7 +875,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// mmr suffix when diversification actually fired (HNSW loaded
 	// + embedder available). Same conditional as the apply site above —
 	// the label tracks the real pipeline.
-	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && s.hnsw != nil && s.embedder != nil && mmrLambda < 1.0 {
+	if mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr")); mmrSet && s.hnsw() != nil && s.embedder != nil && mmrLambda < 1.0 {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
 	}
 	// decay suffix when time-decay was applied.
@@ -1106,8 +1106,8 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	// warningsFor() flags it (carves out the URL-mode-no-embedder
 	// case so the warning isn't misleading).
 	retrieverParam := r.URL.Query().Get("retriever")
-	useDense := retrieverParam == "dense" && s.hnsw != nil
-	useHybrid := retrieverParam == "hybrid" && s.hnsw != nil
+	useDense := retrieverParam == "dense" && s.hnsw() != nil
+	useHybrid := retrieverParam == "hybrid" && s.hnsw() != nil
 	var (
 		hits       []index.Hit
 		denseFired bool
@@ -1118,7 +1118,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	// produced a usable vector.
 	getQueryVec := func() ([]float32, bool) {
 		if srcURL != "" {
-			if v, ok := s.hnsw.LookupVectorByURL(srcURL); ok {
+			if v, ok := s.hnsw().LookupVectorByURL(srcURL); ok {
 				return v, true
 			}
 		}
@@ -1135,7 +1135,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	if useDense {
 		if queryVec, ok := getQueryVec(); ok {
-			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
+			vhits := s.hnsw().Search(r.Context(), queryVec, fetchK)
 			hits = make([]index.Hit, len(vhits))
 			for i, vh := range vhits {
 				hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
@@ -1153,7 +1153,7 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		}
 		bm25Fired = true
 		if queryVec, ok := getQueryVec(); ok {
-			vhits := s.hnsw.Search(r.Context(), queryVec, fetchK)
+			vhits := s.hnsw().Search(r.Context(), queryVec, fetchK)
 			denseHits := s.applyAuthorityToDense(vhits)
 			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits})
 			if len(hits) > fetchK {
@@ -1266,11 +1266,11 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 	// the right anchor for "find similar but diverse".
 	mmrLambda, mmrSet := parseMMRLambda(r.URL.Query().Get("mmr"))
 	mmrFired := false
-	if mmrSet && len(cands) > 1 && s.hnsw != nil {
+	if mmrSet && len(cands) > 1 && s.hnsw() != nil {
 		if qVec, ok := getQueryVec(); ok {
 			hitVecs := make([][]float32, len(cands))
 			for i, c := range cands {
-				if v, vok := s.hnsw.LookupVectorByURL(c.hit.URL); vok {
+				if v, vok := s.hnsw().LookupVectorByURL(c.hit.URL); vok {
 					hitVecs[i] = v
 				}
 			}
@@ -1497,7 +1497,7 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 			fallback = "BM25-MLT"
 		}
 		switch {
-		case s.hnsw == nil:
+		case s.hnsw() == nil:
 			w = append(w, "retriever="+rv+" requested but HNSW graph not loaded (set COSIFT_LOAD_HNSW=true at server start) — fell back to "+fallback)
 		case s.embedder == nil && !isFindSimilarURLMode:
 			w = append(w, "retriever="+rv+" requested but no embedder configured (set cfg.Embeddings.Model) — fell back to "+fallback)
@@ -1513,7 +1513,7 @@ func (s *pebbleHTTP) warningsFor(r *http.Request) []string {
 		isFindSimilarURLMode := strings.HasSuffix(r.URL.Path, "/find_similar") && r.URL.Query().Get("url") != ""
 		if _, ok := parseMMRLambda(raw); !ok {
 			w = append(w, "mmr="+raw+" is not a float in [0,1] — diversification skipped")
-		} else if s.hnsw == nil {
+		} else if s.hnsw() == nil {
 			w = append(w, "mmr requires HNSW graph (set COSIFT_LOAD_HNSW=true at server start) — diversification skipped")
 		} else if s.embedder == nil && !isFindSimilarURLMode {
 			w = append(w, "mmr requires an embedder to vectorize the query (set cfg.Embeddings.Model) — diversification skipped")
@@ -1731,7 +1731,7 @@ func mmrSelect(qVec []float32, hits []searchHit, hitVecs [][]float32, lambda flo
 // no embedder, embed failed, λ≥1, single-element pool). Shared by /answer
 // and /research synth endpoints.
 func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q string, lambda float64) []int {
-	if s.hnsw == nil || s.embedder == nil || len(urls) <= 1 || lambda >= 1.0 {
+	if s.hnsw() == nil || s.embedder == nil || len(urls) <= 1 || lambda >= 1.0 {
 		return nil
 	}
 	vecs, err := s.embedder.Embed(ctx, []string{q})
@@ -1740,7 +1740,7 @@ func (s *pebbleHTTP) applyMMRPermutation(ctx context.Context, urls []string, q s
 	}
 	hitVecs := make([][]float32, len(urls))
 	for i, u := range urls {
-		if v, ok := s.hnsw.LookupVectorByURL(u); ok {
+		if v, ok := s.hnsw().LookupVectorByURL(u); ok {
 			hitVecs[i] = v
 		}
 	}
@@ -1789,7 +1789,7 @@ func (s *pebbleHTTP) buildRetrieverLabel(retrieverParam, expandMode string, dens
 // Operators retain full control: ?retriever=bm25|dense|hybrid and
 // ?rerank=true|false|1|0 override either default.
 func (s *pebbleHTTP) applyLLMEndpointDefaults(retrieverParam, rerankParam string) (string, bool) {
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	if retrieverParam == "" && denseReady {
 		retrieverParam = "hybrid"
 	}
@@ -1847,14 +1847,14 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 // pass it in without shallow-copying the whole pebbleHTTP (which embeds
 // mutexes — copying it trips go vet's lock-copy check and is unsafe).
 func (s *pebbleHTTP) retrieveWith(ctx context.Context, idx *index.PebbleBM25, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	switch {
 	case retrieverParam == "dense" && denseReady:
 		vecs, err := s.embedder.Embed(ctx, []string{q})
 		if err != nil {
 			return nil, "", fmt.Errorf("embedder: %w", err)
 		}
-		vhits := s.hnsw.Search(ctx, vecs[0], fetchK)
+		vhits := s.hnsw().Search(ctx, vecs[0], fetchK)
 		hits := s.applyAuthorityToDense(vhits)
 		return hits, q, nil
 	case retrieverParam == "hybrid" && denseReady:
@@ -1866,7 +1866,7 @@ func (s *pebbleHTTP) retrieveWith(ctx context.Context, idx *index.PebbleBM25, q 
 		if embErr != nil {
 			return nil, "", fmt.Errorf("embedder: %w", embErr)
 		}
-		denseV := s.hnsw.Search(ctx, vecs[0], fetchK)
+		denseV := s.hnsw().Search(ctx, vecs[0], fetchK)
 		denseHits := s.applyAuthorityToDense(denseV)
 		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits})
 		if len(hits) > fetchK {
