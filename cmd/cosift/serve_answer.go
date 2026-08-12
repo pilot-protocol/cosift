@@ -579,7 +579,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
 	}
 	// same retriever label vocabulary as /search.
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, effectiveQuery != q, wantRerank)
 	if mmrFired {
 		retrieverLabel += fmt.Sprintf("+mmr:%.2f", mmrLambda)
@@ -1244,7 +1244,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	// single effectiveQuery, so "expansion fired" is approximated by intent:
 	// chat is up and expandMode requested it. Matches what warningsFor() uses
 	// to decide whether to flag a silent no-op.
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	expandFired := expandMode != "" && s.chat != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandFired, wantRerank)
 	if mmrFired {
@@ -1350,7 +1350,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		r.URL.Query().Get("retriever"),
 		r.URL.Query().Get("rerank"),
 	)
-	denseReady := s.hnsw != nil && s.embedder != nil
+	denseReady := s.hnsw() != nil && s.embedder != nil
 	retrieverLabel := s.buildRetrieverLabel(retrieverParam, expandMode, denseReady, expandMode != "", wantRerank)
 
 	// surface the active expansion strategy on the plan event so

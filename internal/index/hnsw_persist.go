@@ -130,6 +130,14 @@ func LoadHNSWMeta(ctx context.Context, ps *store.PebbleStore) (HNSWMeta, bool, e
 // build a fresh one in that case. Errors are reserved for actual decode
 // failures or storage I/O problems.
 func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
+	return LoadHNSWProgress(ctx, ps, nil)
+}
+
+// LoadHNSWProgress is LoadHNSW with an optional progress callback invoked
+// periodically with (loaded, total) node counts as the graph decodes. It also
+// checks ctx on the same cadence and aborts early (returning ctx.Err()) so a
+// shutdown mid-load doesn't block for the full O(N) decode. progress may be nil.
+func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(loaded, total uint64)) (*HNSW, bool, error) {
 	metaBlob, ok, err := ps.GetVectorMeta(ctx)
 	if err != nil {
 		return nil, false, err
@@ -151,8 +159,11 @@ func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 	// slot at its zero value — same shape as a zombie node, which the Search
 	// path already filters via len(vec) == 0. Log the first few so they're
 	// visible without flooding the journal, plus a final tally.
+	total := uint64(meta.nodeCount)
+	var loaded, processed uint64
 	var skipped int
 	const logFirst = 5
+	const checkEvery = 100_000
 	err = ps.IterateVectorNodes(ctx, func(nodeID uint64, blob []byte) bool {
 		if int(nodeID) >= len(h.nodes) {
 			return true // out-of-bounds — skip silently
@@ -166,10 +177,26 @@ func LoadHNSW(ctx context.Context, ps *store.PebbleStore) (*HNSW, bool, error) {
 			return true
 		}
 		h.nodes[nodeID] = *n
+		loaded++
+		processed++
+		if processed%checkEvery == 0 {
+			if progress != nil {
+				progress(loaded, total)
+			}
+			if ctx.Err() != nil {
+				return false // abort promptly on shutdown
+			}
+		}
 		return true
 	})
 	if err != nil {
 		return nil, false, err
+	}
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
+	if progress != nil {
+		progress(loaded, total)
 	}
 	if skipped > 0 {
 		log.Printf("LoadHNSW: %d corrupt node blob(s) skipped (left as zombies)", skipped)

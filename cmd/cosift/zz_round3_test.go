@@ -243,7 +243,6 @@ func (f *populatedFixture) makeServer(mock *openaiMock) *pebbleHTTP {
 	srv := &pebbleHTTP{
 		store:        f.ps,
 		idx:          f.idx,
-		hnsw:         f.hnsw,
 		hasVectors:   true,
 		vectorDim:    f.dim,
 		vectorNodes:  f.hnsw.Len(),
@@ -253,6 +252,7 @@ func (f *populatedFixture) makeServer(mock *openaiMock) *pebbleHTTP {
 		paraCacheCap: 16,
 		started:      time.Now(),
 	}
+	srv.hnswAt.Store(f.hnsw)
 	if mock != nil {
 		srv.chat = embed.NewOpenAIChat("", mock.URL()+"/v1", "gpt-4o-mini-test")
 		srv.embedder = embed.NewOpenAIClient("", mock.URL()+"/v1", "text-embedding-3-small-test", f.dim)

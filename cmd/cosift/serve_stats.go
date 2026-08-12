@@ -367,7 +367,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	}
 	// signal whether the store has HNSW vectors persisted, and
 	// (when meta is available) surface dim + node count.
-	// when the graph is loaded in memory, report s.hnsw.Len()
+	// when the graph is loaded in memory, report s.hnsw().Len()
 	// instead of the startup-cached vectorNodes count — otherwise /stats
 	// shows the corpus frozen in time while the in-serve crawler keeps
 	// growing the graph.
@@ -386,19 +386,21 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	out["web_denominator"] = webDenom
 	out["has_vectors"] = s.hasVectors
 	switch {
-	case s.hnsw != nil:
-		out["vector_nodes"] = s.hnsw.Len()
+	case s.hnsw() != nil:
+		out["vector_nodes"] = s.hnsw().Len()
 		out["vector_dim"] = s.vectorDim
 	case s.vectorNodes > 0:
 		out["vector_nodes"] = s.vectorNodes
 		out["vector_dim"] = s.vectorDim
 	}
 	// whether the graph is loaded into memory for dense retrieval.
-	out["hnsw_loaded"] = s.hnsw != nil
+	out["hnsw_loaded"] = s.hnsw() != nil
+	// async load progress (state/pct/ETA) so a restart's warm-up is watchable.
+	out["hnsw_load"] = s.hnswLoadSnapshot()
 	// PQ status — operator-facing visibility into compression
 	// state. Only present when the graph is loaded; nil otherwise.
-	if s.hnsw != nil {
-		pq := s.hnsw.PQStatus()
+	if s.hnsw() != nil {
+		pq := s.hnsw().PQStatus()
 		// coverage is over VALID nodes (vec != nil), not raw total —
 		// zombie slots from pre partial persists inflate the total
 		// without being searchable. NodesTotal still surfaced for context.
@@ -433,9 +435,9 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	// new queries. /find_similar URL-mode dense works without embedder, but
 	// that's an endpoint-specific carve-out — keep this list general.
 	retrievers := []string{"bm25", "bm25-mlt"}
-	if s.hnsw != nil && s.embedder != nil {
+	if s.hnsw() != nil && s.embedder != nil {
 		retrievers = append(retrievers, "dense", "hybrid")
-	} else if s.hnsw != nil {
+	} else if s.hnsw() != nil {
 		// Graph but no embedder — only URL-mode /find_similar can use dense.
 		retrievers = append(retrievers, "dense:find_similar_url_only")
 	}
@@ -565,8 +567,8 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// HNSW vector index shape. Live count when graph is
 	// loaded; startup-cached otherwise.
 	vectorNodesLive := s.vectorNodes
-	if s.hnsw != nil {
-		vectorNodesLive = s.hnsw.Len()
+	if s.hnsw() != nil {
+		vectorNodesLive = s.hnsw().Len()
 	}
 	if vectorNodesLive > 0 {
 		fmt.Fprintf(w, "# HELP cosift_vector_nodes Number of HNSW vector nodes in memory (or persisted when not loaded).\n")

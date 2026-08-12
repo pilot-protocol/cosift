@@ -1375,7 +1375,7 @@ func TestHandleSitePackMissingHost(t *testing.T) {
 func TestHandlePQTrainNoHNSW(t *testing.T) {
 	f := populatedPebbleStore(t)
 	srv := f.makeServer(nil)
-	srv.hnsw = nil
+	srv.hnswAt.Store(nil)
 	rec := httptest.NewRecorder()
 	srv.handlePQTrain(rec, mkPOST("/admin/pq-train", map[string]any{}, ""))
 	if rec.Code != http.StatusBadRequest {
@@ -1397,7 +1397,7 @@ func TestHandlePQEncodeNoCodebook(t *testing.T) {
 func TestHandleHNSWCompactNoHNSW(t *testing.T) {
 	f := populatedPebbleStore(t)
 	srv := f.makeServer(nil)
-	srv.hnsw = nil
+	srv.hnswAt.Store(nil)
 	rec := httptest.NewRecorder()
 	srv.handleHNSWCompact(rec, mkPOST("/admin/hnsw-compact", nil, ""))
 	// Handler returns 501 when no HNSW is loaded; the early-error branch
