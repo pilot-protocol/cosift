@@ -44,6 +44,22 @@ func (a *bm25Adapter) Search(ctx context.Context, q string, k int) ([]string, er
 	return urls, nil
 }
 
+// pebbleBM25Adapter adapts index.PebbleBM25 to eval.Retriever, so the golden
+// set gates the production (pebble-serve) BM25 path, not just the SQLite twin.
+type pebbleBM25Adapter struct{ inner *index.PebbleBM25 }
+
+func (a *pebbleBM25Adapter) Search(ctx context.Context, q string, k int) ([]string, error) {
+	hits, err := a.inner.Search(ctx, q, k)
+	if err != nil {
+		return nil, err
+	}
+	urls := make([]string, len(hits))
+	for i, h := range hits {
+		urls[i] = h.URL
+	}
+	return urls, nil
+}
+
 // denseAdapter is a Retriever backed by an in-memory VectorIndex + an Embedder.
 // The embedder is consulted once per query at search time.
 type denseAdapter struct {
@@ -133,6 +149,7 @@ func runEval(ctx context.Context, args []string) error {
 	savePath := fs.String("save", "", "save run summary")
 	baselinePath := fs.String("baseline", "", "compare against a prior summary")
 	retriever := fs.String("retriever", "bm25", "retriever: bm25 | dense | hybrid")
+	backend := fs.String("backend", "sqlite", "BM25 index backend: sqlite | pebble (bm25 retriever only — gates production-path changes like the top-k pool)")
 	embModel := fs.String("embed-model", "text-embedding-3-small", "embedding model name")
 	embURL := fs.String("embed-url", "", "embedding endpoint URL (default OpenAI)")
 	embDim := fs.Int("embed-dim", 1536, "embedding dimensionality")
@@ -264,9 +281,50 @@ func runEval(ctx context.Context, args []string) error {
 	}
 
 	// Build the requested retriever.
+	if *backend != "sqlite" && *backend != "pebble" {
+		return fmt.Errorf("unknown backend %q (sqlite | pebble)", *backend)
+	}
+	if *backend == "pebble" && *retriever != "bm25" {
+		return fmt.Errorf("-backend pebble only supports -retriever bm25")
+	}
 	var ret eval.Retriever
 	switch *retriever {
 	case "bm25":
+		if *backend == "pebble" {
+			ps, e := store.OpenPebble(filepath.Join(tmpDir, "pebble"))
+			if e != nil {
+				return e
+			}
+			defer ps.Close()
+			pbm := index.NewPebbleBM25(ps)
+			for _, d := range corpus.Docs {
+				id, e := ps.UpsertDocument(ctx, &store.Document{
+					URL: d.URL, Title: d.Title, Text: d.Text,
+					Source: "eval", FetchedAt: time.Now(),
+				})
+				if e != nil {
+					return fmt.Errorf("pebble ingest %s: %w", d.URL, e)
+				}
+				if e := pbm.IndexDocument(ctx, id, d.Title, d.Text); e != nil {
+					return fmt.Errorf("pebble index %s: %w", d.URL, e)
+				}
+			}
+			for i, dText := range distractorTexts {
+				dURL := fmt.Sprintf("https://distractor.test/%d", i)
+				dTitle := fmt.Sprintf("Distractor %d", i)
+				id, e := ps.UpsertDocument(ctx, &store.Document{
+					URL: dURL, Title: dTitle, Text: dText, Source: "distractor", FetchedAt: time.Now(),
+				})
+				if e != nil {
+					return fmt.Errorf("pebble distractor %d: %w", i, e)
+				}
+				if e := pbm.IndexDocument(ctx, id, dTitle, dText); e != nil {
+					return fmt.Errorf("pebble index distractor %d: %w", i, e)
+				}
+			}
+			ret = &pebbleBM25Adapter{inner: pbm}
+			break
+		}
 		ret = &bm25Adapter{inner: bm}
 	case "dense", "hybrid":
 		apiKey := os.Getenv("OPENAI_API_KEY")
@@ -331,6 +389,9 @@ func runEval(ctx context.Context, args []string) error {
 
 	// Apply paraphrase + rerank wrappers below.
 	suffix := *retriever
+	if *backend == "pebble" {
+		suffix += "-pebble"
+	}
 	if *useRerank {
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {

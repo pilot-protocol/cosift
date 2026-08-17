@@ -94,6 +94,23 @@ Defaults: k1=1.2, b=0.75. Visible on `/stats` as `bm25_k1` / `bm25_b`.
 
 Changes take effect at server start; no re-index needed (params are scoring-time only).
 
+### Top-k pool: `COSIFT_BM25_TOPK_POOL_FACTOR`, `COSIFT_BM25_DISABLE_TOPK_POOL`
+
+PebbleBM25 resolves URL/title metadata for a bounded pool of `factor*k`
+top-raw-score candidates (default factor 50) instead of every scored doc — at
+multi-million-doc corpora this is the difference between tens and hundreds of
+thousands of point reads per query. The selection is lossless (authority
+reordering included) unless more than `factor*k` candidates sit within the
+authority band of the k-th score; when that happens the engine logs
+`top-k pool cap bound … results approximate` — raise the factor if the affected
+queries are ranking-sensitive. Phrase queries and deleted-doc backfill expand
+the pool automatically, so they never return fewer results than the resolve-all
+path; a phrase that matches nothing still ends up scanning the full candidate
+set (same cost as before the pool, plus a small selection overhead).
+
+`COSIFT_BM25_DISABLE_TOPK_POOL=1` restores the resolve-all path for lossless
+A/B comparison; both vars are read per query, no restart needed.
+
 ## Latency budget
 
 ### Don't enrich what you don't need: `?enrich=false`
