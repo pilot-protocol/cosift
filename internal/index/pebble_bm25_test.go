@@ -511,28 +511,52 @@ func TestPebbleBM25BoostSeedSurvivesPool(t *testing.T) {
 	ps, idx := newPebbleBM25(t)
 	t.Setenv("COSIFT_BM25_DISABLE_MAXSCORE", "1")
 
+	// Graded pads → strict raw ranking; 40 fillers keep "osprey"/"feathers"
+	// above the stopword IDF floor so ranking stays on real IDF.
 	for i := 0; i < 30; i++ {
 		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://x/strong/%d", i), "match",
-			"osprey osprey osprey osprey feathers")
+			"osprey osprey osprey osprey feathers"+strings.Repeat(" pad", i))
+	}
+	for i := 0; i < 40; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://x/filler/%d", i), "filler",
+			"unrelated pottery content entirely")
 	}
 	boostID := upsertAndIndex(t, ps, idx, "https://smallsite.example/page", "unrelated",
-		"completely different content about pottery")
+		"completely different content about ceramics")
+	overlapID := upsertAndIndex(t, ps, idx, "https://overlap.example/page", "overlap",
+		"osprey feathers osprey nest")
+	boosted := idx.WithBoost(map[int64]float64{boostID: 50, overlapID: 50})
 
-	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "1")
-	boosted := idx.WithBoost(map[int64]float64{boostID: 50})
-	pooled, lossless := searchAB(t, boosted, "osprey feathers", 40)
-	found := func(hits []Hit) bool {
+	// Binding pool (20 < 32 candidates): the seed sits outside the raw pool
+	// and is resolved only via the unconditional boost-set resolve; the
+	// overlapping boost doc is both in the boost set and at the top of the
+	// pool, so the dup guard must keep it to a single hit.
+	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "2")
+	pooled, lossless := searchAB(t, boosted, "osprey feathers", 10)
+	count := func(hits []Hit, url string) int {
+		n := 0
 		for _, h := range hits {
-			if h.URL == "https://smallsite.example/page" {
-				return true
+			if h.URL == url {
+				n++
 			}
 		}
-		return false
+		return n
 	}
-	if !found(pooled) {
+	if got := count(pooled, "https://overlap.example/page"); got != 1 {
+		t.Errorf("pool on: overlap boost doc appeared %d times, want exactly 1", got)
+	}
+	if !sameURLSet(urlSet(pooled), urlSet(lossless)) {
+		t.Errorf("boost membership diverges: %v vs %v", urlSet(pooled), urlSet(lossless))
+	}
+
+	// Pool covers all candidates (k=40): the seed fits the result set and
+	// must surface in both arms.
+	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "1")
+	pooled, lossless = searchAB(t, boosted, "osprey feathers", 40)
+	if count(pooled, "https://smallsite.example/page") != 1 {
 		t.Errorf("pool on: seeded boost doc evicted; got %d hits", len(pooled))
 	}
-	if !found(lossless) {
+	if count(lossless, "https://smallsite.example/page") != 1 {
 		t.Errorf("pool off: seeded boost doc missing (test setup wrong?)")
 	}
 }
@@ -546,7 +570,9 @@ func TestPebbleBM25MissingMetaBackfill(t *testing.T) {
 	ctx := context.Background()
 
 	// Deterministic ranking: descending tf. 25 docs so pool (factor=1,
-	// k=3 → floor k+slack) stays below corpus size.
+	// k=3 → floor k+slack) stays below corpus size. The 30 non-matching
+	// docs are load-bearing: with df≈N the IDF goes negative and inverts
+	// the ranking, parking the deleted doc outside the pool.
 	ids := make([]int64, 25)
 	urls := make([]string, 25)
 	for i := 0; i < 25; i++ {
@@ -556,6 +582,10 @@ func TestPebbleBM25MissingMetaBackfill(t *testing.T) {
 		}
 		urls[i] = fmt.Sprintf("https://x/rank/%d", i)
 		ids[i] = upsertAndIndex(t, ps, idx, urls[i], "doc", text)
+	}
+	for i := 0; i < 30; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://x/bg/%d", i), "bg",
+			"quokka background prose entirely elsewhere")
 	}
 	// Delete the raw #2 doc — orphaned postings by design.
 	if ok, err := ps.SoftDeleteDocument(ctx, ids[1], urls[1]); err != nil || !ok {
@@ -574,6 +604,27 @@ func TestPebbleBM25MissingMetaBackfill(t *testing.T) {
 	}
 	if !sameURLSet(urlSet(pooled), urlSet(lossless)) {
 		t.Errorf("backfill diverges from lossless: %v vs %v", urlSet(pooled), urlSet(lossless))
+	}
+}
+
+// TestPebbleBM25ResolvePoolGuards — defensive edges of the pool resolve path:
+// empty candidate set, and filterByPhrasesMemo's k default + k-cap break.
+func TestPebbleBM25ResolvePoolGuards(t *testing.T) {
+	_, idx := newPebbleBM25(t)
+	ctx := context.Background()
+
+	hits, err := idx.resolveTopKPool(ctx, map[int64]float64{}, nil, 5)
+	if err != nil || hits != nil {
+		t.Errorf("empty scores: want (nil, nil), got (%v, %v)", hits, err)
+	}
+
+	in := []Hit{{DocID: 1, Score: 3}, {DocID: 2, Score: 2}, {DocID: 3, Score: 1}}
+	memo := map[int64]bool{1: true, 2: true, 3: true}
+	if got := idx.filterByPhrasesMemo(ctx, in, []string{"x y"}, 2, memo); len(got) != 2 {
+		t.Errorf("k=2: want 2 phrase hits, got %d", len(got))
+	}
+	if got := idx.filterByPhrasesMemo(ctx, in, []string{"x y"}, 0, memo); len(got) != 3 {
+		t.Errorf("k=0 defaults to 10: want all 3 memoized hits, got %d", len(got))
 	}
 }
 
