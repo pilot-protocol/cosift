@@ -49,9 +49,10 @@ Family-tag prefix bytes keep families disjoint for prefix scans. Big-endian IDs 
 **`PebbleBM25.Search(q, k)`**:
 1. `corpusStats()` → O(1) read of running counters
 2. For each unique query token: GetTermInfo → IteratePostings (prefix scan) — sum BM25 scores into a doc-id map
-3. For each scored doc: GetDocMeta(`'i'+docID`) — cheap URL+title
-4. Phrase filter against doc.Text if `q` has quoted phrases
-5. Sort, top-k
+3. Heap-select the top `factor*k` candidates by raw score (top-k pool; see TUNING.md)
+4. For each pool candidate that can still reach the final top-k: GetDocMeta(`'i'+docID`) — cheap URL+title — and apply the authority multiplier
+5. Phrase filter against doc.Text if `q` has quoted phrases (expanding the pool on shortfall)
+6. Sort, top-k
 
 **`ClaimFrontier()`**:
 1. Prefix-scan `'f'+'i'` to collect in-flight host set
@@ -85,6 +86,8 @@ COSIFT_BM25_K1=1.2             # BM25 term-frequency saturation
 COSIFT_BM25_B=0.75             # BM25 length normalization
 COSIFT_HYDE_CACHE_SIZE=256     # expandQuery passage cache
 COSIFT_PARA_CACHE_SIZE=256     # paraphraseQuery cache
+COSIFT_BM25_TOPK_POOL_FACTOR=50  # metadata-resolution pool = factor*k candidates
+COSIFT_BM25_DISABLE_TOPK_POOL=   # non-empty restores resolve-all (A/B escape hatch)
 ```
 
 `COSIFT_PEBBLE_SYNC=false` is the single biggest crawler-throughput win on commodity disks. Tradeoff: WAL writes survive process crash but not VM crash. Crawler resumes cleanly from frontier on next start, so the loss window is bounded.

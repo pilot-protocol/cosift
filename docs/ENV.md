@@ -135,8 +135,10 @@ not re-enable them without the confidentiality decision in that section.
 |---|---|---|---|---|
 | `COSIFT_BM25_K1` | float | `1.2` (PebbleBM25 default) | BM25 term-frequency saturation `k1`; applied only if parseable and `> 0`. | `serve_search.go:1350` |
 | `COSIFT_BM25_B` | float | `0.75` (PebbleBM25 default) | BM25 length-normalization `b`; applied only if parseable and `> 0`. | `serve_search.go:1358` |
-| `COSIFT_BM25_MIN_IDF` | float | `0.5` | IDF floor below which a query term is dropped as a stopword. `0` disables pruning. Must be `>= 0`. | `internal/index/pebble_bm25.go:33` |
-| `COSIFT_BM25_DISABLE_MAXSCORE` | bool (non-empty disables) | unset → MaxScore optimization **enabled** | Any non-empty value disables the WAND/MaxScore early-termination optimization for benchmark-grade lossless ranking. | `internal/index/pebble_bm25.go:204` |
+| `COSIFT_BM25_MIN_IDF` | float | `0.5` | IDF floor below which a query term is dropped as a stopword. `0` disables pruning. Must be `>= 0`. | `internal/index/pebble_bm25.go:38` |
+| `COSIFT_BM25_DISABLE_MAXSCORE` | bool (non-empty disables) | unset → MaxScore optimization **enabled** | Any non-empty value disables the WAND/MaxScore early-termination optimization for benchmark-grade lossless ranking. | `internal/index/pebble_bm25.go:223` |
+| `COSIFT_BM25_TOPK_POOL_FACTOR` | int | `50` | Sizes the metadata-resolution pool at `factor*k` candidates (PebbleBM25 top-k pool). Must be `>= 1`. Raise if the pool-cap log line fires on ranking-sensitive traffic. | `internal/index/pebble_bm25.go:50` |
+| `COSIFT_BM25_DISABLE_TOPK_POOL` | bool (non-empty disables) | unset → top-k pool **enabled** | Any non-empty value restores the resolve-all metadata path (every scored candidate gets a `GetDocMeta`) — the pre-pool behavior, for lossless A/B comparison. | `internal/index/pebble_bm25.go:295` |
 | `COSIFT_DEFAULT_DECAY_DAYS` | float | `180` (6-month half-life) | Default recency half-life (days) applied when a request has no explicit `?decay=`. `0` disables decay globally. Must be `>= 0`; explicit `?decay=N` still wins. | `serve_search.go:1592` |
 | `COSIFT_AUTHORITY_ALPHA` | float | scorer's built-in default (`authority.New()`) | Authority-score blend weight; applied only if parseable and `>= 0`. | `serve_setup.go:188` |
 | `COSIFT_TRANCO_CSV` | string (path) | unset → embedded whitelist + TLD heuristics only | Path to a Tranco rankings CSV to enrich authority scoring. | `serve_setup.go:193` |
