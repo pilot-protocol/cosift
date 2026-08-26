@@ -203,11 +203,11 @@ func (h *HNSW) distanceToNode(q []float32, pqTable []float32, idx int) float64 {
 	// internal greedyDescend/searchLayer calls pass nil because graph
 	// construction always uses raw vecs — without this guard, the PQ
 	// branch fires with a nil table and PQDistance panics indexing it.
+	if len(h.nodes[idx].vec) == 0 {
+		return math.MaxFloat64 // skip zombie nodes — before PQ so a stale code can't resurrect one
+	}
 	if pqTable != nil && h.codebook != nil && idx < len(h.codes) && len(h.codes[idx]) == h.codebook.M {
 		return float64(PQDistance(pqTable, h.codes[idx], h.codebook.M, h.codebook.K))
-	}
-	if len(h.nodes[idx].vec) == 0 {
-		return math.MaxFloat64 // skip zombie nodes
 	}
 	return -float64(Dot(q, h.nodes[idx].vec))
 }
@@ -436,6 +436,34 @@ func (h *HNSW) MarkURLPassagesInvalid(url string) int {
 		}
 	}
 	return n
+}
+
+// ReconcileURLs zeros out vec (and pq code) for every live node whose url
+// fails the live predicate, in one pass under one lock acquisition. Used at
+// load time to invalidate nodes whose docs were soft-deleted offline
+// (purge-domain/purge-adult never touch the graph). Returns (invalidated,
+// scanned). Idempotent: already-invalid nodes are skipped.
+func (h *HNSW) ReconcileURLs(live func(url string) bool) (int, int) {
+	if live == nil {
+		return 0, 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	invalidated := 0
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) == 0 {
+			continue
+		}
+		if live(h.nodes[i].url) {
+			continue
+		}
+		h.nodes[i].vec = nil
+		if h.codes != nil && i < len(h.codes) {
+			h.codes[i] = nil
+		}
+		invalidated++
+	}
+	return invalidated, len(h.nodes)
 }
 
 // AddPassage inserts a passage with explicit byte-span info. The vector is
