@@ -57,4 +57,33 @@ func TestIterURLKeys(t *testing.T) {
 	if err := p.IterURLKeys(cctx, func(string) bool { return true }); err == nil {
 		t.Fatalf("canceled ctx should error")
 	}
+
+	// Mid-iteration cancel: first callback cancels, next loop tick errors.
+	mctx, mcancel := context.WithCancel(ctx)
+	seen := 0
+	if err := p.IterURLKeys(mctx, func(string) bool {
+		seen++
+		mcancel()
+		return true
+	}); err == nil {
+		t.Fatalf("mid-iteration cancel should error")
+	}
+	if seen != 1 {
+		t.Fatalf("mid-iteration cancel visited %d, want 1", seen)
+	}
+
+	// A malformed bare 'u' key (no URL bytes) is skipped, not yielded.
+	if err := p.db.Set([]byte{famURL}, []byte{0}, p.writeOpts); err != nil {
+		t.Fatalf("raw set: %v", err)
+	}
+	got = map[string]bool{}
+	if err := p.IterURLKeys(ctx, func(url string) bool {
+		got[url] = true
+		return true
+	}); err != nil {
+		t.Fatalf("iter after raw set: %v", err)
+	}
+	if len(got) != 2 || got[""] {
+		t.Fatalf("malformed key not skipped: %v", got)
+	}
 }

@@ -281,3 +281,104 @@ func TestHNSWCompactPersistHardening(t *testing.T) {
 		t.Fatalf("skip_persist changed behavior: %v", resp)
 	}
 }
+
+// /answer under divergence (defaults to hybrid when dense is ready) counts
+// resolution drops.
+func TestAnswerDivergenceDrops(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	mock := openaiTestServer(t)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	order := denseCandidateOrder(t, srv, 4)
+	divergeFixture(t, f, order[:4])
+	srv.denseResolutionDrops.Store(0)
+
+	req := httptest.NewRequest(http.MethodGet, "/answer?q=consensus&k=3&rerank=false", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAnswer(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if srv.denseResolutionDrops.Load() == 0 {
+		t.Fatalf("/answer divergence drop not counted")
+	}
+}
+
+// /research (sync and SSE paths) under divergence counts resolution drops.
+func TestResearchDivergenceDrops(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	mock := openaiTestServer(t)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	order := denseCandidateOrder(t, srv, 4)
+	divergeFixture(t, f, order[:4])
+	srv.denseResolutionDrops.Store(0)
+
+	req := httptest.NewRequest(http.MethodGet, "/research?q=consensus&k=3", nil)
+	rec := httptest.NewRecorder()
+	srv.handleResearch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if srv.denseResolutionDrops.Load() == 0 {
+		t.Fatalf("/research sync divergence drop not counted")
+	}
+
+	srv.denseResolutionDrops.Store(0)
+	req = httptest.NewRequest(http.MethodGet, "/research?q=consensus&k=3&stream=true", nil)
+	rec = httptest.NewRecorder()
+	srv.handleResearch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if srv.denseResolutionDrops.Load() == 0 {
+		t.Fatalf("/research SSE divergence drop not counted")
+	}
+}
+
+// /query under divergence (fallback plan retriever = hybrid) counts drops.
+func TestQueryDivergenceDrops(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	mock := openaiTestServer(t)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	order := denseCandidateOrder(t, srv, 4)
+	divergeFixture(t, f, order[:4])
+	srv.denseResolutionDrops.Store(0)
+
+	req := httptest.NewRequest(http.MethodGet, "/query?q=consensus&k=3", nil)
+	rec := httptest.NewRecorder()
+	srv.handleQuery(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if srv.denseResolutionDrops.Load() == 0 {
+		t.Fatalf("/query divergence drop not counted")
+	}
+}
+
+// find_similar hybrid leg + fused truncation, and /search hybrid truncation,
+// with slack pinned to 0 so the denseK cut actually binds on the small fixture.
+func TestHybridSlackTruncationBranches(t *testing.T) {
+	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "0")
+	t.Setenv("COSIFT_DENSE_FETCH_SLACK", "0")
+	mock := openaiTestServer(t)
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/find_similar?url=https%3A%2F%2Fx.example%2Fraft&retriever=hybrid&k=2", nil)
+	rec := httptest.NewRecorder()
+	srv.handleFindSimilar(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("find_similar hybrid status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	resp := doSearch(t, srv, "/search?q=consensus&retriever=hybrid&k=2&rerank=false")
+	if len(resp.Hits) != 2 {
+		t.Fatalf("hybrid k=2 with slack=0 on a clean store should return 2 hits, got %d", len(resp.Hits))
+	}
+}
