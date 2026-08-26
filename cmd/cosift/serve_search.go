@@ -492,6 +492,7 @@ type searchResponse struct {
 	Retriever       string      `json:"retriever"`
 	Hits            []searchHit `json:"hits"`
 	TotalCandidates int         `json:"total_candidates,omitempty"`
+	DenseDrops      int         `json:"dense_drops,omitempty"`
 	Warnings        []string    `json:"warnings,omitempty"`
 	Took            string      `json:"took"`
 }
@@ -732,6 +733,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	includeText := r.URL.Query().Get("include_text") == "true"
 	out := make([]searchHit, 0, keepCap)
+	denseDrops := 0
 	var rerankTexts []string
 	if wantRerank {
 		rerankTexts = make([]string, 0, keepCap)
@@ -753,6 +755,8 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if enrich || dateFilter || includeText {
 			doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 			if derr != nil || doc == nil {
+				s.noteDenseDrop(retrieverParam)
+				denseDrops++
 				continue
 			}
 			if dateFilter {
@@ -893,6 +897,7 @@ func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// total_candidates is close to fetchK, the filter is restrictive
 		// enough that you may want to raise k or relax filters.
 		TotalCandidates: len(hits),
+		DenseDrops:      denseDrops,
 		Took:            time.Since(start).String(),
 	}
 	// surface the post-HyDE query when it actually changed, so callers
@@ -1133,9 +1138,10 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil, false
 	}
+	denseK := fetchK + denseFetchSlack()
 	if useDense {
 		if queryVec, ok := getQueryVec(); ok {
-			vhits := s.hnsw().Search(r.Context(), queryVec, fetchK)
+			vhits := s.hnsw().Search(r.Context(), queryVec, denseK)
 			hits = make([]index.Hit, len(vhits))
 			for i, vh := range vhits {
 				hits[i] = index.Hit{URL: vh.URL, Title: vh.Title, Score: vh.Score}
@@ -1153,11 +1159,11 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		}
 		bm25Fired = true
 		if queryVec, ok := getQueryVec(); ok {
-			vhits := s.hnsw().Search(r.Context(), queryVec, fetchK)
+			vhits := s.hnsw().Search(r.Context(), queryVec, denseK)
 			denseHits := s.applyAuthorityToDense(vhits)
 			hits = rrfFuse([][]index.Hit{bm25Hits, denseHits})
-			if len(hits) > fetchK {
-				hits = hits[:fetchK]
+			if len(hits) > denseK {
+				hits = hits[:denseK]
 			}
 			denseFired = true
 		} else {
@@ -1195,6 +1201,9 @@ func (s *pebbleHTTP) handleFindSimilar(w http.ResponseWriter, r *http.Request) {
 		hit := searchHit{URL: h.URL, Title: h.Title, Score: h.Score}
 		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 		if derr != nil || doc == nil {
+			if useDense || useHybrid {
+				s.denseResolutionDrops.Add(1)
+			}
 			continue
 		}
 		if dateFilter {
@@ -1846,15 +1855,31 @@ func (s *pebbleHTTP) retrieve(ctx context.Context, q string, fetchK int, retriev
 // need a transformed index (e.g. the site-boosted index from WithBoost) can
 // pass it in without shallow-copying the whole pebbleHTTP (which embeds
 // mutexes — copying it trips go vet's lock-copy check and is unsafe).
+// denseFetchSlack pads the dense fetch depth past k so resolution drops
+// don't shrink results below k. COSIFT_DENSE_FETCH_SLACK overrides; free
+// while fetchK+slack stays under efSearch (ef = max(efSearch, k)).
+func denseFetchSlack() int {
+	if v := os.Getenv("COSIFT_DENSE_FETCH_SLACK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 16
+}
+
 func (s *pebbleHTTP) retrieveWith(ctx context.Context, idx *index.PebbleBM25, q string, fetchK int, retrieverParam, expandMode string) ([]index.Hit, string, error) {
 	denseReady := s.hnsw() != nil && s.embedder != nil
+	// Over-fetch the dense leg so candidates lost at store resolution
+	// (graph/store divergence, mirrors BM25's topKResolveSlack) don't
+	// shrink results below k. Handler loops still cap at their keepCap.
+	denseK := fetchK + denseFetchSlack()
 	switch {
 	case retrieverParam == "dense" && denseReady:
 		vecs, err := s.embedder.Embed(ctx, []string{q})
 		if err != nil {
 			return nil, "", fmt.Errorf("embedder: %w", err)
 		}
-		vhits := s.hnsw().Search(ctx, vecs[0], fetchK)
+		vhits := s.hnsw().Search(ctx, vecs[0], denseK)
 		hits := s.applyAuthorityToDense(vhits)
 		return hits, q, nil
 	case retrieverParam == "hybrid" && denseReady:
@@ -1866,11 +1891,11 @@ func (s *pebbleHTTP) retrieveWith(ctx context.Context, idx *index.PebbleBM25, q 
 		if embErr != nil {
 			return nil, "", fmt.Errorf("embedder: %w", embErr)
 		}
-		denseV := s.hnsw().Search(ctx, vecs[0], fetchK)
+		denseV := s.hnsw().Search(ctx, vecs[0], denseK)
 		denseHits := s.applyAuthorityToDense(denseV)
 		hits := rrfFuse([][]index.Hit{bm25Hits, denseHits})
-		if len(hits) > fetchK {
-			hits = hits[:fetchK]
+		if len(hits) > denseK {
+			hits = hits[:denseK]
 		}
 		return hits, bm25Eff, nil
 	default:
@@ -2345,6 +2370,7 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		doc, err := s.store.GetDocByURL(r.Context(), h.URL)
 		if err != nil || doc == nil {
+			s.noteDenseDrop(plan.Retriever)
 			continue
 		}
 		if !since.IsZero() && (doc.PublishedAt.IsZero() || doc.PublishedAt.Before(since)) {

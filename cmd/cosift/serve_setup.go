@@ -684,7 +684,29 @@ func (s *pebbleHTTP) hnswLoadSnapshot() map[string]any {
 			m["eta_s"] = (float64(total) - float64(loaded)) / (float64(loaded) / elapsed)
 		}
 	}
+	if n := s.reconciledOrphans.Load(); n > 0 {
+		m["reconciled_orphans"] = n
+	}
 	return m
+}
+
+// noteDenseDrop counts a candidate from a dense-capable retriever that
+// failed store resolution — the store/graph divergence signal.
+func (s *pebbleHTTP) noteDenseDrop(retriever string) {
+	if retriever == "dense" || retriever == "hybrid" {
+		s.denseResolutionDrops.Add(1)
+	}
+}
+
+// fnv64a is an allocation-free FNV-1a over a string, for the reconcile
+// URL set.
+func fnv64a(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
 }
 
 // loadHNSWInto decodes the persisted graph into memory (with progress logging),
@@ -695,6 +717,27 @@ func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, ve
 	s.hnswLoadStart.Store(time.Now().UnixNano())
 	s.hnswTotal.Store(uint64(vectorNodes))
 	start := time.Now()
+
+	// Live-URL set for the post-load reconcile, built concurrently with the
+	// graph decode so its cost hides inside the load window. FNV-64 hashes
+	// (~8 B/URL) instead of the strings; a collision keeps one orphan alive,
+	// which search tolerates.
+	type urlSetResult struct {
+		set map[uint64]struct{}
+		err error
+	}
+	var urlSetCh chan urlSetResult
+	if os.Getenv("COSIFT_RECONCILE_ON_LOAD") != "false" {
+		urlSetCh = make(chan urlSetResult, 1)
+		go func() {
+			set := make(map[uint64]struct{}, 1<<20)
+			err := ps.IterURLKeys(ctx, func(url string) bool {
+				set[fnv64a(url)] = struct{}{}
+				return true
+			})
+			urlSetCh <- urlSetResult{set: set, err: err}
+		}()
+	}
 	g, ok, err := index.LoadHNSWProgress(ctx, ps, func(loaded, total uint64) {
 		s.hnswLoaded.Store(loaded)
 		if total == 0 {
@@ -759,6 +802,27 @@ func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, ve
 			g.UsePQ(cb, codes)
 			log.Printf("pebble-serve: PQ search enabled (codebook: dim=%d M=%d K=%d, codes=%d/%d)",
 				cb.Dim, cb.M, cb.K, loaded, g.Len())
+		}
+	}
+	// Reconcile the graph against the store's live 'u' keys before the graph
+	// is published: purge-domain/purge-adult soft-delete docs without touching
+	// the graph, leaving live nodes whose URLs no longer resolve. Ordering is
+	// load-bearing — after UsePQ (the codes reload above attaches by nodeID
+	// with no vec check) and before hnswAt.Store (unpublished graph ⇒ the
+	// write lock is uncontended).
+	if urlSetCh != nil {
+		res := <-urlSetCh
+		if res.err != nil && ctx.Err() == nil {
+			log.Printf("pebble-serve: reconcile skipped — live-URL scan failed: %v", res.err)
+		} else if res.err == nil {
+			t0 := time.Now()
+			invalidated, scanned := g.ReconcileURLs(func(u string) bool {
+				_, ok := res.set[fnv64a(u)]
+				return ok
+			})
+			s.reconciledOrphans.Store(int64(invalidated))
+			log.Printf("pebble-serve: reconcile: invalidated %d of %d nodes absent from store (%d live urls, %s)",
+				invalidated, scanned, len(res.set), time.Since(t0).Round(time.Millisecond))
 		}
 	}
 	s.hnswAt.Store(g)
@@ -1187,6 +1251,11 @@ type pebbleHTTP struct {
 	hnswLoadStart atomic.Int64 // unix nanos; 0 until the load begins
 	hnswLoaded    atomic.Uint64
 	hnswTotal     atomic.Uint64
+	// Nodes invalidated by the post-load store reconcile (purge orphans).
+	reconciledOrphans atomic.Int64
+	// Dense/hybrid candidates that failed GetDocByURL resolution and were
+	// silently dropped from responses — the store/graph divergence signal.
+	denseResolutionDrops atomic.Int64
 	// Required by
 	// /search?retriever=dense alongside the HNSW graph. Built at startup when
 	// cfg.Embeddings.Model is set. Nil → ?retriever=dense warns + falls back.

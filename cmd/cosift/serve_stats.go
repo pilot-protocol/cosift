@@ -463,6 +463,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 			out["crawl_rate_limited_deferrals"] = deferred
 		}
 	}
+	out["dense_resolution_drops"] = s.denseResolutionDrops.Load()
 	return json.Marshal(out)
 }
 
@@ -564,6 +565,9 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP cosift_warnings_emitted_total Responses that carried at least one warning (misconfigured request).\n")
 	fmt.Fprintf(w, "# TYPE cosift_warnings_emitted_total counter\n")
 	fmt.Fprintf(w, "cosift_warnings_emitted_total %d\n", s.warningsEmitted.Load())
+	fmt.Fprintf(w, "# HELP cosift_dense_resolution_drops_total Dense/hybrid candidates dropped because their URL no longer resolves in the store (graph/store divergence).\n")
+	fmt.Fprintf(w, "# TYPE cosift_dense_resolution_drops_total counter\n")
+	fmt.Fprintf(w, "cosift_dense_resolution_drops_total %d\n", s.denseResolutionDrops.Load())
 	// HNSW vector index shape. Live count when graph is
 	// loaded; startup-cached otherwise.
 	vectorNodesLive := s.vectorNodes
