@@ -737,6 +737,13 @@ func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, ve
 			})
 			urlSetCh <- urlSetResult{set: set, err: err}
 		}()
+		// Join on every return path (incl. load error/abort) — the goroutine
+		// must not outlive this call and race a store close.
+		defer func() {
+			if urlSetCh != nil {
+				<-urlSetCh
+			}
+		}()
 	}
 	g, ok, err := index.LoadHNSWProgress(ctx, ps, func(loaded, total uint64) {
 		s.hnswLoaded.Store(loaded)
@@ -812,6 +819,7 @@ func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, ve
 	// write lock is uncontended).
 	if urlSetCh != nil {
 		res := <-urlSetCh
+		urlSetCh = nil
 		if res.err != nil && ctx.Err() == nil {
 			log.Printf("pebble-serve: reconcile skipped — live-URL scan failed: %v", res.err)
 		} else if res.err == nil {
