@@ -1,5 +1,11 @@
 package index
 
+import "log"
+
+// compactProgressEvery paces the in-compact progress logs; the whole pass
+// runs under the write lock, so these lines are the only liveness signal.
+const compactProgressEvery = 10_000_000
+
 // Rebuild constructs a fresh HNSW with the same parameters as h and inserts
 // every valid (vec != nil) node from h via AddPassage. Unlike Compact, which
 // merely removes zombies and rewires existing edges, Rebuild reconstructs
@@ -69,6 +75,9 @@ func (h *HNSW) Compact() (removed int) {
 		newCodes = make([][]uint16, 0, len(h.codes))
 	}
 	for i := range h.nodes {
+		if i > 0 && i%compactProgressEvery == 0 {
+			log.Printf("hnsw compact: scanning %d/%d nodes", i, len(h.nodes))
+		}
 		if len(h.nodes[i].vec) == 0 {
 			remap[i] = -1
 			continue
@@ -88,6 +97,9 @@ func (h *HNSW) Compact() (removed int) {
 	// 2. Remap neighbor lists. Iterating in increasing order so writes only
 	//    touch slots we've already read from the source array.
 	for i := range newNodes {
+		if i > 0 && i%compactProgressEvery == 0 {
+			log.Printf("hnsw compact: rewiring neighbors %d/%d nodes", i, len(newNodes))
+		}
 		for lvl := range newNodes[i].neighbors {
 			old := newNodes[i].neighbors[lvl]
 			out := make([]int, 0, len(old))
