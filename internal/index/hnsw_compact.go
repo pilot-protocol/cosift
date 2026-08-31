@@ -4,7 +4,8 @@ import "log"
 
 // compactProgressEvery paces the in-compact progress logs; the whole pass
 // runs under the write lock, so these lines are the only liveness signal.
-const compactProgressEvery = 10_000_000
+// A var (not const) so tests can lower it below the fixture size.
+var compactProgressEvery = 10_000_000
 
 // Rebuild constructs a fresh HNSW with the same parameters as h and inserts
 // every valid (vec != nil) node from h via AddPassage. Unlike Compact, which
