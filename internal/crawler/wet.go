@@ -305,10 +305,8 @@ func (c *Crawler) indexWetRecord(ctx context.Context, rec *WetRecord, lexicalOnl
 	if embErr != nil || len(vecs) != len(chunks) {
 		return nil // best-effort — BM25 doc is already indexed
 	}
-	if inv, ok := c.passageWriter.(URLInvalidator); ok {
-		if getEnv("COSIFT_ZOMBIE_RECLAIM") == "1" {
-			_, _ = inv.MarkURLInvalid(ctx, rec.URL)
-		}
+	if inv, ok := c.passageWriter.(URLInvalidator); ok && ZombieReclaimEnabled() {
+		_, _ = inv.MarkURLInvalid(ctx, rec.URL)
 	}
 	for i, ch := range chunks {
 		p := &store.Passage{

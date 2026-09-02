@@ -397,6 +397,11 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	out["hnsw_loaded"] = s.hnsw() != nil
 	// async load progress (state/pct/ETA) so a restart's warm-up is watchable.
 	out["hnsw_load"] = s.hnswLoadSnapshot()
+	out["hnsw_compact"] = s.compact.snapshot()
+	if g := s.hnsw(); g != nil {
+		out["hnsw_reclaimed_total"] = g.Reclaimed()
+		out["hnsw_slot"] = g.Slot()
+	}
 	// PQ status — operator-facing visibility into compression
 	// state. Only present when the graph is loaded; nil otherwise.
 	if s.hnsw() != nil {
@@ -581,6 +586,22 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# HELP cosift_vector_dim Embedding dimension of the persisted HNSW index.\n")
 		fmt.Fprintf(w, "# TYPE cosift_vector_dim gauge\n")
 		fmt.Fprintf(w, "cosift_vector_dim %d\n", s.vectorDim)
+	}
+	if g := s.hnsw(); g != nil {
+		st := g.PQStatus()
+		fmt.Fprintf(w, "# HELP cosift_hnsw_zombie_nodes HNSW nodes invalidated (reclaimed or reconciled) and awaiting compaction.\n")
+		fmt.Fprintf(w, "# TYPE cosift_hnsw_zombie_nodes gauge\n")
+		fmt.Fprintf(w, "cosift_hnsw_zombie_nodes %d\n", st.NodesTotal-st.NodesValid)
+		fmt.Fprintf(w, "# HELP cosift_hnsw_reclaimed_total Nodes invalidated by re-crawl zombie reclaim since process start.\n")
+		fmt.Fprintf(w, "# TYPE cosift_hnsw_reclaimed_total counter\n")
+		fmt.Fprintf(w, "cosift_hnsw_reclaimed_total %d\n", g.Reclaimed())
+		running := 0
+		if s.compact.snapshot()["state"] == "running" {
+			running = 1
+		}
+		fmt.Fprintf(w, "# HELP cosift_hnsw_compact_running 1 while an hnsw-compact job is in flight.\n")
+		fmt.Fprintf(w, "# TYPE cosift_hnsw_compact_running gauge\n")
+		fmt.Fprintf(w, "cosift_hnsw_compact_running %d\n", running)
 	}
 	// PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)

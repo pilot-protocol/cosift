@@ -98,6 +98,9 @@ func (s *pebbleHTTP) handleFrontierClear(w http.ResponseWriter, r *http.Request)
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid peer token")
 		return
 	}
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
 	if err := s.store.ClearFrontier(r.Context()); err != nil {
 		writeProblem(w, http.StatusInternalServerError, err.Error())
 		return

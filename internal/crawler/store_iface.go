@@ -9,6 +9,8 @@ package crawler
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -102,6 +104,16 @@ type PassageWriter interface {
 // call so the underlying writer can take the HNSW lock once.
 type PassageWriterBatch interface {
 	UpsertPassageBatch(ctx context.Context, ps []*store.Passage) error
+}
+
+// ZombieReclaimEnabled gates re-crawl reclaim of prior HNSW generations:
+// on unless COSIFT_ZOMBIE_RECLAIM is "0", "false" or "off".
+func ZombieReclaimEnabled() bool {
+	switch strings.ToLower(os.Getenv("COSIFT_ZOMBIE_RECLAIM")) {
+	case "0", "false", "off":
+		return false
+	}
+	return true
 }
 
 // URLInvalidator is the optional zombie-reclaim surface. When a doc is
