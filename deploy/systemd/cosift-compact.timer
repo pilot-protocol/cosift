@@ -1,0 +1,8 @@
+[Unit]
+Description=Cosift HNSW compact schedule
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+AccuracySec=10min
+[Install]
+WantedBy=timers.target
