@@ -763,7 +763,7 @@ func (c *Crawler) runEmbedJob(parent context.Context, job *embedJob, jobTimeout 
 	}
 	// Mirror the synchronous path's zombie reclaim so re-crawled
 	// URLs don't accumulate generations of vectors in HNSW.
-	if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+	if ZombieReclaimEnabled() {
 		if inv, ok := c.passageWriter.(URLInvalidator); ok {
 			_, _ = inv.MarkURLInvalid(ctx, job.url)
 		}
@@ -1480,14 +1480,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				// writes give readers more chances to slip in. Same total
 				// lock time, smaller bursts.
 				if c.passageWriter != nil {
-					// When this URL was
-					// previously crawled, the prior generation of chunks
-					// still lives in the HNSW graph (same url, stale vecs).
-					// Mark them invalid before adding the fresh set so the
-					// graph doesn't accumulate generations. Gated by env
-					// COSIFT_ZOMBIE_RECLAIM=1 until soaked; off-by-default
-					// preserves prior behavior bit-for-bit.
-					if os.Getenv("COSIFT_ZOMBIE_RECLAIM") == "1" {
+					// When this URL was previously crawled, the prior
+					// generation of chunks still lives in the HNSW graph
+					// (same url, stale vecs). Mark them invalid before
+					// adding the fresh set so the graph doesn't accumulate
+					// generations.
+					if ZombieReclaimEnabled() {
 						inv, ok := c.passageWriter.(URLInvalidator)
 						if !ok {
 							log.Printf("zombie-reclaim: passageWriter %T does NOT implement URLInvalidator (one-time check)", c.passageWriter)

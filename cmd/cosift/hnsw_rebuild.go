@@ -13,9 +13,9 @@ import (
 
 // runHNSWRebuild reconstructs the HNSW graph in a pebble dir from valid
 // (vec != nil) nodes only. Removes zombies, recovers full M-neighbor
-// connectivity, persists the fresh graph back into the same dir under a
-// cleared 'v' family. Invalidates 'q' (PQ) — operators must re-train PQ
-// after rebuild via /admin/pq-train.
+// connectivity, persists the fresh graph into the inactive node slot and
+// swaps. Invalidates 'q' (PQ) — operators must re-train PQ after rebuild via
+// /admin/pq-train.
 //
 // Use this against a Pebble dir whose serve has been stopped (Pebble locks
 // the dir exclusively). Pair with /admin/checkpoint to take a consistent
@@ -76,20 +76,21 @@ func runHNSWRebuild(ctx context.Context, cfg *config.Config, args []string) erro
 		return nil
 	}
 
+	persistT0 := time.Now()
+	old := fresh.Slot()
+	if err := fresh.PersistSwap(ctx, ps, nil); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	fmt.Printf("hnsw-rebuild: persisted into slot %#x in %s\n", fresh.Slot(), time.Since(persistT0).Round(time.Second))
+
 	clearT0 := time.Now()
-	if err := ps.ClearVectorFamily(ctx); err != nil {
-		return fmt.Errorf("clear vector family: %w", err)
+	if err := ps.ClearVectorSlot(ctx, old); err != nil {
+		return fmt.Errorf("clear old slot: %w", err)
 	}
 	if err := ps.ClearPQFamily(ctx); err != nil {
 		return fmt.Errorf("clear PQ family: %w", err)
 	}
-	fmt.Printf("hnsw-rebuild: cleared old v + q families in %s\n", time.Since(clearT0).Round(time.Millisecond))
-
-	persistT0 := time.Now()
-	if err := fresh.Persist(ctx, ps); err != nil {
-		return fmt.Errorf("persist: %w", err)
-	}
-	fmt.Printf("hnsw-rebuild: persisted in %s\n", time.Since(persistT0).Round(time.Second))
+	fmt.Printf("hnsw-rebuild: cleared old slot + q family in %s\n", time.Since(clearT0).Round(time.Millisecond))
 
 	fmt.Printf("hnsw-rebuild: DONE. nodes %d → %d (PQ codes cleared; run /admin/pq-train to restore PQ)\n",
 		g.Len(), fresh.Len())

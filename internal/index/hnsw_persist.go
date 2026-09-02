@@ -108,6 +108,10 @@ func (h *HNSW) TryPersistFrom(ctx context.Context, ps *store.PebbleStore, fromId
 func (h *HNSW) PersistSwap(ctx context.Context, ps *store.PebbleStore, progress func(PersistProgress)) error {
 	h.persistMu.Lock()
 	defer h.persistMu.Unlock()
+	return h.persistSwapLocked(ctx, ps, progress)
+}
+
+func (h *HNSW) persistSwapLocked(ctx context.Context, ps *store.PebbleStore, progress func(PersistProgress)) error {
 	h.mu.RLock()
 	old := h.slot
 	h.mu.RUnlock()
