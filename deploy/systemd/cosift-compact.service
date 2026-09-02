@@ -1,0 +1,10 @@
+[Unit]
+Description=Cosift HNSW compact (zombie threshold check + async job follow)
+After=cosift-serve.service
+Wants=cosift-serve.service
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/cosift-compact.sh
+StandardOutput=journal
+StandardError=journal
