@@ -153,6 +153,7 @@ func openPebble(path string, readOnly bool) (*PebbleStore, error) {
 	cacheMB := envInt("COSIFT_PEBBLE_CACHE_MB", 128)
 	memtableMB := envInt("COSIFT_PEBBLE_MEMTABLE_MB", 32)
 	memtables := envInt("COSIFT_PEBBLE_MEMTABLES", 2)
+	compactions := envInt("COSIFT_PEBBLE_COMPACTIONS", 1)
 
 	cache := pebble.NewCache(int64(cacheMB) << 20)
 	defer cache.Unref()
@@ -160,6 +161,7 @@ func openPebble(path string, readOnly bool) (*PebbleStore, error) {
 		Cache:                       cache,
 		MemTableSize:                uint64(memtableMB) << 20,
 		MemTableStopWritesThreshold: memtables + 2,
+		MaxConcurrentCompactions:    func() int { return compactions },
 		ReadOnly:                    readOnly,
 	}
 	db, err := pebble.Open(path, opts)
@@ -843,17 +845,35 @@ func docLenKey(docID int64) []byte {
 	return k
 }
 
-// Two sub-prefixes under the 'v' family: 0x00 for meta, 0x01 for nodes.
-// Sorting on Pebble's byte ordering puts meta before nodes, so a startup
-// iterator can read meta first and use it to size the node slice.
+// Sub-prefixes under the 'v' family: 0x00 for meta, then one node slot per
+// generation. A full persist writes the next generation into the inactive
+// slot and only then points meta at it, so the previous graph stays
+// loadable until the swap and the two key ranges never share tombstones.
+const (
+	VectorSlotA byte = 0x01
+	VectorSlotB byte = 0x02
+)
+
+// OtherVectorSlot returns the inactive slot for the given active one.
+func OtherVectorSlot(slot byte) byte {
+	if slot == VectorSlotA {
+		return VectorSlotB
+	}
+	return VectorSlotA
+}
+
 func vectorMetaKey() []byte { return []byte{famVector, 0x00, 'm', 'e', 't', 'a'} }
 
-func vectorNodeKey(nodeID uint64) []byte {
+func vectorNodeKey(slot byte, nodeID uint64) []byte {
 	k := make([]byte, 1+1+8)
 	k[0] = famVector
-	k[1] = 0x01
+	k[1] = slot
 	binary.BigEndian.PutUint64(k[2:], nodeID)
 	return k
+}
+
+func vectorSlotBounds(slot byte) (lo, hi []byte) {
+	return []byte{famVector, slot}, []byte{famVector, slot + 1}
 }
 
 // PutVectorMeta / GetVectorMeta — opaque blob holder under the 'v' family
@@ -886,11 +906,11 @@ func (p *PebbleStore) GetVectorMeta(ctx context.Context) ([]byte, bool, error) {
 }
 
 // PutVectorNode writes one HNSW-node blob under its ID. Caller-owned format.
-func (p *PebbleStore) PutVectorNode(ctx context.Context, nodeID uint64, blob []byte) error {
+func (p *PebbleStore) PutVectorNode(ctx context.Context, slot byte, nodeID uint64, blob []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return p.db.Set(vectorNodeKey(nodeID), blob, p.writeOpts)
+	return p.db.Set(vectorNodeKey(slot, nodeID), blob, p.writeOpts)
 }
 
 // VectorNodeEntry is one (id, blob) tuple for batched writes.
@@ -908,7 +928,7 @@ type VectorNodeEntry struct {
 //
 // Used by index.HNSW.Persist for full snapshots and HNSW.PersistFrom for
 // incremental checkpoints. Iterb.
-func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorNodeEntry) error {
+func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, slot byte, entries []VectorNodeEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -939,7 +959,7 @@ func (p *PebbleStore) PutVectorNodesBatch(ctx context.Context, entries []VectorN
 			batch = p.db.NewBatch()
 			batchBytes = 0
 		}
-		if err := batch.Set(vectorNodeKey(e.ID), e.Blob, nil); err != nil {
+		if err := batch.Set(vectorNodeKey(slot, e.ID), e.Blob, nil); err != nil {
 			return err
 		}
 		batchBytes += entryBytes
@@ -1054,10 +1074,8 @@ func (p *PebbleStore) IteratePQCodes(ctx context.Context, fn func(nodeID uint64,
 	return nil
 }
 
-// ClearVectorFamily removes every persisted HNSW key (meta + nodes) in a
-// single DeleteRange op. Used by `cosift hnsw-rebuild` before writing the
-// freshly-reconstructed graph so leftover entries from the old graph
-// can't shadow new ones at lower indices.
+// ClearVectorFamily removes every persisted HNSW key (meta + all node slots)
+// in a single DeleteRange op.
 func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1065,6 +1083,33 @@ func (p *PebbleStore) ClearVectorFamily(ctx context.Context) error {
 	lo := []byte{famVector}
 	hi := []byte{famVector + 1}
 	return p.db.DeleteRange(lo, hi, p.writeOpts)
+}
+
+// ClearVectorSlot removes every node blob in one slot and compacts the range
+// synchronously so a later persist into it never lands on top of tombstones.
+func (p *PebbleStore) ClearVectorSlot(ctx context.Context, slot byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lo, hi := vectorSlotBounds(slot)
+	if err := p.db.DeleteRange(lo, hi, p.writeOpts); err != nil {
+		return err
+	}
+	return p.db.Compact(lo, hi, true)
+}
+
+// VectorSlotEmpty reports whether a node slot holds no entries.
+func (p *PebbleStore) VectorSlotEmpty(ctx context.Context, slot byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	lo, hi := vectorSlotBounds(slot)
+	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return false, err
+	}
+	defer it.Close()
+	return !it.First(), nil
 }
 
 // DB returns the underlying Pebble handle for operations that need
@@ -1112,14 +1157,14 @@ func (p *PebbleStore) ClearPQFamily(ctx context.Context) error {
 	return p.db.DeleteRange(lo, hi, p.writeOpts)
 }
 
-// IterateVectorNodes scans every persisted HNSW node in ascending ID order,
-// invoking fn(nodeID, blob) for each. Returning false from fn stops the scan.
-func (p *PebbleStore) IterateVectorNodes(ctx context.Context, fn func(nodeID uint64, blob []byte) bool) error {
+// IterateVectorNodes scans every persisted HNSW node in one slot in ascending
+// ID order, invoking fn(nodeID, blob) for each. Returning false from fn stops
+// the scan.
+func (p *PebbleStore) IterateVectorNodes(ctx context.Context, slot byte, fn func(nodeID uint64, blob []byte) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	lo := []byte{famVector, 0x01}
-	hi := []byte{famVector, 0x02}
+	lo, hi := vectorSlotBounds(slot)
 	it, err := p.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
 		return err

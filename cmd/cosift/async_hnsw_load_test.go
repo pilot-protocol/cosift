@@ -52,7 +52,7 @@ func TestLoadHNSWProgressSkipsCorruptNode(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 	// Overwrite one node's blob with garbage too short to decode.
-	if err := f.ps.PutVectorNode(context.Background(), 1, []byte{0x00, 0x01, 0x02}); err != nil {
+	if err := f.ps.PutVectorNode(context.Background(), store.VectorSlotA, 1, []byte{0x00, 0x01, 0x02}); err != nil {
 		t.Fatalf("corrupt node: %v", err)
 	}
 	g, ok, err := index.LoadHNSW(context.Background(), f.ps)
