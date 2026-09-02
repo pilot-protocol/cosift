@@ -30,6 +30,7 @@ func (h *HNSW) Rebuild() *HNSW {
 	fresh.efConstruction = h.efConstruction
 	fresh.efSearch = h.efSearch
 	fresh.levelMult = h.levelMult
+	fresh.slot = h.slot
 
 	for i := range h.nodes {
 		if len(h.nodes[i].vec) == 0 {
@@ -115,9 +116,18 @@ func (h *HNSW) Compact() (removed int) {
 		}
 	}
 
-	// 3. Pick new entry point as the highest-level surviving node.
+	// 3. Rebuild the URL index and counters; every id changed, so the dirty
+	//    set is meaningless until the caller's full persist rewrites the graph.
 	h.nodes = newNodes
 	h.codes = newCodes
+	h.byURL = make(map[string][]int32, len(h.byURL))
+	for i := range h.nodes {
+		h.byURL[h.nodes[i].url] = append(h.byURL[h.nodes[i].url], int32(i))
+	}
+	h.valid = len(h.nodes)
+	h.dirty = make(map[int32]struct{})
+
+	// 4. Pick new entry point as the highest-level surviving node.
 	if len(h.nodes) == 0 {
 		h.entryPoint = -1
 		h.maxLevel = 0

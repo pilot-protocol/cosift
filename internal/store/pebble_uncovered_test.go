@@ -72,13 +72,13 @@ func TestPebbleVectorNodeRoundtrip(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
 
-	if err := p.PutVectorNode(ctx, 42, []byte("nodepayload")); err != nil {
+	if err := p.PutVectorNode(ctx, VectorSlotA, 42, []byte("nodepayload")); err != nil {
 		t.Fatalf("PutVectorNode: %v", err)
 	}
 
 	// Iterate and confirm we see it.
 	found := false
-	if err := p.IterateVectorNodes(ctx, func(id uint64, blob []byte) bool {
+	if err := p.IterateVectorNodes(ctx, VectorSlotA, func(id uint64, blob []byte) bool {
 		if id == 42 && string(blob) == "nodepayload" {
 			found = true
 		}
@@ -96,7 +96,7 @@ func TestPebbleVectorNodesBatch(t *testing.T) {
 	ctx := context.Background()
 
 	// Empty input is a no-op.
-	if err := p.PutVectorNodesBatch(ctx, nil); err != nil {
+	if err := p.PutVectorNodesBatch(ctx, VectorSlotA, nil); err != nil {
 		t.Errorf("empty batch: %v", err)
 	}
 
@@ -105,12 +105,12 @@ func TestPebbleVectorNodesBatch(t *testing.T) {
 		{ID: 2, Blob: []byte("two")},
 		{ID: 3, Blob: []byte("three")},
 	}
-	if err := p.PutVectorNodesBatch(ctx, entries); err != nil {
+	if err := p.PutVectorNodesBatch(ctx, VectorSlotA, entries); err != nil {
 		t.Fatalf("PutVectorNodesBatch: %v", err)
 	}
 
 	seen := map[uint64]string{}
-	_ = p.IterateVectorNodes(ctx, func(id uint64, blob []byte) bool {
+	_ = p.IterateVectorNodes(ctx, VectorSlotA, func(id uint64, blob []byte) bool {
 		seen[id] = string(blob)
 		return true
 	})
@@ -119,11 +119,45 @@ func TestPebbleVectorNodesBatch(t *testing.T) {
 	}
 }
 
+// Slots are disjoint key ranges: clearing one leaves the other intact.
+func TestPebbleVectorSlots(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	_ = p.PutVectorNode(ctx, VectorSlotA, 1, []byte("a1"))
+	_ = p.PutVectorNode(ctx, VectorSlotB, 1, []byte("b1"))
+
+	if OtherVectorSlot(VectorSlotA) != VectorSlotB || OtherVectorSlot(VectorSlotB) != VectorSlotA {
+		t.Fatal("OtherVectorSlot mapping")
+	}
+	for _, slot := range []byte{VectorSlotA, VectorSlotB} {
+		if empty, err := p.VectorSlotEmpty(ctx, slot); err != nil || empty {
+			t.Fatalf("slot %d: empty=%v err=%v", slot, empty, err)
+		}
+	}
+	if err := p.ClearVectorSlot(ctx, VectorSlotA); err != nil {
+		t.Fatalf("ClearVectorSlot: %v", err)
+	}
+	if empty, _ := p.VectorSlotEmpty(ctx, VectorSlotA); !empty {
+		t.Error("slot A should be empty")
+	}
+	got := ""
+	_ = p.IterateVectorNodes(ctx, VectorSlotB, func(_ uint64, blob []byte) bool {
+		got = string(blob)
+		return true
+	})
+	if got != "b1" {
+		t.Errorf("slot B disturbed: %q", got)
+	}
+	if err := p.ClearVectorSlot(ctx, VectorSlotA); err != nil {
+		t.Fatalf("ClearVectorSlot on empty slot: %v", err)
+	}
+}
+
 func TestPebbleClearVectorFamily(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
 	_ = p.PutVectorMeta(ctx, []byte("meta"))
-	_ = p.PutVectorNode(ctx, 1, []byte("one"))
+	_ = p.PutVectorNode(ctx, VectorSlotA, 1, []byte("one"))
 
 	if err := p.ClearVectorFamily(ctx); err != nil {
 		t.Fatalf("ClearVectorFamily: %v", err)
@@ -132,7 +166,7 @@ func TestPebbleClearVectorFamily(t *testing.T) {
 		t.Errorf("VectorMeta should be cleared")
 	}
 	count := 0
-	_ = p.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
+	_ = p.IterateVectorNodes(ctx, VectorSlotA, func(_ uint64, _ []byte) bool {
 		count++
 		return true
 	})

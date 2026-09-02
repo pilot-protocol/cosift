@@ -77,10 +77,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		vectorDim = meta.Dim
 		vectorNodes = meta.NodeCount
 	} else {
-		_ = ps.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
-			hasVectors = true
-			return false
-		})
+		for _, slot := range []byte{store.VectorSlotA, store.VectorSlotB} {
+			_ = ps.IterateVectorNodes(ctx, slot, func(_ uint64, _ []byte) bool {
+				hasVectors = true
+				return false
+			})
+		}
 	}
 	// The full graph is loaded asynchronously (loadHNSWInto, launched after
 	// the listener binds) so the O(N) decode of millions of nodes no longer

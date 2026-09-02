@@ -25,6 +25,9 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+	"sync/atomic"
+
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // HNSW default parameters. Tunable per build; suitable for general-purpose
@@ -71,6 +74,13 @@ type HNSW struct {
 	// raw vectors; new nodes need a subsequent pq-train to get codes.
 	codebook *PQCodebook
 	codes    [][]uint16 // parallel to nodes; nil entries fall back to raw vec
+
+	byURL     map[string][]int32 // live node ids per URL
+	valid     int                // nodes with a vector
+	reclaimed atomic.Uint64
+	dirty     map[int32]struct{} // nodes changed since the last persist (vec cleared or neighbors gained)
+	persistMu sync.Mutex         // serializes persist and compact
+	slot      byte               // on-disk node slot the graph was loaded from / last persisted to
 }
 
 type hnswNode struct {
@@ -91,7 +101,21 @@ func NewHNSW(dim int) *HNSW {
 		efSearch:       HNSWefSearch,
 		levelMult:      1.0 / math.Log(float64(HNSWM)),
 		entryPoint:     -1,
+		byURL:          make(map[string][]int32),
+		dirty:          make(map[int32]struct{}),
+		slot:           store.VectorSlotA,
 	}
+}
+
+// Reclaimed reports the cumulative count of nodes invalidated by
+// MarkURLPassagesInvalid.
+func (h *HNSW) Reclaimed() uint64 { return h.reclaimed.Load() }
+
+// Slot reports the on-disk node slot the graph is currently persisted in.
+func (h *HNSW) Slot() byte {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.slot
 }
 
 // SetEfSearch overrides the query-time candidate-list size. Bigger values
@@ -156,22 +180,18 @@ type PQStatus struct {
 func (h *HNSW) PQStatus() PQStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	st := PQStatus{NodesTotal: len(h.nodes)}
-	if h.codebook != nil {
-		st.Enabled = true
-		st.Dim = h.codebook.Dim
-		st.M = h.codebook.M
-		st.K = h.codebook.K
+	st := PQStatus{NodesTotal: len(h.nodes), NodesValid: h.valid}
+	if h.codebook == nil {
+		return st
 	}
-	// Walk in a single pass; count valid vecs and codes that are
-	// ATTACHED to those valid vecs (ghost codes on vec-less zombies
-	// don't help anyone search and shouldn't pad coverage).
-	for i := range h.nodes {
-		valid := len(h.nodes[i].vec) > 0
-		if valid {
-			st.NodesValid++
-		}
-		if h.codebook != nil && i < len(h.codes) && len(h.codes[i]) == h.codebook.M && valid {
+	st.Enabled = true
+	st.Dim = h.codebook.Dim
+	st.M = h.codebook.M
+	st.K = h.codebook.K
+	// Count only codes ATTACHED to valid vecs (ghost codes on vec-less
+	// zombies don't help anyone search and shouldn't pad coverage).
+	for i := range h.codes {
+		if i < len(h.nodes) && len(h.nodes[i].vec) > 0 && len(h.codes[i]) == h.codebook.M {
 			st.NodesWithCode++
 		}
 	}
@@ -373,23 +393,20 @@ func (h *HNSW) EncodeAll(cb *PQCodebook) ([]uint64, [][]uint16, error) {
 	return ids, codes, nil
 }
 
-// LookupVectorByURL returns the persisted unit-normalized vector for the
-// first passage whose url matches. Used by /find_similar?retriever=dense to
-// skip the embed RPC — the source doc's vector is already in the graph.
-// Linear scan; for 1M passages this is ~few ms, dominated by cache misses.
-// Returns (nil, false) when the URL has no indexed passage.
+// LookupVectorByURL returns the unit-normalized vector of the first live
+// passage for url. Used by /find_similar?retriever=dense to skip the embed
+// RPC. Returns (nil, false) when the URL has no live passage.
 func (h *HNSW) LookupVectorByURL(url string) ([]float32, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	for i := range h.nodes {
-		if h.nodes[i].url == url {
-			// Copy: caller shouldn't be able to mutate graph internals.
-			cp := make([]float32, len(h.nodes[i].vec))
-			copy(cp, h.nodes[i].vec)
-			return cp, true
-		}
+	ids := h.byURL[url]
+	if len(ids) == 0 {
+		return nil, false
 	}
-	return nil, false
+	src := h.nodes[ids[0]].vec
+	cp := make([]float32, len(src))
+	copy(cp, src)
+	return cp, true
 }
 
 // Add inserts a doc-level embedding without span info. Mirrors
@@ -412,37 +429,61 @@ func (h *HNSW) codeFor(vec []float32) []uint16 {
 	return code
 }
 
-// MarkURLPassagesInvalid zeros out vec (and pq code, if present) for every
-// node whose url matches. Returns the count zeroed. Dead nodes remain in
-// the graph as link targets so neighbor adjacency lists stay consistent
-// (searchLayer/Search both already skip nodes with empty vec —
-// "zombie / partial-persisted" guard). Lets the crawler reclaim recall +
-// memory on re-fetch instead of accumulating generations of stale chunks
-// for the same URL.
+// invalidateLocked turns node i into a zombie: vec and PQ code cleared, the
+// node stays in place as a link target so adjacency lists stay consistent.
+// Caller holds the write lock and owns the byURL entry.
+func (h *HNSW) invalidateLocked(i int) {
+	h.nodes[i].vec = nil
+	if h.codes != nil && i < len(h.codes) {
+		h.codes[i] = nil
+	}
+	h.valid--
+	h.dirty[int32(i)] = struct{}{}
+}
+
+// relocateEntryLocked moves the entry point off a zombie to the highest-level
+// live node; -1 when no live node remains.
+func (h *HNSW) relocateEntryLocked() {
+	if h.entryPoint >= 0 && h.entryPoint < len(h.nodes) && len(h.nodes[h.entryPoint].vec) > 0 {
+		return
+	}
+	h.entryPoint = -1
+	h.maxLevel = 0
+	for i := range h.nodes {
+		if len(h.nodes[i].vec) > 0 && (h.entryPoint < 0 || h.nodes[i].level > h.maxLevel) {
+			h.entryPoint = i
+			h.maxLevel = h.nodes[i].level
+		}
+	}
+}
+
+// MarkURLPassagesInvalid zombifies every live node for url (O(k) via the
+// URL index). Returns the count zeroed. Lets the crawler reclaim recall +
+// memory on re-fetch instead of accumulating generations of stale chunks.
 func (h *HNSW) MarkURLPassagesInvalid(url string) int {
 	if url == "" {
 		return 0
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	n := 0
-	for i := range h.nodes {
-		if h.nodes[i].url == url && len(h.nodes[i].vec) > 0 {
-			h.nodes[i].vec = nil
-			if h.codes != nil && i < len(h.codes) {
-				h.codes[i] = nil
-			}
-			n++
-		}
+	ids := h.byURL[url]
+	if len(ids) == 0 {
+		return 0
 	}
-	return n
+	delete(h.byURL, url)
+	for _, id := range ids {
+		h.invalidateLocked(int(id))
+	}
+	h.reclaimed.Add(uint64(len(ids)))
+	h.relocateEntryLocked()
+	return len(ids)
 }
 
-// ReconcileURLs zeros out vec (and pq code) for every live node whose url
-// fails the live predicate, in one pass under one lock acquisition. Used at
-// load time to invalidate nodes whose docs were soft-deleted offline
-// (purge-domain/purge-adult never touch the graph). Returns (invalidated,
-// scanned). Idempotent: already-invalid nodes are skipped.
+// ReconcileURLs zombifies every live node whose url fails the live
+// predicate, in one pass under one lock acquisition. Used at load time to
+// invalidate nodes whose docs were soft-deleted offline (purge-domain/
+// purge-adult never touch the graph). Returns (invalidated, scanned).
+// Idempotent: already-invalid nodes are skipped.
 func (h *HNSW) ReconcileURLs(live func(url string) bool) (int, int) {
 	if live == nil {
 		return 0, 0
@@ -457,11 +498,12 @@ func (h *HNSW) ReconcileURLs(live func(url string) bool) (int, int) {
 		if live(h.nodes[i].url) {
 			continue
 		}
-		h.nodes[i].vec = nil
-		if h.codes != nil && i < len(h.codes) {
-			h.codes[i] = nil
-		}
+		delete(h.byURL, h.nodes[i].url)
+		h.invalidateLocked(i)
 		invalidated++
+	}
+	if invalidated > 0 {
+		h.relocateEntryLocked()
 	}
 	return invalidated, len(h.nodes)
 }
@@ -545,6 +587,8 @@ func (h *HNSW) addPassageLocked(url, title string, offset, length int, cp []floa
 		level:     level,
 		neighbors: make([][]int, level+1),
 	})
+	h.byURL[url] = append(h.byURL[url], int32(newIdx))
+	h.valid++
 	// when a codebook is loaded, encode the new vec inline and
 	// keep h.codes parallel to h.nodes. The crawl-time PQ checkpoint
 	// writes [lastN, len) of these to Pebble.
@@ -560,9 +604,10 @@ func (h *HNSW) addPassageLocked(url, title string, offset, length int, cp []floa
 		h.codes[newIdx] = code
 	}
 
-	// First node: becomes the entry point trivially.
-	if newIdx == 0 {
-		h.entryPoint = 0
+	// First node (or first live node after every other was invalidated):
+	// becomes the entry point trivially.
+	if h.entryPoint < 0 {
+		h.entryPoint = newIdx
 		h.maxLevel = level
 		return
 	}
@@ -750,11 +795,19 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 	results := &candMaxHeap{}
 	heap.Init(results)
 
+	// Zombies are transit-only: expanded so traversal can cross them, never
+	// admitted to results (they would otherwise fill the ef window with
+	// +Inf entries — the failure mode when the entry point sits in an
+	// invalidated cluster).
 	for _, ep := range entryPoints {
+		visited[ep] = struct{}{}
+		if h.zombieIdx(ep) {
+			heap.Push(cands, candEntry{idx: ep, dist: float32(math.Inf(1))})
+			continue
+		}
 		d := float32(h.distanceToNode(q, pqTable, ep))
 		heap.Push(cands, candEntry{idx: ep, dist: d})
 		heap.Push(results, candEntry{idx: ep, dist: d})
-		visited[ep] = struct{}{}
 	}
 
 	for cands.Len() > 0 {
@@ -784,6 +837,12 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 				continue
 			}
 			visited[nb] = struct{}{}
+			if h.zombieIdx(nb) {
+				if nb >= 0 && nb < len(h.nodes) {
+					heap.Push(cands, candEntry{idx: nb, dist: nearest.dist})
+				}
+				continue
+			}
 			d := float32(h.distanceToNode(q, pqTable, nb))
 			if results.Len() < ef {
 				heap.Push(cands, candEntry{idx: nb, dist: d})
@@ -804,6 +863,11 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 	return out
 }
 
+// zombieIdx reports whether idx is out of range or an invalidated node.
+func (h *HNSW) zombieIdx(idx int) bool {
+	return idx < 0 || idx >= len(h.nodes) || len(h.nodes[idx].vec) == 0
+}
+
 // addBackLink wires a back-edge from neighbor to newIdx at the given layer,
 // pruning neighbor's list if it overflows the per-layer cap.
 //
@@ -819,6 +883,7 @@ func (h *HNSW) addBackLink(neighbor, newIdx, lvl int) {
 	if lvl >= len(h.nodes[neighbor].neighbors) {
 		return // neighbor doesn't participate at this layer
 	}
+	h.dirty[int32(neighbor)] = struct{}{}
 	mCap := h.M
 	if lvl == 0 {
 		mCap = h.Mmax0
