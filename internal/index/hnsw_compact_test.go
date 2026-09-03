@@ -92,9 +92,10 @@ func TestHNSWZombieCompaction(t *testing.T) {
 	}
 	t.Logf("zombified %d of %d nodes", zombified, len(h.nodes))
 
+	// Zombies are transit-only in searchLayer, so they cost nothing in recall.
 	zombied := measure("with-zombies")
-	if zombied >= clean*0.9 {
-		t.Logf("note: zombies didn't drag recall enough on this seed (clean=%.3f, zombied=%.3f); test still validates compact()'s round-trip", clean, zombied)
+	if zombied < clean*0.95 {
+		t.Errorf("zombies dragged recall: clean=%.3f zombied=%.3f", clean, zombied)
 	}
 
 	removed := h.Compact()
@@ -102,12 +103,11 @@ func TestHNSWZombieCompaction(t *testing.T) {
 		t.Fatalf("compact removed %d, expected %d", removed, zombified)
 	}
 
+	// Compact drops edges through removed nodes without re-linking survivors
+	// (Rebuild's job); recall may dip but must stay close to clean.
 	compacted := measure("compacted")
-	// Compact doesn't restore edges to surviving nodes — it only removes
-	// dangling refs. Same recall as the zombied state (slightly higher is
-	// possible if traversal now skips fewer dead branches).
-	if compacted < zombied*0.95 {
-		t.Errorf("compaction regressed recall: zombied=%.3f compacted=%.3f", zombied, compacted)
+	if compacted < clean*0.9 {
+		t.Errorf("compaction regressed recall: clean=%.3f compacted=%.3f", clean, compacted)
 	}
 
 	// Rebuild does restore: fresh graph topology with full M-neighbor

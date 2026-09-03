@@ -91,6 +91,9 @@ func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
 	base := os.Getenv("COSIFT_CHECKPOINT_DIR")
 	if base == "" {
 		base = "/tmp"
@@ -335,90 +338,170 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHNSWCompact runs HNSW.Compact() in-place, then clears the persisted
-// 'v' family and writes a fresh full snapshot so disk matches the compacted
-// in-memory graph. Cheaper than the offline hnsw-rebuild subcommand: Compact
-// keeps the existing topology among surviving nodes (O(N + edges)), whereas
-// Rebuild re-inserts every node via HNSW search (multiple minutes per million
-// passages). Operators run this when stats.zombie_nodes climbs above ~30% of
-// nodes_total.
-//
-// Synchronous; holds the HNSW write lock during the compact step and the
-// read lock during the persist step. Dense retrieval and AddPassage calls
-// queue for the duration. The server-wide WriteTimeout is disabled here via
-// ResponseController because compacting a multi-million-node graph routinely
-// runs past 60s. Returns counters so operators can confirm progress.
+// compactJob is the single-slot state of the async /admin/hnsw-compact run,
+// mirrored into /stats.hnsw_compact.
+type compactJob struct {
+	mu       sync.Mutex
+	running  bool
+	started  time.Time
+	finished time.Time
+	progress index.CompactProgress
+	result   index.CompactResult
+	err      error
+	done     chan struct{}
+}
+
+func (j *compactJob) snapshot() map[string]any {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.snapshotLocked()
+}
+
+func (j *compactJob) snapshotLocked() map[string]any {
+	m := map[string]any{"state": "idle"}
+	if j.started.IsZero() {
+		return m
+	}
+	switch {
+	case j.running:
+		m["state"] = "running"
+	case j.err != nil:
+		m["state"] = "error"
+		m["error"] = j.err.Error()
+	default:
+		m["state"] = "done"
+	}
+	p := j.progress
+	m["phase"] = p.Phase
+	m["nodes_before"] = p.NodesBefore
+	m["nodes_after"] = p.NodesAfter
+	m["removed"] = p.Removed
+	m["started_at"] = j.started.UTC().Format(time.RFC3339)
+	end := j.finished
+	if j.running {
+		end = time.Now()
+	} else {
+		m["finished_at"] = end.UTC().Format(time.RFC3339)
+	}
+	elapsed := end.Sub(j.started).Seconds()
+	m["elapsed_s"] = elapsed
+	if p.Total > 0 {
+		m["persist_written"] = p.Written
+		m["persist_total"] = p.Total
+		m["persist_pct"] = 100 * float64(p.Written) / float64(p.Total)
+		if j.running && p.Phase == "persist" && p.Written > 0 && elapsed > 0 {
+			m["eta_s"] = float64(p.Total-p.Written) / (float64(p.Written) / elapsed)
+		}
+	}
+	if !j.running {
+		m["persisted"] = j.result.Persisted
+		m["compact_ms"] = j.result.CompactDur.Milliseconds()
+		m["persist_ms"] = j.result.PersistDur.Milliseconds()
+	}
+	return m
+}
+
+// resultJSON is the completion payload (also returned by ?wait=1).
+func (j *compactJob) resultJSON() (map[string]any, int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	r := j.result
+	resp := map[string]any{
+		"nodes_before": r.NodesBefore,
+		"nodes_after":  r.NodesAfter,
+		"removed":      r.Removed,
+		"compact_ms":   r.CompactDur.Milliseconds(),
+		"persisted":    r.Persisted,
+	}
+	if r.Forced {
+		resp["forced"] = true
+	}
+	if r.Persisted {
+		resp["persist_ms"] = r.PersistDur.Milliseconds()
+	}
+	if j.err != nil {
+		resp["persist_error"] = j.err.Error()
+		return resp, http.StatusInternalServerError
+	}
+	return resp, http.StatusOK
+}
+
+// handleHNSWCompact starts HNSW.CompactPersist as a background job: compact
+// in place, rewrite the graph into the inactive on-disk slot, swap, clear the
+// old slot. Returns 202 immediately (409 while a run is in flight); progress
+// lives in /stats.hnsw_compact. ?wait=1 blocks for the result instead —
+// the WriteTimeout is lifted for that case. Options: skip_persist=1,
+// force_persist=1 (re-persist even when nothing was removed — the retry
+// path after an interrupted run). PQ codes are cleared with the old slot;
+// operators re-run /admin/pq-train if PQ was in use.
 func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if s.hnsw() == nil {
+	g := s.hnsw()
+	if g == nil {
 		writeProblem(w, http.StatusNotImplemented, "hnsw-compact requires a loaded HNSW graph")
+		return
+	}
+	q := r.URL.Query()
+	skipPersist := q.Get("skip_persist") == "1"
+	forcePersist := q.Get("force_persist") == "1"
+	wait := q.Get("wait") == "1"
+
+	j := &s.compact
+	j.mu.Lock()
+	if j.running {
+		snap := j.snapshotLocked()
+		j.mu.Unlock()
+		writeJSON(w, http.StatusConflict, snap)
+		return
+	}
+	j.running = true
+	j.started = time.Now()
+	j.finished = time.Time{}
+	j.progress = index.CompactProgress{Phase: "compact", NodesBefore: g.Len()}
+	j.result = index.CompactResult{}
+	j.err = nil
+	done := make(chan struct{})
+	j.done = done
+	j.mu.Unlock()
+
+	s.bgJobs.Add(1)
+	go func() {
+		defer s.bgJobs.Done()
+		// Deliberately not r.Context(): the run must outlive the request.
+		res, err := g.CompactPersist(context.Background(), s.store, skipPersist, forcePersist, func(p index.CompactProgress) {
+			j.mu.Lock()
+			j.progress = p
+			j.mu.Unlock()
+		})
+		j.mu.Lock()
+		j.result, j.err = res, err
+		j.running = false
+		j.finished = time.Now()
+		j.mu.Unlock()
+		close(done)
+		if err != nil {
+			log.Printf("hnsw-compact: FAILED after removing %d nodes: %v", res.Removed, err)
+			return
+		}
+		log.Printf("hnsw-compact: removed=%d (%.1f%% zombies) compact=%s persist=%s persisted=%v nodes %d→%d slot=%#x",
+			res.Removed, 100*float64(res.Removed)/float64(max(res.NodesBefore, 1)),
+			res.CompactDur.Round(time.Millisecond), res.PersistDur.Round(time.Millisecond),
+			res.Persisted, res.NodesBefore, res.NodesAfter, g.Slot())
+	}()
+
+	if !wait {
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "started", "watch": "/stats hnsw_compact"})
 		return
 	}
 	if rc := http.NewResponseController(w); rc != nil {
 		_ = rc.SetWriteDeadline(time.Time{})
 	}
-	skipPersist := r.URL.Query().Get("skip_persist") == "1"
-	forcePersist := r.URL.Query().Get("force_persist") == "1"
-
-	before := s.hnsw().Len()
-	t0 := time.Now()
-	removed := s.hnsw().Compact()
-	compactDur := time.Since(t0)
-	after := s.hnsw().Len()
-
-	resp := map[string]any{
-		"nodes_before": before,
-		"nodes_after":  after,
-		"removed":      removed,
-		"compact_ms":   compactDur.Milliseconds(),
-		"persisted":    false,
-	}
-
-	// force_persist=1 re-runs the wipe+persist even when this compact removed
-	// nothing — the retry path after a failed or interrupted persist, which
-	// otherwise leaves the disk graph partial with no way to repair it
-	// in-process (a second compact finds removed==0 and returns here).
-	if skipPersist || (removed == 0 && !forcePersist) {
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-	if forcePersist {
-		resp["forced"] = true
-	}
-
-	// Compact remapped node indices; the persisted 'v' family now points at
-	// stale slots. Wipe and full-rewrite. PQ codes follow node indices too,
-	// so clear 'q' as well — operators must re-run /admin/pq-train if PQ was
-	// in use.
-	persistT0 := time.Now()
-	// Deliberately NOT r.Context(): a dropped client connection mid-persist
-	// would cancel the wipe+rewrite and strand a partial disk graph.
-	ctx := context.Background()
-	if err := s.store.ClearVectorFamily(ctx); err != nil {
-		resp["persist_error"] = "clear vector family: " + err.Error()
-		writeJSON(w, http.StatusInternalServerError, resp)
-		return
-	}
-	if err := s.store.ClearPQFamily(ctx); err != nil {
-		resp["persist_error"] = "clear pq family: " + err.Error()
-		writeJSON(w, http.StatusInternalServerError, resp)
-		return
-	}
-	if err := s.hnsw().Persist(ctx, s.store); err != nil {
-		resp["persist_error"] = "persist: " + err.Error()
-		writeJSON(w, http.StatusInternalServerError, resp)
-		return
-	}
-	resp["persisted"] = true
-	resp["persist_ms"] = time.Since(persistT0).Milliseconds()
-	log.Printf("hnsw-compact: removed=%d (%.1f%% zombies) compact=%s persist=%s nodes %d→%d",
-		removed, 100*float64(removed)/float64(before),
-		compactDur.Round(time.Millisecond), time.Since(persistT0).Round(time.Millisecond),
-		before, after)
-	writeJSON(w, http.StatusOK, resp)
+	<-done
+	resp, code := j.resultJSON()
+	writeJSON(w, code, resp)
 }
 
 // responseRecorder captures an http.Handler's output for in-process

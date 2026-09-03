@@ -77,10 +77,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		vectorDim = meta.Dim
 		vectorNodes = meta.NodeCount
 	} else {
-		_ = ps.IterateVectorNodes(ctx, func(_ uint64, _ []byte) bool {
-			hasVectors = true
-			return false
-		})
+		for _, slot := range []byte{store.VectorSlotA, store.VectorSlotB} {
+			_ = ps.IterateVectorNodes(ctx, slot, func(_ uint64, _ []byte) bool {
+				hasVectors = true
+				return false
+			})
+		}
 	}
 	// The full graph is loaded asynchronously (loadHNSWInto, launched after
 	// the listener binds) so the O(N) decode of millions of nodes no longer
@@ -656,6 +658,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	servErr := httpSrv.ListenAndServe()
 	bgWG.Wait()    // loader goroutine (and its crawler-start decision) done
 	crawlWG.Wait() // crawler final persist before the deferred ps.Close()
+	srv.bgJobs.Wait()
 	if servErr != nil && servErr != http.ErrServerClosed {
 		return servErr
 	}
@@ -836,8 +839,19 @@ func (s *pebbleHTTP) loadHNSWInto(ctx context.Context, ps *store.PebbleStore, ve
 	s.hnswAt.Store(g)
 	s.hnswLoaded.Store(uint64(g.Len()))
 	s.hnswLoadState.Store(2) // ready
-	log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d (%.0fs)",
-		g.Len(), vectorDim, time.Since(start).Seconds())
+	log.Printf("pebble-serve: HNSW graph loaded into memory: %d nodes, dim=%d, slot=%#x (%.0fs)",
+		g.Len(), vectorDim, g.Slot(), time.Since(start).Seconds())
+	// A crash between a slot swap and its cleanup leaves the previous
+	// generation on disk; reclaim it before the crawler starts persisting.
+	stale := store.OtherVectorSlot(g.Slot())
+	if empty, err := ps.VectorSlotEmpty(ctx, stale); err == nil && !empty {
+		t0 := time.Now()
+		if err := ps.ClearVectorSlot(ctx, stale); err != nil {
+			log.Printf("pebble-serve: clearing stale HNSW slot %#x failed: %v", stale, err)
+		} else {
+			log.Printf("pebble-serve: cleared stale HNSW slot %#x in %s", stale, time.Since(t0).Round(time.Millisecond))
+		}
+	}
 }
 
 // startInProcessCrawl wires the crawler-inside-serve flow. Bumps
@@ -971,78 +985,76 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 		}
 		_ = c.Seed(u)
 	}
-	log.Printf("in-serve crawler: %d seeds queued (concurrency=%d, depth=%d, checkpoint=%s)",
-		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery)
+	log.Printf("in-serve crawler: %d seeds queued (concurrency=%d, depth=%d, checkpoint=%s, zombie-reclaim=%v)",
+		len(seeds), cfg.Crawler.MaxConcurrent, cfg.Crawler.MaxDepth, ckpEvery, crawler.ZombieReclaimEnabled())
 	s.crawlActive = true
 
-	// Checkpoint goroutine: incremental persist via PersistFrom — each
-	// tick only writes nodes [lastN, n). Shutdown does a full persist
-	// from 0 so any backlinks added to older nodes get refreshed.
-	// Seeding lastN from the loaded graph means the first checkpoint
-	// after restart only writes nodes added during this run; the prior
-	// N are already on disk.
+	// Checkpoint goroutine: incremental persist via TryPersistFrom — each
+	// tick writes nodes [lastN, n) plus the dirty set (invalidated nodes and
+	// nodes that gained back-links), so shutdown is just one more incremental
+	// checkpoint. Seeding lastN from the loaded graph means the first
+	// checkpoint after restart only writes nodes added during this run.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		t := time.NewTicker(ckpEvery)
 		defer t.Stop()
 		lastN := g.Len()
+		pqLastN := lastN
 		if lastN > 0 {
 			log.Printf("in-serve crawler: checkpoint baseline = %d nodes (loaded from disk)", lastN)
+		}
+		checkpoint := func(what string) bool {
+			n, dirty := g.Len(), g.DirtyCount()
+			if n == 0 || (n == lastN && dirty == 0) {
+				return false
+			}
+			// graph can shrink (e.g., /admin/hnsw-compact rewrites
+			// indices and writes a smaller meta). When that happens, lastN
+			// from before the compaction is stale and > n; PersistFrom(lastN)
+			// would be a no-op forever, stranding any new AddPassages until
+			// shutdown. The compact job does its own full persist so disk
+			// is already in sync; we just need to resync lastN here.
+			if n < lastN {
+				lastN = n
+				return false
+			}
+			t0 := time.Now()
+			ok, err := g.TryPersistFrom(context.Background(), ps, lastN)
+			if err != nil {
+				log.Printf("in-serve crawler: HNSW %s (incremental from %d) failed: %v", what, lastN, err)
+				return false
+			}
+			if !ok {
+				log.Printf("in-serve crawler: HNSW %s skipped — full persist in progress", what)
+				return false
+			}
+			log.Printf("in-serve crawler: HNSW %s at %d nodes (+%d new, +%d dirty, took %s)",
+				what, n, n-lastN, dirty, time.Since(t0))
+			lastN = n
+			return true
 		}
 		for {
 			select {
 			case <-ctx.Done():
-				n := g.Len()
-				if n > 0 {
-					t0 := time.Now()
-					log.Printf("in-serve crawler: final HNSW persist at shutdown (%d nodes, full)", n)
-					if err := g.Persist(context.Background(), ps); err != nil {
-						log.Printf("in-serve crawler: final HNSW persist failed: %v", err)
-					} else {
-						log.Printf("in-serve crawler: final HNSW persist complete in %s", time.Since(t0))
-					}
-				}
+				checkpoint("final checkpoint at shutdown")
 				return
 			case <-t.C:
+				if !checkpoint("checkpoint") {
+					continue
+				}
 				n := g.Len()
-				if n == 0 || n == lastN {
-					continue
-				}
-				// graph can shrink (e.g., /admin/hnsw-compact rewrites
-				// indices and writes a smaller meta). When that happens, lastN
-				// from before the compaction is stale and > n; PersistFrom(lastN)
-				// would be a no-op forever, stranding any new AddPassages until
-				// shutdown. The compact handler does its own full Persist so disk
-				// is already in sync; we just need to resync lastN here.
-				if n < lastN {
-					lastN = n
-					continue
-				}
-				t0 := time.Now()
-				if err := g.PersistFrom(context.Background(), ps, lastN); err != nil {
-					log.Printf("in-serve crawler: HNSW persist (incremental from %d) failed: %v", lastN, err)
-					continue
-				}
 				// alongside HNSW node writes, persist any newly-
 				// encoded PQ codes for nodes [lastN, n). Skipped silently
 				// when no codebook is loaded.
-				pqWritten := 0
 				if g.HasPQ() {
-					if w, err := g.PersistPQCodesFrom(context.Background(), ps, lastN); err != nil {
+					if w, err := g.PersistPQCodesFrom(context.Background(), ps, pqLastN); err != nil {
 						log.Printf("in-serve crawler: PQ codes persist failed: %v", err)
-					} else {
-						pqWritten = w
+					} else if w > 0 {
+						log.Printf("in-serve crawler: +%d PQ codes persisted", w)
 					}
 				}
-				if pqWritten > 0 {
-					log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, +%d PQ codes, took %s)",
-						n, n-lastN, pqWritten, time.Since(t0))
-				} else {
-					log.Printf("in-serve crawler: HNSW checkpoint at %d nodes (+%d incremental, took %s)",
-						n, n-lastN, time.Since(t0))
-				}
-				lastN = n
+				pqLastN = n
 			}
 		}
 	}()
@@ -1261,6 +1273,10 @@ type pebbleHTTP struct {
 	hnswTotal     atomic.Uint64
 	// Nodes invalidated by the post-load store reconcile (purge orphans).
 	reconciledOrphans atomic.Int64
+	// Background admin jobs (hnsw-compact) that touch the store; joined
+	// before the store closes.
+	bgJobs  sync.WaitGroup
+	compact compactJob
 	// Dense/hybrid candidates that failed GetDocByURL resolution and were
 	// silently dropped from responses — the store/graph divergence signal.
 	denseResolutionDrops atomic.Int64

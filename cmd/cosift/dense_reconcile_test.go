@@ -7,6 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // divergeFixture soft-deletes the docs behind the given URLs, leaving their
@@ -238,7 +242,11 @@ func TestHNSWCompactPersistHardening(t *testing.T) {
 
 	compact := func(q string, ctx context.Context) map[string]any {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/admin/hnsw-compact"+q, nil)
+		sep := "?"
+		if q != "" {
+			sep = "&"
+		}
+		req := httptest.NewRequest(http.MethodPost, "/admin/hnsw-compact"+q+sep+"wait=1", nil)
 		if ctx != nil {
 			req = req.WithContext(ctx)
 		}
@@ -279,6 +287,67 @@ func TestHNSWCompactPersistHardening(t *testing.T) {
 	resp = compact("?skip_persist=1", nil)
 	if resp["removed"].(float64) != 1 || resp["persisted"] != false {
 		t.Fatalf("skip_persist changed behavior: %v", resp)
+	}
+	// Each persisting run swapped slots; the graph reloads from the active one
+	// and the old slot is empty.
+	if f.hnsw.Slot() != store.VectorSlotA {
+		t.Fatalf("two swaps should land back in slot A, got %#x", f.hnsw.Slot())
+	}
+	if empty, _ := f.ps.VectorSlotEmpty(context.Background(), store.VectorSlotB); !empty {
+		t.Fatal("old slot not cleared after swap")
+	}
+	g, ok, err := index.LoadHNSW(context.Background(), f.ps)
+	if err != nil || !ok || g.Len() != f.hnsw.Len()+1 {
+		t.Fatalf("reload after compact: ok=%v err=%v len=%d", ok, err, g.Len())
+	}
+}
+
+// The async path: 202 on start, 409 while running, progress + result in
+// /stats.hnsw_compact once done.
+func TestHNSWCompactAsyncJob(t *testing.T) {
+	f := populatedPebbleStore(t)
+	srv := f.makeServer(nil)
+	f.hnsw.MarkURLPassagesInvalid(f.docs[5])
+	post := func(q string) (int, map[string]any) {
+		req := httptest.NewRequest(http.MethodPost, "/admin/hnsw-compact"+q, nil)
+		rec := httptest.NewRecorder()
+		srv.handleHNSWCompact(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+	code, body := post("")
+	if code != http.StatusAccepted || body["status"] != "started" {
+		t.Fatalf("start: %d %v", code, body)
+	}
+	for i := 0; i < 200; i++ {
+		if srv.compact.snapshot()["state"] != "running" {
+			break
+		}
+		if c, _ := post(""); c != http.StatusConflict && c != http.StatusAccepted {
+			t.Fatalf("second POST while running: %d", c)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	srv.bgJobs.Wait()
+	snap := srv.compact.snapshot()
+	if snap["state"] != "done" || snap["phase"] != "done" || snap["persisted"] != true {
+		t.Fatalf("snapshot after run: %v", snap)
+	}
+	if snap["removed"].(int) != 1 {
+		t.Fatalf("removed: %v", snap["removed"])
+	}
+	raw, err := srv.buildStatsBody(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stats map[string]any
+	_ = json.Unmarshal(raw, &stats)
+	if _, ok := stats["hnsw_compact"]; !ok {
+		t.Fatalf("/stats lacks hnsw_compact: %v", stats)
+	}
+	if stats["hnsw_reclaimed_total"].(float64) < 1 {
+		t.Fatalf("hnsw_reclaimed_total: %v", stats["hnsw_reclaimed_total"])
 	}
 }
 
