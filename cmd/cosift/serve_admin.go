@@ -361,6 +361,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		_ = rc.SetWriteDeadline(time.Time{})
 	}
 	skipPersist := r.URL.Query().Get("skip_persist") == "1"
+	forcePersist := r.URL.Query().Get("force_persist") == "1"
 
 	before := s.hnsw().Len()
 	t0 := time.Now()
@@ -376,9 +377,16 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		"persisted":    false,
 	}
 
-	if removed == 0 || skipPersist {
+	// force_persist=1 re-runs the wipe+persist even when this compact removed
+	// nothing — the retry path after a failed or interrupted persist, which
+	// otherwise leaves the disk graph partial with no way to repair it
+	// in-process (a second compact finds removed==0 and returns here).
+	if skipPersist || (removed == 0 && !forcePersist) {
 		writeJSON(w, http.StatusOK, resp)
 		return
+	}
+	if forcePersist {
+		resp["forced"] = true
 	}
 
 	// Compact remapped node indices; the persisted 'v' family now points at
@@ -386,7 +394,9 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	// so clear 'q' as well — operators must re-run /admin/pq-train if PQ was
 	// in use.
 	persistT0 := time.Now()
-	ctx := r.Context()
+	// Deliberately NOT r.Context(): a dropped client connection mid-persist
+	// would cancel the wipe+rewrite and strand a partial disk graph.
+	ctx := context.Background()
 	if err := s.store.ClearVectorFamily(ctx); err != nil {
 		resp["persist_error"] = "clear vector family: " + err.Error()
 		writeJSON(w, http.StatusInternalServerError, resp)

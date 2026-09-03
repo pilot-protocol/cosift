@@ -2325,6 +2325,36 @@ func (p *PebbleStore) IterDocsLite(ctx context.Context, fn func(docID int64, url
 	return nil
 }
 
+// IterURLKeys walks the famURL ('u' family) keys and yields each live URL.
+// The key itself is the URL — no value decode. Caller returns false from fn
+// to stop early. Stops on ctx cancel.
+func (p *PebbleStore) IterURLKeys(ctx context.Context, fn func(url string) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	it, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{famURL},
+		UpperBound: []byte{famURL + 1},
+	})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	for valid := it.First(); valid; valid = it.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		key := it.Key()
+		if len(key) < 2 {
+			continue
+		}
+		if !fn(string(key[1:])) {
+			return nil
+		}
+	}
+	return nil
+}
+
 // IterHostDocIDs iterates over all docIDs whose stored Domain equals host
 // (exact match, case-folded). Uses the famHost prefix index — O(site_docs)
 // rather than a full corpus scan. Caller returns false from fn to stop early.

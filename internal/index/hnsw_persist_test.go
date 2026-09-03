@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -495,4 +496,253 @@ func sameIntSlice(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// failAfterFlagCtx reports Canceled once *fail is set; used to kill a persist
+// between windows deterministically.
+type failAfterFlagCtx struct {
+	context.Context
+	fail *bool
+}
+
+func (c *failAfterFlagCtx) Err() error {
+	if *c.fail {
+		return context.Canceled
+	}
+	return nil
+}
+
+func buildTestHNSW(n, dim int, graphSeed, vecSeed int64) *HNSW {
+	h := NewHNSW(dim)
+	h.rng = rand.New(rand.NewSource(graphSeed))
+	rng := rand.New(rand.NewSource(vecSeed))
+	for i := 0; i < n; i++ {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = float32(rng.NormFloat64())
+		}
+		h.AddPassage(fmt.Sprintf("https://x/%d", i), fmt.Sprintf("doc %d", i), i*100, 50, v)
+	}
+	return h
+}
+
+// TestHNSWPersistWindowed pins the streaming persist: a multi-window persist
+// must keep every window bounded, cover every node exactly once, and load
+// back identical to a single-window persist.
+func TestHNSWPersistWindowed(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const (
+		n   = 500
+		dim = 32
+	)
+	original := buildTestHNSW(n, dim, 13, 7)
+
+	savedWindow := persistWindowBytes
+	persistWindowBytes = 16 * 1024
+	windows := 0
+	nodesFlushed := 0
+	persistFlushed = func(nodes, bytes int) {
+		windows++
+		nodesFlushed += nodes
+		// Window may overshoot by at most the final blob (+16 overhead).
+		if bytes > persistWindowBytes+8*1024 {
+			t.Errorf("window %d: %d bytes exceeds bound", windows, bytes)
+		}
+	}
+	defer func() {
+		persistWindowBytes = savedWindow
+		persistFlushed = nil
+	}()
+
+	if err := original.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	if windows < 3 {
+		t.Fatalf("windows: want >=3 for this fixture, got %d", windows)
+	}
+	if nodesFlushed != n {
+		t.Fatalf("nodes flushed: want %d, got %d", n, nodesFlushed)
+	}
+
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !ok {
+		t.Fatal("loaded ok=false; expected persisted index")
+	}
+	if loaded.Len() != n {
+		t.Errorf("loaded.Len(): want %d, got %d", n, loaded.Len())
+	}
+	if loaded.entryPoint != original.entryPoint || loaded.maxLevel != original.maxLevel {
+		t.Errorf("meta mismatch: entry %d/%d level %d/%d",
+			loaded.entryPoint, original.entryPoint, loaded.maxLevel, original.maxLevel)
+	}
+	rng := rand.New(rand.NewSource(99))
+	for qi := 0; qi < 5; qi++ {
+		q := make([]float32, dim)
+		for j := range q {
+			q[j] = float32(rng.NormFloat64())
+		}
+		want := original.Search(ctx, q, 10)
+		got := loaded.Search(ctx, q, 10)
+		wantURLs := make([]string, len(want))
+		gotURLs := make([]string, len(got))
+		for i := range want {
+			wantURLs[i] = want[i].URL
+		}
+		for i := range got {
+			gotURLs[i] = got[i].URL
+		}
+		if !sameURLOrder(gotURLs, wantURLs) {
+			t.Errorf("query %d: windowed round-trip diverged\n  want: %v\n  got:  %v", qi, wantURLs, gotURLs)
+		}
+	}
+}
+
+// TestHNSWPersistFailureLeavesNoMeta pins the meta-written-last invariant: a
+// persist killed between windows must leave the store loadable as "absent",
+// never with meta pointing past the written nodes.
+func TestHNSWPersistFailureLeavesNoMeta(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+
+	const (
+		n   = 500
+		dim = 32
+	)
+	h := buildTestHNSW(n, dim, 13, 7)
+
+	savedWindow := persistWindowBytes
+	persistWindowBytes = 16 * 1024
+	failNow := false
+	persistFlushed = func(nodes, bytes int) { failNow = true }
+	defer func() {
+		persistWindowBytes = savedWindow
+		persistFlushed = nil
+	}()
+
+	ctx := &failAfterFlagCtx{Context: context.Background(), fail: &failNow}
+	if err := h.Persist(ctx, ps); err == nil {
+		t.Fatal("persist: want error from cancelled second window, got nil")
+	}
+
+	loaded, ok, err := LoadHNSW(context.Background(), ps)
+	if err != nil {
+		t.Fatalf("load after failed persist: %v", err)
+	}
+	if ok || loaded != nil {
+		t.Fatalf("load after failed persist: want absent (ok=false), got ok=%v", ok)
+	}
+}
+
+// TestHNSWPersistWindowOne: degenerate one-blob windows must still cover
+// every node and load back correctly (also exercises the empty final flush).
+func TestHNSWPersistWindowOne(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+	ctx := context.Background()
+
+	const n = 50
+	h := buildTestHNSW(n, 32, 13, 7)
+
+	savedWindow := persistWindowBytes
+	persistWindowBytes = 1
+	windows := 0
+	persistFlushed = func(nodes, bytes int) {
+		windows++
+		if nodes != 1 {
+			t.Errorf("window %d: want 1 node per window, got %d", windows, nodes)
+		}
+	}
+	defer func() {
+		persistWindowBytes = savedWindow
+		persistFlushed = nil
+	}()
+
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	if windows != n {
+		t.Fatalf("windows: want %d, got %d", n, windows)
+	}
+	loaded, ok, err := LoadHNSW(ctx, ps)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if loaded.Len() != n {
+		t.Errorf("loaded.Len(): want %d, got %d", n, loaded.Len())
+	}
+}
+
+// TestHNSWPersistCancelledBeforeWrite: a context dead before the first window
+// commits must error out of the final flush and leave the store absent.
+func TestHNSWPersistCancelledBeforeWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+
+	h := buildTestHNSW(50, 32, 13, 7)
+	dead := true
+	ctx := &failAfterFlagCtx{Context: context.Background(), fail: &dead}
+	if err := h.Persist(ctx, ps); err == nil {
+		t.Fatal("persist: want error with pre-cancelled ctx, got nil")
+	}
+	_, ok, err := LoadHNSW(context.Background(), ps)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if ok {
+		t.Fatal("load: want absent after fully-cancelled persist")
+	}
+}
+
+// TestHNSWPersistMetaWriteFails: nodes land but the trailing meta write
+// fails — the store must still read as absent (meta is the commit point).
+func TestHNSWPersistMetaWriteFails(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	defer ps.Close()
+
+	h := buildTestHNSW(50, 32, 13, 7)
+	failNow := false
+	persistFlushed = func(nodes, bytes int) { failNow = true }
+	defer func() { persistFlushed = nil }()
+
+	ctx := &failAfterFlagCtx{Context: context.Background(), fail: &failNow}
+	err = h.Persist(ctx, ps)
+	if err == nil {
+		t.Fatal("persist: want meta-write error, got nil")
+	}
+	if !strings.Contains(err.Error(), "put vector meta") {
+		t.Fatalf("persist error: want meta-write failure, got: %v", err)
+	}
+	_, ok, err := LoadHNSW(context.Background(), ps)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if ok {
+		t.Fatal("load: want absent when meta never landed")
+	}
 }

@@ -41,11 +41,20 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"time"
 
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 const hnswMetaMagic = "HSW1"
+
+// persistWindowBytes bounds encoded blobs held in memory at once: a full
+// persist that materializes every blob first costs ~vec-bytes of extra heap
+// (~240 GB at 80M nodes) and OOMs before writing anything. Var for tests.
+var persistWindowBytes = 1 << 30
+
+// persistFlushed is a test hook observing each flushed window (nil in prod).
+var persistFlushed func(nodes, bytes int)
 
 // Persist serializes every node + meta into the PebbleStore. Safe to call
 // during ongoing search (acquires RLock); does NOT acquire the write lock,
@@ -55,7 +64,7 @@ func (h *HNSW) Persist(ctx context.Context, ps *store.PebbleStore) error {
 	return h.PersistFrom(ctx, ps, 0)
 }
 
-// PersistFrom writes meta + nodes[fromIdx:] in a single Pebble batch. The
+// PersistFrom writes nodes[fromIdx:] in bounded windows, then meta. The
 // crawl-time checkpoint goroutine uses this with fromIdx = last-persisted
 // count, so each checkpoint touches only the newly-added nodes. Meta is
 // always re-written so a reader can size the slice correctly.
@@ -81,15 +90,48 @@ func (h *HNSW) PersistFrom(ctx context.Context, ps *store.PebbleStore, fromIdx i
 	// New order: meta ALWAYS lags or equals nodes-on-disk. Worst case after
 	// partial write: meta says N nodes, disk has N+M; the M extras are
 	// orphan but harmless (LoadHNSW caps at meta.nodeCount).
-	entries := make([]store.VectorNodeEntry, 0, len(h.nodes)-fromIdx)
-	for i := fromIdx; i < len(h.nodes); i++ {
-		entries = append(entries, store.VectorNodeEntry{
-			ID:   uint64(i),
-			Blob: encodeHNSWNode(&h.nodes[i]),
-		})
+	total := len(h.nodes) - fromIdx
+	start := time.Now()
+	window := make([]store.VectorNodeEntry, 0, 4096)
+	windowBytes, written, flushes := 0, 0, 0
+	var bytesWritten int64
+	flush := func() error {
+		if len(window) == 0 {
+			return nil
+		}
+		if err := ps.PutVectorNodesBatch(ctx, window); err != nil {
+			return fmt.Errorf("put vector nodes batch: %w", err)
+		}
+		written += len(window)
+		bytesWritten += int64(windowBytes)
+		flushes++
+		if persistFlushed != nil {
+			persistFlushed(len(window), windowBytes)
+		}
+		if flushes > 1 || written < total {
+			elapsed := max(time.Since(start).Seconds(), 0.001)
+			rate := float64(written) / elapsed
+			eta := time.Duration(float64(total-written) / rate * float64(time.Second)).Round(time.Second)
+			log.Printf("hnsw persist: %d/%d nodes (%.1f GiB, %.0f nodes/s, eta %s)",
+				written, total, float64(bytesWritten)/(1<<30), rate, eta)
+		}
+		clear(window)
+		window = window[:0]
+		windowBytes = 0
+		return nil
 	}
-	if err := ps.PutVectorNodesBatch(ctx, entries); err != nil {
-		return fmt.Errorf("put vector nodes batch: %w", err)
+	for i := fromIdx; i < len(h.nodes); i++ {
+		blob := encodeHNSWNode(&h.nodes[i])
+		window = append(window, store.VectorNodeEntry{ID: uint64(i), Blob: blob})
+		windowBytes += len(blob) + 16
+		if windowBytes >= persistWindowBytes {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return err
 	}
 	meta := encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, len(h.nodes))
 	if err := ps.PutVectorMeta(ctx, meta); err != nil {

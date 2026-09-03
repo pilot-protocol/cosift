@@ -421,6 +421,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		score      float64 // retrieval score, used by time-decay
 	}
 	cands := make([]cand, 0, keepCap)
+	denseDrops := 0
 	for _, h := range hits {
 		if len(include) > 0 || len(exclude) > 0 {
 			host := hostOf(h.URL)
@@ -436,6 +437,8 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		}
 		doc, derr := s.store.GetDocByURL(r.Context(), h.URL)
 		if derr != nil || doc == nil {
+			s.noteDenseDrop(retrieverParam)
+			denseDrops++
 			continue
 		}
 		if dateFilter {
@@ -468,7 +471,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 	if sse != nil {
-		sse.phase("filter", map[string]any{"candidates": len(cands)})
+		sse.phase("filter", map[string]any{"candidates": len(cands), "dense_drops": denseDrops})
 	}
 	// time-decay re-weights then re-sorts BEFORE rerank, mirroring
 	// the /search pre-rerank placement so the reranker sees a freshness-
@@ -1157,6 +1160,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pooled {
 		doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 		if derr != nil || doc == nil {
+			s.noteDenseDrop(retrieverParam)
 			continue
 		}
 		if !filt.allow(doc.URL, doc.PublishedAt) {
@@ -1495,6 +1499,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		for _, p := range pooled {
 			doc, derr := s.store.GetDocByURL(r.Context(), p.hit.URL)
 			if derr != nil || doc == nil {
+				s.noteDenseDrop(retrieverParam)
 				continue
 			}
 			if !filt.allow(doc.URL, doc.PublishedAt) {

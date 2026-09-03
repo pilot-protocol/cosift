@@ -1,9 +1,13 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +120,34 @@ func TestHNSWZombieCompaction(t *testing.T) {
 	rebuiltRecall := measure("rebuilt")
 	if rebuiltRecall < clean*0.9 {
 		t.Errorf("rebuild did not restore recall: clean=%.3f rebuilt=%.3f", clean, rebuiltRecall)
+	}
+}
+
+// TestHNSWCompactProgressLogs pins the write-lock liveness lines.
+func TestHNSWCompactProgressLogs(t *testing.T) {
+	h := buildTestHNSW(250, 16, 3, 5)
+	for i := 0; i < 40; i++ {
+		h.nodes[i*5].vec = nil
+	}
+
+	savedEvery := compactProgressEvery
+	compactProgressEvery = 100
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer func() {
+		compactProgressEvery = savedEvery
+		log.SetOutput(os.Stderr)
+	}()
+
+	removed := h.Compact()
+	if removed != 40 {
+		t.Errorf("removed: want 40, got %d", removed)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "hnsw compact: scanning") {
+		t.Errorf("missing scanning progress line in:\n%s", out)
+	}
+	if !strings.Contains(out, "hnsw compact: rewiring neighbors") {
+		t.Errorf("missing rewiring progress line in:\n%s", out)
 	}
 }
