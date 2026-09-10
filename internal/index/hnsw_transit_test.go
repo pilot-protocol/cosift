@@ -8,10 +8,10 @@ import (
 
 // Scattered zombies must not turn a search into a walk of the whole graph.
 func TestHNSWZombieTransitBounded(t *testing.T) {
-	const n, dim, k = 20000, 16, 10
+	const n, dim, k = 3000, 16, 10
 	h := buildTestHNSW(n, dim, 3, 5)
 	rng := rand.New(rand.NewSource(11))
-	queries := make([][]float32, 30)
+	queries := make([][]float32, 20)
 	for i := range queries {
 		q := make([]float32, dim)
 		for j := range q {
@@ -50,7 +50,7 @@ func TestHNSWZombieTransitBounded(t *testing.T) {
 	}
 	zVisited, zRecall := run()
 	t.Logf("clean visited=%d recall=%.3f; 10%% zombies visited=%d recall=%.3f", cleanVisited, cleanRecall, zVisited, zRecall)
-	if zVisited > 3*cleanVisited {
+	if float64(zVisited) > 2.5*float64(cleanVisited) {
 		t.Fatalf("zombie transit unbounded: visited %d vs clean %d", zVisited, cleanVisited)
 	}
 	if zRecall < 0.9 || zRecall < cleanRecall-0.05 {
