@@ -821,8 +821,9 @@ type candEntry struct {
 // (measured: 17x the clean visited set at 10 % scattered zombies).
 var zombieTransitMult = 1
 
-// searchVisitedHook observes the visited-set size of each searchLayer call (tests only).
-var searchVisitedHook func(visited int)
+// searchStatsHook observes each searchLayer call's visited-set size and
+// zombie expansions (tests only).
+var searchStatsHook func(visited, zombieExpansions int)
 
 // searchLayer is the core HNSW search routine. From the given entry points,
 // expands the nearest-first frontier until the top ef candidates are stable.
@@ -831,6 +832,7 @@ var searchVisitedHook func(visited int)
 func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef int, lvl int) []candEntry {
 	visited := make(map[int]struct{}, ef*2)
 	transit := zombieTransitMult * ef
+	expanded := 0
 	// Candidates: min-heap by dist (front-of-queue is the nearest to expand).
 	cands := &candMinHeap{}
 	heap.Init(cands)
@@ -879,6 +881,7 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 				continue
 			}
 			transit--
+			expanded++
 		}
 		nbIdx := minInt(lvl, len(h.nodes[nearest.idx].neighbors)-1)
 		for _, nb := range h.nodes[nearest.idx].neighbors[nbIdx] {
@@ -904,8 +907,8 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 		}
 	}
 
-	if searchVisitedHook != nil {
-		searchVisitedHook(len(visited))
+	if searchStatsHook != nil {
+		searchStatsHook(len(visited), expanded)
 	}
 	// Drain results — convert max-heap to ascending-by-dist slice.
 	out := make([]candEntry, results.Len())
