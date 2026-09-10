@@ -341,14 +341,15 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 // compactJob is the single-slot state of the async /admin/hnsw-compact run,
 // mirrored into /stats.hnsw_compact.
 type compactJob struct {
-	mu       sync.Mutex
-	running  bool
-	started  time.Time
-	finished time.Time
-	progress index.CompactProgress
-	result   index.CompactResult
-	err      error
-	done     chan struct{}
+	mu           sync.Mutex
+	running      bool
+	started      time.Time
+	persistStart time.Time
+	finished     time.Time
+	progress     index.CompactProgress
+	result       index.CompactResult
+	err          error
+	done         chan struct{}
 }
 
 func (j *compactJob) snapshot() map[string]any {
@@ -389,8 +390,8 @@ func (j *compactJob) snapshotLocked() map[string]any {
 		m["persist_written"] = p.Written
 		m["persist_total"] = p.Total
 		m["persist_pct"] = 100 * float64(p.Written) / float64(p.Total)
-		if j.running && p.Phase == "persist" && p.Written > 0 && elapsed > 0 {
-			m["eta_s"] = float64(p.Total-p.Written) / (float64(p.Written) / elapsed)
+		if pe := end.Sub(j.persistStart).Seconds(); j.running && p.Phase == "persist" && p.Written > 0 && !j.persistStart.IsZero() && pe > 0 {
+			m["eta_s"] = float64(p.Total-p.Written) / (float64(p.Written) / pe)
 		}
 	}
 	if !j.running {
@@ -430,10 +431,10 @@ func (j *compactJob) resultJSON() (map[string]any, int) {
 // in place, rewrite the graph into the inactive on-disk slot, swap, clear the
 // old slot. Returns 202 immediately (409 while a run is in flight); progress
 // lives in /stats.hnsw_compact. ?wait=1 blocks for the result instead —
-// the WriteTimeout is lifted for that case. Options: skip_persist=1,
-// force_persist=1 (re-persist even when nothing was removed — the retry
-// path after an interrupted run). PQ codes are cleared with the old slot;
-// operators re-run /admin/pq-train if PQ was in use.
+// the WriteTimeout is lifted for that case. force_persist=1 re-persists even
+// when nothing was removed (the retry path after an interrupted run);
+// skip_persist is rejected. PQ codes are cleared with the old slot; operators
+// re-run /admin/pq-train if PQ was in use.
 func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
@@ -445,7 +446,10 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	skipPersist := q.Get("skip_persist") == "1"
+	if q.Get("skip_persist") == "1" {
+		writeProblem(w, http.StatusBadRequest, "skip_persist was removed: it leaves memory and disk on different node numberings")
+		return
+	}
 	forcePersist := q.Get("force_persist") == "1"
 	wait := q.Get("wait") == "1"
 
@@ -459,6 +463,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	j.running = true
 	j.started = time.Now()
+	j.persistStart = time.Time{}
 	j.finished = time.Time{}
 	j.progress = index.CompactProgress{Phase: "compact", NodesBefore: g.Len()}
 	j.result = index.CompactResult{}
@@ -471,8 +476,11 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.bgJobs.Done()
 		// Deliberately not r.Context(): the run must outlive the request.
-		res, err := g.CompactPersist(context.Background(), s.store, skipPersist, forcePersist, func(p index.CompactProgress) {
+		res, err := g.CompactPersist(context.Background(), s.store, forcePersist, s.shutdown, func(p index.CompactProgress) {
 			j.mu.Lock()
+			if p.Phase == "persist" && j.persistStart.IsZero() {
+				j.persistStart = time.Now()
+			}
 			j.progress = p
 			j.mu.Unlock()
 		})
@@ -486,10 +494,10 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 			log.Printf("hnsw-compact: FAILED after removing %d nodes: %v", res.Removed, err)
 			return
 		}
-		log.Printf("hnsw-compact: removed=%d (%.1f%% zombies) compact=%s persist=%s persisted=%v nodes %d→%d slot=%#x",
+		log.Printf("hnsw-compact: removed=%d (%.1f%% zombies) compact=%s persist=%s persisted=%v cleanup_skipped=%v nodes %d→%d slot=%#x",
 			res.Removed, 100*float64(res.Removed)/float64(max(res.NodesBefore, 1)),
 			res.CompactDur.Round(time.Millisecond), res.PersistDur.Round(time.Millisecond),
-			res.Persisted, res.NodesBefore, res.NodesAfter, g.Slot())
+			res.Persisted, res.CleanupSkipped, res.NodesBefore, res.NodesAfter, g.Slot())
 	}()
 
 	if !wait {
@@ -671,14 +679,16 @@ func (s *pebbleHTTP) handleEmbedBackfill(w http.ResponseWriter, r *http.Request)
 	}
 	wg.Wait()
 
-	// AddPassage only mutates the in-memory graph. Snapshot it to the store
-	// so the newly-embedded vectors survive a restart; without this the
-	// backfill's work is lost whenever the process exits. Detached context
-	// so a client disconnect can't abort the write.
+	// AddPassage only mutates the in-memory graph. Checkpoint the appended
+	// range plus the dirty set so the backfill survives a restart. Detached
+	// context so a client disconnect can't abort the write.
 	persisted := false
 	var persistErr string
 	if s.store != nil && embedded.Load() > 0 {
-		if err := s.hnsw().Persist(context.Background(), s.store); err != nil {
+		s.bgJobs.Add(1)
+		err := s.hnsw().PersistFrom(context.Background(), s.store, s.hnsw().PersistedCount())
+		s.bgJobs.Done()
+		if err != nil {
 			persistErr = err.Error()
 			log.Printf("embed-backfill: hnsw persist FAILED: %v", err)
 		} else {

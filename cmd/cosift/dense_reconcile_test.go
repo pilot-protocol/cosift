@@ -283,10 +283,11 @@ func TestHNSWCompactPersistHardening(t *testing.T) {
 		t.Fatalf("force_persist should re-persist: %v", resp)
 	}
 
-	f.hnsw.MarkURLPassagesInvalid(f.docs[4])
-	resp = compact("?skip_persist=1", nil)
-	if resp["removed"].(float64) != 1 || resp["persisted"] != false {
-		t.Fatalf("skip_persist changed behavior: %v", resp)
+	req := httptest.NewRequest(http.MethodPost, "/admin/hnsw-compact?skip_persist=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleHNSWCompact(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("skip_persist must be rejected, got %d", rec.Code)
 	}
 	// Each persisting run swapped slots; the graph reloads from the active one
 	// and the old slot is empty.
@@ -297,7 +298,7 @@ func TestHNSWCompactPersistHardening(t *testing.T) {
 		t.Fatal("old slot not cleared after swap")
 	}
 	g, ok, err := index.LoadHNSW(context.Background(), f.ps)
-	if err != nil || !ok || g.Len() != f.hnsw.Len()+1 {
+	if err != nil || !ok || g.Len() != f.hnsw.Len() {
 		t.Fatalf("reload after compact: ok=%v err=%v len=%d", ok, err, g.Len())
 	}
 }

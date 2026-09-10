@@ -275,8 +275,9 @@ func TestPebbleServeAsyncHNSWWarmup(t *testing.T) {
 		t.Errorf("healthz: %v", resp)
 	}
 
-	// The 3-node graph loads near-instantly; poll /stats until it's ready.
-	deadline := time.Now().Add(5 * time.Second)
+	// The 3-node graph loads near-instantly; poll /stats until it's ready
+	// (past the 5 s stats cache TTL, which can pin the first "loading" body).
+	deadline := time.Now().Add(12 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		st := mustGet(t, base+"/stats")

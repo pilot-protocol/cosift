@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -277,6 +278,33 @@ func (s *pebbleHTTP) handleStats(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(newBody)
 }
 
+// pqStatsInfo shapes the /stats.pq block. Coverage is over VALID nodes (vec
+// != nil), not raw total — zombies inflate the total without being searchable.
+func pqStatsInfo(pq index.PQStatus) map[string]any {
+	denom := pq.NodesValid
+	if denom == 0 {
+		denom = pq.NodesTotal
+	}
+	coverage := 0.0
+	if denom > 0 {
+		coverage = 100 * float64(pq.NodesWithCode) / float64(denom)
+	}
+	info := map[string]any{
+		"enabled":         pq.Enabled,
+		"nodes_with_code": pq.NodesWithCode,
+		"nodes_valid":     pq.NodesValid,
+		"nodes_total":     pq.NodesTotal,
+		"zombie_nodes":    pq.NodesTotal - pq.NodesValid,
+		"coverage_pct":    coverage,
+	}
+	if pq.Enabled {
+		info["dim"] = pq.Dim
+		info["m"] = pq.M
+		info["k"] = pq.K
+	}
+	return info
+}
+
 // buildStatsBody collects every signal /stats surfaces and marshals it.
 // Heavy paths: PebbleStore.Stats (d-family scan, partially counter-cached
 // since), HNSW.PQStatus (O(N) under h.mu read lock that
@@ -398,40 +426,17 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 	// async load progress (state/pct/ETA) so a restart's warm-up is watchable.
 	out["hnsw_load"] = s.hnswLoadSnapshot()
 	out["hnsw_compact"] = s.compact.snapshot()
+	out["hnsw_stale_slot_kept"] = s.staleSlotKept.Load()
+	// PQ status — operator-facing visibility into compression state. Only
+	// present when the graph is loaded and not write-locked (compact).
 	if g := s.hnsw(); g != nil {
 		out["hnsw_reclaimed_total"] = g.Reclaimed()
-		out["hnsw_slot"] = g.Slot()
-	}
-	// PQ status — operator-facing visibility into compression
-	// state. Only present when the graph is loaded; nil otherwise.
-	if s.hnsw() != nil {
-		pq := s.hnsw().PQStatus()
-		// coverage is over VALID nodes (vec != nil), not raw total —
-		// zombie slots from pre partial persists inflate the total
-		// without being searchable. NodesTotal still surfaced for context.
-		denom := pq.NodesValid
-		if denom == 0 {
-			denom = pq.NodesTotal // avoid div-by-zero on a fresh load
+		pq, slot, ok := g.TryStatus()
+		out["hnsw_busy"] = !ok
+		if ok {
+			out["hnsw_slot"] = slot
+			out["pq"] = pqStatsInfo(pq)
 		}
-		coverage := 0.0
-		if denom > 0 {
-			coverage = 100 * float64(pq.NodesWithCode) / float64(denom)
-		}
-		zombies := pq.NodesTotal - pq.NodesValid
-		pqInfo := map[string]any{
-			"enabled":         pq.Enabled,
-			"nodes_with_code": pq.NodesWithCode,
-			"nodes_valid":     pq.NodesValid,
-			"nodes_total":     pq.NodesTotal,
-			"zombie_nodes":    zombies,
-			"coverage_pct":    coverage,
-		}
-		if pq.Enabled {
-			pqInfo["dim"] = pq.Dim
-			pqInfo["m"] = pq.M
-			pqInfo["k"] = pq.K
-		}
-		out["pq"] = pqInfo
 	}
 	// Clients can read
 	// this once instead of probing ?retriever=dense + parsing the warning.
@@ -588,10 +593,11 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cosift_vector_dim %d\n", s.vectorDim)
 	}
 	if g := s.hnsw(); g != nil {
-		st := g.PQStatus()
-		fmt.Fprintf(w, "# HELP cosift_hnsw_zombie_nodes HNSW nodes invalidated (reclaimed or reconciled) and awaiting compaction.\n")
-		fmt.Fprintf(w, "# TYPE cosift_hnsw_zombie_nodes gauge\n")
-		fmt.Fprintf(w, "cosift_hnsw_zombie_nodes %d\n", st.NodesTotal-st.NodesValid)
+		if st, _, ok := g.TryStatus(); ok {
+			fmt.Fprintf(w, "# HELP cosift_hnsw_zombie_nodes HNSW nodes invalidated (reclaimed or reconciled) and awaiting compaction.\n")
+			fmt.Fprintf(w, "# TYPE cosift_hnsw_zombie_nodes gauge\n")
+			fmt.Fprintf(w, "cosift_hnsw_zombie_nodes %d\n", st.NodesTotal-st.NodesValid)
+		}
 		fmt.Fprintf(w, "# HELP cosift_hnsw_reclaimed_total Nodes invalidated by re-crawl zombie reclaim since process start.\n")
 		fmt.Fprintf(w, "# TYPE cosift_hnsw_reclaimed_total counter\n")
 		fmt.Fprintf(w, "cosift_hnsw_reclaimed_total %d\n", g.Reclaimed())

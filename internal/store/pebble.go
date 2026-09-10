@@ -1098,6 +1098,15 @@ func (p *PebbleStore) ClearVectorSlot(ctx context.Context, slot byte) error {
 	return p.db.Compact(lo, hi, true)
 }
 
+// VectorSlotDiskUsage estimates the on-disk bytes of one node slot.
+func (p *PebbleStore) VectorSlotDiskUsage(ctx context.Context, slot byte) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	lo, hi := vectorSlotBounds(slot)
+	return p.db.EstimateDiskUsage(lo, hi)
+}
+
 // VectorSlotEmpty reports whether a node slot holds no entries.
 func (p *PebbleStore) VectorSlotEmpty(ctx context.Context, slot byte) (bool, error) {
 	if err := ctx.Err(); err != nil {

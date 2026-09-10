@@ -89,18 +89,25 @@ type CompactProgress struct {
 
 // CompactResult summarizes a finished CompactPersist.
 type CompactResult struct {
-	NodesBefore, NodesAfter, Removed int
-	CompactDur, PersistDur           time.Duration
-	Persisted, Forced                bool
+	NodesBefore, NodesAfter, Removed  int
+	CompactDur, PersistDur            time.Duration
+	Persisted, Forced, CleanupSkipped bool
 }
 
-// CompactPersist compacts the graph and, unless skipPersist (or nothing was
-// removed and !forcePersist), rewrites it into the inactive slot, then clears
-// the previous slot and the PQ family (codes are keyed by node id). No other
-// persist runs in between. progress may be nil.
-func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, skipPersist, forcePersist bool, progress func(CompactProgress)) (CompactResult, error) {
+// CompactPersist compacts the graph and, unless nothing was removed and
+// !forcePersist, rewrites it into the inactive slot, then clears the previous
+// slot and the PQ family (codes are keyed by node id). Incremental persists
+// wait for the swap; the cleanup runs outside persistMu so checkpoints resume
+// during it. When stop is closed the cleanup is skipped (the next load
+// reclaims the stale slot). progress and stop may be nil.
+func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, forcePersist bool, stop <-chan struct{}, progress func(CompactProgress)) (CompactResult, error) {
 	h.persistMu.Lock()
-	defer h.persistMu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			h.persistMu.Unlock()
+		}
+	}()
 	report := func(p CompactProgress) {
 		if progress != nil {
 			progress(p)
@@ -113,7 +120,7 @@ func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, skipPe
 	res.CompactDur = time.Since(t0)
 	res.NodesAfter = h.Len()
 	base := CompactProgress{NodesBefore: res.NodesBefore, NodesAfter: res.NodesAfter, Removed: res.Removed}
-	if skipPersist || (res.Removed == 0 && !forcePersist) {
+	if res.Removed == 0 && !forcePersist {
 		base.Phase = "done"
 		report(base)
 		return res, nil
@@ -135,9 +142,23 @@ func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, skipPe
 	}
 	res.PersistDur = time.Since(t0)
 	res.Persisted = true
+	h.persistMu.Unlock()
+	locked = false
 
+	if stop != nil {
+		select {
+		case <-stop:
+			res.CleanupSkipped = true
+			base.Phase = "done"
+			report(base)
+			return res, nil
+		default:
+		}
+	}
 	base.Phase = "cleanup"
 	report(base)
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
 	if err := ps.ClearVectorSlot(ctx, old); err != nil {
 		base.Phase = "error"
 		report(base)
@@ -188,6 +209,9 @@ func (h *HNSW) compactLocked() (removed int) {
 		}
 	}
 	removed = len(h.nodes) - len(newNodes)
+	if removed == 0 {
+		return 0
+	}
 
 	// 2. Remap neighbor lists. Iterating in increasing order so writes only
 	//    touch slots we've already read from the source array.
@@ -219,6 +243,7 @@ func (h *HNSW) compactLocked() (removed int) {
 	}
 	h.valid = len(h.nodes)
 	h.dirty = make(map[int32]struct{})
+	h.renumbered = true
 
 	// 4. Pick new entry point as the highest-level surviving node.
 	if len(h.nodes) == 0 {

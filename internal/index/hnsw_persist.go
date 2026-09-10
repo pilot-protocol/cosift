@@ -42,6 +42,7 @@ package index
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -56,10 +57,14 @@ const (
 	hnswMetaMagicV2 = "HSW2"
 )
 
+// ErrLayoutDiverged: node ids were renumbered in memory (compact) but disk
+// still holds the old numbering; only a full persist may run.
+var ErrLayoutDiverged = errors.New("hnsw: node ids renumbered in memory; full persist required before incremental checkpoints")
+
 // persistWindowBytes bounds encoded blobs held in memory at once: a full
 // persist that materializes every blob first costs ~vec-bytes of extra heap
 // (~240 GB at 80M nodes) and OOMs before writing anything. Var for tests.
-var persistWindowBytes = 1 << 30
+var persistWindowBytes = 256 << 20
 
 // persistFlushed is a test hook observing each flushed window (nil in prod).
 var persistFlushed func(nodes, bytes int)
@@ -116,7 +121,10 @@ func (h *HNSW) persistSwapLocked(ctx context.Context, ps *store.PebbleStore, pro
 	old := h.slot
 	h.mu.RUnlock()
 	target := store.OtherVectorSlot(old)
-	if err := ps.ClearVectorSlot(ctx, target); err != nil {
+	h.cleanupMu.Lock()
+	err := ps.ClearVectorSlot(ctx, target)
+	h.cleanupMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("clear target slot: %w", err)
 	}
 	if err := h.persistNodes(ctx, ps, 0, target, progress); err != nil {
@@ -135,6 +143,10 @@ func (h *HNSW) persistSwapLocked(ctx context.Context, ps *store.PebbleStore, pro
 // Caller holds persistMu.
 func (h *HNSW) persistNodes(ctx context.Context, ps *store.PebbleStore, fromIdx int, slot byte, progress func(PersistProgress)) error {
 	h.mu.Lock()
+	if fromIdx > 0 && h.renumbered {
+		h.mu.Unlock()
+		return ErrLayoutDiverged
+	}
 	dirty := h.dirty
 	h.dirty = make(map[int32]struct{})
 	h.mu.Unlock()
@@ -189,6 +201,7 @@ func (h *HNSW) persistNodes(ctx context.Context, ps *store.PebbleStore, fromIdx 
 
 	i, di := fromIdx, 0
 	var meta []byte
+	metaN := 0
 	for {
 		h.mu.RLock()
 		n := len(h.nodes)
@@ -218,6 +231,7 @@ func (h *HNSW) persistNodes(ctx context.Context, ps *store.PebbleStore, fromIdx 
 		done := di >= len(dirtyIDs) && i >= n
 		if done {
 			meta = encodeHNSWMeta(h.dim, h.maxLevel, h.entryPoint, n, slot)
+			metaN = n
 		}
 		h.mu.RUnlock()
 		if err := flush(); err != nil {
@@ -232,6 +246,12 @@ func (h *HNSW) persistNodes(ctx context.Context, ps *store.PebbleStore, fromIdx 
 		restoreDirty()
 		return fmt.Errorf("put vector meta: %w", err)
 	}
+	h.mu.Lock()
+	h.persisted = metaN
+	if fromIdx == 0 {
+		h.renumbered = false
+	}
+	h.mu.Unlock()
 	return nil
 }
 
@@ -295,6 +315,7 @@ func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(
 	h.entryPoint = meta.entryPoint
 	h.maxLevel = meta.maxLevel
 	h.slot = meta.slot
+	h.persisted = meta.nodeCount
 	h.nodes = make([]hnswNode, meta.nodeCount)
 
 	// Corrupt blobs (bit rot, partial writes from prior crashes) leave the
@@ -318,7 +339,7 @@ func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(
 			return true
 		}
 		h.nodes[nodeID] = *n
-		if len(n.vec) > 0 && n.url != "" {
+		if len(n.vec) > 0 {
 			h.byURL[n.url] = append(h.byURL[n.url], int32(nodeID))
 			h.valid++
 		}
@@ -346,6 +367,7 @@ func LoadHNSWProgress(ctx context.Context, ps *store.PebbleStore, progress func(
 	if skipped > 0 {
 		log.Printf("LoadHNSW: %d corrupt node blob(s) skipped (left as zombies)", skipped)
 	}
+	h.relocateEntryLocked()
 	return h, true, nil
 }
 

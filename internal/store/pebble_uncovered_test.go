@@ -722,3 +722,31 @@ func TestPebbleGetDocMetaHit(t *testing.T) {
 		t.Errorf("meta: url=%q title=%q", url, title)
 	}
 }
+
+func TestPebbleVectorSlotDiskUsage(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	blob := make([]byte, 4096)
+	var entries []VectorNodeEntry
+	for i := 0; i < 200; i++ {
+		entries = append(entries, VectorNodeEntry{ID: uint64(i), Blob: blob})
+	}
+	if err := p.PutVectorNodesBatch(ctx, VectorSlotA, entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DB().Flush(); err != nil {
+		t.Fatal(err)
+	}
+	a, err := p.VectorSlotDiskUsage(ctx, VectorSlotA)
+	if err != nil || a == 0 {
+		t.Fatalf("slot A usage: %d %v", a, err)
+	}
+	if b, err := p.VectorSlotDiskUsage(ctx, VectorSlotB); err != nil || b != 0 {
+		t.Fatalf("slot B usage: %d %v", b, err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := p.VectorSlotDiskUsage(cctx, VectorSlotA); err == nil {
+		t.Fatal("cancelled ctx must error")
+	}
+}

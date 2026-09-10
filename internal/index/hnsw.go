@@ -75,12 +75,15 @@ type HNSW struct {
 	codebook *PQCodebook
 	codes    [][]uint16 // parallel to nodes; nil entries fall back to raw vec
 
-	byURL     map[string][]int32 // live node ids per URL
-	valid     int                // nodes with a vector
-	reclaimed atomic.Uint64
-	dirty     map[int32]struct{} // nodes changed since the last persist (vec cleared or neighbors gained)
-	persistMu sync.Mutex         // serializes persist and compact
-	slot      byte               // on-disk node slot the graph was loaded from / last persisted to
+	byURL      map[string][]int32 // live node ids per URL
+	valid      int                // nodes with a vector
+	reclaimed  atomic.Uint64
+	dirty      map[int32]struct{} // nodes changed since the last persist (vec cleared or neighbors gained)
+	persistMu  sync.Mutex         // serializes persist and compact
+	cleanupMu  sync.Mutex         // serializes on-disk slot clears
+	slot       byte               // on-disk node slot the graph was loaded from / last persisted to
+	persisted  int                // node count named by the last meta written
+	renumbered bool               // ids changed in memory since the last full persist
 }
 
 type hnswNode struct {
@@ -116,6 +119,22 @@ func (h *HNSW) Slot() byte {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.slot
+}
+
+// PersistedCount reports the node count named by the last meta written;
+// incremental checkpoints persist from here.
+func (h *HNSW) PersistedCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.persisted
+}
+
+// LayoutDiverged reports whether node ids were renumbered in memory (compact)
+// since the last full persist; incremental persists refuse until one runs.
+func (h *HNSW) LayoutDiverged() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.renumbered
 }
 
 // SetEfSearch overrides the query-time candidate-list size. Bigger values
@@ -180,6 +199,20 @@ type PQStatus struct {
 func (h *HNSW) PQStatus() PQStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.pqStatusLocked()
+}
+
+// TryStatus is PQStatus plus the slot, or ok=false when the graph write lock
+// is held (compact); /stats and /metrics must not queue behind it.
+func (h *HNSW) TryStatus() (PQStatus, byte, bool) {
+	if !h.mu.TryRLock() {
+		return PQStatus{}, 0, false
+	}
+	defer h.mu.RUnlock()
+	return h.pqStatusLocked(), h.slot, true
+}
+
+func (h *HNSW) pqStatusLocked() PQStatus {
 	st := PQStatus{NodesTotal: len(h.nodes), NodesValid: h.valid}
 	if h.codebook == nil {
 		return st
@@ -782,12 +815,22 @@ type candEntry struct {
 	dist float32 // 1 - cos(q, v); smaller = closer
 }
 
+// zombieTransitMult bounds zombie expansions per searchLayer call at
+// zombieTransitMult*ef; past it zombies are dead ends. A zombie inherits its
+// parent's distance, so an unbounded walk drains whole dead components
+// (measured: 17x the clean visited set at 10 % scattered zombies).
+var zombieTransitMult = 1
+
+// searchVisitedHook observes the visited-set size of each searchLayer call (tests only).
+var searchVisitedHook func(visited int)
+
 // searchLayer is the core HNSW search routine. From the given entry points,
 // expands the nearest-first frontier until the top ef candidates are stable.
 // Returns the ef best candidates at this layer, sorted by ascending dist.
 // pqTable enables PQ-distance traversal when set (nil = raw).
 func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef int, lvl int) []candEntry {
 	visited := make(map[int]struct{}, ef*2)
+	transit := zombieTransitMult * ef
 	// Candidates: min-heap by dist (front-of-queue is the nearest to expand).
 	cands := &candMinHeap{}
 	heap.Init(cands)
@@ -831,6 +874,12 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 		if len(h.nodes[nearest.idx].neighbors) == 0 {
 			continue
 		}
+		if len(h.nodes[nearest.idx].vec) == 0 {
+			if transit == 0 {
+				continue
+			}
+			transit--
+		}
 		nbIdx := minInt(lvl, len(h.nodes[nearest.idx].neighbors)-1)
 		for _, nb := range h.nodes[nearest.idx].neighbors[nbIdx] {
 			if _, ok := visited[nb]; ok {
@@ -855,6 +904,9 @@ func (h *HNSW) searchLayer(q []float32, pqTable []float32, entryPoints []int, ef
 		}
 	}
 
+	if searchVisitedHook != nil {
+		searchVisitedHook(len(visited))
+	}
 	// Drain results — convert max-heap to ascending-by-dist slice.
 	out := make([]candEntry, results.Len())
 	for i := len(out) - 1; i >= 0; i-- {
