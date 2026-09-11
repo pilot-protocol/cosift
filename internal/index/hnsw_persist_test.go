@@ -158,7 +158,7 @@ func TestLoadHNSWLegacyTruncatedZombieAccepted(t *testing.T) {
 	if len(legacy) != 20 {
 		t.Fatalf("legacy fixture size: got %d, want 20", len(legacy))
 	}
-	if err := ps.PutVectorNodesBatch(ctx, []store.VectorNodeEntry{
+	if err := ps.PutVectorNodesBatch(ctx, store.VectorSlotA, []store.VectorNodeEntry{
 		{ID: legacyID, Blob: legacy},
 	}); err != nil {
 		t.Fatalf("PutVectorNodesBatch: %v", err)
@@ -335,7 +335,7 @@ func TestLoadHNSWSkipsCorruptNode(t *testing.T) {
 	bad = append(bad, 0, 0, 0, 0)  // length
 	bad = append(bad, 0, 0, 0, 0)  // level
 	bad = append(bad, 99, 0, 0, 0) // dim = 99 — mismatch with meta dim=8
-	if err := ps.PutVectorNodesBatch(ctx, []store.VectorNodeEntry{
+	if err := ps.PutVectorNodesBatch(ctx, store.VectorSlotA, []store.VectorNodeEntry{
 		{ID: corruptID, Blob: bad},
 	}); err != nil {
 		t.Fatalf("PutVectorNodesBatch: %v", err)

@@ -28,8 +28,21 @@ The two backends have parity for BM25 search quality (`TestPebbleBM25MatchesSQLi
 'f' + 'u' + url                   → packed frontierEntry
 'f' + 'q' + host + 0x00 + url     → empty (queued, host-keyed index)
 'f' + 'i' + host + 0x00 + url     → empty (in-flight, host-keyed index)
-'v' + 0x00 + "meta"               → HNSW meta blob
-'v' + 0x01 + uint64-be(nodeID)    → HNSW node blob
+'v' + 0x00 + "meta"               → HNSW meta blob (HSW1 = 20 B, slot 0x01 implied; HSW2 = 21 B, trailing slot byte)
+'v' + 0x01 + uint64-be(nodeID)    → HNSW node blob, slot A
+'v' + 0x02 + uint64-be(nodeID)    → HNSW node blob, slot B
+
+A full persist (`hnsw-compact`, `hnsw-rebuild`) writes the next generation into
+the inactive slot, then points meta at it, then clears the old slot — the previous
+graph stays loadable throughout and the fresh writes never land on tombstones.
+Incremental checkpoints write new + dirtied nodes into the active slot.
+
+Binaries before v0.2.4 read only slot A and reject the HSW2 meta: started on a
+store whose graph sits in slot B they come up with an empty graph and their first
+checkpoint overwrites the meta. v0.2.4 refuses to clear an inactive slot that is
+more than twice the active one (`/stats.hnsw_stale_slot_kept`), so the graph
+survives in slot B and can be restored from a checkpoint or by repointing meta —
+but do not roll back past the first swap.
 'm' + name                        → counter bytes (next_doc_id, next_term_id,
                                                    sum_doc_len, indexed_docs)
 ```

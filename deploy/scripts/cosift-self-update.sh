@@ -180,8 +180,9 @@ log "restarting $SERVICE"
 sudo systemctl restart "$SERVICE"
 
 # --- HEALTH GATE ---------------------------------------------------------
-# The listener only binds AFTER the ~4-5 min synchronous HNSW load, so a
-# 200 from /healthz is a true readiness signal. Poll up to the timeout.
+# The listener binds immediately (BM25 serves while the HNSW graph loads in
+# the background), so a 200 from /healthz means the new binary is up, not
+# that dense retrieval is ready — watch /stats.hnsw_load for that.
 log "health-gating $HEALTH_URL (timeout ${HEALTH_TIMEOUT_S}s, every ${HEALTH_INTERVAL_S}s)"
 deadline=$(( $(date +%s) + HEALTH_TIMEOUT_S ))
 healthy=0

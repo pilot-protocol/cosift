@@ -52,7 +52,7 @@ func TestLoadHNSWProgressSkipsCorruptNode(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 	// Overwrite one node's blob with garbage too short to decode.
-	if err := f.ps.PutVectorNode(context.Background(), 1, []byte{0x00, 0x01, 0x02}); err != nil {
+	if err := f.ps.PutVectorNode(context.Background(), store.VectorSlotA, 1, []byte{0x00, 0x01, 0x02}); err != nil {
 		t.Fatalf("corrupt node: %v", err)
 	}
 	g, ok, err := index.LoadHNSW(context.Background(), f.ps)
@@ -275,8 +275,9 @@ func TestPebbleServeAsyncHNSWWarmup(t *testing.T) {
 		t.Errorf("healthz: %v", resp)
 	}
 
-	// The 3-node graph loads near-instantly; poll /stats until it's ready.
-	deadline := time.Now().Add(5 * time.Second)
+	// The 3-node graph loads near-instantly; poll /stats until it's ready
+	// (past the 5 s stats cache TTL, which can pin the first "loading" body).
+	deadline := time.Now().Add(12 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		st := mustGet(t, base+"/stats")
