@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,8 +51,9 @@ func TestRunPurgeDomain(t *testing.T) {
 		"https://spam1.cfd/a": true, "https://gamble.sbs/c": true, "https://good.com/d": true,
 	})
 
-	// Apply with a keep-list: the kept host survives even though it matches -suffix.
-	if err := runPurgeDomain(ctx, []string{"-dir", dir, "-suffix", "cfd,sbs", "-keep", "spam.cfd", "-apply"}); err != nil {
+	// Apply with a keep-list: the kept host survives even though it matches -suffix/-blocklist.
+	bl := writeSuffixFile(t, "# spam TLDs\n\n  SBS  \n")
+	if err := runPurgeDomain(ctx, []string{"-dir", dir, "-suffix", "cfd", "-blocklist", bl, "-keep", "spam.cfd", "-apply"}); err != nil {
 		t.Fatalf("apply with keep: %v", err)
 	}
 	assertDocs(t, dir, map[string]bool{
@@ -102,7 +105,91 @@ func TestRunPurgeDomainRequiresSuffix(t *testing.T) {
 	if err := runPurgeDomain(context.Background(), []string{"-dir", dir}); err == nil {
 		t.Error("expected error when -suffix is empty")
 	}
+	empty := writeSuffixFile(t, "# only comments\n\n")
+	if err := runPurgeDomain(context.Background(), []string{"-dir", dir, "-blocklist", empty}); err == nil {
+		t.Error("expected error when -suffix and -blocklist are both empty")
+	}
+	if err := runPurgeDomain(context.Background(), []string{"-dir", dir, "-blocklist", filepath.Join(dir, "missing.txt")}); err == nil {
+		t.Error("expected error when -blocklist file is missing")
+	}
 	if err := runPurgeDomain(context.Background(), []string{"-dir", dir, "-suffix", "cfd", "-apply", "-readonly"}); err == nil {
 		t.Error("expected error when -apply combined with -readonly")
+	}
+}
+
+func writeSuffixFile(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "blocklist.txt")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadSuffixFile(t *testing.T) {
+	p := writeSuffixFile(t, "# header comment\n\n  cfd  \nSpam.SBS\n\t\nbbc.co.uk # inline\n   # indented comment\nXYZ\n")
+	got, err := loadSuffixFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cfd", "spam.sbs", "bbc.co.uk", "xyz"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if _, err := loadSuffixFile(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Error("expected error for a missing file")
+	}
+}
+
+func TestSuffixMatcherBucketedEqualsLinear(t *testing.T) {
+	suffixes := []string{"cfd", "sbs", "xyz", "bbc.co.uk", "spam.cfd", "localhost", "trail.cfd."}
+	keep := []string{"news.bbc.co.uk", "good.spam.cfd", "cfd"}
+	for i := 0; i < 600; i++ {
+		suffixes = append(suffixes, fmt.Sprintf("junk%d.example%d.tld%d", i, i%7, i%13))
+		keep = append(keep, fmt.Sprintf("keep%d.junk%d.example%d.tld%d", i, i, i%7, i%13))
+	}
+	if len(suffixes) <= suffixBucketThreshold || len(keep) <= suffixBucketThreshold {
+		t.Fatalf("fixture must exceed %d entries", suffixBucketThreshold)
+	}
+	bm, km := newSuffixMatcher(suffixes), newSuffixMatcher(keep)
+	if bm.buckets == nil || km.buckets == nil {
+		t.Fatal("expected bucketed matchers")
+	}
+	if small := newSuffixMatcher(suffixes[:3]); small.buckets != nil {
+		t.Error("small list must stay linear")
+	}
+
+	hosts := []string{
+		"x.cfd", "X.CFD", "cfd", "notcfd.com", "a.b.c.sbs", "sbs.com", "xyz",
+		"bbc.co.uk", "news.bbc.co.uk", "www.news.bbc.co.uk", "bbc.co.uk.evil.com",
+		"spam.cfd", "good.spam.cfd", "deep.good.spam.cfd", "badspam.cfd",
+		"localhost", "host.localhost", "trail.cfd.", "x.trail.cfd.", "",
+		"junk5.example5.tld5", "sub.junk5.example5.tld5", "keep5.junk5.example5.tld5",
+		"junk5.example5.tld6", "example5.tld5", "tld5", "ajunk5.example5.tld5",
+	}
+	for i := 0; i < 600; i += 37 {
+		hosts = append(hosts, fmt.Sprintf("junk%d.example%d.tld%d", i, i%7, i%13), fmt.Sprintf("keep%d.junk%d.example%d.tld%d", i, i, i%7, i%13))
+	}
+	var hits, kept int
+	for _, h := range hosts {
+		wantMatch, wantKeep := matchesAnyDomain(h, suffixes), matchesAnyDomain(h, keep)
+		if got := bm.matches(h); got != wantMatch {
+			t.Errorf("suffix %q: bucketed=%v linear=%v", h, got, wantMatch)
+		}
+		if got := km.matches(h); got != wantKeep {
+			t.Errorf("keep %q: bucketed=%v linear=%v", h, got, wantKeep)
+		}
+		if wantMatch {
+			hits++
+		}
+		if wantMatch && wantKeep {
+			kept++
+		}
+	}
+	if hits == 0 || kept == 0 || hits == len(hosts) {
+		t.Fatalf("fixture not mixed: hits=%d kept=%d of %d", hits, kept, len(hosts))
+	}
+	if !bm.matches("x.cfd") || bm.matches("notcfd.com") {
+		t.Error("bare TLD entry must dot-boundary match")
 	}
 }
