@@ -30,6 +30,7 @@ func TestNormalizeURLKey(t *testing.T) {
 		{"https://example.com/a?a=1&utm_campaign=z&b=2", "https://example.com/a?a=1&b=2", "example.com"},
 		{"https://example.com/a?refresh=1", "https://example.com/a?refresh=1", "example.com"},
 		{"ftp://example.com/a", "ftp://example.com/a", "example.com"},
+		{"https://example.com///", "https://example.com/", "example.com"},
 	}
 	for _, c := range cases {
 		key, host, ok := normalizeURLKey(c.in)
@@ -44,6 +45,9 @@ func TestNormalizeURLKey(t *testing.T) {
 	for _, bad := range []string{"", "not a url", "/relative/path", "://x"} {
 		if _, _, ok := normalizeURLKey(bad); ok {
 			t.Errorf("%q: expected not ok", bad)
+		}
+		if _, _, ok := urlDupKey(bad); ok {
+			t.Errorf("urlDupKey %q: expected not ok", bad)
 		}
 	}
 }
@@ -232,5 +236,70 @@ func TestRunCensus(t *testing.T) {
 	}
 	if rep2.Docs != 5 || rep2.Lang != nil || rep2.Dups != nil {
 		t.Errorf("limited report: docs=%d lang=%v dups=%v", rep2.Docs, rep2.Lang != nil, rep2.Dups != nil)
+	}
+}
+
+func TestRunCensusEdges(t *testing.T) {
+	ctx := context.Background()
+	if err := runCensus(ctx, nil); err == nil {
+		t.Fatal("missing -dir accepted")
+	}
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCensus(ctx, []string{"-dir", notADir, "-readonly=false"}); err == nil {
+		t.Fatal("open on a regular file should fail")
+	}
+
+	dir := filepath.Join(t.TempDir(), "pebble")
+	ps, err := store.OpenPebble(dir)
+	if err != nil {
+		t.Fatalf("OpenPebble: %v", err)
+	}
+	idx := index.NewPebbleBM25(ps)
+	for _, u := range []string{"https://a.com/x", "https://a.com/x/", "https://b.org/y", "urn:isbn:0"} {
+		id, err := ps.UpsertDocument(ctx, &store.Document{URL: u, Title: "t", Text: "one two", FetchedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("UpsertDocument %s: %v", u, err)
+		}
+		if err := idx.IndexDocument(ctx, id, "t", "one two"); err != nil {
+			t.Fatalf("IndexDocument %s: %v", u, err)
+		}
+	}
+	ps.Close()
+
+	if err := runCensus(ctx, []string{"-dir", dir, "-out", filepath.Join(t.TempDir(), "no", "such", "dir.json")}); err == nil {
+		t.Fatal("unwritable -out accepted")
+	}
+
+	report := func(args ...string) censusReport {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "r.json")
+		if err := runCensus(ctx, append([]string{"-dir", dir, "-out", out}, args...)); err != nil {
+			t.Fatalf("runCensus %v: %v", args, err)
+		}
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rep censusReport
+		if err := json.Unmarshal(data, &rep); err != nil {
+			t.Fatal(err)
+		}
+		return rep
+	}
+
+	full := report("-dups", "-readonly=false", "-progress", "1")
+	if full.Docs != 4 || full.Dups == nil || full.Dups.Groups != 1 || full.Dups.Removable != 1 || full.Dups.Unparseable != 1 {
+		t.Errorf("full: docs=%d dups=%+v", full.Docs, full.Dups)
+	}
+	one := report("-dups", "-limit", "1")
+	if one.Docs != 1 || one.Dups == nil || one.Dups.Groups != 0 || len(one.Dups.TopHosts) != 0 || len(one.Dups.Samples) != 0 {
+		t.Errorf("limit 1: docs=%d dups=%+v", one.Docs, one.Dups)
+	}
+	two := report("-dups", "-limit", "2")
+	if two.Docs != 2 || two.Dups == nil || two.Dups.Groups != 1 || two.Dups.Removable != 1 {
+		t.Errorf("limit 2: docs=%d dups=%+v", two.Docs, two.Dups)
 	}
 }
