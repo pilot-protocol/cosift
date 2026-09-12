@@ -41,6 +41,7 @@ usage:
   cosift pebble-info -dir D [-json]     dump corpus counters + pebble.Metrics for an offline store (-json = jq-friendly shape, no pebble.Metrics)
   cosift pebble-compact -dir D [-range R]  force-compact a Pebble key range to collapse tombstones (R=all|f|d|l|v; default all) — service must be stopped
   cosift domain-audit -dir D [-tranco csv] [-majestic csv] [-out path] [-top N] [-min-count N]   single-scan host inventory + authority scoring (JSONL)
+  cosift census -dir D [-out f.json] [-dups] [-lang] [-top N] [-limit N]   read-only corpus census: docs/tokens per TLD, non-English footprint, language, duplicate URLs
   cosift migrate-to-pebble -output D    copy a SQLite cosift data dir into a fresh Pebble store
   cosift verify [-json] [-server URL]   compare counters vs 'l' family scan (non-zero exit on drift; -server routes through HTTP /verify when the writer lock is held)
   cosift status-file [-target N] [-json]  read crawl-status.json (lock-free; works during a live crawl)
@@ -327,6 +328,10 @@ func run(cfgPath string) error {
 	case "purge-domain":
 		if err := runPurgeDomain(ctx, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("purge-domain: %w", err)
+		}
+	case "census":
+		if err := runCensus(ctx, flag.Args()[1:]); err != nil {
+			return fmt.Errorf("census: %w", err)
 		}
 	case "backfill-host-postings":
 		if err := runBackfillHostPostings(ctx, flag.Args()[1:]); err != nil {
