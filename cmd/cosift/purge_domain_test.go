@@ -49,6 +49,16 @@ func TestRunPurgeDomain(t *testing.T) {
 		"https://spam1.cfd/a": true, "https://gamble.sbs/c": true, "https://good.com/d": true,
 	})
 
+	// Apply with a keep-list: the kept host survives even though it matches -suffix.
+	if err := runPurgeDomain(ctx, []string{"-dir", dir, "-suffix", "cfd,sbs", "-keep", "spam.cfd", "-apply"}); err != nil {
+		t.Fatalf("apply with keep: %v", err)
+	}
+	assertDocs(t, dir, map[string]bool{
+		"https://spam1.cfd/a":  false,
+		"https://x.spam.cfd/b": true, // kept (subdomain of the keep entry)
+		"https://gamble.sbs/c": false,
+	})
+
 	// Apply: purge *.cfd and *.sbs.
 	if err := runPurgeDomain(ctx, []string{"-dir", dir, "-suffix", "cfd,sbs", "-apply"}); err != nil {
 		t.Fatalf("apply: %v", err)

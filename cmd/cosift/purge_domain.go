@@ -31,6 +31,7 @@ func runPurgeDomain(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("purge-domain", flag.ExitOnError)
 	dir := fs.String("dir", "", "PebbleStore directory (required; same dir as pebble-serve -dir)")
 	suffixCSV := fs.String("suffix", "", "CSV of host/TLD suffixes to purge, dot-boundary match (e.g. cfd,sbs)")
+	keepCSV := fs.String("keep", "", "CSV of host suffixes to skip even when matched by -suffix (e.g. bbc.co.uk)")
 	apply := fs.Bool("apply", false, "actually soft-delete matches (default: dry run, report only)")
 	limit := fs.Int("limit", 0, "stop after deleting this many docs (0 = no limit)")
 	topHosts := fs.Int("top-hosts", 25, "how many top matched hosts/TLDs to print in the report")
@@ -42,6 +43,7 @@ func runPurgeDomain(ctx context.Context, args []string) error {
 		return fmt.Errorf("-dir required")
 	}
 	suffixes := splitDomainsCSV(*suffixCSV)
+	keep := splitDomainsCSV(*keepCSV)
 	if len(suffixes) == 0 {
 		return fmt.Errorf("-suffix required (e.g. -suffix cfd,sbs)")
 	}
@@ -66,9 +68,9 @@ func runPurgeDomain(ctx context.Context, args []string) error {
 	if *apply {
 		mode = "APPLY (soft-deleting matches)"
 	}
-	fmt.Fprintf(os.Stderr, "purge-domain: %s — scanning %d docs for suffixes %v\n", mode, before, suffixes)
+	fmt.Fprintf(os.Stderr, "purge-domain: %s — scanning %d docs for suffixes %v (keep %v)\n", mode, before, suffixes, keep)
 
-	var scanned, matched, deleted int64
+	var scanned, matched, kept, deleted int64
 	tldHist := map[string]int64{}
 	hostHist := map[string]int64{}
 	var samples []string
@@ -80,6 +82,10 @@ func runPurgeDomain(ctx context.Context, args []string) error {
 		}
 		host := hostFromURL(url)
 		if !matchesAnyDomain(host, suffixes) {
+			return nil
+		}
+		if len(keep) > 0 && matchesAnyDomain(host, keep) {
+			kept++
 			return nil
 		}
 		matched++
@@ -107,7 +113,7 @@ func runPurgeDomain(ctx context.Context, args []string) error {
 	}
 
 	_, after, _ := ps.CorpusStats(ctx)
-	fmt.Fprintf(os.Stderr, "\npurge-domain: done — scanned=%d matched=%d deleted=%d\n", scanned, matched, deleted)
+	fmt.Fprintf(os.Stderr, "\npurge-domain: done — scanned=%d matched=%d kept=%d deleted=%d\n", scanned, matched, kept, deleted)
 	fmt.Fprintf(os.Stderr, "purge-domain: corpus indexed_docs %d → %d\n", before, after)
 	printHist(os.Stderr, "top matched TLDs", tldHist, *topHosts)
 	printHist(os.Stderr, "top matched hosts", hostHist, *topHosts)
