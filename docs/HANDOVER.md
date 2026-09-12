@@ -363,6 +363,20 @@ not just the HTTP surface. Treat SSH access as the real trust boundary, and gate
 > `cosift-serve` holds the lock. Stop the service first (incurring the §4 outage), or use the
 > equivalent admin endpoint against the live process where one exists (e.g. `host-backfill`).
 
+### `census` (read-only corpus inventory)
+
+`cosift census -dir D [-out f.json] [-dups] [-lang] [-top N] [-limit N] [-progress N]` opens the
+store read-only (`-readonly=true` by default, no lock — safe alongside a live `pebble-serve`) and
+sweeps the `'i'` family once, reporting docs and BM25 tokens per TLD, a fixed country-TLD
+"non-English footprint", and a scan summary (docs, elapsed, docs/s). `-lang` adds a per-language
+census from the stored `Lang` field (populated from `<html lang>` on crawled HTML, empty for WET/PDF)
+at the cost of one full document read per doc, and also sums `text_bytes`. `-dups` adds a
+duplicate-URL census keyed on a normalized URL (http/https and `www.` folded, default ports,
+fragments, trailing slashes and `utm_*`/`ref`/`fbclid`/`gclid`/`mc_*`/`_ga` params dropped, remaining
+params sorted): a 64-bit hash → count map (~450 MB at 17M docs) plus a second cheap `'i'` scan for
+per-host removable counts and 20 sample groups. It never mutates the store; the sizing output is meant
+to feed `purge-domain` / blocklist decisions.
+
 ---
 
 ## 7. Open decisions for the principal (decide before cutover)
