@@ -678,6 +678,8 @@ func (r *recordingWriter) Flush() {
 	}
 }
 
+func (r *recordingWriter) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 // wantsSSE reports whether the request opts into Server-Sent Events,
 // either via ?stream=true or an Accept: text/event-stream header. Both
 // /answer, /query, and /research check the same envelope.
@@ -724,9 +726,7 @@ func newAnswerSSE(w http.ResponseWriter, start time.Time) *answerSSE {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
+	liftWriteDeadline(w)
 	w.WriteHeader(http.StatusOK)
 	return &answerSSE{w: w, flusher: flusher, start: start, last: start}
 }
