@@ -150,4 +150,35 @@ func TestHNSWCompactProgressLogs(t *testing.T) {
 	if !strings.Contains(out, "hnsw compact: rewiring neighbors") {
 		t.Errorf("missing rewiring progress line in:\n%s", out)
 	}
+	for _, want := range []string{"rebuilding url index", "url index rebuilt in", "for entry point", "hnsw compact: entry point"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q progress line in:\n%s", want, out)
+		}
+	}
+}
+
+func TestHNSWCompactPersistReportsSubPhases(t *testing.T) {
+	ps := openTestStore(t)
+	ctx := context.Background()
+	h := buildTestHNSW(120, 8, 3, 5)
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatal(err)
+	}
+	h.MarkURLPassagesInvalid("https://x/3")
+	var phases []string
+	res, err := h.CompactPersist(ctx, ps, false, nil, func(p CompactProgress) {
+		if n := len(phases); n == 0 || phases[n-1] != p.Phase {
+			phases = append(phases, p.Phase)
+		}
+	})
+	if err != nil || res.Removed != 1 {
+		t.Fatalf("compact: %+v %v", res, err)
+	}
+	want := []string{"compact", "compact:url-index", "compact:entry-point", "persist", "cleanup", "done"}
+	if fmt.Sprint(phases) != fmt.Sprint(want) {
+		t.Fatalf("phases: got %v want %v", phases, want)
+	}
+	if h.entryPoint < 0 || h.entryPoint >= h.Len() {
+		t.Fatalf("entry point %d out of range", h.entryPoint)
+	}
 }

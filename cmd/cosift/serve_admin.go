@@ -91,9 +91,7 @@ func (s *pebbleHTTP) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
+	liftWriteDeadline(w)
 	base := os.Getenv("COSIFT_CHECKPOINT_DIR")
 	if base == "" {
 		base = "/tmp"
@@ -254,9 +252,7 @@ func (s *pebbleHTTP) handleEvalQuick(w http.ResponseWriter, r *http.Request) {
 	// this long-running admin endpoint via ResponseController. Pairs with
 	// bounded-parallel dispatch below so the 10-query batch finishes in
 	// ~one chat-LLM round-trip instead of ten.
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
+	liftWriteDeadline(w)
 	type queryResult struct {
 		Query     string `json:"query"`
 		Verdict   string `json:"verdict"` // answered | no_info | empty | error
@@ -504,9 +500,7 @@ func (s *pebbleHTTP) handleHNSWCompact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "started", "watch": "/stats hnsw_compact"})
 		return
 	}
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
+	liftWriteDeadline(w)
 	<-done
 	resp, code := j.resultJSON()
 	writeJSON(w, code, resp)

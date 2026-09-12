@@ -70,7 +70,7 @@ func (h *HNSW) Rebuild() *HNSW {
 func (h *HNSW) Compact() (removed int) {
 	h.persistMu.Lock()
 	defer h.persistMu.Unlock()
-	return h.compactLocked()
+	return h.compactLocked(nil)
 }
 
 // DirtyCount reports how many nodes await an incremental persist.
@@ -82,7 +82,7 @@ func (h *HNSW) DirtyCount() int {
 
 // CompactProgress is the observable state of a CompactPersist run.
 type CompactProgress struct {
-	Phase                            string // compact | persist | cleanup | done | error
+	Phase                            string // compact | compact:url-index | compact:entry-point | persist | cleanup | done | error
 	NodesBefore, NodesAfter, Removed int
 	Written, Total                   int // persist progress
 }
@@ -116,7 +116,9 @@ func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, forceP
 	res := CompactResult{NodesBefore: h.Len()}
 	report(CompactProgress{Phase: "compact", NodesBefore: res.NodesBefore})
 	t0 := time.Now()
-	res.Removed = h.compactLocked()
+	res.Removed = h.compactLocked(func(phase string) {
+		report(CompactProgress{Phase: phase, NodesBefore: res.NodesBefore})
+	})
 	res.CompactDur = time.Since(t0)
 	res.NodesAfter = h.Len()
 	base := CompactProgress{NodesBefore: res.NodesBefore, NodesAfter: res.NodesAfter, Removed: res.Removed}
@@ -174,9 +176,12 @@ func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, forceP
 	return res, nil
 }
 
-func (h *HNSW) compactLocked() (removed int) {
+func (h *HNSW) compactLocked(phase func(string)) (removed int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if phase == nil {
+		phase = func(string) {}
+	}
 
 	if len(h.nodes) == 0 {
 		return 0
@@ -235,6 +240,9 @@ func (h *HNSW) compactLocked() (removed int) {
 
 	// 3. Rebuild the URL index and counters; every id changed, so the dirty
 	//    set is meaningless until the caller's full persist rewrites the graph.
+	phase("compact:url-index")
+	t0 := time.Now()
+	log.Printf("hnsw compact: rebuilding url index for %d nodes", len(newNodes))
 	h.nodes = newNodes
 	h.codes = newCodes
 	h.byURL = make(map[string][]int32, len(h.byURL))
@@ -244,20 +252,20 @@ func (h *HNSW) compactLocked() (removed int) {
 	h.valid = len(h.nodes)
 	h.dirty = make(map[int32]struct{})
 	h.renumbered = true
+	log.Printf("hnsw compact: url index rebuilt in %s", time.Since(t0).Round(time.Millisecond))
 
 	// 4. Pick new entry point as the highest-level surviving node.
-	if len(h.nodes) == 0 {
-		h.entryPoint = -1
-		h.maxLevel = 0
-		return removed
-	}
-	h.entryPoint = 0
-	h.maxLevel = h.nodes[0].level
-	for i := 1; i < len(h.nodes); i++ {
-		if h.nodes[i].level > h.maxLevel {
+	phase("compact:entry-point")
+	t0 = time.Now()
+	log.Printf("hnsw compact: scanning %d nodes for entry point", len(h.nodes))
+	h.entryPoint = -1
+	h.maxLevel = 0
+	for i := range h.nodes {
+		if i == 0 || h.nodes[i].level > h.maxLevel {
 			h.entryPoint = i
 			h.maxLevel = h.nodes[i].level
 		}
 	}
+	log.Printf("hnsw compact: entry point %d (level %d) in %s", h.entryPoint, h.maxLevel, time.Since(t0).Round(time.Millisecond))
 	return removed
 }

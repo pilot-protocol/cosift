@@ -28,6 +28,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -131,6 +132,10 @@ const (
 //	COSIFT_PEBBLE_CACHE_MB     — block cache size in MB (default 128)
 //	COSIFT_PEBBLE_MEMTABLE_MB  — single memtable size in MB (default 32)
 //	COSIFT_PEBBLE_MEMTABLES    — max memtables in memory (default 2)
+//	COSIFT_PEBBLE_TARGET_FILE_MB      — L0 TargetFileSize in MB, doubling per level (default: Pebble's 2)
+//	COSIFT_PEBBLE_LBASE_MB            — LBaseMaxBytes in MB (default: Pebble's 64)
+//	COSIFT_PEBBLE_L0_COMPACTION_FILES — L0CompactionFileThreshold (default: Pebble's 500)
+//	COSIFT_PEBBLE_L0_STOP_WRITES      — L0StopWritesThreshold (default: Pebble's 12)
 //
 // Total Pebble memory ceiling ≈ cache + memtables × memtable_size, so the
 // defaults pin Pebble at roughly 128 + 2×32 = 192 MB. Real working set
@@ -164,6 +169,7 @@ func openPebble(path string, readOnly bool) (*PebbleStore, error) {
 		MaxConcurrentCompactions:    func() int { return compactions },
 		ReadOnly:                    readOnly,
 	}
+	applyLevelOptsFromEnv(opts)
 	db, err := pebble.Open(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("pebble.Open(%s): %w", path, err)
@@ -246,6 +252,35 @@ func (p *PebbleStore) Close() error {
 // — Pebble's compactor cannot mutate hard-linked files. destDir must not exist.
 func (p *PebbleStore) Checkpoint(destDir string) error {
 	return p.db.Checkpoint(destDir)
+}
+
+// applyLevelOptsFromEnv sets LSM shape options only when the matching env
+// var is set, so unset leaves Pebble's defaults untouched.
+func applyLevelOptsFromEnv(opts *pebble.Options) {
+	targetMB := envInt("COSIFT_PEBBLE_TARGET_FILE_MB", 0)
+	lbaseMB := envInt("COSIFT_PEBBLE_LBASE_MB", 0)
+	l0Files := envInt("COSIFT_PEBBLE_L0_COMPACTION_FILES", 0)
+	l0Stop := envInt("COSIFT_PEBBLE_L0_STOP_WRITES", 0)
+	if targetMB == 0 && lbaseMB == 0 && l0Files == 0 && l0Stop == 0 {
+		return
+	}
+	if targetMB > 0 {
+		opts.Levels = make([]pebble.LevelOptions, 7)
+		for i := range opts.Levels {
+			opts.Levels[i].TargetFileSize = int64(targetMB) << 20 << i
+		}
+	}
+	if lbaseMB > 0 {
+		opts.LBaseMaxBytes = int64(lbaseMB) << 20
+	}
+	if l0Files > 0 {
+		opts.L0CompactionFileThreshold = l0Files
+	}
+	if l0Stop > 0 {
+		opts.L0StopWritesThreshold = l0Stop
+	}
+	log.Printf("pebble: level opts target_file_mb=%d lbase_mb=%d l0_compaction_files=%d l0_stop_writes=%d (0 = pebble default)",
+		targetMB, lbaseMB, l0Files, l0Stop)
 }
 
 // envInt reads an env var as int with a default. Empty / malformed → default.

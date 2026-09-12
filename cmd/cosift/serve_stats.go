@@ -474,6 +474,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 		}
 	}
 	out["dense_resolution_drops"] = s.denseResolutionDrops.Load()
+	out["runtime"] = readRuntimeStats().statsMap()
 	return json.Marshal(out)
 }
 
@@ -609,6 +610,28 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# TYPE cosift_hnsw_compact_running gauge\n")
 		fmt.Fprintf(w, "cosift_hnsw_compact_running %d\n", running)
 	}
+	rs := readRuntimeStats()
+	fmt.Fprintf(w, "# HELP cosift_go_heap_objects_bytes Bytes occupied by heap objects (live + not yet collected).\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_heap_objects_bytes gauge\n")
+	fmt.Fprintf(w, "cosift_go_heap_objects_bytes %d\n", rs.HeapObjects)
+	fmt.Fprintf(w, "# HELP cosift_go_heap_live_bytes Heap bytes marked live by the last GC.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_heap_live_bytes gauge\n")
+	fmt.Fprintf(w, "cosift_go_heap_live_bytes %d\n", rs.HeapLive)
+	fmt.Fprintf(w, "# HELP cosift_go_heap_goal_bytes Heap size the next GC cycle targets.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_heap_goal_bytes gauge\n")
+	fmt.Fprintf(w, "cosift_go_heap_goal_bytes %d\n", rs.HeapGoal)
+	fmt.Fprintf(w, "# HELP cosift_go_mem_limit_bytes GOMEMLIMIT soft memory limit, -1 when unset.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_mem_limit_bytes gauge\n")
+	fmt.Fprintf(w, "cosift_go_mem_limit_bytes %d\n", rs.MemLimit)
+	fmt.Fprintf(w, "# HELP cosift_go_mem_total_bytes Total memory mapped by the Go runtime.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_mem_total_bytes gauge\n")
+	fmt.Fprintf(w, "cosift_go_mem_total_bytes %d\n", rs.MemTotal)
+	fmt.Fprintf(w, "# HELP cosift_go_gc_cycles_total Completed GC cycles since process start.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_gc_cycles_total counter\n")
+	fmt.Fprintf(w, "cosift_go_gc_cycles_total %d\n", rs.GCCycles)
+	fmt.Fprintf(w, "# HELP cosift_go_goroutines Live goroutines.\n")
+	fmt.Fprintf(w, "# TYPE cosift_go_goroutines gauge\n")
+	fmt.Fprintf(w, "cosift_go_goroutines %d\n", rs.Goroutines)
 	// PromQL
 	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
 	// gives mean latency in any window. Labels = path; misrouted calls (404)

@@ -1566,6 +1566,17 @@ func (s *statusCapturingWriter) Flush() {
 	}
 }
 
+func (s *statusCapturingWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+var liftWriteDeadlineWarn sync.Once
+
+// liftWriteDeadline clears the server WriteTimeout for a long-running handler.
+func liftWriteDeadline(w http.ResponseWriter) {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		liftWriteDeadlineWarn.Do(func() { log.Printf("warning: cannot lift write deadline: %v", err) })
+	}
+}
+
 //go:embed assets/landing.html
 var landingHTML []byte
 
