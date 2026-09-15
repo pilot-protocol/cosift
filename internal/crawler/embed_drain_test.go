@@ -110,7 +110,7 @@ func pagesServer(t *testing.T, n int) (*httptest.Server, []string) {
 }
 
 func fastCrawlCfg() config.Crawler {
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 8
@@ -168,7 +168,7 @@ func TestEmbedPoolFinishesQueuedJobsAfterCrawlContextCancel(t *testing.T) {
 // makes the producer wait for space rather than discarding the document's
 // passages outright.
 func TestEnqueueEmbedJobWaitsForCapacity(t *testing.T) {
-	c := newBare(config.Default().Crawler)
+	c := newBare(testCrawlerCfg())
 	c.embedQ = make(chan *embedJob, 1)
 	c.embedQ <- &embedJob{url: "https://x.example/filler"}
 
@@ -191,7 +191,7 @@ func TestEnqueueEmbedJobWaitsForCapacity(t *testing.T) {
 // TestEnqueueEmbedJobGivesUpWhenQueueStaysFull keeps the wall clock bounded:
 // a permanently full queue must not block a crawl worker indefinitely.
 func TestEnqueueEmbedJobGivesUpWhenQueueStaysFull(t *testing.T) {
-	c := newBare(config.Default().Crawler)
+	c := newBare(testCrawlerCfg())
 	c.embedQ = make(chan *embedJob, 1)
 	c.embedQ <- &embedJob{url: "https://x.example/filler"}
 
@@ -209,7 +209,7 @@ func TestEnqueueEmbedJobGivesUpWhenQueueStaysFull(t *testing.T) {
 // TestEmbedJobExpiredHonoursDrainDeadline covers the shutdown bound: once the
 // drain deadline has passed, remaining queued work is abandoned.
 func TestEmbedJobExpiredHonoursDrainDeadline(t *testing.T) {
-	c := newBare(config.Default().Crawler)
+	c := newBare(testCrawlerCfg())
 	if c.embedJobExpired() {
 		t.Fatalf("expired with no deadline set")
 	}

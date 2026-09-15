@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// clientIPResolver decides what counts as the "client IP" for rate limiting.
+// ClientIPResolver decides what counts as the "client IP" for rate limiting.
 // Default behavior: return the direct TCP peer's IP (RemoteAddr without port).
 // When configured with trustedProxies, walks X-Forwarded-For for requests
 // that came in through a trusted reverse proxy.
@@ -16,15 +16,27 @@ import (
 // Trusting it unconditionally lets attackers spoof their IP and bypass the
 // limiter. Only trust the header when we know who terminated the TCP
 // connection — i.e., the direct peer is a known proxy.
-type clientIPResolver struct {
+type ClientIPResolver struct {
 	trustedProxies []*net.IPNet
+	clientIPHeader string
 }
 
-// newClientIPResolver parses the CIDR list. Returns nil resolver + error on
+// NewClientIPResolver parses the CIDR list. Returns nil resolver + error on
 // malformed input — caller decides whether to fail-fast or fall back to
 // direct-only.
-func newClientIPResolver(cidrs []string) (*clientIPResolver, error) {
-	r := &clientIPResolver{trustedProxies: make([]*net.IPNet, 0, len(cidrs))}
+func NewClientIPResolver(cidrs []string) (*ClientIPResolver, error) {
+	return NewClientIPResolverWithHeader(cidrs, "")
+}
+
+// NewClientIPResolverWithHeader additionally reads the client from a
+// single-value header (e.g. CF-Connecting-IP) when the direct peer is trusted.
+// Only set it to a header the edge overwrites on every request: unlike the
+// X-Forwarded-For walk it cannot tell an appended hop from a spoofed one.
+func NewClientIPResolverWithHeader(cidrs []string, header string) (*ClientIPResolver, error) {
+	r := &ClientIPResolver{
+		trustedProxies: make([]*net.IPNet, 0, len(cidrs)),
+		clientIPHeader: strings.TrimSpace(header),
+	}
 	for _, c := range cidrs {
 		c = strings.TrimSpace(c)
 		if c == "" {
@@ -42,7 +54,7 @@ func newClientIPResolver(cidrs []string) (*clientIPResolver, error) {
 // Resolve returns the client IP for the given request. Falls back to the
 // direct peer when there's no XFF, when no proxies are trusted, or when
 // the immediate peer isn't on the trust list.
-func (r *clientIPResolver) Resolve(req *http.Request) string {
+func (r *ClientIPResolver) Resolve(req *http.Request) string {
 	direct := directPeerIP(req.RemoteAddr)
 	if r == nil || len(r.trustedProxies) == 0 || direct == "" {
 		return direct
@@ -50,7 +62,14 @@ func (r *clientIPResolver) Resolve(req *http.Request) string {
 	if !r.isTrusted(direct) {
 		return direct
 	}
-	xff := req.Header.Get("X-Forwarded-For")
+	if r.clientIPHeader != "" {
+		if ip := net.ParseIP(strings.TrimSpace(req.Header.Get(r.clientIPHeader))); ip != nil {
+			return ip.String()
+		}
+	}
+	// Go keeps repeated X-Forwarded-For lines separate and Header.Get returns
+	// only the first, which the client controls when a hop adds its own line.
+	xff := strings.Join(req.Header.Values("X-Forwarded-For"), ",")
 	if xff == "" {
 		return direct
 	}
@@ -77,7 +96,7 @@ func (r *clientIPResolver) Resolve(req *http.Request) string {
 	return direct
 }
 
-func (r *clientIPResolver) isTrusted(ipStr string) bool {
+func (r *ClientIPResolver) isTrusted(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return false

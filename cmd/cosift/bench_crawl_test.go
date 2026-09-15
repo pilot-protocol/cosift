@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/pilot-protocol/cosift/internal/netguard"
 )
 
 // TestBenchCrawlSmall verifies the crawler bench mode runs to
@@ -19,6 +21,8 @@ func TestBenchCrawlSmall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping bench in -short")
 	}
+	// The bench must work for a user who has not set the escape hatch.
+	t.Setenv(netguard.AllowPrivateEnv, "")
 	r, err := benchCrawl(context.Background(), 10, 0)
 	if err != nil {
 		t.Fatalf("benchCrawl: %v", err)

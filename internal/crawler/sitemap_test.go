@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 const urlsetXML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -24,7 +22,7 @@ func TestSeedSitemapURLSet(t *testing.T) {
 	defer srv.Close()
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	c := New(cfg, s)
 
@@ -70,7 +68,7 @@ func TestSeedSitemapIndex(t *testing.T) {
 	srvURL = srv.URL
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	c := New(cfg, s)
 
@@ -91,7 +89,7 @@ func TestSeedSitemapRespectsDomainFilters(t *testing.T) {
 	defer srv.Close()
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	cfg.IncludeDomains = []string{"example.com"} // matches the test URLs
 	c := New(cfg, s)
@@ -120,7 +118,7 @@ func TestSitemapMalformedReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	c := New(cfg, s)
 

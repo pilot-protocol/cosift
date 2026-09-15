@@ -14,6 +14,14 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
+// testCrawlerCfg is Default() with the SSRF guard off: every fixture in this
+// package is an httptest server on 127.0.0.1.
+func testCrawlerCfg() config.Crawler {
+	cfg := config.Default().Crawler
+	cfg.BlockPrivateNetworks = false
+	return cfg
+}
+
 // stubEmbedder counts calls and returns a deterministic non-zero vector.
 type stubEmbedder struct {
 	dim   int
@@ -61,7 +69,7 @@ func TestCrawlEmbedsAndPersistsPassage(t *testing.T) {
 	s := newStoreT(t)
 	emb := &stubEmbedder{dim: 8}
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0          // don't follow links
 	cfg.PerHostDelayMs = 0    // fast test
 	cfg.MaxConcurrent = 1     // deterministic
@@ -109,7 +117,7 @@ func TestCrawlContentHashSkipsReembedOnUnchangedRecrawl(t *testing.T) {
 	s := newStoreT(t)
 	emb := &stubEmbedder{dim: 8}
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -155,7 +163,7 @@ func TestCrawlContentChangedReembedsOnRecrawl(t *testing.T) {
 	s := newStoreT(t)
 	emb := &stubEmbedder{dim: 8}
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -196,7 +204,7 @@ func TestCrawlConditionalGET304SkipsBodyAndEmbed(t *testing.T) {
 	s := newStoreT(t)
 	emb := &stubEmbedder{dim: 8}
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -232,7 +240,7 @@ func TestCrawlWithoutEmbedderSkipsPassages(t *testing.T) {
 	defer srv.Close()
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -275,7 +283,7 @@ func TestCrawlPerHostChunkSizeOverride(t *testing.T) {
 	run := func(globalSize int, perHost map[string]int) int {
 		s := newStoreT(t)
 		emb := &stubEmbedder{dim: 4}
-		cfg := config.Default().Crawler
+		cfg := testCrawlerCfg()
 		cfg.MaxDepth = 0
 		cfg.PerHostDelayMs = 0
 		cfg.MaxConcurrent = 1
@@ -328,7 +336,7 @@ func TestCrawlChunkSizeOverrideEmitsMorePassages(t *testing.T) {
 	run := func(chunkSize, overlap int) int {
 		s := newStoreT(t)
 		emb := &stubEmbedder{dim: 4}
-		cfg := config.Default().Crawler
+		cfg := testCrawlerCfg()
 		cfg.MaxDepth = 0
 		cfg.PerHostDelayMs = 0
 		cfg.MaxConcurrent = 1
@@ -375,7 +383,7 @@ func TestCrawlGzipEncodedResponse(t *testing.T) {
 	defer srv.Close()
 
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -408,7 +416,7 @@ func TestCrawlGzipEncodedResponse(t *testing.T) {
 // thousands and starve the host-fair scheduler.
 func TestEnqueueLinksRespectsPerHostCap(t *testing.T) {
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxConcurrent = 1
 	cfg.RespectRobots = false
 	cfg.MaxDepth = 5
@@ -440,7 +448,7 @@ func TestEnqueueLinksRespectsPerHostCap(t *testing.T) {
 // must enqueue all valid links without any cap.
 func TestEnqueueLinksUnlimitedWhenCapIsZero(t *testing.T) {
 	s := newStoreT(t)
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxConcurrent = 1
 	cfg.RespectRobots = false
 	cfg.MaxDepth = 5
