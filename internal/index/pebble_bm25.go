@@ -55,16 +55,21 @@ func bm25TopKPoolFactor() int {
 	return 50
 }
 
-// bm25TopKPoolMin floors the resolution pool at a k-independent size.
+// bm25RankDepth floors the depth at which ranking decisions are made, so they
+// stop depending on the caller's k.
 //
-// factor*k alone makes ranking depend on k: when the cap binds, k=10 and k=50
-// sample the same candidate set to different depths, so one query returns two
-// different top-10s. Measured on prod 2026-09-15 at factor 200, a median
-// cap-bound query resolved 2,000 of ~68,500 in-band candidates and 51 of 60
-// goldens disagreed between k=10 and k=50. A floor makes the candidate universe
-// identical across k. 0 keeps the pure factor*k behaviour.
-func bm25TopKPoolMin() int {
-	if v := os.Getenv("COSIFT_BM25_TOPK_POOL_MIN"); v != "" {
+// Two decisions are k-shaped. The MaxScore break compares against
+// kthLargest(scores, k): a small k gives a higher theta, so the scan stops
+// earlier and produces a different score map. The resolution pool is factor*k:
+// a small k resolves fewer candidates. Measured on prod 2026-09-15 at factor
+// 200, 51 of 60 goldens returned a different top-10 at k=10 than at k=50, and a
+// median cap-bound query resolved 2,000 of ~68,500 in-band candidates.
+//
+// Running both at kEff = max(k, depth) and truncating afterwards makes the
+// top-k of any k <= depth a prefix of the same ranking. The cost is that every
+// query pays the depth-k price. 0 keeps the k-shaped behaviour.
+func bm25RankDepth() int {
+	if v := os.Getenv("COSIFT_BM25_RANK_DEPTH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
@@ -72,13 +77,15 @@ func bm25TopKPoolMin() int {
 	return 0
 }
 
-// bm25TopKPoolCap is the resolution pool size for a query of depth k.
-func bm25TopKPoolCap(k int) int {
-	c := bm25TopKPoolFactor() * k
-	if m := bm25TopKPoolMin(); c < m {
-		c = m
+// bm25EffectiveK is the internal ranking depth for a caller asking for k.
+func bm25EffectiveK(k int) int {
+	if k <= 0 {
+		return k
 	}
-	return c
+	if d := bm25RankDepth(); d > k {
+		return d
+	}
+	return k
 }
 
 // bm25MaxScoreAuthorityBound reports whether the MaxScore early-termination
@@ -261,6 +268,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// optimization for benchmark-grade lossless ranking. Phrase queries opt
 	// out: theta cannot threshold the phrase-filtered subset (empty results).
 	maxScoreEnabled := os.Getenv("COSIFT_BM25_DISABLE_MAXSCORE") == "" && len(phrases) == 0
+	kEff := bm25EffectiveK(k)
 	maxMult := 1.0
 	if bm25MaxScoreAuthorityBound() {
 		maxMult = b.maxAuthorityMult()
@@ -273,8 +281,8 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	}
 	for i, c := range active {
 		// theta is raw; an unseen doc's final ceiling is remainingMax*maxMult.
-		if maxScoreEnabled && i > 0 && len(scores) >= k {
-			theta := kthLargest(scores, k)
+		if maxScoreEnabled && i > 0 && len(scores) >= kEff {
+			theta := kthLargest(scores, kEff)
 			if remainingMax*maxMult < theta {
 				break
 			}
@@ -328,7 +336,14 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// resolved; COSIFT_BM25_DISABLE_TOPK_POOL restores the resolve-all
 	// path (also taken for k<=0 = "return everything").
 	if k > 0 && os.Getenv("COSIFT_BM25_DISABLE_TOPK_POOL") == "" {
-		return b.resolveTopKPool(ctx, scores, phrases, k)
+		hits, err := b.resolveTopKPool(ctx, scores, phrases, kEff)
+		if err != nil {
+			return nil, err
+		}
+		if len(hits) > k {
+			hits = hits[:k]
+		}
+		return hits, nil
 	}
 
 	hits := make([]Hit, 0, len(scores))
@@ -379,7 +394,7 @@ const topKResolveSlack = 16
 func (b *PebbleBM25) resolveTopKPool(ctx context.Context, scores map[int64]float64, phrases []string, k int) ([]Hit, error) {
 	maxMult := b.maxAuthorityMult()
 
-	poolCap := bm25TopKPoolCap(k)
+	poolCap := bm25TopKPoolFactor() * k
 	pool := topCandidates(scores, poolCap)
 	if len(pool) == 0 {
 		return nil, nil

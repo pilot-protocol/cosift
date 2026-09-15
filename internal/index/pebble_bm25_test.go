@@ -995,11 +995,12 @@ func BenchmarkPebbleBM25Search(b *testing.B) {
 	}
 }
 
-// TestPebbleBM25PoolMinMakesTopKIndependentOfK pins the defect measured on prod
-// 2026-09-15: with poolCap = factor*k, a cap-bound query returns a different
-// top-10 at k=10 than at k=50 (51 of 60 goldens did). The floor makes the
-// candidate universe identical across k, so the top-10 must agree.
-func TestPebbleBM25PoolMinMakesTopKIndependentOfK(t *testing.T) {
+// TestPebbleBM25RankDepthMakesTopKIndependentOfK pins the defect measured on
+// prod 2026-09-15: 51 of 60 goldens returned a different top-10 at k=10 than at
+// k=50. Two decisions are k-shaped -- the MaxScore theta and the resolution
+// pool -- and flooring only the pool still left 48 of 59 disagreeing on the
+// box. Running both at kEff makes the top-10 a prefix of the same ranking.
+func TestPebbleBM25RankDepthMakesTopKIndependentOfK(t *testing.T) {
 	ps, idx := newPebbleBM25(t)
 	// Authority spread is what lets a low-raw-score doc outrank a high one, so
 	// truncating the pool at different depths changes the answer.
@@ -1033,28 +1034,45 @@ func TestPebbleBM25PoolMinMakesTopKIndependentOfK(t *testing.T) {
 	// factor 1 makes the cap bind hard: k=10 resolves 10 candidates, k=50
 	// resolves 50, out of 400 scored.
 	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "1")
-	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "0")
+	t.Setenv("COSIFT_BM25_RANK_DEPTH", "0")
 	if sameURLSet(top(10), top(50)) {
 		t.Fatal("fixture does not reproduce k-dependence: raise the authority spread or the corpus size")
 	}
 
-	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "400")
+	t.Setenv("COSIFT_BM25_RANK_DEPTH", "50")
 	a, b := top(10), top(50)
 	if !sameURLSet(a, b) {
-		t.Errorf("top-10 still depends on k with the pool floor set:\n k=10 %v\n k=50 %v", a, b)
+		t.Errorf("top-10 still depends on k at rank depth 50:\n k=10 %v\n k=50 %v", a, b)
 	}
 }
 
-func TestBM25TopKPoolCapHonoursFloor(t *testing.T) {
-	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "200")
-	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "10000")
-	for _, tc := range []struct{ k, want int }{{10, 10000}, {50, 10000}, {100, 20000}} {
-		if got := bm25TopKPoolCap(tc.k); got != tc.want {
-			t.Errorf("bm25TopKPoolCap(%d) = %d, want %d", tc.k, got, tc.want)
+func TestBM25EffectiveKHonoursRankDepth(t *testing.T) {
+	t.Setenv("COSIFT_BM25_RANK_DEPTH", "50")
+	for _, tc := range []struct{ k, want int }{{10, 50}, {50, 50}, {100, 100}, {0, 0}, {-1, -1}} {
+		if got := bm25EffectiveK(tc.k); got != tc.want {
+			t.Errorf("bm25EffectiveK(%d) = %d, want %d", tc.k, got, tc.want)
 		}
 	}
-	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "0")
-	if got := bm25TopKPoolCap(10); got != 2000 {
-		t.Errorf("floor 0 must keep factor*k: got %d, want 2000", got)
+	t.Setenv("COSIFT_BM25_RANK_DEPTH", "0")
+	if got := bm25EffectiveK(10); got != 10 {
+		t.Errorf("depth 0 must leave k alone: got %d, want 10", got)
+	}
+}
+
+// A caller asking for k must still get at most k hits when the engine ranked
+// deeper internally.
+func TestPebbleBM25RankDepthStillReturnsK(t *testing.T) {
+	ps, idx := newPebbleBM25(t)
+	for i := 0; i < 120; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://e.example/d%03d", i), "Quantum",
+			strings.Repeat("quantum ", 1+(120-i)/4))
+	}
+	t.Setenv("COSIFT_BM25_RANK_DEPTH", "100")
+	hits, err := idx.Search(context.Background(), "quantum", 5)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 5 {
+		t.Errorf("asked for k=5 at rank depth 100, got %d hits", len(hits))
 	}
 }
