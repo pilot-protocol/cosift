@@ -297,7 +297,7 @@ func newBare(cfg config.Crawler) *Crawler {
 	}
 	// Each request picks a random proxy
 	// from cfg.Proxies; empty list = direct connection.
-	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 {
+	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 && !cfg.PublicOnly {
 		var pmu sync.Mutex
 		var prng = rand.New(rand.NewSource(time.Now().UnixNano()))
 		transport.Proxy = func(req *http.Request) (*url.URL, error) {
@@ -318,9 +318,13 @@ func newBare(cfg config.Crawler) *Crawler {
 	if len(urls) == 0 && cfg.RemoteFetcherURL != "" {
 		urls = []string{cfg.RemoteFetcherURL}
 	}
-	if len(urls) > 0 {
+	if len(urls) > 0 && !cfg.PublicOnly {
 		rt = newRemoteFetcherTransport(urls, cfg.RemoteFetcherToken, transport)
 		log.Printf("crawler: remote fetcher enabled (%d workers in pool)", len(urls))
+	}
+	if cfg.PublicOnly {
+		transport.DialContext = newPublicDialer().DialContext
+		log.Printf("crawler: public-only direct HTTP egress enabled")
 	}
 	// 30s overall timeout was generous to a fault — most useful
 	// fetches finish in <3s. Drop to 12s so dead URLs free up the worker

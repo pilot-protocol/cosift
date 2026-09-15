@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Cosift — your corner of the web</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="auth" class="entry" hidden>
+      <div class="entry-story">
+        <a class="brand" href="/">cosift<span>●</span></a>
+        <div>
+          <p class="eyebrow">A web worth finding</p>
+          <h1>A little curiosity.<br />A better internet.</h1>
+          <p class="intro">
+            Find something useful. Keep what matters.<br />Share the corners of
+            the web you know best.
+          </p>
+          <div class="story-tags">
+            <span>Independent sources</span><span>Shared discovery</span>
+          </div>
+        </div>
+        <p class="fine">Built for curious people. Made better together.</p>
+      </div>
+      <div class="entry-form">
+        <div class="form-wrap">
+          <p class="eyebrow">Welcome to Cosift</p>
+          <h2 id="auth-title">Make yourself at home.</h2>
+          <p id="auth-description" class="muted">
+            One account for your searches and contributions.
+          </p>
+          <form id="auth-form">
+            <label id="name-field"
+              >Your name<input
+                name="name"
+                autocomplete="name"
+                maxlength="80"
+                required
+                placeholder="Alex Morgan" /></label
+            ><label
+              >Email<input
+                name="email"
+                type="email"
+                autocomplete="email"
+                maxlength="254"
+                required
+                placeholder="you@example.com" /></label
+            ><label
+              >Password<input
+                name="password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                maxlength="256"
+                required
+                placeholder="At least 12 characters" /></label
+            ><button class="primary wide" id="auth-submit">
+              Create account <span>↗</span>
+            </button>
+          </form>
+          <p class="muted switch">
+            <span id="auth-switch-copy">Already have an account?</span>
+            <button id="auth-toggle" class="text-button">Sign in</button>
+          </p>
+          <button id="continue-guest" class="secondary wide" type="button">
+            Explore as a guest ↗
+          </button>
+          <p class="fine">
+            Guest access: one request every 30 minutes.
+          </p>
+        </div>
+      </div>
+    </section>
+    <section id="onboarding" class="onboarding" hidden>
+      <a class="brand" href="/">cosift<span>●</span></a>
+      <div class="onboarding-inner">
+        <p class="eyebrow">Make it yours</p>
+        <h1>What catches<br />your attention?</h1>
+        <p class="muted">
+          Pick a few interests. We’ll turn them into starting points for your
+          next search. You can change these anytime.
+        </p>
+        <form id="interests-form">
+          <div id="topics" class="topics"></div>
+          <label
+            >Something else?<input
+              id="custom-interests"
+              maxlength="600"
+              placeholder="Urban gardens, open hardware, ocean science…"
+            /><span class="fine"
+              >Separate your interests with commas.</span
+            ></label
+          >
+          <div class="actions">
+            <button class="primary" type="submit">
+              Save interests <span>→</span></button
+            ><button class="text-button" type="button" id="skip-interests">
+              Skip for now
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+    <div id="app" class="app" hidden>
+      <aside>
+        <a class="brand" href="/">cosift<span>●</span></a>
+        <p class="eyebrow workspace-label">Your workspace</p>
+        <nav aria-label="Workspace">
+          <button data-view="search" class="nav-item active">
+            <span>⌕</span> Discover</button
+          ><button data-view="saved" class="nav-item">
+            <span>▤</span> Saved requests
+            <small id="saved-count">0</small></button
+          ><button data-view="contribute" class="nav-item">
+            <span>＋</span> Contribute
+          </button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="dot"></span>
+          <p>A better index starts<br />with a good link.</p>
+          <button data-view="contribute" class="text-button">
+            Share something ↗
+          </button>
+        </div>
+        <div class="account">
+          <div id="avatar" class="avatar">C</div>
+          <div>
+            <strong id="account-name"></strong
+            ><button id="edit-interests" class="text-button">
+              Edit interests
+            </button>
+          </div>
+          <button
+            id="logout"
+            class="icon-button"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            ↪
+          </button>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <span>THE COMMUNITY INDEX</span
+          ><span class="muted">Collect curiosity.</span>
+        </header>
+        <div id="guest-banner" class="guest-banner" hidden>
+          <div>
+            <strong>You’re exploring as a guest.</strong
+            ><span id="guest-allowance"
+              >One Search, Research, Answer, or submission every 30
+              minutes.</span
+            >
+          </div>
+          <button id="guest-signup" class="secondary">
+            Create an account ↗
+          </button>
+        </div>
+        <section id="view-search" class="view">
+          <p class="eyebrow">Follow your curiosity</p>
+          <h1>What will you find today?</h1>
+          <p id="mode-description" class="muted">
+            Find webpages in the Cosift index.
+          </p>
+          <div class="mode-picker" role="group" aria-label="Request mode">
+            <button type="button" data-mode="search" aria-pressed="true">
+              ⌕ Search</button
+            ><button type="button" data-mode="research" aria-pressed="false">
+              ✳ Research</button
+            ><button type="button" data-mode="answer" aria-pressed="false">
+              ↳ Answer
+            </button>
+          </div>
+          <form id="search-form" class="search-box">
+            <span aria-hidden="true">⌕</span
+            ><input
+              id="query"
+              type="search"
+              maxlength="500"
+              required
+              placeholder="A question, an idea, a rabbit hole…"
+              aria-label="Search query"
+            /><button class="primary" type="submit">
+              Search <span>↗</span>
+            </button>
+          </form>
+          <div id="suggestions" class="suggestions"></div>
+          <div id="search-heading" class="list-heading" hidden>
+            <div>
+              <p class="eyebrow">From Cosift</p>
+              <h2 id="results-title">Search results</h2>
+            </div>
+            <button id="save-search" class="secondary">＋ Save search</button>
+          </div>
+          <div id="results"></div>
+          <div id="search-empty" class="discovery-card">
+            <div class="orb" aria-hidden="true">✳</div>
+            <p class="eyebrow">Good things are out there</p>
+            <h2>Start with what interests you.</h2>
+            <p class="muted">
+              Explore a topic above, or follow an entirely new thread.<br />Save
+              a search to pick it up again later.
+            </p>
+          </div>
+        </section>
+        <section id="view-saved" class="view" hidden>
+          <p class="eyebrow">Keep the thread</p>
+          <h1>Your saved requests.</h1>
+          <p class="muted">
+            A place for ideas you want to come back to. Rerun a request to see
+            what’s in the index now.
+          </p>
+          <div id="saved-list" class="cards"></div>
+        </section>
+        <section id="view-contribute" class="view" hidden>
+          <p class="eyebrow">Add your corner of the web</p>
+          <h1>Know a good source?</h1>
+          <p class="muted">
+            Share useful articles, documentation, and pages that deserve to be
+            found.
+          </p>
+          <div class="contribute-grid">
+            <form id="contribution-form" class="panel">
+              <div class="number-label">01 / SHARE A LINK</div>
+              <h2>A good find goes further.</h2>
+              <label
+                >Webpage URLs<textarea
+                  id="urls"
+                  rows="5"
+                  placeholder="https://example.com/a-great-article&#10;https://example.com/docs"
+                ></textarea
+                ><span class="fine"
+                  >One full webpage URL per line. Up to 100 per
+                  submission.</span
+                ></label
+              >
+              <div class="divider"><span>or upload a collection</span></div>
+              <label class="file-label"
+                >Choose a CSV file<input
+                  id="csv"
+                  type="file"
+                  accept=".csv,text/csv"
+                /><span class="fine"
+                  >One URL column, or a column named “url”. Maximum 1 MB.</span
+                ></label
+              >
+              <a
+                class="text-button"
+                href="/sample.csv"
+                download="cosift-sample.csv"
+                >Download sample CSV ↓</a
+              >
+              <p id="file-note" class="fine">
+                Use either the text field or a CSV for each submission.
+              </p>
+              <button class="primary wide" type="submit">
+                Contribute webpages <span>↗</span>
+              </button>
+            </form>
+            <div class="contribution-explainer">
+              <div class="number-label">02 / LET DISCOVERY HAPPEN</div>
+              <h2>You share.<br />Cosift explores.</h2>
+              <p>
+                We validate each link and check readable page content for
+                explicit adult material, malware, phishing, and harmful
+                promotion before sending it to the crawler.
+              </p>
+              <div class="status-example">
+                <span class="status pending">Checking</span>
+                <p>
+                  Saved for content safety checks. Pages are queued only after
+                  passing.
+                </p>
+              </div>
+              <div class="status-example">
+                <span class="status queued">Queued</span>
+                <p>
+                  Delivered to the crawl queue. This doesn’t yet mean the page
+                  is indexed.
+                </p>
+              </div>
+              <div class="status-example">
+                <span class="status rejected">Rejected / Unverified</span>
+                <p>
+                  Blocked content and pages we cannot confidently check are kept
+                  out of the crawl queue.
+                </p>
+              </div>
+              <p class="fine">
+                Please submit public webpages. Pages behind a login or excluded
+                by crawl rules may not be indexed.
+              </p>
+            </div>
+          </div>
+          <div class="list-heading">
+            <div>
+              <p class="eyebrow">Your footprint</p>
+              <h2>Recent contributions</h2>
+            </div>
+            <button id="refresh-contributions" class="text-button">
+              Refresh ↻
+            </button>
+          </div>
+          <div id="contribution-list"></div>
+        </section>
+        <footer>
+          A little more discoverable, together. <span>cosift / community</span>
+        </footer>
+      </main>
+    </div>
+    <noscript
+      >This app needs JavaScript to sign in, search, and contribute.</noscript
+    >
+  </body>
+</html>

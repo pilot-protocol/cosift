@@ -5,6 +5,7 @@
 
 # Local data + runtime state
 cosift-data/
+community-data/
 cosift.db
 *.db
 *.db-wal
