@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/community"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -24,6 +25,35 @@ type crawlEnqueueReq struct {
 	// Lane optionally targets a frontier lane. Empty keeps the historical
 	// default (discovered) — parseLaneName("") would mean submitted.
 	Lane string `json:"lane,omitempty"`
+}
+
+// Community intake uses a separate endpoint so an older or unguarded backend
+// cannot silently accept public submissions through the historical admin API.
+func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Request) {
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
+	}
+	if !s.crawlCommunityReady.Load() || s.crawlSeedLane == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "community submissions require an active crawler with crawler.public_only=true and crawler.filter_adult=true")
+		return
+	}
+	var req crawlEnqueueReq
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeProblem(w, http.StatusBadRequest, "expected a webpage URL")
+		return
+	}
+	u, err := community.NormalizeURL(req.URL)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.crawlSeedLane(u, parseLaneName("submitted")); err != nil {
+		writeProblem(w, http.StatusInternalServerError, "could not queue webpage")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"queued": u})
 }
 
 func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {

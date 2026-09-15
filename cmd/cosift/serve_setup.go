@@ -453,6 +453,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", awrap(srv.handleCrawlEnqueue))
+	mux.HandleFunc("POST /admin/community-enqueue", awrap(srv.handleCommunityEnqueue))
+	mux.HandleFunc("POST /admin/community-moderate", awrap(srv.handleCommunityModerate))
 	mux.HandleFunc("POST /admin/allow-domain", awrap(srv.handleAllowDomain))
 	mux.HandleFunc("POST /admin/frontier-purge-host", awrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", awrap(srv.handleFrontierClear))
@@ -926,6 +928,9 @@ func (s *pebbleHTTP) freshGraphAllowed() error {
 // live as soon as the first passage lands), then runs the crawler in a
 // goroutine for the server's lifetime.
 func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleStore, seedsFile string, ckpEvery time.Duration, cfg *config.Config, wg *sync.WaitGroup) error {
+	if cfg.Crawler.PublicOnly && (len(cfg.Crawler.Proxies) > 0 || cfg.Crawler.RemoteFetcherURL != "" || len(cfg.Crawler.RemoteFetcherURLs) > 0) {
+		return errors.New("public-only community crawling requires direct HTTP egress; remove crawler proxies and remote fetchers")
+	}
 	if s.embedder == nil {
 		return errors.New("crawl requires embedder configuration (cfg.Embeddings.Model)")
 	}
@@ -1045,6 +1050,10 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	s.crawlFetchNow = c.FetchAndIndexNow
 	s.crawlSeedWET = c.SeedWET
 	s.crawlAllowDomain = c.AddAllowedDomain
+	// Publish only after all crawler hooks are initialized. The listener is
+	// already accepting requests while HNSW/crawler initialization runs.
+	s.crawlPublicOnly.Store(cfg.Crawler.PublicOnly)
+	s.crawlCommunityReady.Store(cfg.Crawler.PublicOnly && cfg.Crawler.FilterAdult)
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -1207,7 +1216,9 @@ type pebbleHTTP struct {
 	// crawlSeed is set after startInProcessCrawl runs so /admin/crawl-enqueue
 	// can hand off forwarded URLs into the in-process frontier. Nil when no
 	// in-serve crawler is wired.
-	crawlSeed func(url string) error
+	crawlSeed           func(url string) error
+	crawlPublicOnly     atomic.Bool
+	crawlCommunityReady atomic.Bool
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)

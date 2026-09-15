@@ -22,6 +22,8 @@ usage:
   cosift init               write a sensible default cosift.json to ./
   cosift init -site URL     same, with include_domains pre-populated
   cosift serve              run the HTTP API (port from config)
+  cosift community          run the contributor web app (login, interests, saved searches, URL/CSV submissions)
+  cosift contribute [-server URL] [-guest] [-email EMAIL] [-csv FILE] <url...>   submit URLs as a guest or member
   cosift crawl <url...>     one-shot crawl of seed URLs
   cosift check-robots <url...>   report whether each URL is crawlable per the site's robots.txt
   cosift crawl-errors [-limit N] list recently-errored frontier URLs with their failure reason
@@ -127,6 +129,10 @@ func run(cfgPath string) error {
 	defer cancel()
 
 	switch cmd := flag.Arg(0); cmd {
+	case "community":
+		return runCommunity(ctx, flag.Args()[1:])
+	case "contribute":
+		return runContribute(ctx, flag.Args()[1:])
 	case "version":
 		fmt.Println(version)
 	case "init":
