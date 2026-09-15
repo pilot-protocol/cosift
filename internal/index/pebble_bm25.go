@@ -55,6 +55,39 @@ func bm25TopKPoolFactor() int {
 	return 50
 }
 
+// bm25TopKPoolMin floors the resolution pool at a k-independent size.
+//
+// factor*k alone makes ranking depend on k: when the cap binds, k=10 and k=50
+// sample the same candidate set to different depths, so one query returns two
+// different top-10s. Measured on prod 2026-09-15 at factor 200, a median
+// cap-bound query resolved 2,000 of ~68,500 in-band candidates and 51 of 60
+// goldens disagreed between k=10 and k=50. A floor makes the candidate universe
+// identical across k. 0 keeps the pure factor*k behaviour.
+func bm25TopKPoolMin() int {
+	if v := os.Getenv("COSIFT_BM25_TOPK_POOL_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// bm25TopKPoolCap is the resolution pool size for a query of depth k.
+func bm25TopKPoolCap(k int) int {
+	c := bm25TopKPoolFactor() * k
+	if m := bm25TopKPoolMin(); c < m {
+		c = m
+	}
+	return c
+}
+
+// bm25MaxScoreAuthorityBound reports whether the MaxScore early-termination
+// bound accounts for the authority multiplier applied after the scan. 0 selects
+// the pre-2026-09 behaviour, which prunes harder and is measurably less exact.
+func bm25MaxScoreAuthorityBound() bool {
+	return os.Getenv("COSIFT_BM25_MAXSCORE_AUTHORITY") != "0"
+}
+
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.
 type PebbleBM25 struct {
 	store *store.PebbleStore
@@ -228,7 +261,10 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// optimization for benchmark-grade lossless ranking. Phrase queries opt
 	// out: theta cannot threshold the phrase-filtered subset (empty results).
 	maxScoreEnabled := os.Getenv("COSIFT_BM25_DISABLE_MAXSCORE") == "" && len(phrases) == 0
-	maxMult := b.maxAuthorityMult()
+	maxMult := 1.0
+	if bm25MaxScoreAuthorityBound() {
+		maxMult = b.maxAuthorityMult()
+	}
 	remainingMax := 0.0
 	if maxScoreEnabled {
 		for _, c := range active {
@@ -343,7 +379,7 @@ const topKResolveSlack = 16
 func (b *PebbleBM25) resolveTopKPool(ctx context.Context, scores map[int64]float64, phrases []string, k int) ([]Hit, error) {
 	maxMult := b.maxAuthorityMult()
 
-	poolCap := bm25TopKPoolFactor() * k
+	poolCap := bm25TopKPoolCap(k)
 	pool := topCandidates(scores, poolCap)
 	if len(pool) == 0 {
 		return nil, nil

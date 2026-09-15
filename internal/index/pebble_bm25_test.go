@@ -994,3 +994,67 @@ func BenchmarkPebbleBM25Search(b *testing.B) {
 		})
 	}
 }
+
+// TestPebbleBM25PoolMinMakesTopKIndependentOfK pins the defect measured on prod
+// 2026-09-15: with poolCap = factor*k, a cap-bound query returns a different
+// top-10 at k=10 than at k=50 (51 of 60 goldens did). The floor makes the
+// candidate universe identical across k, so the top-10 must agree.
+func TestPebbleBM25PoolMinMakesTopKIndependentOfK(t *testing.T) {
+	ps, idx := newPebbleBM25(t)
+	// Authority spread is what lets a low-raw-score doc outrank a high one, so
+	// truncating the pool at different depths changes the answer.
+	// Embedded-trusted host scores 0.9 vs 0.5 for an unknown one: a 1.9x vs
+	// 1.5x multiplier at the default alpha, enough for a lower-raw-score doc to
+	// outrank a higher one once it is actually resolved.
+	sc := authority.New()
+	idx = idx.WithAuthority(sc)
+
+	for i := 0; i < 400; i++ {
+		host := "plain.example"
+		if i%7 == 0 {
+			host = "en.wikipedia.org"
+		}
+		// Descending term frequency gives a descending raw-score ladder.
+		body := strings.Repeat("quantum ", 1+(400-i)/8) + strings.Repeat("filler ", i%5)
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://%s/doc%03d", host, i), "Quantum", body)
+	}
+
+	top := func(k int) []string {
+		hits, err := idx.Search(context.Background(), "quantum", k)
+		if err != nil {
+			t.Fatalf("search k=%d: %v", k, err)
+		}
+		if len(hits) > 10 {
+			hits = hits[:10]
+		}
+		return urlSet(hits)
+	}
+
+	// factor 1 makes the cap bind hard: k=10 resolves 10 candidates, k=50
+	// resolves 50, out of 400 scored.
+	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "1")
+	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "0")
+	if sameURLSet(top(10), top(50)) {
+		t.Fatal("fixture does not reproduce k-dependence: raise the authority spread or the corpus size")
+	}
+
+	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "400")
+	a, b := top(10), top(50)
+	if !sameURLSet(a, b) {
+		t.Errorf("top-10 still depends on k with the pool floor set:\n k=10 %v\n k=50 %v", a, b)
+	}
+}
+
+func TestBM25TopKPoolCapHonoursFloor(t *testing.T) {
+	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "200")
+	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "10000")
+	for _, tc := range []struct{ k, want int }{{10, 10000}, {50, 10000}, {100, 20000}} {
+		if got := bm25TopKPoolCap(tc.k); got != tc.want {
+			t.Errorf("bm25TopKPoolCap(%d) = %d, want %d", tc.k, got, tc.want)
+		}
+	}
+	t.Setenv("COSIFT_BM25_TOPK_POOL_MIN", "0")
+	if got := bm25TopKPoolCap(10); got != 2000 {
+		t.Errorf("floor 0 must keep factor*k: got %d, want 2000", got)
+	}
+}
