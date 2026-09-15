@@ -13,7 +13,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-func newPebbleBM25(t *testing.T) (*store.PebbleStore, *PebbleBM25) {
+func newPebbleBM25(t testing.TB) (*store.PebbleStore, *PebbleBM25) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "pebble")
 	p, err := store.OpenPebble(dir)
@@ -135,11 +135,8 @@ func TestPebbleBM25IDFStopwordFilter(t *testing.T) {
 	}
 }
 
-// TestPebbleBM25MaxScorePreservesTopKMembership locks in the Phase-2
-// contract: MaxScore-style early termination must not lose any doc that
-// would have been in the lossless top-K. We compare top-K membership
-// (URL set) with the optimization on vs off across a corpus where the
-// optimization should actually trigger early-break.
+// TestPebbleBM25MaxScorePreservesTopKMembership — top hit only, no authority;
+// full set membership is TestPebbleBM25MaxScoreAuthorityTopK.
 func TestPebbleBM25MaxScorePreservesTopKMembership(t *testing.T) {
 	ps, idx := newPebbleBM25(t)
 	ctx := context.Background()
@@ -196,6 +193,254 @@ func TestPebbleBM25MaxScorePreservesTopKMembership(t *testing.T) {
 	if hits[0].URL != hits2[0].URL {
 		t.Errorf("top-K membership diverges: maxscore=%s vs lossless=%s",
 			hits[0].URL, hits2[0].URL)
+	}
+}
+
+const (
+	maxScoreAuthQuery   = "zeta koppa"
+	maxScoreAuthURL     = "https://www.nih.gov/koppa"
+	maxScorePhraseURL   = "https://www.nih.gov/phrase"
+	maxScorePhraseQuery = `zeta "koppa koppa"`
+)
+
+// maxScoreAuthorityCorpus — spam farm (multiplier 1.0) plus one trusted host
+// whose only matching term is the lower-IDF one.
+func maxScoreAuthorityCorpus(t testing.TB) (*store.PebbleStore, *PebbleBM25, *authority.Scorer) {
+	t.Helper()
+	ps, idx := newPebbleBM25(t)
+	for i := 0; i < 13; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://spam%d.jiali.sbs/p", i), "spam",
+			"zeta zeta ordinary body prose here"+strings.Repeat(" pad", i))
+	}
+	upsertAndIndex(t, ps, idx, maxScoreAuthURL, "Koppa", "koppa koppa koppa")
+	for i := 0; i < 165; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://fill%d.jiali.sbs/p", i), "fill",
+			"koppa ordinary body prose here")
+	}
+	for i := 0; i < 221; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://bg%d.jiali.sbs/p", i), "bg",
+			"unrelated background prose entirely")
+	}
+	sc := authority.New()
+	sc.SetSubdomainCounts(map[string]int{"jiali.sbs": 200000})
+	return ps, idx, sc
+}
+
+// maxScoreDeepPruneCorpus — a rare term plus a near-ubiquitous one, far enough
+// apart that the MaxScore bound breaks before the common postings are scanned
+// even at maxMult=1+alpha. Only maxScorePhraseURL carries the literal phrase.
+func maxScoreDeepPruneCorpus(t testing.TB) (*store.PebbleStore, *PebbleBM25, *authority.Scorer) {
+	t.Helper()
+	ps, idx := newPebbleBM25(t)
+	for i := 0; i < 10; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://spam%d.jiali.sbs/p", i), "spam",
+			"zeta zeta zeta koppa ordinary body prose here"+strings.Repeat(" pad", i))
+	}
+	upsertAndIndex(t, ps, idx, maxScorePhraseURL, "Koppa", "koppa koppa is here")
+	for i := 0; i < 1800; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://fill%d.jiali.sbs/p", i), "fill",
+			"koppa ordinary body prose here")
+	}
+	for i := 0; i < 200; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://bg%d.jiali.sbs/p", i), "bg",
+			"unrelated background prose entirely")
+	}
+	sc := authority.New()
+	sc.SetSubdomainCounts(map[string]int{"jiali.sbs": 200000})
+	return ps, idx, sc
+}
+
+// searchEnvAB runs the same query twice: once with envVar cleared, once with
+// it set to "1".
+func searchEnvAB(t *testing.T, idx *PebbleBM25, envVar, q string, k int) ([]Hit, []Hit) {
+	t.Helper()
+	ctx := context.Background()
+	t.Setenv(envVar, "")
+	on, err := idx.Search(ctx, q, k)
+	if err != nil {
+		t.Fatalf("search (%s unset): %v", envVar, err)
+	}
+	t.Setenv(envVar, "1")
+	off, err := idx.Search(ctx, q, k)
+	if err != nil {
+		t.Fatalf("search (%s=1): %v", envVar, err)
+	}
+	t.Setenv(envVar, "")
+	return on, off
+}
+
+// searchMaxScoreAB — arm 2 (COSIFT_BM25_DISABLE_MAXSCORE=1) is the lossless oracle.
+func searchMaxScoreAB(t *testing.T, idx *PebbleBM25, q string, k int) ([]Hit, []Hit) {
+	t.Helper()
+	return searchEnvAB(t, idx, "COSIFT_BM25_DISABLE_MAXSCORE", q, k)
+}
+
+func containsURL(hits []Hit, url string) bool {
+	for _, h := range hits {
+		if h.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPebbleBM25MaxScoreAuthorityTopK — MaxScore ON with authority attached:
+// the raw k-th early-stop threshold must carry maxAuthorityMult.
+func TestPebbleBM25MaxScoreAuthorityTopK(t *testing.T) {
+	_, idx, sc := maxScoreAuthorityCorpus(t)
+	scored := idx.WithAuthority(sc)
+
+	for _, k := range []int{5, 10} {
+		on, off := searchMaxScoreAB(t, scored, maxScoreAuthQuery, k)
+		if len(off) != k {
+			t.Fatalf("k=%d: oracle returned %d hits, want %d", k, len(off), k)
+		}
+		if !sameURLSet(urlSet(on), urlSet(off)) {
+			t.Errorf("k=%d: MaxScore top-k diverges from lossless\n  maxscore: %v\n  lossless: %v",
+				k, urlSet(on), urlSet(off))
+		}
+		if !containsURL(on, maxScoreAuthURL) {
+			t.Errorf("k=%d: authority doc dropped by MaxScore: %v", k, urlSet(on))
+		}
+	}
+}
+
+// TestPebbleBM25MaxScoreKIndependence pins the prod symptom: the top-10 must
+// not depend on the requested k. Each k is independently oracle-checked, so
+// the test cannot go vacuous if the fixture starts breaking at k=50.
+func TestPebbleBM25MaxScoreKIndependence(t *testing.T) {
+	_, idx, sc := maxScoreAuthorityCorpus(t)
+	scored := idx.WithAuthority(sc)
+
+	small, smallOracle := searchMaxScoreAB(t, scored, maxScoreAuthQuery, 10)
+	large, largeOracle := searchMaxScoreAB(t, scored, maxScoreAuthQuery, 50)
+	if len(small) != 10 || len(large) < 10 || len(largeOracle) < 10 {
+		t.Fatalf("want >=10 hits every arm, got k=10:%d k=50:%d oracle50:%d",
+			len(small), len(large), len(largeOracle))
+	}
+	if !sameURLSet(urlSet(small), urlSet(smallOracle)) {
+		t.Errorf("k=10 diverges from lossless\n  maxscore: %v\n  lossless: %v",
+			urlSet(small), urlSet(smallOracle))
+	}
+	if !sameURLSet(urlSet(large[:10]), urlSet(largeOracle[:10])) {
+		t.Errorf("k=50 diverges from lossless\n  maxscore: %v\n  lossless: %v",
+			urlSet(large[:10]), urlSet(largeOracle[:10]))
+	}
+	if !sameURLSet(urlSet(small), urlSet(large[:10])) {
+		t.Errorf("top-10 depends on k\n  k=10: %v\n  k=50: %v", urlSet(small), urlSet(large[:10]))
+	}
+}
+
+// TestPebbleBM25MaxScoreAlphaTable sweeps alpha over the same fixture: the
+// MaxScore arm must match the lossless oracle at every alpha, including
+// alpha=0 where the authority-aware bound collapses to the raw one.
+func TestPebbleBM25MaxScoreAlphaTable(t *testing.T) {
+	ps, _, _ := maxScoreAuthorityCorpus(t)
+	for _, alpha := range []float64{0, 0.5, 1, 2, 5} {
+		t.Run(fmt.Sprintf("alpha=%g", alpha), func(t *testing.T) {
+			sc := authority.New().WithAlpha(alpha)
+			sc.SetSubdomainCounts(map[string]int{"jiali.sbs": 200000})
+			// WithAuthority mutates in place, so each subtest gets its own handle.
+			on, off := searchMaxScoreAB(t, NewPebbleBM25(ps).WithAuthority(sc), maxScoreAuthQuery, 10)
+			if !sameURLSet(urlSet(on), urlSet(off)) {
+				t.Errorf("MaxScore diverges from lossless\n  maxscore: %v\n  lossless: %v",
+					urlSet(on), urlSet(off))
+			}
+		})
+	}
+}
+
+// TestPebbleBM25MaxScorePrunes pins that the optimization still prunes at the
+// production alpha: the truncated scan must under-score at least one hit
+// relative to the lossless arm. Goes red if MaxScore stops breaking.
+func TestPebbleBM25MaxScorePrunes(t *testing.T) {
+	_, idx, sc := maxScoreDeepPruneCorpus(t)
+	scored := idx.WithAuthority(sc)
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
+
+	on, off := searchMaxScoreAB(t, scored, "zeta koppa", 10)
+	if len(on) != 10 || len(off) != 10 {
+		t.Fatalf("want 10 hits both arms, got on=%d off=%d", len(on), len(off))
+	}
+	if !sameURLSet(urlSet(on), urlSet(off)) {
+		t.Fatalf("deep-prune fixture must not change top-k membership\n  maxscore: %v\n  lossless: %v",
+			urlSet(on), urlSet(off))
+	}
+	lossless := make(map[string]float64, len(off))
+	for _, h := range off {
+		lossless[h.URL] = h.Score
+	}
+	for _, h := range on {
+		if h.Score < lossless[h.URL]-1e-9 {
+			return
+		}
+	}
+	t.Errorf("MaxScore never broke: every hit scored identically to the lossless arm (%v)", urlSet(on))
+}
+
+// TestPebbleBM25MaxScorePhraseQuery — theta is a k-th over all scored docs, so
+// it cannot threshold the phrase-filtered subset; the break must be skipped.
+func TestPebbleBM25MaxScorePhraseQuery(t *testing.T) {
+	ps, _, sc := maxScoreDeepPruneCorpus(t)
+	t.Setenv("COSIFT_BM25_MIN_IDF", "0")
+
+	for _, c := range []struct {
+		name   string
+		scorer *authority.Scorer
+	}{{"no-authority", nil}, {"authority", sc}} {
+		t.Run(c.name, func(t *testing.T) {
+			on, off := searchMaxScoreAB(t, NewPebbleBM25(ps).WithAuthority(c.scorer), maxScorePhraseQuery, 10)
+			if !containsURL(off, maxScorePhraseURL) {
+				t.Fatalf("oracle lost the phrase doc; fixture is wrong: %v", urlSet(off))
+			}
+			if !sameURLSet(urlSet(on), urlSet(off)) {
+				t.Errorf("phrase query diverges from lossless\n  maxscore: %v\n  lossless: %v",
+					urlSet(on), urlSet(off))
+			}
+		})
+	}
+}
+
+// TestPebbleBM25TopKPoolAuthorityRiser pins the pool path's authority-aware
+// bounds: a doc far outside the raw-score top-k whose raw*(1+alpha) clears the
+// k-th raw score must still be resolved and must displace into the top-k.
+func TestPebbleBM25TopKPoolAuthorityRiser(t *testing.T) {
+	ps, idx := newPebbleBM25(t)
+	const riserURL = "https://www.nih.gov/riser"
+	for i := 0; i < 60; i++ {
+		upsertAndIndex(t, ps, idx, fmt.Sprintf("https://spam%d.jiali.sbs/p", i), "spam",
+			"gopher body prose"+strings.Repeat(" pad", i))
+	}
+	upsertAndIndex(t, ps, idx, riserURL, "riser", "gopher body prose"+strings.Repeat(" pad", 44))
+	sc := authority.New()
+	sc.SetSubdomainCounts(map[string]int{"jiali.sbs": 200000})
+	scored := idx.WithAuthority(sc)
+	t.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "10")
+
+	pooled, lossless := searchAB(t, scored, "gopher", 5)
+	if len(pooled) != 5 || len(lossless) != 5 {
+		t.Fatalf("want 5 hits both arms, got pool=%d lossless=%d", len(pooled), len(lossless))
+	}
+	if !containsURL(lossless, riserURL) {
+		t.Fatalf("oracle lost the riser; fixture is wrong: %v", urlSet(lossless))
+	}
+	if !containsURL(pooled, riserURL) {
+		t.Errorf("pool dropped the authority riser: %v", urlSet(pooled))
+	}
+}
+
+// TestPebbleBM25MaxAuthorityMult — the pruning-bound ceiling shared by the
+// MaxScore loop and resolveTopKPool.
+func TestPebbleBM25MaxAuthorityMult(t *testing.T) {
+	_, idx := newPebbleBM25(t)
+	if got := idx.maxAuthorityMult(); got != 1.0 {
+		t.Errorf("no authority: got %v want 1", got)
+	}
+	for _, c := range []struct{ alpha, want float64 }{{0, 1}, {0.5, 1.5}, {2, 3}} {
+		_, h := newPebbleBM25(t)
+		if got := h.WithAuthority(authority.New().WithAlpha(c.alpha)).maxAuthorityMult(); got != c.want {
+			t.Errorf("alpha=%v: got %v want %v", c.alpha, got, c.want)
+		}
 	}
 }
 
@@ -381,19 +626,7 @@ func upsertAndIndex(t testing.TB, ps *store.PebbleStore, idx *PebbleBM25, url, t
 // returns both hit lists.
 func searchAB(t *testing.T, idx *PebbleBM25, q string, k int) ([]Hit, []Hit) {
 	t.Helper()
-	ctx := context.Background()
-	t.Setenv("COSIFT_BM25_DISABLE_TOPK_POOL", "")
-	pooled, err := idx.Search(ctx, q, k)
-	if err != nil {
-		t.Fatalf("search (pool on): %v", err)
-	}
-	t.Setenv("COSIFT_BM25_DISABLE_TOPK_POOL", "1")
-	lossless, err := idx.Search(ctx, q, k)
-	if err != nil {
-		t.Fatalf("search (pool off): %v", err)
-	}
-	t.Setenv("COSIFT_BM25_DISABLE_TOPK_POOL", "")
-	return pooled, lossless
+	return searchEnvAB(t, idx, "COSIFT_BM25_DISABLE_TOPK_POOL", q, k)
 }
 
 // TestPebbleBM25TopKPoolPreservesMembership pins the pool refactor: results
@@ -657,6 +890,55 @@ func TestTopCandidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkPebbleBM25MaxScoreAuthority — cost of the authority-aware bound:
+// "band" is suppressed by maxMult, "deep-prune" breaks either way.
+func BenchmarkPebbleBM25MaxScoreAuthority(b *testing.B) {
+	ps, idx := newPebbleBM25(b)
+	ctx := context.Background()
+
+	for i := 0; i < 20000; i++ {
+		text := "filler body prose text content"
+		if i%20 == 0 {
+			text += " rare"
+		}
+		if i%5 < 2 {
+			text += " mid mid"
+		}
+		upsertAndIndex(b, ps, idx, fmt.Sprintf("https://bench%d.example.com/d", i), "bench doc", text)
+	}
+	b.Setenv("COSIFT_BM25_MIN_IDF", "0")
+	b.Setenv("COSIFT_BM25_TOPK_POOL_FACTOR", "200")
+
+	for _, q := range []struct{ name, query string }{
+		{"band", "rare mid"},
+		{"deep-prune", "rare filler"},
+		{"phrase", `rare "mid mid"`},
+	} {
+		for _, a := range []struct {
+			name   string
+			scorer *authority.Scorer
+		}{
+			{"no-authority", nil},
+			{"authority", authority.New()},
+		} {
+			b.Run(q.name+"/"+a.name, func(b *testing.B) {
+				scored := idx.WithAuthority(a.scorer)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					hits, err := scored.Search(ctx, q.query, 10)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if len(hits) != 10 {
+						b.Fatalf("want 10 hits, got %d", len(hits))
+					}
+				}
+			})
+		}
 	}
 }
 
