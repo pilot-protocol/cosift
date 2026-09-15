@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 // TestMaybeAutoSitemapDropsWhenSemSaturated locks in the GH200 fix: when
@@ -17,7 +15,7 @@ import (
 // hosts are dropped instead of leaking another 5-min goroutine parked on
 // PebbleStore.mu.
 func TestMaybeAutoSitemapDropsWhenSemSaturated(t *testing.T) {
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.AutoSitemap = true
 	cfg.RespectRobots = false
 
@@ -54,7 +52,7 @@ func TestMaybeAutoSitemapReleasesSlotOnCompletion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.AutoSitemap = true
 	cfg.RespectRobots = false
 

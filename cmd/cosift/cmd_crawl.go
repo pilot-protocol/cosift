@@ -19,6 +19,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -342,7 +343,7 @@ func runCheckRobots(ctx context.Context, cfg *config.Config, args []string) erro
 	if *userAgent == "" {
 		*userAgent = "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)"
 	}
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient := netguard.Client(15 * time.Second)
 	r := crawler.NewRobots(httpClient, *userAgent)
 
 	fmt.Printf("user-agent: %s\n", *userAgent)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -192,7 +193,7 @@ func (s *pebbleHTTP) handleRecrawlSitemap(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Fetch and parse the sitemap.
-	hc := &http.Client{Timeout: 20 * time.Second}
+	hc := netguard.Client(20 * time.Second)
 	resp, err := hc.Get(req.URL)
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "fetch sitemap: "+err.Error())
@@ -318,8 +319,12 @@ func (s *pebbleHTTP) handleSitePack(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "host must be a bare hostname like example.com")
 		return
 	}
+	if err := netguard.CheckHost(r.Context(), host); err != nil {
+		writeProblem(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	base := "https://" + host
-	hc := &http.Client{Timeout: 20 * time.Second}
+	hc := netguard.Client(20 * time.Second)
 
 	type result struct {
 		Source  string `json:"source"` // "robots-sitemap" | "fallback-sitemap" | "rss"
@@ -392,7 +397,7 @@ func normalizeBareHost(s string) (host string, ok bool) {
 // list of canonical/CMS paths. fromRobots reports which source was used.
 func discoverSitemaps(ctx context.Context, hc *http.Client, base string) (sitemaps []string, fromRobots bool) {
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		hc = netguard.Client(20 * time.Second)
 	}
 	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/robots.txt", nil); err == nil {
 		if rresp, err := hc.Do(req); err == nil {
@@ -496,9 +501,13 @@ func (s *pebbleHTTP) handleSiteSubmit(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "host must be a bare hostname like example.com")
 		return
 	}
+	if err := netguard.CheckHost(r.Context(), host); err != nil {
+		writeProblem(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	lane := parseLaneName(req.Lane)
 	base := "https://" + host
-	hc := &http.Client{Timeout: 20 * time.Second}
+	hc := netguard.Client(20 * time.Second)
 	t0 := time.Now()
 
 	type result struct {
@@ -584,7 +593,7 @@ func (s *pebbleHTTP) handleWETImportBulk(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	mreq.Header.Set("User-Agent", "cosift-bulk-import")
-	mresp, err := (&http.Client{Timeout: 60 * time.Second}).Do(mreq)
+	mresp, err := netguard.Client(60 * time.Second).Do(mreq)
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "fetch manifest: "+err.Error())
 		return

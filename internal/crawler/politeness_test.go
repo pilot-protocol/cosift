@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 func robotsCrawlerT(t *testing.T, crawlDelay string, maxDelayMs int) (*Crawler, *httptest.Server) {
@@ -23,7 +21,7 @@ func robotsCrawlerT(t *testing.T, crawlDelay string, maxDelayMs int) (*Crawler, 
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 2
@@ -78,7 +76,7 @@ func TestClaimTimeDropCountedAndTerminal(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1

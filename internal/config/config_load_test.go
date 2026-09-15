@@ -29,6 +29,35 @@ func TestDefaultHasSensibleValues(t *testing.T) {
 	if !c.Crawler.RespectRobots {
 		t.Errorf("RespectRobots should default true")
 	}
+	if !c.Crawler.BlockPrivateNetworks {
+		t.Errorf("BlockPrivateNetworks should default true")
+	}
+}
+
+func TestLoadKeepsBlockPrivateNetworksWhenOmitted(t *testing.T) {
+	unsetEnvWithRestore(t, "PORT", "COSIFT_LISTEN", "COSIFT_DATA_DIR")
+
+	path := filepath.Join(t.TempDir(), "cosift.json")
+	if err := os.WriteFile(path, []byte(`{"crawler":{"max_depth":3}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Crawler.BlockPrivateNetworks {
+		t.Errorf("omitted block_private_networks should keep the default true")
+	}
+	if err := os.WriteFile(path, []byte(`{"crawler":{"block_private_networks":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Crawler.BlockPrivateNetworks {
+		t.Errorf("explicit false should disable the guard")
+	}
 }
 
 // unsetEnvWithRestore unsets each variable for the duration of the test and

@@ -2,7 +2,9 @@
   "data_dir": "./cosift-data",
 
   "server": {
-    "addr": "127.0.0.1:7777"
+    "addr": "127.0.0.1:7777",
+    "trusted_proxies": [],
+    "client_ip_header": ""
   },
 
   "crawler": {
@@ -12,6 +14,7 @@
     "max_body_bytes": 5242880,
     "max_depth": 2,
     "respect_robots": true,
+    "block_private_networks": true,
     "include_domains": [],
     "exclude_domains": []
   },

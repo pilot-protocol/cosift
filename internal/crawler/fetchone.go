@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/netguard"
 )
 
 // FetchResult is a parsed page from a single fetch. Same shape as what the
@@ -92,12 +94,12 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 func defaultHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
+		Transport: netguard.Protect(&http.Transport{
 			MaxIdleConns:          50,
 			MaxConnsPerHost:       2,
 			IdleConnTimeout:       90 * time.Second,
 			ForceAttemptHTTP2:     true,
 			ResponseHeaderTimeout: 15 * time.Second,
-		},
+		}, true),
 	}
 }
