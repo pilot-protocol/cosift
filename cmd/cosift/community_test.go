@@ -127,3 +127,27 @@ func TestCommunityGuestCLI(t *testing.T) {
 		t.Fatalf("requests %d", called)
 	}
 }
+
+func TestCommunityRequestCLI(t *testing.T) {
+	for _, mode := range []string{"search", "answer", "research"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("COSIFT_EMAIL", "")
+			t.Setenv("COSIFT_PASSWORD", "")
+			called := false
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if r.Method != "GET" || r.URL.Path != "/api/"+mode || r.URL.Query().Get("q") != "Go channels & select?" || r.Header.Get("X-Cosift-Client") != "community" {
+					t.Errorf("incorrect request: %s %s", r.Method, r.URL)
+				}
+				w.Write([]byte(`{"results":[]}`))
+			}))
+			defer backend.Close()
+			if err := runContribute(context.Background(), []string{"-server", backend.URL, "-request", "-guest", "-mode", mode, "-query", "Go channels & select?"}); err != nil {
+				t.Fatal(err)
+			}
+			if !called {
+				t.Fatal("no API request")
+			}
+		})
+	}
+}

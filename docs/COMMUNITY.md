@@ -89,6 +89,7 @@ Authenticated CLI users can fetch, parse, chunk and embed webpages locally, save
 ./cosift -config local.json contribute -server https://cosift.pilotprotocol.network \
   -index-locally https://go.dev/doc/
 ./cosift contribute -server https://cosift.pilotprotocol.network -credits
+./cosift request -server https://cosift.pilotprotocol.network -mode research -query "How does Raft work?"
 ```
 
 `-index-locally` also accepts `-csv`. It requires login, limits an artifact to
@@ -205,3 +206,22 @@ Search returns ordinary result cards; Answer and Research render the returned an
 
 Tests cover account isolation, mode-aware saved-request migration, endpoint parity, session expiry/logout, CSV atomicity, durable prevalidation/delivery, strict moderation decisions, guest cooldown/restart/concurrency, trusted proxies, public-network egress, and CLI member/guest submissions. No production deployment is performed
 by building or running the app locally.
+
+## Production service and release
+
+`deploy/systemd/cosift-community.service` runs the portal on loopback port 7780.
+Create its private data directory before starting it and supply
+`COSIFT_COMMUNITY_ADMIN_TOKEN` through root-owned `/etc/cosift/community.env`.
+`deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
+portal while retaining existing engine endpoints. It trusts only loopback and
+Cloudflare networks, then overwrites the forwarded client IP.
+
+The community backup timer snapshots SQLite consistently into the existing GCS
+bucket. Restore the account database as a unit, including credits and pending
+artifacts. The release updater restarts the portal after backend health passes;
+check `/stats.hnsw_load.state` separately for dense retrieval readiness. Initial
+rollout also requires preserving the old binary, backend config and Caddy config.
+
+Signed release assets include Linux ARM64/AMD64, macOS ARM64/AMD64 and Windows
+AMD64. Install the matching binary and use the same public server URL for both
+`contribute` and `request`. Payment purchase flows remain disabled.

@@ -244,9 +244,14 @@ func TestDeliveryRetrySurvivesRestart(t *testing.T) {
 		if r.URL.Path != "/admin/community-enqueue" || r.Header.Get("Authorization") != "Bearer backend-secret" {
 			t.Errorf("incorrect delivery: %s", r.URL.Path)
 		}
-		var in map[string]string
-		json.NewDecoder(r.Body).Decode(&in)
-		if in["url"] != "https://example.com/guide" || in["lane"] != "submitted" {
+		var in struct {
+			URL      string           `json:"url"`
+			Artifact *json.RawMessage `json:"artifact"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			t.Fatal(err)
+		}
+		if in.URL != "https://example.com/guide" || in.Artifact != nil {
 			t.Errorf("wrong payload: %+v", in)
 		}
 		if attempts == 1 {

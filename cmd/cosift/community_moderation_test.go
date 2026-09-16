@@ -26,7 +26,11 @@ func (c *communitySafetyChat) Chat(ctx context.Context, msgs []embed.ChatMsg) (s
 		c.t.Error("missing trusted policy / untrusted data separation")
 	}
 	var doc community.ModerationDocument
-	if json.Unmarshal([]byte(msgs[1].Content), &doc) != nil {
+	lines := strings.Split(msgs[1].Content, "\n")
+	if len(lines) < 4 || !strings.HasPrefix(lines[1], "BEGIN_UNTRUSTED_SOURCES_") || !strings.HasPrefix(lines[3], "END_UNTRUSTED_SOURCES_") {
+		c.t.Fatal("missing source envelope")
+	}
+	if json.Unmarshal([]byte(lines[2]), &doc) != nil {
 		c.t.Error("page data not JSON encoded")
 	}
 	return c.reply, nil

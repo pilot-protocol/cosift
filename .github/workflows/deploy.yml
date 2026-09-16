@@ -4,7 +4,7 @@ name: deploy
 # this workflow never touches the production box and never holds an SSH key.
 # The box runs cosift-self-update.timer, which polls the latest GitHub Release,
 # verifies sha256 + minisign signature against a public key baked on the box,
-# snapshots, atomically swaps the binary, restarts, and health-gates with
+# atomically swaps the binary, restarts, and health-gates with
 # auto-rollback. See deploy/scripts/README.md.
 #
 # Triggers:
@@ -44,7 +44,7 @@ jobs:
         # Guarded with a timeout so a hung crawl can't wedge the release.
         run: timeout 300 make smoke
 
-  # (b) build — reproducible static arm64 binary, sha256, minisign signature.
+  # (b) build — static server and CLI binaries, sha256, minisign signatures.
   build:
     needs: verify
     runs-on: ubuntu-latest

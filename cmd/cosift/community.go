@@ -74,6 +74,9 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	server := fs.String("server", "http://127.0.0.1:7780", "community app origin")
 	email := fs.String("email", os.Getenv("COSIFT_EMAIL"), "account email (or COSIFT_EMAIL)")
 	file := fs.String("csv", "", "CSV file with webpage URLs; - reads stdin")
+	requestMode := fs.Bool("request", false, "perform a community Search, Answer or Research request")
+	query := fs.String("query", "", "query for a community request")
+	mode := fs.String("mode", "search", "search, answer or research")
 	local := fs.Bool("index-locally", false, "fetch, index and embed locally, then contribute verified artifacts (requires login and embedding config)")
 	credits := fs.Bool("credits", false, "show the authenticated account credit balance")
 	guest := fs.Bool("guest", false, "submit without login (one request per 30 minutes per IP)")
@@ -117,7 +120,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 			return err
 		}
 	}
-	if !*credits && (len(values) == 0 || len(values) > community.MaxURLs) {
+	if !*credits && !*requestMode && (len(values) == 0 || len(values) > community.MaxURLs) {
 		return fmt.Errorf("provide 1–100 webpage URLs or -csv FILE")
 	}
 	for i, v := range values {
@@ -181,6 +184,17 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		if len(encoded) > 1<<20 {
 			return fmt.Errorf("local artifacts exceed 1 MB; submit fewer URLs")
 		}
+	}
+	if *requestMode {
+		if *local || *credits || len(values) > 0 || *file != "" {
+			return fmt.Errorf("request cannot be combined with contributions or credits")
+		}
+		if strings.TrimSpace(*query) == "" || (*mode != "search" && *mode != "answer" && *mode != "research") {
+			return fmt.Errorf("provide -query and a valid -mode")
+		}
+		path = *mode + "?q=" + url.QueryEscape(*query)
+		body = nil
+		client.Timeout = 4 * time.Minute
 	}
 	if *credits {
 		path = "credits"
