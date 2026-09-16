@@ -67,7 +67,7 @@ func TestCrawlerEnqueueLinksDropsOverCappedChildren(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	cfg.MaxDepth = 5
 	cfg.PerHostMaxDepth = map[string]int{
@@ -116,7 +116,7 @@ func TestCrawlerEnqueueLinksOverrideExceedsDefault(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	cfg.MaxDepth = 5
 	cfg.PerHostMaxDepth = map[string]int{"deep.example.com": 10}

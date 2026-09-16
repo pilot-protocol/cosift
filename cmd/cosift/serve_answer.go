@@ -24,6 +24,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/judge"
+	"github.com/pilot-protocol/cosift/internal/promptsafe"
 	"github.com/pilot-protocol/cosift/internal/rerank"
 )
 
@@ -618,9 +619,10 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
+	env := promptsafe.New()
 	msgs := []embed.ChatMsg{
-		{Role: "system", Content: answerSystemPrompt},
-		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
+		{Role: "system", Content: env.System(answerSystemPrompt)},
+		{Role: "user", Content: sourcesUserMsg(env, "Question", q, promptSources.String())},
 	}
 
 	if sse != nil {
@@ -1025,22 +1027,14 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 
 	// Plan — include site domain so the LLM generates site-specific sub-queries
 	// rather than generic web queries that miss small-site content.
-	planQ := q
-	if len(filt.sites) > 0 {
-		siteHints := make([]string, len(filt.sites))
-		for si, ss := range filt.sites {
-			siteHints[si] = ss.host
-			if ss.path != "" {
-				siteHints[si] += ss.path
-			}
-		}
-		planQ = q + "\n\nSite filter: " + strings.Join(siteHints, ", ") + ". Generate sub-queries using specific terminology likely found on this site."
-		if titles := s.getSiteTitles(r.Context(), filt.sites); len(titles) > 0 {
-			planQ += "\n\nExample pages on this site: " + strings.Join(titles, ", ") + "."
-		}
+	env := promptsafe.New()
+	planQ, planFenced := planUserMsg(env, q, filt.sites, s.getSiteTitles(r.Context(), filt.sites))
+	planSys := researchPlanPrompt
+	if planFenced {
+		planSys = env.System(researchPlanPrompt)
 	}
 	planRaw, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-		{Role: "system", Content: researchPlanPrompt},
+		{Role: "system", Content: planSys},
 		{Role: "user", Content: planQ},
 	})
 	if err != nil {
@@ -1268,8 +1262,8 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-		{Role: "system", Content: researchSynthPrompt},
-		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
+		{Role: "system", Content: env.System(researchSynthPrompt)},
+		{Role: "user", Content: sourcesUserMsg(env, "Original question", q, promptSources.String())},
 	})
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
@@ -1312,22 +1306,14 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 
 	// site= hint: LLM generates site-specific sub-queries with domain terminology
 	// rather than generic queries that miss small-site content in BM25 top-200.
-	planQ := q
-	if len(filt.sites) > 0 {
-		siteHints := make([]string, len(filt.sites))
-		for si, ss := range filt.sites {
-			siteHints[si] = ss.host
-			if ss.path != "" {
-				siteHints[si] += ss.path
-			}
-		}
-		planQ = q + "\n\nSite filter: " + strings.Join(siteHints, ", ") + ". Generate sub-queries using specific terminology likely found on this site."
-		if titles := s.getSiteTitles(r.Context(), filt.sites); len(titles) > 0 {
-			planQ += "\n\nExample pages on this site: " + strings.Join(titles, ", ") + "."
-		}
+	env := promptsafe.New()
+	planQ, planFenced := planUserMsg(env, q, filt.sites, s.getSiteTitles(r.Context(), filt.sites))
+	planSys := researchPlanPrompt
+	if planFenced {
+		planSys = env.System(researchPlanPrompt)
 	}
 	planRaw, err := s.doChat(r.Context(), sc, []embed.ChatMsg{
-		{Role: "system", Content: researchPlanPrompt},
+		{Role: "system", Content: planSys},
 		{Role: "user", Content: planQ},
 	})
 	if err != nil {
@@ -1626,16 +1612,17 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			"pass": pass, "sources": len(cumulativeSources), "model": sc.Model(),
 		})
 		var synthMsgs []embed.ChatMsg
-		userMsg := "Sources:\n\n" + promptSources.String() + "Original question: " + q
+		userMsg := sourcesUserMsg(env, "Original question", q, promptSources.String())
 		if pass == 1 {
 			synthMsgs = []embed.ChatMsg{
-				{Role: "system", Content: researchSynthPrompt},
+				{Role: "system", Content: env.System(researchSynthPrompt)},
 				{Role: "user", Content: userMsg},
 			}
 		} else {
+			// lastAnswer is our own model's output, but it is derived from crawled text — untrusted.
 			synthMsgs = []embed.ChatMsg{
-				{Role: "system", Content: researchRefineSynthPrompt},
-				{Role: "user", Content: userMsg + "\n\nYour prior draft answer:\n" + lastAnswer},
+				{Role: "system", Content: env.System(researchRefineSynthPrompt)},
+				{Role: "user", Content: userMsg + "\nYour prior draft answer:\n" + env.Wrap(promptsafe.LabelPriorDraft, lastAnswer)},
 			}
 		}
 		full, serr := s.doChatStream(r.Context(), sc, synthMsgs, sse.chunk)
@@ -1653,11 +1640,13 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 		// Self-evaluate. The model decides whether to escalate.
 		sse.phase("self_eval_start", map[string]any{"pass": pass})
 		evalUserMsg := fmt.Sprintf(
-			"Question: %s\n\nYour answer:\n%s\n\nSources used (id — title — url):\n%s",
-			q, lastAnswer, summarizeSourceList(cumulativeSources),
+			"Question: %s\n\nYour answer:\n%s\nSources used (id — title — url):\n%s",
+			q,
+			env.Wrap(promptsafe.LabelPriorDraft, lastAnswer),
+			env.Wrap(promptsafe.LabelSourceList, summarizeSourceList(cumulativeSources)),
 		)
 		evalRaw, eerr := s.doChat(r.Context(), sc, []embed.ChatMsg{
-			{Role: "system", Content: selfEvalPrompt},
+			{Role: "system", Content: env.System(selfEvalPrompt)},
 			{Role: "user", Content: evalUserMsg},
 		})
 		if eerr != nil {

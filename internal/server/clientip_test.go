@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func req(remoteAddr, xff string) *http.Request {
 }
 
 func TestResolveDirectWhenNoTrustedProxies(t *testing.T) {
-	r, _ := newClientIPResolver(nil)
+	r, _ := NewClientIPResolver(nil)
 	got := r.Resolve(req("1.2.3.4:50000", "5.6.7.8"))
 	if got != "1.2.3.4" {
 		t.Errorf("got %q want 1.2.3.4 (direct, XFF ignored without trusted proxies)", got)
@@ -25,7 +26,7 @@ func TestResolveDirectWhenNoTrustedProxies(t *testing.T) {
 }
 
 func TestResolveDirectWhenPeerNotTrusted(t *testing.T) {
-	r, _ := newClientIPResolver([]string{"10.0.0.0/8"})
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
 	got := r.Resolve(req("8.8.8.8:1234", "5.6.7.8"))
 	if got != "8.8.8.8" {
 		t.Errorf("got %q want 8.8.8.8 (direct peer not in trusted CIDR)", got)
@@ -33,7 +34,7 @@ func TestResolveDirectWhenPeerNotTrusted(t *testing.T) {
 }
 
 func TestResolveTrustsXFFFromTrustedProxy(t *testing.T) {
-	r, _ := newClientIPResolver([]string{"10.0.0.0/8"})
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
 	got := r.Resolve(req("10.0.0.5:1234", "5.6.7.8"))
 	if got != "5.6.7.8" {
 		t.Errorf("got %q want 5.6.7.8 (XFF trusted via trusted proxy)", got)
@@ -44,7 +45,7 @@ func TestResolveMultiHop(t *testing.T) {
 	// Chain: client 5.6.7.8 → proxy1 10.0.0.5 → proxy2 10.0.0.6 → us.
 	// XFF = "5.6.7.8, 10.0.0.5" (added by proxy2 listing what it received from + its predecessor).
 	// We see RemoteAddr=10.0.0.6. Walking rightward-skipping-trusted: 10.0.0.5 trusted, 5.6.7.8 is the client.
-	r, _ := newClientIPResolver([]string{"10.0.0.0/8"})
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
 	got := r.Resolve(req("10.0.0.6:443", "5.6.7.8, 10.0.0.5"))
 	if got != "5.6.7.8" {
 		t.Errorf("got %q want 5.6.7.8 (client at left of XFF after skipping trusted hops)", got)
@@ -52,7 +53,7 @@ func TestResolveMultiHop(t *testing.T) {
 }
 
 func TestResolveIgnoresMalformedXFFEntries(t *testing.T) {
-	r, _ := newClientIPResolver([]string{"10.0.0.0/8"})
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
 	got := r.Resolve(req("10.0.0.1:80", "garbage,  ,5.6.7.8"))
 	if got != "5.6.7.8" {
 		t.Errorf("got %q want 5.6.7.8 (skip malformed XFF entries)", got)
@@ -61,7 +62,7 @@ func TestResolveIgnoresMalformedXFFEntries(t *testing.T) {
 
 func TestResolveAllProxiesTrusted(t *testing.T) {
 	// Pathological: XFF entirely composed of trusted proxies. Fall back to direct.
-	r, _ := newClientIPResolver([]string{"10.0.0.0/8"})
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
 	got := r.Resolve(req("10.0.0.1:80", "10.0.0.5, 10.0.0.6"))
 	if got != "10.0.0.1" {
 		t.Errorf("got %q want 10.0.0.1 (no untrusted IP in XFF, fall back to direct)", got)
@@ -69,7 +70,7 @@ func TestResolveAllProxiesTrusted(t *testing.T) {
 }
 
 func TestNewClientIPResolverBadCIDR(t *testing.T) {
-	_, err := newClientIPResolver([]string{"not-a-cidr"})
+	_, err := NewClientIPResolver([]string{"not-a-cidr"})
 	if err == nil {
 		t.Errorf("expected error on malformed CIDR")
 	}
@@ -97,5 +98,51 @@ func TestServerWithTrustedProxiesEndToEnd(t *testing.T) {
 	}
 	if got := hit("127.0.0.1:80", "2.2.2.2"); got != "2.2.2.2" {
 		t.Errorf("second XFF client: %q", got)
+	}
+}
+
+// Go keeps repeated header lines separate; Header.Get would see only the
+// attacker's first line and never reach the hops the proxies appended.
+func TestResolveJoinsRepeatedXFFLines(t *testing.T) {
+	r, _ := NewClientIPResolver([]string{"10.0.0.0/8"})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:80"
+	req.Header.Add("X-Forwarded-For", "203.0.113.9")
+	req.Header.Add("X-Forwarded-For", "198.51.100.1")
+	if got := r.Resolve(req); got != "198.51.100.1" {
+		t.Errorf("got %q want 198.51.100.1 (rightmost untrusted across all header lines)", got)
+	}
+}
+
+func TestResolveClientIPHeaderWinsOverXFF(t *testing.T) {
+	r, err := NewClientIPResolverWithHeader([]string{"10.0.0.0/8"}, "CF-Connecting-IP")
+	if err != nil {
+		t.Fatalf("NewClientIPResolverWithHeader: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:80"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.5")
+	req.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	if got := r.Resolve(req); got != "198.51.100.7" {
+		t.Errorf("got %q want 198.51.100.7 (edge-set header beats the forgeable chain)", got)
+	}
+	// Missing or unparseable header falls back to the walk.
+	req.Header.Del("CF-Connecting-IP")
+	if got := r.Resolve(req); got != "203.0.113.9" {
+		t.Errorf("got %q want 203.0.113.9 (fall back to the XFF walk)", got)
+	}
+	req.Header.Set("CF-Connecting-IP", "not-an-ip")
+	if got := r.Resolve(req); got != "203.0.113.9" {
+		t.Errorf("got %q want 203.0.113.9 (garbage header falls back to the walk)", got)
+	}
+}
+
+func TestResolveClientIPHeaderIgnoredFromUntrustedPeer(t *testing.T) {
+	r, _ := NewClientIPResolverWithHeader([]string{"10.0.0.0/8"}, "CF-Connecting-IP")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	req.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	if got := r.Resolve(req); got != "8.8.8.8" {
+		t.Errorf("got %q want 8.8.8.8 (header only trusted behind a trusted proxy)", got)
 	}
 }

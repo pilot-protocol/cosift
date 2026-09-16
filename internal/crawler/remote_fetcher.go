@@ -32,8 +32,9 @@ import (
 //	                              cosift consults this for status; the
 //	                              outer 200 is just "worker reachable"
 //
-// Non-GET requests (auth probes, robots.txt fetches, etc.) bypass the
-// worker and go direct via the inner transport.
+// Non-GET requests bypass the worker and go direct via the inner transport,
+// as do GETs whose host is in directHosts. robots.txt is a plain GET, so it
+// goes through the worker like any other page.
 type remoteFetcherTransport struct {
 	inner http.RoundTripper
 	urls  []string // pool — picked round-robin per request
@@ -53,7 +54,7 @@ type remoteFetcherTransport struct {
 
 // defaultDirectHosts is the seed allow-list for sites that reliably serve
 // machine clients with no rate-limit drama. Operators can override via
-// COSIFT_DIRECT_HOSTS (comma-separated) — empty disables direct-fetch.
+// COSIFT_DIRECT_HOSTS (comma-separated); an empty value keeps these defaults.
 var defaultDirectHosts = []string{
 	"en.wikipedia.org", "commons.wikimedia.org", "en.wiktionary.org",
 	"arxiv.org", "info.arxiv.org", "export.arxiv.org",

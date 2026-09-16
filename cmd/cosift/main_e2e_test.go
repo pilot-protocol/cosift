@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/netguard"
 )
 
 // freePort grabs a free TCP port via the standard listen-then-close trick.
@@ -216,12 +218,19 @@ func TestQuickstartE2E(t *testing.T) {
 	// Also point data_dir into TempDir so we don't pollute the cwd.
 	dataDir := filepath.Join(tmp, "data")
 	cfgEdited = strings.ReplaceAll(cfgEdited, `"data_dir": "./cosift-data"`, fmt.Sprintf(`"data_dir": %q`, dataDir))
+	// The test site is on loopback, which the shipped default refuses.
+	cfgEdited = strings.ReplaceAll(cfgEdited, `"block_private_networks": true`, `"block_private_networks": false`)
+	if !strings.Contains(cfgEdited, `"block_private_networks": false`) {
+		t.Fatalf("cosift init no longer emits block_private_networks:\n%s", cfgEdited)
+	}
 	if err := os.WriteFile(cfgPath, []byte(cfgEdited), 0o644); err != nil {
 		t.Fatalf("rewrite config: %v", err)
 	}
 
 	// 5. Crawl the test site through the binary.
 	crawlCmd := exec.Command(bin, "-config", cfgPath, "crawl", site.URL)
+	// Empty, not "1": the child must reach loopback through the config field.
+	crawlCmd.Env = append(os.Environ(), netguard.AllowPrivateEnv+"=")
 	crawlOut, err := crawlCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("crawl: %v\n%s", err, crawlOut)
@@ -346,6 +355,7 @@ func TestCrawlAutoWiresEmbedderFromConfig(t *testing.T) {
     "max_body_bytes": 1048576,
     "max_depth": 0,
     "respect_robots": true,
+    "block_private_networks": false,
     "include_domains": [%q]
   },
   "embeddings": {"model": "test-model", "url": %q, "dim": 8}
@@ -355,7 +365,7 @@ func TestCrawlAutoWiresEmbedderFromConfig(t *testing.T) {
 	}
 
 	crawlCmd := exec.Command(bin, "-config", cfgPath, "crawl", site.URL)
-	crawlCmd.Env = append(os.Environ(), "OPENAI_API_KEY=stub-key-for-e2e-test")
+	crawlCmd.Env = append(os.Environ(), "OPENAI_API_KEY=stub-key-for-e2e-test", netguard.AllowPrivateEnv+"=")
 	crawlOut, err := crawlCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("crawl: %v\n%s", err, crawlOut)

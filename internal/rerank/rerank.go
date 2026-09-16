@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/promptsafe"
 )
 
 // Candidate is one item to score: an ID the caller will recognize, plus the
@@ -90,10 +91,12 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, candidates []Can
 		}
 		fmt.Fprintf(&sb, "[%d] %s\n\n", i, text)
 	}
-	user := fmt.Sprintf("Query: %s\n\nPassages:\n%s\nOutput the ranked passage numbers as a JSON array.", query, sb.String())
+	env := promptsafe.New()
+	user := fmt.Sprintf("Query: %s\n\nPassages:\n%s\nOutput the ranked passage numbers as a JSON array.",
+		query, env.Wrap(promptsafe.LabelPassages, sb.String()))
 
 	resp, err := r.chat.Chat(ctx, []embed.ChatMsg{
-		{Role: "system", Content: llmRerankSystem},
+		{Role: "system", Content: env.System(llmRerankSystem)},
 		{Role: "user", Content: user},
 	})
 	if err != nil {

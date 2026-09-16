@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -31,7 +30,7 @@ func TestSeedSitemapLane(t *testing.T) {
 	}
 	defer ps.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	c := NewWithBackend(cfg, ps, index.NewPebbleBM25(ps))
 
@@ -72,7 +71,7 @@ func TestSeedSitemapDefaultLane(t *testing.T) {
 	}
 	defer ps.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	c := NewWithBackend(cfg, ps, index.NewPebbleBM25(ps))
 

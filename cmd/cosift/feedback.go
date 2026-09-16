@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -61,17 +60,9 @@ func (s *pebbleHTTP) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotImplemented, "feedback disabled (COSIFT_QUERY_LOG/COSIFT_FEEDBACK_LOG unset)")
 		return
 	}
-	// Per-client rate limit (feedback is public/unauthed and abusable). Keyed on
-	// the real client via XFF, not the Caddy peer.
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if i := strings.IndexByte(clientIP, ','); i >= 0 {
-		clientIP = clientIP[:i]
-	}
-	clientIP = strings.TrimSpace(clientIP)
-	if clientIP == "" {
-		clientIP = stripPort(r.RemoteAddr)
-	}
-	if s.fbRL != nil && !s.fbRL.allow(clientIP) {
+	// Per-client rate limit (feedback is public/unauthed and abusable).
+	clientIP, attested := s.clientKey(r)
+	if !s.limiterExempt(r, clientIP) && !s.fbRL.allowKey(clientIP, attested) {
 		w.Header().Set("Retry-After", "60")
 		writeProblem(w, http.StatusTooManyRequests, "feedback rate limit exceeded")
 		return
