@@ -1,6 +1,6 @@
 # Multi-stage build → ~20 MB final image.
 # Stage 1: build the static binary against alpine-pinned Go.
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 
 # Cache deps separately from source so go.sum changes invalidate less.
