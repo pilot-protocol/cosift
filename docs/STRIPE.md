@@ -104,6 +104,10 @@ idempotent checkout, invalid/old signatures, unpaid or mismatched events,
 concurrent/repeated fulfillment, restart persistence, transaction rollback and
 partial/full/out-of-order refunds. They do not move money or contact Stripe.
 
+Use an isolated staging account database for Stripe test mode; never put test
+credentials on the production credit ledger. Test purchases grant test credits
+in that database. Checkout idempotency is separated by test/live mode.
+
 After keys are supplied, use Stripe **test mode** to complete a hosted Checkout,
 confirm one 50,000-credit grant, replay its event, cancel another checkout, and
 perform a partial then full refund. Confirm the dashboard's delivery status and

@@ -30,7 +30,9 @@ func (s *Server) paymentsEnabled() bool {
 	key := s.cfg.StripeSecretKey
 	return (strings.HasPrefix(key, "sk_test_") || strings.HasPrefix(key, "sk_live_") || strings.HasPrefix(key, "rk_test_") || strings.HasPrefix(key, "rk_live_")) && strings.HasPrefix(s.cfg.StripeWebhookSecret, "whsec_")
 }
-func (s *Server) stripeLive() bool { return strings.Contains(s.cfg.StripeSecretKey, "_live_") }
+func (s *Server) stripeLive() bool {
+	return strings.HasPrefix(s.cfg.StripeSecretKey, "sk_live_") || strings.HasPrefix(s.cfg.StripeSecretKey, "rk_live_")
+}
 
 type checkoutOrder struct {
 	ID, UserID, Currency, SessionID, CheckoutURL string
@@ -55,7 +57,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 429, "too many checkout attempts; try again in a minute")
 		return
 	}
-	id := "checkout:" + tokenHash(u.ID+":"+in.IdempotencyKey)
+	id := "checkout:" + tokenHash(strconv.FormatBool(s.stripeLive())+":"+u.ID+":"+in.IdempotencyKey)
 	_, err := s.db.ExecContext(r.Context(), `INSERT INTO payment_checkouts(id,user_id,amount_cents,credits,currency,created_at) VALUES(?,?,?,?,'usd',?) ON CONFLICT(id) DO NOTHING`, id, u.ID, packAmountCents, packCredits, time.Now().Unix())
 	if err != nil {
 		problem(w, 500, "could not prepare checkout")

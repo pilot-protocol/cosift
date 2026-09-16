@@ -272,3 +272,35 @@ func TestStripeCheckoutRetryKeepsSameOrderAfterTimeout(t *testing.T) {
 		t.Fatal("expired key sent to Stripe again")
 	}
 }
+
+func TestStripeCheckoutSeparatesTestAndLiveSessions(t *testing.T) {
+	s, cookie, _ := stripeTestServer(t)
+	keys := map[string]bool{}
+	s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+		keys[r.Header.Get("Idempotency-Key")] = true
+		mode := "test"
+		if s.stripeLive() {
+			mode = "live"
+		}
+		body, _ := json.Marshal(map[string]any{"id": "cs_" + mode, "url": "https://checkout.stripe.com/c/pay/cs_" + mode, "livemode": s.stripeLive()})
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})
+	body := map[string]string{"idempotency_key": "checkout-mode-isolation"}
+	expect(t, request(t, s, "POST", "/api/payments/checkout", body, cookie), 200)
+	s.cfg.StripeSecretKey = "sk_live_fake_for_unit_tests"
+	expect(t, request(t, s, "POST", "/api/payments/checkout", body, cookie), 200)
+	if len(keys) != 2 {
+		t.Fatal("live mode reused a cached test checkout")
+	}
+}
+
+func TestStripeModeUsesOnlyKeyPrefix(t *testing.T) {
+	s := &Server{cfg: Config{StripeSecretKey: "sk_test_value_live_value"}}
+	if s.stripeLive() {
+		t.Fatal("test key suffix changed payment mode")
+	}
+	s.cfg.StripeSecretKey = "rk_live_test_value"
+	if !s.stripeLive() {
+		t.Fatal("restricted live key not recognized")
+	}
+}
