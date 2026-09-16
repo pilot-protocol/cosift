@@ -40,7 +40,7 @@ func ValidVerdict(v ModerationVerdict) bool {
 		return false
 	}
 	switch v.Category {
-	case "adult", "malware", "phishing", "graphic_violence", "extremist_promotion", "illegal_harm":
+	case "adult", "malware", "phishing", "graphic_violence", "extremist_promotion", "illegal_harm", "spam", "low_quality":
 		return true
 	}
 	return false
@@ -140,6 +140,9 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason st
 	if len(doc.Text) > 32000 || len(doc.Title) > 1000 || len(doc.Signals) > 4000 {
 		return "unverified", "The webpage contains more content than can be fully checked in one validation."
 	}
+	if status, reason := ObviousQualityProblem(doc); status != "" {
+		return status, reason
+	}
 	b, _ := json.Marshal(doc)
 	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-moderate", bytes.NewReader(b))
 	checkReq.Header.Set("Content-Type", "application/json")
@@ -163,7 +166,7 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason st
 	case "uncertain":
 		return "unverified", "This webpage could not be confidently validated."
 	default:
-		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm"}
+		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm", "spam": "Spam or search manipulation", "low_quality": "Garbage or content without useful information"}
 		return "rejected", labels[verdict.Category] + " is not accepted."
 	}
 }

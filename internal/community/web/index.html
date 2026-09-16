@@ -68,7 +68,7 @@
           <button id="continue-guest" class="secondary wide" type="button">
             Explore as a guest ↗
           </button>
-          <p class="fine">Guest access: one request every 30 minutes.</p>
+          <p id="guest-policy" class="fine">Loading guest limits…</p>
         </div>
       </div>
     </section>
@@ -147,12 +147,12 @@
           <span>THE COMMUNITY INDEX</span
           ><span class="muted">Collect curiosity.</span>
         </header>
+        <p id="request-limits" class="fine"></p>
         <div id="guest-banner" class="guest-banner" hidden>
           <div>
             <strong>You’re exploring as a guest.</strong
             ><span id="guest-allowance"
-              >One Search, Research, Answer, or submission every 30
-              minutes.</span
+              >Checking your allowance…</span
             >
           </div>
           <button id="guest-signup" class="secondary">
@@ -266,12 +266,12 @@
               <p>
                 We validate each link and check readable page content for
                 explicit adult material, malware, phishing, and harmful
-                promotion before sending it to the crawler.
+                promotion, spam, repetitive filler, and placeholder pages before indexing.
               </p>
               <div class="status-example">
                 <span class="status pending">Checking</span>
                 <p>
-                  Saved for content safety checks. Pages are indexed only after
+                  Saved for safety and quality checks. Pages are indexed only after
                   passing.
                 </p>
               </div>

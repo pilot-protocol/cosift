@@ -52,7 +52,7 @@ async function api(path, method = "GET", body) {
     throw new Error("The server is unavailable. Please try again.");
   }
   if (!response.ok) {
-    if (data.retry_at) {
+    if (data.retry_at && !data.mode && !user) {
       guestUntil = data.retry_at;
       renderGuestAllowance();
     }
@@ -196,6 +196,7 @@ async function refreshCredits() {
   }
 }
 async function enter() {
+  await refreshLimits();
   await refreshCredits();
   if (!currentQuery) {
     $("results").replaceChildren();
@@ -590,6 +591,18 @@ async function refreshContributions() {
 }
 $("refresh-contributions").onclick = () =>
   refreshContributions().catch((e) => notify(e.message, true));
+let requestPolicy;
+async function refreshLimits() {
+  requestPolicy = await api("limits");
+  const interval = requestPolicy.guest_interval_seconds;
+  const duration = (seconds) => seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
+  const describe = (limits) => Object.entries(limits).map(([mode, limit]) =>
+    `${modeLabels[mode]} ${limit.requests}/${duration(limit.window_seconds)}`).join(" · ");
+  $("guest-policy").textContent = `Guests: one shared request every ${duration(interval)}. ${describe(requestPolicy.guest)}.`;
+  $("request-limits").textContent = user
+    ? `${describe(requestPolicy.member)}. ${requestPolicy.member_free_requests_per_minute} shared free requests/min; extra requests cost 1 credit within these caps.`
+    : describe(requestPolicy.guest);
+}
 (async () => {
   try {
     user = await api("me");
@@ -597,6 +610,7 @@ $("refresh-contributions").onclick = () =>
     user = null;
   }
   try {
+    await refreshLimits();
     if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
     if (user) await enter();
     else showScreen("auth");

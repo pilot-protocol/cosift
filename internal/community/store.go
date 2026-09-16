@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS payment_events (
  provider TEXT NOT NULL,event_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),
  credits INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(provider,event_id));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS retrieval_usage (identity TEXT NOT NULL, mode TEXT NOT NULL, count INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(identity,mode));
+CREATE INDEX IF NOT EXISTS retrieval_usage_expiry ON retrieval_usage(expires_at);
 CREATE TABLE IF NOT EXISTS guest_usage (ip_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, reservation TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);`)
 	if err != nil {

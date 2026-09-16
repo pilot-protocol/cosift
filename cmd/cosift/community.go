@@ -26,6 +26,11 @@ func runCommunity(ctx context.Context, args []string) error {
 	backend := fs.String("backend", "http://127.0.0.1:7777", "Cosift Pebble server origin")
 	dir := fs.String("data-dir", "./community-data", "private account database directory")
 	proxies := fs.String("trusted-proxies", "", "comma-separated proxy CIDRs allowed to supply X-Forwarded-For")
+	guestInterval := fs.Duration("guest-interval", time.Minute, "shared guest allowance interval")
+	freeRPM := fs.Int("member-free-rpm", 60, "shared free member requests per minute")
+	searchRPM := fs.Int("search-rpm", 60, "member Search hard cap per minute, including credit requests")
+	answerRPM := fs.Int("answer-rpm", 20, "member Answer hard cap per minute, including credit requests")
+	researchLimit := fs.Int("research-per-10m", 3, "member Research hard cap per ten minutes, including credit requests")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -36,7 +41,7 @@ func runCommunity(ctx context.Context, args []string) error {
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
 	}
-	s, err := community.Open(community.Config{DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted})
+	s, err := community.Open(community.Config{DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit})
 	if err != nil {
 		return err
 	}
@@ -79,7 +84,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	mode := fs.String("mode", "search", "search, answer or research")
 	local := fs.Bool("index-locally", false, "fetch, index and embed locally, then contribute verified artifacts (requires login and embedding config)")
 	credits := fs.Bool("credits", false, "show the authenticated account credit balance")
-	guest := fs.Bool("guest", false, "submit without login (one request per 30 minutes per IP)")
+	guest := fs.Bool("guest", false, "submit without login (server guest limits apply)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

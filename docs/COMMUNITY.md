@@ -12,13 +12,13 @@ People can:
 - See their most recent 200 contributions, indexing status and credit balance.
 - Submit the same URLs or CSV files using `cosift contribute`.
 
-Guests share **one successful Search, Research, Answer, or submission per 30 minutes per IP**.
+Guests share **one successful Search, Research, Answer, or submission per minute per IP**.
 The allowance is persistent and atomic across concurrent requests. Invalid input
 and failed backend searches do not consume it. Reading pages or checking the
 allowance is free. A submission may contain up to 100 URLs, just like a member
 submission. HTTP 429 includes `Retry-After`, `retry_at` and
-`retry_after_seconds`. Logging in uses the member limits instead: 30 Search/Research/Answer requests per
-minute, 500 new contributed URLs per rolling 24 hours, and 200 saved searches.
+`retry_after_seconds`. Guest Answer is capped at one per 5 minutes and Research at one per 30 minutes.
+Members receive 60 shared free requests/minute, 500 new contributed URLs per rolling 24 hours, and 200 saved searches.
 People on a shared public IP share the guest allowance.
 
 ## Start the services
@@ -71,7 +71,7 @@ not proxy arbitrary backend paths or expose backend administration.
 
 ## Contribution delivery
 
-The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
+The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
 
 The receiving backend performs guarded direct indexing through a separate crawler. Bulk crawling retains its remote fetcher. Contributions never trigger link or sitemap discovery; existing domain inclusion/exclusion policy still applies. At most two contributions index concurrently, sharing the bulk crawler's embedding throttle. The delivery call is bounded to two minutes, with durable retries on transient failures.
 
@@ -103,9 +103,9 @@ If chunk boundaries differ, the backend computes the missing vectors normally.
 A newly indexed member contribution earns **10 credits**. Rewards are globally
 idempotent by content hash, so retrying or mirroring the same content cannot earn
 multiple rewards. Existing corpus URLs and rejected/unverified submissions do
-not earn credits. Guests do not earn credits. After the free 30 requests/minute,
+not earn credits. Guests do not earn credits. After the shared free 60 requests/minute,
 each additional Search, Answer or Research costs **1 credit**, with a ceiling of
-120 requests/minute per account. Backend failures refund the debit. Credits are
+60 Search/minute, 20 Answer/minute and 3 Research/10 minutes per account. Credits cannot bypass these hard caps. Mode caps are persisted across restarts and shared by all sessions and native endpoint aliases. Backend failures refund the debit. Credits are
 spent rather than granting permanent tiers. `GET /api/credits` returns the
 balance and policy; the web app displays the balance.
 
@@ -114,8 +114,17 @@ purchases. Payment checkout, payment-provider credentials and webhook handling
 are **not enabled**. No money is charged in this release. A future integration
 must verify signed provider events and credit the ledger transactionally.
 
-The guest/account limits apply to the community API. Existing public engine
-endpoints retain their own rate limits for compatibility with current clients.
+The deployed Caddy configuration routes public `/search`, `/answer` and `/research`
+through the same portal policy as `/api/*`. These public aliases support GET with
+`q`; POST and advanced native engine parameters are not supported on the public
+portal. The internal loopback engine remains available to trusted operators.
+`GET /api/limits` publishes current limits. Operators can configure
+`-guest-interval`, `-member-free-rpm`, `-search-rpm`, `-answer-rpm`, and
+`-research-per-10m` on the community command. A guest interval change preserves
+the original request time instead of resetting all allowances. In-flight requests
+reserve a mode slot; backend failures release it and refund charged credits.
+The shared free member allowance counts attempts and is process-local; persisted
+mode caps still bound actual work after a restart.
 
 ## CLI and CSV
 
@@ -231,7 +240,7 @@ AMD64. Install the matching binary and use the same public server URL for both
 
 Anonymous visitors land on the signup/sign-in screen. `/login` opens sign-in,
 `/signup` opens account creation, and an existing session opens the workspace.
-Guest browsing remains an explicit choice with the same 30-minute allowance.
+Guest browsing remains an explicit choice with the configured guest allowance.
 Signing out returns to authentication.
 
 The production proxy denies public access to `/stats`, `/metrics`, `/queue`,

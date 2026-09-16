@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const guestCooldown = 30 * time.Minute
-
 // clientIP trusts forwarded addresses only when the direct peer is a configured
 // proxy. Walk from right to left so client-supplied XFF cannot bypass quotas.
 func (s *Server) clientIP(r *http.Request) string {
@@ -67,7 +65,7 @@ func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not check guest allowance")
 		return
 	}
-	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(guestCooldown.Seconds())})
+	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(s.cfg.GuestInterval.Seconds())})
 }
 
 // reserveGuest is atomic across concurrent requests and survives restarts.
@@ -75,7 +73,7 @@ func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish func(bool), ok bool) {
 	key, token := s.guestKey(r), randomID()
 	now := time.Now().Unix()
-	until := now + int64(guestCooldown.Seconds())
+	until := now + int64(s.cfg.GuestInterval.Seconds())
 	_, err := s.db.ExecContext(r.Context(), `DELETE FROM guest_usage WHERE expires_at<=?`, now)
 	if err != nil {
 		problem(w, 500, "guest allowance unavailable")
@@ -98,7 +96,7 @@ func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish fu
 		}
 		seconds := max(int64(1), until-now)
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-		respond(w, 429, map[string]any{"error": fmt.Sprintf("Guest access allows one Search, Research, Answer, or submission every 30 minutes. Try again in %d minutes, or sign in.", (seconds+59)/60), "retry_at": until, "retry_after_seconds": seconds})
+		respond(w, 429, map[string]any{"error": fmt.Sprintf("Guest allowance reached. Try again in %d minutes, or sign in.", (seconds+59)/60), "retry_at": until, "retry_after_seconds": seconds})
 		return nil, false
 	}
 	return func(success bool) {

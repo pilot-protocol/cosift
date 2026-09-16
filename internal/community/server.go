@@ -33,11 +33,16 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 
 type Config struct {
-	DataDir        string
-	Backend        string
-	PublicURL      string
-	AdminToken     string // Only used for crawl-enqueue, never forwarded with searches.
-	TrustedProxies []string
+	DataDir          string
+	Backend          string
+	PublicURL        string
+	AdminToken       string // Only used for crawl-enqueue, never forwarded with searches.
+	TrustedProxies   []string
+	GuestInterval    time.Duration
+	MemberFreeRPM    int
+	SearchRPM        int
+	AnswerRPM        int
+	ResearchPer10Min int
 }
 
 type bucket struct {
@@ -59,6 +64,9 @@ type Server struct {
 }
 
 func Open(cfg Config) (*Server, error) {
+	if err := cfg.defaultLimits(); err != nil {
+		return nil, err
+	}
 	for name, raw := range map[string]string{"backend": cfg.Backend, "public URL": cfg.PublicURL} {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -99,6 +107,10 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.migrateGuestInterval(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
@@ -116,9 +128,12 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/me", s.auth(func(w http.ResponseWriter, r *http.Request, u User) { respond(w, 200, u) }))
 	mux.HandleFunc("PUT /api/interests", s.auth(s.interests))
 	for _, mode := range []string{"search", "answer", "research"} {
-		mux.HandleFunc("GET /api/"+mode, s.optionalAuth(func(w http.ResponseWriter, r *http.Request, u User) { s.retrieve(w, r, u, mode) }))
+		handler := s.optionalAuth(func(w http.ResponseWriter, r *http.Request, u User) { s.retrieve(w, r, u, mode) })
+		mux.HandleFunc("GET /api/"+mode, handler)
+		mux.HandleFunc("GET /"+mode, handler)
 	}
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
+	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))
@@ -378,18 +393,6 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		return
 	}
 	completed := false
-	if u.ID != "" && !s.allow("retrieval:"+u.ID, 30, time.Minute) {
-		if !s.allow("extra:"+u.ID, 90, time.Minute) {
-			w.Header().Set("Retry-After", "60")
-			problem(w, 429, "account limit is 120 requests per minute")
-			return
-		}
-		finish, ok := s.reserveCredit(w, r, u)
-		if !ok {
-			return
-		}
-		defer func() { finish(completed) }()
-	}
 	if u.ID == "" {
 		finish, ok := s.reserveGuest(w, r)
 		if !ok {
@@ -397,6 +400,20 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		}
 		defer func() { finish(completed) }()
 	}
+	// Hard mode caps apply before free allowance or credit charging.
+	finishMode, ok := s.allowRetrieval(w, r, u, mode)
+	if !ok {
+		return
+	}
+	defer func() { finishMode(completed) }()
+	if u.ID != "" && !s.allow("retrieval:"+u.ID, s.cfg.MemberFreeRPM, time.Minute) {
+		finish, ok := s.reserveCredit(w, r, u)
+		if !ok {
+			return
+		}
+		defer func() { finish(completed) }()
+	}
+
 	// Preserve the backend's normal retrieval, reranking and research defaults.
 	params := url.Values{"q": {q}, "stream": {"false"}}
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", s.cfg.Backend+"/"+mode+"?"+params.Encode(), nil)

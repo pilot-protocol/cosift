@@ -14,7 +14,7 @@ func (s *Server) credits(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 500, "credits unavailable")
 		return
 	}
-	respond(w, 200, map[string]any{"balance": balance, "free_requests_per_minute": 30, "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": false})
+	respond(w, 200, map[string]any{"balance": balance, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": false})
 }
 
 // reserveCredit performs a conditional debit atomically. Refunds have an
