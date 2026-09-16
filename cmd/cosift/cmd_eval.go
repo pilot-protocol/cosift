@@ -1000,7 +1000,8 @@ func benchCrawl(ctx context.Context, n, perHostDelayMs int) (*benchResult, error
 	cfg.MaxConcurrent = 4
 	cfg.MaxDepth = 100 // ensure no depth ceiling cuts the crawl short
 	cfg.RespectRobots = false
-	cfg.IncludeDomains = nil // accept the httptest host (port-bound)
+	cfg.IncludeDomains = nil         // accept the httptest host (port-bound)
+	cfg.BlockPrivateNetworks = false // the fixture above is in-process loopback
 
 	c := crawler.New(cfg, s)
 	// Seed ALL pages — measures pure fetch+parse+index throughput, not the
@@ -1514,14 +1515,11 @@ func runAnswerEval(ctx context.Context, args []string) error {
 		for _, strategy := range []string{"planner", "paraphrase"} {
 			// /research call.
 			u := researchBaseURL + "/research?strategy=" + strategy + "&q=" + url.QueryEscape(q.Text)
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
-			resp, err := httpClient.Do(req)
+			resp, body, err := getWithThrottleBackoff(ctx, httpClient, u)
 			if err != nil {
 				fmt.Printf("  %s: research call failed: %v\n", strategy, err)
 				continue
 			}
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
 			if resp.StatusCode != 200 {
 				fmt.Printf("  %s: research returned %d: %s\n", strategy, resp.StatusCode, string(body))
 				continue
@@ -1900,4 +1898,39 @@ func runAnswerEvalCompare(_ context.Context, args []string) error {
 		}
 	}
 	return nil
+}
+
+// getWithThrottleBackoff retries a 429 (honouring Retry-After) rather than
+// recording the query as a failure, which would read as a quality regression.
+func getWithThrottleBackoff(ctx context.Context, c *http.Client, u string) (*http.Response, []byte, error) {
+	var resp *http.Response
+	var body []byte
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err = c.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= 3 {
+			return resp, body, nil
+		}
+		wait := 5 * time.Second
+		if v, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && v > 0 {
+			wait = time.Duration(v) * time.Second
+		}
+		if wait > 60*time.Second {
+			wait = 60 * time.Second
+		}
+		fmt.Printf("  rate limited, retrying in %s\n", wait)
+		select {
+		case <-ctx.Done():
+			return resp, body, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
 }

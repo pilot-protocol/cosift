@@ -64,6 +64,7 @@ type fakePeer struct {
 	failNext     atomic.Bool  // when true, next request returns 500
 	delayNext    atomic.Int64 // ms to sleep before responding
 	canonicalURL string       // URL prefix this peer owns
+	textOverride string       // when set, replaces the canned hit text
 }
 
 func (p *fakePeer) URL() string { return strings.TrimPrefix(p.srv.URL, "http://") }
@@ -103,6 +104,10 @@ func (p *fakePeer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	p.searchCalls.Add(1)
 	q := r.URL.Query().Get("q")
+	textA, textB := "full text a from peer "+fmt.Sprintf("%d", p.id), "full text b"
+	if p.textOverride != "" {
+		textA, textB = p.textOverride, p.textOverride
+	}
 	// Two canned hits per peer; URLs are stable + unique so dedup is testable.
 	resp := map[string]any{
 		"query": q,
@@ -112,14 +117,14 @@ func (p *fakePeer) handleSearch(w http.ResponseWriter, r *http.Request) {
 				"title":   fmt.Sprintf("peer %d hit a for %s", p.id, q),
 				"score":   1.0 - float64(p.id)*0.1,
 				"excerpt": "snippet a",
-				"text":    "full text a from peer " + fmt.Sprintf("%d", p.id),
+				"text":    textA,
 			},
 			{
 				"url":     p.canonicalURL + "/b",
 				"title":   fmt.Sprintf("peer %d hit b for %s", p.id, q),
 				"score":   0.5 - float64(p.id)*0.1,
 				"excerpt": "snippet b",
-				"text":    "full text b",
+				"text":    textB,
 			},
 		},
 	}

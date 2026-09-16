@@ -28,6 +28,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -287,16 +288,17 @@ func newBare(cfg config.Crawler) *Crawler {
 			maxConnsPerHost = n
 		}
 	}
-	transport := &http.Transport{
+	transport := netguard.Protect(&http.Transport{
 		MaxIdleConns:          2000,
 		MaxIdleConnsPerHost:   maxConnsPerHost,
 		MaxConnsPerHost:       maxConnsPerHost,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
 		ResponseHeaderTimeout: respHeaderTimeout,
-	}
+	}, cfg.BlockPrivateNetworks)
 	// Each request picks a random proxy
 	// from cfg.Proxies; empty list = direct connection.
+	var inner http.RoundTripper = transport
 	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 && !cfg.PublicOnly {
 		var pmu sync.Mutex
 		var prng = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -306,20 +308,25 @@ func newBare(cfg config.Crawler) *Crawler {
 			pmu.Unlock()
 			return proxies[idx], nil
 		}
+		// A proxied dial resolves the proxy, never the target.
+		if netguard.Enabled(cfg.BlockPrivateNetworks) {
+			inner = netguard.VetTargets(inner)
+		}
 		log.Printf("crawler: proxy pool enabled (%d proxies)", len(proxies))
 	}
 	// optional remote fetcher (CF Worker pool, etc.). When
 	// configured, wraps the transport so every outbound GET goes through
 	// the worker. Crawler logic is unchanged; only the network egress
-	// shifts. Falls back to direct fetch for non-GET (robots, etc.).
-	var rt http.RoundTripper = transport
+	// shifts. Non-GET requests and the direct-host allow-list still go out
+	// through the inner transport.
+	rt := inner
 	// prefer the pool field when set; fall back to the singular URL.
 	urls := cfg.RemoteFetcherURLs
 	if len(urls) == 0 && cfg.RemoteFetcherURL != "" {
 		urls = []string{cfg.RemoteFetcherURL}
 	}
 	if len(urls) > 0 && !cfg.PublicOnly {
-		rt = newRemoteFetcherTransport(urls, cfg.RemoteFetcherToken, transport)
+		rt = newRemoteFetcherTransport(urls, cfg.RemoteFetcherToken, inner)
 		log.Printf("crawler: remote fetcher enabled (%d workers in pool)", len(urls))
 	}
 	if cfg.PublicOnly {
@@ -336,14 +343,9 @@ func newBare(cfg config.Crawler) *Crawler {
 		}
 	}
 	httpClient := &http.Client{
-		Timeout:   overallTimeout,
-		Transport: rt,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			return nil
-		},
+		Timeout:       overallTimeout,
+		Transport:     rt,
+		CheckRedirect: checkRedirect,
 	}
 	var robots *Robots
 	if cfg.RespectRobots {
@@ -366,6 +368,13 @@ func newBare(cfg config.Crawler) *Crawler {
 	}
 	c.LoadDynamicDomains()
 	return c
+}
+
+func checkRedirect(_ *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects")
+	}
+	return nil
 }
 
 // maybeAutoSitemap kicks off a background sitemap discovery the first

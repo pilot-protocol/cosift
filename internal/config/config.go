@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -97,6 +99,12 @@ type Server struct {
 	// any deployment behind nginx/caddy/cloudflare/fly to make per-IP limits
 	// see the real client, not the proxy.
 	TrustedProxies []string `json:"trusted_proxies"`
+	// ClientIPHeader names a header the edge overwrites on every request
+	// (Cloudflare: "CF-Connecting-IP"). Read only when the direct peer is
+	// trusted, and preferred over the X-Forwarded-For walk. Prefer this over
+	// trusting the edge's own address ranges: those are multi-tenant, so a
+	// client egressing from them can otherwise forge the X-Forwarded-For chain.
+	ClientIPHeader string `json:"client_ip_header,omitempty"`
 }
 
 // Crawler holds the politeness, concurrency, and discovery settings used
@@ -167,6 +175,11 @@ type Crawler struct {
 
 	// RespectRobots toggles robots.txt enforcement (default true).
 	RespectRobots bool `json:"respect_robots"`
+
+	// BlockPrivateNetworks refuses crawler fetches to non-public addresses
+	// (default true). Crawler transport only — /contents and /admin/* are
+	// guarded regardless; COSIFT_ALLOW_PRIVATE_NETWORKS overrides both.
+	BlockPrivateNetworks bool `json:"block_private_networks"`
 
 	// AutoSitemap — when true, the crawler fires a
 	// fire-and-forget /sitemap.xml fetch the first time it sees a host.
@@ -461,12 +474,13 @@ func Default() *Config {
 			Addr: "127.0.0.1:7777",
 		},
 		Crawler: Crawler{
-			UserAgent:      "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)",
-			MaxConcurrent:  8,
-			PerHostDelayMs: 1000,
-			MaxBodyBytes:   5 << 20, // 5 MB
-			MaxDepth:       2,
-			RespectRobots:  true,
+			UserAgent:            "CosiftBot/0.0 (+https://github.com/pilot-protocol/cosift)",
+			MaxConcurrent:        8,
+			PerHostDelayMs:       1000,
+			MaxBodyBytes:         5 << 20, // 5 MB
+			MaxDepth:             2,
+			RespectRobots:        true,
+			BlockPrivateNetworks: true,
 		},
 		Embeddings: Embeddings{},
 	}
@@ -480,7 +494,14 @@ func Default() *Config {
 // container deploys (Cloud Run, Fly, Heroku) typically don't ship a JSON
 // config but DO inject PORT etc.
 func Load(path string) (*Config, error) {
-	_ = LoadDotEnv(".env") // best-effort; missing file is fine
+	secrets, _ := loadDotEnv(".env") // best-effort; missing file is fine
+	if len(secrets) > 0 {
+		abs, err := filepath.Abs(".env")
+		if err != nil {
+			abs = ".env"
+		}
+		log.Printf("config: WARN %s holds credential-shaped vars %v — move them to a root-owned systemd EnvironmentFile (e.g. /etc/cosift/cosift.env, 0640) so they are not readable from the working tree", abs, secrets)
+	}
 	cfg := Default()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -520,12 +541,21 @@ func applyEnvOverrides(cfg *Config) {
 // optional surrounding single or double quotes on VALUE. Returns nil if the
 // file does not exist. ~30 LOC — avoids the godotenv dependency.
 func LoadDotEnv(path string) error {
+	_, err := loadDotEnv(path)
+	return err
+}
+
+// loadDotEnv is LoadDotEnv plus the names of the credential-shaped keys the
+// file declares, for the startup hygiene warning.
+func loadDotEnv(path string) ([]string, error) {
+	var secrets []string
+	seen := map[string]bool{}
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	defer f.Close()
 
@@ -547,9 +577,26 @@ func LoadDotEnv(path string) error {
 				val = val[1 : len(val)-1]
 			}
 		}
+		if isCredentialKey(key) && !seen[key] {
+			seen[key] = true
+			secrets = append(secrets, key)
+		}
 		if _, exists := os.LookupEnv(key); !exists {
 			_ = os.Setenv(key, val)
 		}
 	}
-	return sc.Err()
+	return secrets, sc.Err()
+}
+
+func isCredentialKey(key string) bool {
+	k := strings.ToUpper(key)
+	if k == "OPENAI" {
+		return true
+	}
+	for _, marker := range []string{"API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"} {
+		if strings.Contains(k, marker) {
+			return true
+		}
+	}
+	return false
 }

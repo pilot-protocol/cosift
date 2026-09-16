@@ -19,6 +19,7 @@ import (
 
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
+	"github.com/pilot-protocol/cosift/internal/promptsafe"
 	"github.com/pilot-protocol/cosift/internal/qexpand"
 	"github.com/pilot-protocol/cosift/internal/rerank"
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -405,9 +406,10 @@ func (s *pebbleHTTP) handleResearchGateway(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	env := promptsafe.New()
 	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-		{Role: "system", Content: researchSynthPrompt},
-		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Original question: " + q},
+		{Role: "system", Content: env.System(researchSynthPrompt)},
+		{Role: "user", Content: sourcesUserMsg(env, "Original question", q, promptSources.String())},
 	})
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
@@ -460,9 +462,10 @@ func (s *pebbleHTTP) handleAnswerGateway(w http.ResponseWriter, r *http.Request)
 		sources = append(sources, src)
 		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, h.Title, h.URL, text)
 	}
+	env := promptsafe.New()
 	answer, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-		{Role: "system", Content: answerSystemPrompt},
-		{Role: "user", Content: "Sources:\n\n" + promptSources.String() + "Question: " + q},
+		{Role: "system", Content: env.System(answerSystemPrompt)},
+		{Role: "user", Content: sourcesUserMsg(env, "Question", q, promptSources.String())},
 	})
 	if err != nil {
 		writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())
@@ -566,7 +569,9 @@ func (s *pebbleHTTP) handleSearchPOST(w http.ResponseWriter, r *http.Request) {
 		v.Set("expand", req.Expand)
 	}
 	r.URL.RawQuery = v.Encode()
-	s.handleSearch(w, r)
+	// LLM opt-ins arrive in the body, so the tier can only be applied here —
+	// the mux-level llmParamRateLimit saw an empty query string.
+	s.llmParamRateLimit(s.handleSearch)(w, r)
 }
 
 type findSimilarRequest struct {
@@ -624,7 +629,7 @@ func (s *pebbleHTTP) handleFindSimilarPOST(w http.ResponseWriter, r *http.Reques
 		v.Set("rerank", "true")
 	}
 	r.URL.RawQuery = v.Encode()
-	s.handleFindSimilar(w, r)
+	s.llmParamRateLimit(s.handleFindSimilar)(w, r)
 }
 
 func (s *pebbleHTTP) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -2408,6 +2413,7 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&promptSrcs, "[%d] %s\n%s\n\n", c.src.ID, c.src.URL, truncateForPromptLite(c.text, 1200))
 		sources = append(sources, c.src)
 	}
+	env := promptsafe.New()
 
 	if sse != nil {
 		sse.sources(q, sources, s.chat.Model(), "query:planner+hybrid+rrf", len(fused))
@@ -2418,8 +2424,8 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		sse.phase("synth_start", map[string]any{"sources": len(sources), "model": streamChat.Model()})
 		_, cerr := s.doChatStream(r.Context(), streamChat, []embed.ChatMsg{
-			{Role: "system", Content: answerSystemPrompt},
-			{Role: "user", Content: "Sources:\n\n" + promptSrcs.String() + "Question: " + q},
+			{Role: "system", Content: env.System(answerSystemPrompt)},
+			{Role: "user", Content: sourcesUserMsg(env, "Question", q, promptSrcs.String())},
 		}, sse.chunk)
 		if cerr != nil {
 			sse.errorEvt("synth: " + cerr.Error())
@@ -2432,8 +2438,8 @@ func (s *pebbleHTTP) handleQuery(w http.ResponseWriter, r *http.Request) {
 	answerText := ""
 	if len(cands) > 0 {
 		answerText, err = s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-			{Role: "system", Content: answerSystemPrompt},
-			{Role: "user", Content: "Sources:\n\n" + promptSrcs.String() + "Question: " + q},
+			{Role: "system", Content: env.System(answerSystemPrompt)},
+			{Role: "user", Content: sourcesUserMsg(env, "Question", q, promptSrcs.String())},
 		})
 		if err != nil {
 			writeProblem(w, http.StatusBadGateway, "synth: "+err.Error())

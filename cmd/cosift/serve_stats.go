@@ -633,17 +633,22 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# TYPE cosift_go_goroutines gauge\n")
 	fmt.Fprintf(w, "cosift_go_goroutines %d\n", rs.Goroutines)
 	// PromQL
-	// rate(cosift_request_duration_seconds_sum) / rate(cosift_requests_total)
-	// gives mean latency in any window. Labels = path; misrouted calls (404)
-	// don't share a label with any handled path.
+	// rate(cosift_request_duration_seconds_sum) /
+	// (rate(cosift_requests_total) - rate(cosift_requests_throttled_total))
+	// gives mean latency in any window — rate-limited requests are counted but
+	// carry no duration. Labels = path; misrouted calls (404) don't share a
+	// label with any handled path.
 	fmt.Fprintf(w, "# HELP cosift_requests_total HTTP requests served, by endpoint.\n")
 	fmt.Fprintf(w, "# TYPE cosift_requests_total counter\n")
+	fmt.Fprintf(w, "# HELP cosift_requests_throttled_total Requests rejected with 429 by a rate limiter, by endpoint.\n")
+	fmt.Fprintf(w, "# TYPE cosift_requests_throttled_total counter\n")
 	fmt.Fprintf(w, "# HELP cosift_request_duration_seconds_sum Cumulative request duration, by endpoint.\n")
 	fmt.Fprintf(w, "# TYPE cosift_request_duration_seconds_sum counter\n")
 	s.requestCounts.Range(func(k, v any) bool {
 		path := k.(string)
 		m := v.(*endpointMetrics)
 		fmt.Fprintf(w, "cosift_requests_total{endpoint=%q} %d\n", path, m.count.Load())
+		fmt.Fprintf(w, "cosift_requests_throttled_total{endpoint=%q} %d\n", path, m.throttled.Load())
 		fmt.Fprintf(w, "cosift_request_duration_seconds_sum{endpoint=%q} %.6f\n", path, float64(m.sumNanos.Load())/1e9)
 		return true
 	})

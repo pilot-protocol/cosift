@@ -29,6 +29,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/rerank"
+	"github.com/pilot-protocol/cosift/internal/server"
 	"github.com/pilot-protocol/cosift/internal/sla"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -227,6 +228,20 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 				role, cfg.Cluster.MyShardID, cfg.Cluster.NumShards, len(cfg.Cluster.Peers))
 		}
 	}
+	if srv.cluster.PeerAuthToken == "" {
+		log.Printf("pebble-serve: WARN cluster.peer_auth_token is empty — every /admin/* route is unauthenticated")
+	}
+	if len(cfg.Server.TrustedProxies) > 0 {
+		res, err := server.NewClientIPResolverWithHeader(cfg.Server.TrustedProxies, cfg.Server.ClientIPHeader)
+		if err != nil {
+			return fmt.Errorf("trusted_proxies: %w", err)
+		}
+		srv.ipResolver = res
+		srv.clientIPHeader = strings.TrimSpace(cfg.Server.ClientIPHeader)
+		log.Printf("pebble-serve: client IP trusted from %v (client_ip_header=%q)", cfg.Server.TrustedProxies, srv.clientIPHeader)
+	} else if isLoopbackHostPort(*addr) {
+		log.Printf("pebble-serve: WARN server.trusted_proxies is empty and the listener is on loopback (%s) — forwarded clients are limited on the unverified leftmost X-Forwarded-For hop, which any client can set, until it is configured", *addr)
+	}
 	// Uses the same OpenAI-compatible chat
 	// client the SQLite-side server uses; works against OpenAI, Together,
 	// Azure, llama.cpp, vLLM, Ollama, anything speaking /v1/chat/completions.
@@ -261,13 +276,21 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		}
 	}
 	srv.qlogNoLogToken = os.Getenv("COSIFT_QLOG_NOLOG_TOKEN")
-	// Feedback rate limiter — always on (stricter than global). Per-client via
-	// XFF. Override COSIFT_FEEDBACK_RPM / _BURST.
+	// Feedback rate limiter — always on (stricter than global). Override
+	// COSIFT_FEEDBACK_RPM / _BURST.
 	srv.fbRL = &rateLimiter{
 		rpm:       float64(envIntDefault("COSIFT_FEEDBACK_RPM", 20)),
 		burst:     float64(envIntDefault("COSIFT_FEEDBACK_BURST", 5)),
 		whitelist: map[string]bool{},
 	}
+	// LLM-route rate limiter — always on, independent of COSIFT_RATELIMIT_RPM.
+	srv.llmRL = &rateLimiter{
+		rpm:       float64(envIntDefault("COSIFT_RATELIMIT_LLM_RPM", defaultLLMRatelimitRPM)),
+		burst:     float64(envIntDefault("COSIFT_RATELIMIT_LLM_BURST", defaultLLMRatelimitBurst)),
+		whitelist: parseIPWhitelist(os.Getenv("COSIFT_RATELIMIT_LLM_WHITELIST")),
+	}
+	log.Printf("pebble-serve: llm rate limit active (rpm=%.0f burst=%.0f whitelist=%v)",
+		srv.llmRL.rpm, srv.llmRL.burst, srv.llmRL.whitelistList())
 	// Feedback log. COSIFT_FEEDBACK_LOG=/path, or defaults beside the query log.
 	if fp := feedbackLogPath(); fp != "" {
 		if f, err := os.OpenFile(fp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
@@ -412,23 +435,38 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	srv.hostBoosts = cfg.Defaults.HostBoosts
 
 	mux := http.NewServeMux()
-	// Built once from env;
-	// nil when disabled (COSIFT_RATELIMIT_RPM unset or 0). Wraps every route
-	// below — including /healthz so monitoring hits are budgeted too;
-	// operators wanting unlimited probes should set
-	// COSIFT_RATELIMIT_WHITELIST to include their monitoring source.
+	// Built once from env; nil when disabled (COSIFT_RATELIMIT_RPM unset or 0).
+	// Wraps every route below except /healthz — a throttled health probe makes
+	// the reverse proxy declare the upstream down.
 	srv.rl = newRateLimiterFromEnv()
 	if srv.rl != nil {
 		log.Printf("pebble-serve: rate limit active (rpm=%.0f burst=%.0f whitelist=%v)", srv.rl.rpm, srv.rl.burst, srv.rl.whitelistList())
 	}
+	for name, rl := range map[string]*rateLimiter{"global": srv.rl, "llm": srv.llmRL, "feedback": srv.fbRL} {
+		if lb := rl.loopbackWhitelist(); len(lb) > 0 {
+			log.Printf("pebble-serve: WARN %s rate-limit whitelist contains loopback %v — behind a local reverse proxy every request keys to it and that bucket never engages", name, lb)
+		}
+		rl.startSweeper(ctx)
+	}
 	wrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(h)) }
-	// qwrap adds query logging (innermost, so it sees the real status+bytes) for
-	// the user-facing query endpoints — the observability substrate we lacked.
-	qwrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.qlog(h))) }
+	// qlog sits outside both limiters so a throttled request still leaves a row
+	// (status 429) instead of vanishing from the demand-loop analysis.
+	// llmParamRateLimit only charges requests asking for an LLM-backed option.
+	qwrap := func(h http.HandlerFunc) http.HandlerFunc {
+		return srv.count(srv.qlog(srv.llmParamRateLimit(srv.rateLimit(h))))
+	}
+	lwrap := func(h http.HandlerFunc) http.HandlerFunc {
+		return srv.count(srv.qlog(srv.llmRateLimit(srv.rateLimit(h))))
+	}
 	// awrap = wrap + admin auth. All /admin/* routes go through this so the
 	// peer-token gate is enforced at the mux level (belt-and-suspenders with any
 	// per-handler check), closing gaps where a handler forgets to inline it.
 	awrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.requireAdmin(h))) }
+	// alwrap = awrap + the LLM tier. peer_auth_token is empty in production, so
+	// an LLM-spending admin route is reachable unauthenticated.
+	alwrap := func(h http.HandlerFunc) http.HandlerFunc {
+		return srv.count(srv.llmRateLimit(srv.rateLimit(srv.requireAdmin(h))))
+	}
 	// landing page at / and OpenAPI 3.1 spec at /openapi.json.
 	// Both embedded into the binary at build time — operators get a single
 	// self-contained executable, no separate static-asset deployment.
@@ -442,8 +480,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// serve the dist assets locally so the page works air-gapped (no CDN).
 	mux.HandleFunc("GET /docs", wrap(srv.handleSwaggerUI))
 	mux.HandleFunc("GET /docs/{file...}", wrap(srv.handleSwaggerAsset))
-	mux.HandleFunc("GET /healthz", wrap(srv.handleHealthz))
-	mux.HandleFunc("GET /find", qwrap(srv.handleFind))
+	mux.HandleFunc("GET /healthz", srv.count(srv.handleHealthz))
+	mux.HandleFunc("GET /find", lwrap(srv.handleFind))
 	mux.HandleFunc("GET /stats", wrap(srv.handleStats))
 	mux.HandleFunc("GET /domains", wrap(srv.handleDomains))
 	// frontier queue visibility — counts by status + top-N
@@ -468,10 +506,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("POST /admin/site-submit", awrap(srv.handleSiteSubmit))
 	mux.HandleFunc("POST /admin/embed-backfill", awrap(srv.handleEmbedBackfill))
 	mux.HandleFunc("POST /admin/host-backfill", awrap(srv.handleHostBackfill))
-	mux.HandleFunc("GET /admin/eval-quick", awrap(srv.handleEvalQuick))
+	mux.HandleFunc("GET /admin/eval-quick", alwrap(srv.handleEvalQuick))
 	mux.HandleFunc("POST /admin/hnsw-compact", awrap(srv.handleHNSWCompact))
-	mux.HandleFunc("GET /query", qwrap(srv.handleQuery))
-	mux.HandleFunc("POST /query", qwrap(srv.handleQuery))
+	mux.HandleFunc("GET /query", lwrap(srv.handleQuery))
+	mux.HandleFunc("POST /query", lwrap(srv.handleQuery))
 	// import a sitemap.xml (or sitemap-index) and push every
 	// listed URL into the live frontier.
 	mux.HandleFunc("POST /admin/sitemap-import", awrap(srv.handleSitemapImport))
@@ -499,10 +537,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	mux.HandleFunc("GET /admin/domains-audit", awrap(srv.handleDomainsAudit))
 	mux.HandleFunc("GET /find_similar", qwrap(srv.handleFindSimilar))
 	mux.HandleFunc("POST /find_similar", qwrap(srv.handleFindSimilarPOST))
-	mux.HandleFunc("GET /answer", qwrap(srv.handleAnswer))
-	mux.HandleFunc("POST /answer", qwrap(srv.handleAnswerPOST))
-	mux.HandleFunc("GET /research", qwrap(srv.handleResearch))
-	mux.HandleFunc("POST /research", qwrap(srv.handleResearchPOST))
+	mux.HandleFunc("GET /answer", lwrap(srv.handleAnswer))
+	mux.HandleFunc("POST /answer", lwrap(srv.handleAnswerPOST))
+	mux.HandleFunc("GET /research", lwrap(srv.handleResearch))
+	mux.HandleFunc("POST /research", lwrap(srv.handleResearchPOST))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -1211,6 +1249,15 @@ type pebbleHTTP struct {
 	// Nil = disabled.
 	rl *rateLimiter
 
+	// llmRL gates the LLM-backed routes. Always on, independent of rl.
+	llmRL *rateLimiter
+
+	// nil = no attested forwarded client; see clientKey. Built from
+	// cfg.Server.TrustedProxies.
+	ipResolver     *server.ClientIPResolver
+	clientIPHeader string
+	proxyWarnOnce  sync.Once
+
 	// Empty cluster cfg = single-node, no-ops below.
 	cluster config.Cluster
 	// crawlSeed is set after startInProcessCrawl runs so /admin/crawl-enqueue
@@ -1359,8 +1406,9 @@ type pebbleHTTP struct {
 }
 
 type endpointMetrics struct {
-	count    atomic.Int64
-	sumNanos atomic.Int64
+	count     atomic.Int64
+	sumNanos  atomic.Int64
+	throttled atomic.Int64
 }
 
 // count is the request-counting middleware. Bumps a per-path
@@ -1425,14 +1473,34 @@ func newRateLimiterFromEnv() *rateLimiter {
 			burst = b
 		}
 	}
+	return &rateLimiter{rpm: rpm, burst: burst, whitelist: parseIPWhitelist(os.Getenv("COSIFT_RATELIMIT_WHITELIST"))}
+}
+
+const (
+	defaultLLMRatelimitRPM   = 30
+	defaultLLMRatelimitBurst = 10
+)
+
+func parseIPWhitelist(csv string) map[string]bool {
 	wl := map[string]bool{}
-	for _, ip := range strings.Split(os.Getenv("COSIFT_RATELIMIT_WHITELIST"), ",") {
-		ip = strings.TrimSpace(ip)
-		if ip != "" {
+	for _, ip := range strings.Split(csv, ",") {
+		if ip = strings.TrimSpace(ip); ip != "" {
 			wl[ip] = true
 		}
 	}
-	return &rateLimiter{rpm: rpm, burst: burst, whitelist: wl}
+	return wl
+}
+
+// loopbackWhitelist returns the whitelisted entries that are loopback
+// addresses — behind a local reverse proxy those match every request.
+func (rl *rateLimiter) loopbackWhitelist() []string {
+	var out []string
+	for _, ip := range rl.whitelistList() {
+		if p := net.ParseIP(ip); p != nil && p.IsLoopback() {
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 // whitelistList returns the whitelisted IPs as a slice (for logging only).
@@ -1450,14 +1518,18 @@ func (rl *rateLimiter) whitelistList() []string {
 
 // allow returns whether the request from ip may proceed. Side-effects: drains
 // one token from the IP's bucket on success.
-func (rl *rateLimiter) allow(ip string) bool {
+func (rl *rateLimiter) allow(ip string) bool { return rl.allowKey(ip, true) }
+
+// allowKey is allow for a key whose provenance is known. A key the transport
+// does not attest is client-controlled, so it may not match the whitelist.
+func (rl *rateLimiter) allowKey(ip string, attested bool) bool {
 	if rl == nil {
 		return true
 	}
-	if rl.whitelist[ip] {
+	if attested && rl.whitelist[ip] {
 		return true
 	}
-	bv, _ := rl.buckets.LoadOrStore(ip, &rateLimitBucket{tokens: rl.burst, last: time.Now()})
+	bv, _ := rl.buckets.LoadOrStore(bucketKey(ip), &rateLimitBucket{tokens: rl.burst, last: time.Now()})
 	b := bv.(*rateLimitBucket)
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1475,6 +1547,68 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
+// bucketKey collapses an IPv6 client to its /64: one routed /64 is one
+// allocation, and rotating host bits inside it must not mint fresh buckets.
+func bucketKey(ip string) string {
+	p := net.ParseIP(ip)
+	if p == nil || p.To4() != nil {
+		return ip
+	}
+	return p.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// sweepIdle drops buckets idle long enough to have refilled to burst, which
+// makes them indistinguishable from a bucket that was never created.
+func (rl *rateLimiter) sweepIdle(now time.Time, idle time.Duration) int {
+	if rl == nil {
+		return 0
+	}
+	n := 0
+	rl.buckets.Range(func(k, v any) bool {
+		b := v.(*rateLimitBucket)
+		b.mu.Lock()
+		stale := now.Sub(b.last) >= idle
+		b.mu.Unlock()
+		if stale {
+			rl.buckets.Delete(k)
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// idleTTL is the refill time from empty to burst, floored at a minute.
+func (rl *rateLimiter) idleTTL() time.Duration {
+	if rl == nil || rl.rpm <= 0 {
+		return time.Minute
+	}
+	d := time.Duration(rl.burst / rl.rpm * float64(time.Minute))
+	if d < time.Minute {
+		d = time.Minute
+	}
+	return d
+}
+
+func (rl *rateLimiter) startSweeper(ctx context.Context) {
+	if rl == nil {
+		return
+	}
+	ttl := rl.idleTTL()
+	go func() {
+		t := time.NewTicker(ttl)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				rl.sweepIdle(now, ttl)
+			}
+		}
+	}()
+}
+
 // stripPort drops ":port" from a "host:port" or "[v6]:port" RemoteAddr. Falls
 // back to the input on parse failure (so we still get SOME per-client key).
 func stripPort(remoteAddr string) string {
@@ -1485,10 +1619,20 @@ func stripPort(remoteAddr string) string {
 	return host
 }
 
-// rateLimit is the HTTP middleware that gates each request through the per-IP
-// limiter. Returns 429 with a JSON problem doc + Retry-After hint when the
-// bucket is empty. No-op when s.rl is nil.
-//
+// isLoopbackHostPort reports whether a "host:port" listen address binds only
+// the loopback interface.
+func isLoopbackHostPort(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // requireAdmin gates a handler on the peer auth token (cfg.Cluster.PeerAuthToken,
 // sent as "Authorization: Bearer <token>"). When the token is empty — the
 // single-node default — the check is skipped and any caller is accepted. Applied
@@ -1504,20 +1648,122 @@ func (s *pebbleHTTP) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// X-Forwarded-For is honored ONLY when the request came from a configured
-// trusted proxy; otherwise clients could spoof their IP by setting the header.
-// For self-host with cosift directly on the public network, leave
-// cfg.Server.TrustedProxies empty (default) and the RemoteAddr is used.
+// resolveClientIP returns the rate-limit key for r: the direct TCP peer, or
+// the forwarded client when the peer is a configured trusted proxy.
+func (s *pebbleHTTP) resolveClientIP(r *http.Request) string {
+	ip, _ := s.clientKey(r)
+	return ip
+}
+
+// clientKey returns the rate-limit key for r plus whether the transport
+// attests it. Attested means the direct TCP peer, or a hop a trusted proxy
+// vouched for. Without trusted_proxies a loopback peer is a local reverse
+// proxy and its forwarded chain is the only per-client signal there is: keying
+// on it is spoofable but per-client, where keying on the peer would put the
+// whole internet in one bucket. Unattested therefore also means "not eligible
+// for the operator whitelist" — a client must not name its way out of a limit.
+func (s *pebbleHTTP) clientKey(r *http.Request) (string, bool) {
+	if s.ipResolver != nil {
+		return s.ipResolver.Resolve(r), true
+	}
+	direct := stripPort(r.RemoteAddr)
+	if chain := s.forwardedChain(r); chain != "" && isLoopbackIP(direct) {
+		if hop := leftmostHop(chain); hop != "" {
+			return hop, false
+		}
+		return direct, false
+	}
+	return direct, true
+}
+
+// leftmostHop is the first entry of a forwarded chain: the client as the
+// nearest proxy saw it.
+func leftmostHop(chain string) string {
+	if i := strings.IndexByte(chain, ','); i >= 0 {
+		chain = chain[:i]
+	}
+	return strings.TrimSpace(chain)
+}
+
+func isLoopbackIP(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && p.IsLoopback()
+}
+
+// rateLimit is the global per-IP gate. 429 + Retry-After when the bucket is
+// empty; no-op when s.rl is nil.
 func (s *pebbleHTTP) rateLimit(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := stripPort(r.RemoteAddr)
-		if !s.rl.allow(ip) {
-			w.Header().Set("Retry-After", "60")
-			writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded for ip="+ip)
+		s.limited(w, r, s.rl, "rate limit exceeded", h)
+	}
+}
+
+// llmRateLimit is the second, tighter tier for the LLM-backed routes. Wrapped
+// OUTSIDE rateLimit so it trips first.
+func (s *pebbleHTTP) llmRateLimit(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.limited(w, r, s.llmRL, "llm rate limit exceeded", h)
+	}
+}
+
+// llmParamRateLimit applies the LLM tier only to requests that opt into an
+// LLM-backed option, so plain keyword /search keeps the global budget.
+func (s *pebbleHTTP) llmParamRateLimit(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requestSpendsLLM(r) {
+			h(w, r)
 			return
 		}
-		h(w, r)
+		s.limited(w, r, s.llmRL, "llm rate limit exceeded", h)
 	}
+}
+
+func requestSpendsLLM(r *http.Request) bool {
+	q := r.URL.Query()
+	return q.Get("rerank") == "true" || normalizeExpandMode(q.Get("expand")) != ""
+}
+
+func (s *pebbleHTTP) limited(w http.ResponseWriter, r *http.Request, rl *rateLimiter, reason string, h http.HandlerFunc) {
+	ip, attested := s.clientKey(r)
+	if s.limiterExempt(r, ip) {
+		h(w, r)
+		return
+	}
+	if !rl.allowKey(ip, attested) {
+		w.Header().Set("Retry-After", "60")
+		writeProblem(w, http.StatusTooManyRequests, reason+" for ip="+ip)
+		return
+	}
+	h(w, r)
+}
+
+// limiterExempt reports whether a request keying to loopback is genuinely
+// on-box — a harvester, snapshot.sh, an eval run, a health probe — rather than
+// a client a reverse proxy on the same box forwarded. The forwarded chain is
+// the whole tell, so a spoofed "X-Forwarded-For: 127.0.0.1" buys nothing.
+func (s *pebbleHTTP) limiterExempt(r *http.Request, ip string) bool {
+	if !isLoopbackIP(ip) {
+		return false
+	}
+	if s.forwardedChain(r) == "" {
+		return true
+	}
+	if s.ipResolver == nil {
+		s.proxyWarnOnce.Do(func() {
+			log.Printf("pebble-serve: WARN forwarded client headers seen from a loopback peer but server.trusted_proxies is empty — limiting and query-log attribution fall back to the unverified leftmost X-Forwarded-For hop until it is set")
+		})
+	}
+	return false
+}
+
+// forwardedChain is every forwarded-client header line in wire order: Go keeps
+// repeated lines separate and Header.Get would return only the first.
+func (s *pebbleHTTP) forwardedChain(r *http.Request) string {
+	c := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	if s.clientIPHeader != "" {
+		c += strings.Join(r.Header.Values(s.clientIPHeader), ",")
+	}
+	return c
 }
 
 func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
@@ -1536,6 +1782,12 @@ func (s *pebbleHTTP) count(h http.HandlerFunc) http.HandlerFunc {
 		sw := &statusCapturingWriter{ResponseWriter: w, status: 200}
 		h(sw, r)
 		dur := time.Since(start)
+		// A 429 never reached the handler; its microsecond duration would drag
+		// the latency series toward zero exactly when a route is under load.
+		if sw.status == http.StatusTooManyRequests {
+			m.throttled.Add(1)
+			return
+		}
 		m.sumNanos.Add(dur.Nanoseconds())
 		if s.sla != nil {
 			s.sla.Observe(key, dur, sw.status < 500)
