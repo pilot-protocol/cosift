@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
 CREATE INDEX IF NOT EXISTS credit_owner ON credit_ledger(user_id);
 CREATE TABLE IF NOT EXISTS submission_artifacts (
  submission_id TEXT PRIMARY KEY REFERENCES submissions(id) ON DELETE CASCADE,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_checkouts (
+ id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),
+ amount_cents INTEGER NOT NULL,credits INTEGER NOT NULL,currency TEXT NOT NULL,
+ session_id TEXT UNIQUE,checkout_url TEXT NOT NULL DEFAULT '',payment_intent TEXT UNIQUE,
+ refunded_cents INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_events (
  provider TEXT NOT NULL,event_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),
  credits INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(provider,event_id));

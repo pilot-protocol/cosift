@@ -189,10 +189,50 @@ $("skip-interests").onclick = async () => {
 };
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
+  $("buy-credits").hidden = true;
+  $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
     $("credit-balance").textContent =
       `${c.balance} credits · 1 per extra request`;
+    if (c.payments_enabled) {
+      const pack = c.credit_pack;
+      const price = new Intl.NumberFormat("en-US", {style: "currency", currency: pack.currency}).format(pack.amount_cents / 100);
+      $("buy-credits").textContent = `Buy ${pack.credits.toLocaleString()} credits · ${price}`;
+      $("buy-credits").hidden = false;
+      $("payment-info").hidden = false;
+      $("payment-info").textContent = `$${pack.usd_per_1000_requests} per 1,000 extra requests. One-time payment. Existing rate caps apply.`;
+    }
+  }
+}
+let checkoutKey;
+$("buy-credits").onclick = async () => {
+  const button = $("buy-credits");
+  button.disabled = true;
+  checkoutKey ||= crypto.randomUUID();
+  try {
+    const checkout = await api("payments/checkout", "POST", {idempotency_key: checkoutKey});
+    const destination = new URL(checkout.url);
+    if (destination.protocol !== "https:" || destination.host !== "checkout.stripe.com" || destination.username || destination.password)
+      throw new Error("Invalid checkout destination.");
+    location.assign(destination.href);
+  } catch (e) {
+    notify(e.message, true);
+    button.disabled = false;
+  }
+};
+async function showPaymentReturn() {
+  const result = new URLSearchParams(location.search).get("payment");
+  if (!result) return;
+  history.replaceState(null, "", location.pathname);
+  if (result === "cancelled") { notify("Checkout cancelled. No credits were added."); return; }
+  if (result !== "success") return;
+  notify("Checkout returned. Credits appear after Stripe confirms payment; this can take a moment.");
+  // Display only: the browser cannot grant credits or confirm a charge.
+  for (let i = 0; i < 4; i++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!user) return;
+    await refreshCredits();
   }
 }
 async function enter() {
@@ -614,6 +654,7 @@ async function refreshLimits() {
     if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
     if (user) await enter();
     else showScreen("auth");
+    await showPaymentReturn();
   } catch (e) {
     showScreen("auth");
     notify(e.message, true);

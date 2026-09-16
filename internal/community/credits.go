@@ -14,7 +14,7 @@ func (s *Server) credits(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 500, "credits unavailable")
 		return
 	}
-	respond(w, 200, map[string]any{"balance": balance, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": false})
+	respond(w, 200, map[string]any{"balance": balance, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "credit_pack": creditPack()})
 }
 
 // reserveCredit performs a conditional debit atomically. Refunds have an
@@ -30,7 +30,11 @@ SELECT ?,?,-1,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		w.Header().Set("Retry-After", "60")
-		problem(w, 429, "free request limit reached; contribute verified new webpages to earn credits, or try again in a minute")
+		message := "free request limit reached; contribute verified new webpages to earn credits, or try again in a minute"
+		if s.paymentsEnabled() {
+			message = "free request limit reached; buy credits in the web app, contribute verified webpages, or try again in a minute"
+		}
+		problem(w, 429, message)
 		return nil, false
 	}
 	return func(success bool) {

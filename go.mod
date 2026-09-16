@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
+	github.com/stripe/stripe-go/v86 v86.4.2
 	golang.org/x/net v0.59.0
 	modernc.org/sqlite v1.58.0
 )

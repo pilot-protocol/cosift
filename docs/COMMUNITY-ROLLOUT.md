@@ -81,7 +81,10 @@ reuse the withdrawn v0.2.6 artifacts.
    Remove only explicitly created QA accounts/data according to retention
    requirements. Reject garbage and unsafe fixtures without sending harmful
    material to the corpus. Classifier uncertainty must remain held.
-8. Enable and test the community backup timer. Inspect logs and service restart
+8. If payments are part of the approved rollout, complete the Stripe test-mode
+   checks in `docs/STRIPE.md` before supplying live credentials. Verify webhook
+   fulfillment, replay protection and refund reconciliation.
+9. Enable and test the community backup timer. Inspect logs and service restart
    counts, confirm credit refunds on backend failure, and run the same client
    flows through the public hostname. Leave automatic engine updates disabled
    until the rollout is accepted; enabling them is a separate operator choice.
@@ -128,5 +131,7 @@ are not classified. Unreadable, oversized or uncertain pages remain unverified.
 Obvious junk is screened before the model; the model handles broader spam and
 content judgments. Local embeddings are checked against server computation,
 so this first version does not promise server-compute savings. New content earns
-10 credits, globally deduplicated by content hash. Payments, email verification
-and self-service password reset are not enabled in this version.
+10 credits, globally deduplicated by content hash. Stripe one-time credit purchases are implemented but disabled until the secret
+API key and webhook signing secret are configured. See [Stripe activation and
+test-mode checks](STRIPE.md). Email verification and self-service password reset
+are not enabled in this version.

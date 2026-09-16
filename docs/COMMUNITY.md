@@ -1,7 +1,7 @@
 # Community app and contributions
 
 `cosift community` runs a small web app alongside the search backend. It ships
-inside the existing binary, with no JavaScript build step or new Go dependency.
+inside the existing binary, with no JavaScript build step. Stripe webhook verification uses the official Go SDK.
 
 People can:
 
@@ -109,12 +109,13 @@ each additional Search, Answer or Research costs **1 credit**, with a ceiling of
 spent rather than granting permanent tiers. `GET /api/credits` returns the
 balance and policy; the web app displays the balance.
 
-The ledger and an idempotent payment-event table leave room for paid credit
-purchases. Payment checkout, payment-provider credentials and webhook handling
-are **not enabled**. No money is charged in this release. A future integration
-must verify signed provider events and credit the ledger transactionally.
+A one-time **$5 Stripe Checkout purchases 50,000 credits** ($0.10 per 1,000
+extra requests). Payments remain disabled until `STRIPE_SECRET_KEY` and
+`STRIPE_WEBHOOK_SECRET` are configured. Signed webhooks grant credits exactly
+once after payment; refunds revoke the corresponding purchased credits. There
+are no subscriptions or automatic charges. See [Stripe setup and validation](STRIPE.md).
 
-The deployed Caddy configuration routes public `/search`, `/answer` and `/research`
+The candidate Caddy configuration routes public `/search`, `/answer` and `/research`
 through the same portal policy as `/api/*`. These public aliases support GET with
 `q`; POST and advanced native engine parameters are not supported on the public
 portal. The internal loopback engine remains available to trusted operators.
@@ -167,10 +168,10 @@ batch without saving partial input or using a guest allowance.
 
 ## API
 
-All mutation requests carry `X-Cosift-Client: community`. JSON mutations use
+Browser and CLI mutation requests carry `X-Cosift-Client: community`. JSON mutations use
 `Content-Type: application/json`; CSV uses multipart field `file`. Browser
 requests must originate from `-public-url`. No cross-origin CORS access is
-enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie.
+enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. The exact Stripe webhook path is exempt from browser CSRF headers and instead requires a valid signature over the raw body.
 
 | Method and path | Access | Body / behavior |
 | --- | --- | --- |
@@ -186,7 +187,9 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie.
 | `GET /api/saved` | Member | Own saved searches |
 | `POST /api/saved` | Member | `{query,mode}`; mode defaults to `search`; idempotent per account/query/mode |
 | `DELETE /api/saved/{id}` | Member | Removes an owned saved search |
-| `GET /api/credits` | Member | Credit balance, free allowance and extra-request cost |
+| `GET /api/credits` | Member | Credit balance, allowance, pack price and payment availability |
+| `POST /api/payments/checkout` | Member | `{idempotency_key}`; returns a hosted Stripe checkout URL |
+| `POST /api/payments/webhook` | Stripe signature | Paid-session fulfillment and refund reconciliation |
 | `GET /api/submissions` | Member | Own recent contributions |
 | `POST /api/submissions` | Guest or member | `{urls:[...]}`, authenticated `{artifacts:[...]}`, or multipart CSV; returns HTTP 202 |
 
@@ -235,7 +238,7 @@ rollout also requires preserving the old binary, backend config and Caddy config
 
 Signed release assets include Linux ARM64/AMD64, macOS ARM64/AMD64 and Windows
 AMD64. Install the matching binary and use the same public server URL for both
-`contribute` and `request`. Payment purchase flows remain disabled.
+`contribute` and `request`. Credit purchases are available only when Stripe is configured.
 
 
 ## Public entry and operations visibility

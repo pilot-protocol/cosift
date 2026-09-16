@@ -33,16 +33,18 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 
 type Config struct {
-	DataDir          string
-	Backend          string
-	PublicURL        string
-	AdminToken       string // Only used for crawl-enqueue, never forwarded with searches.
-	TrustedProxies   []string
-	GuestInterval    time.Duration
-	MemberFreeRPM    int
-	SearchRPM        int
-	AnswerRPM        int
-	ResearchPer10Min int
+	DataDir             string
+	Backend             string
+	PublicURL           string
+	AdminToken          string // Only used for crawl-enqueue, never forwarded with searches.
+	TrustedProxies      []string
+	GuestInterval       time.Duration
+	MemberFreeRPM       int
+	SearchRPM           int
+	AnswerRPM           int
+	ResearchPer10Min    int
+	StripeSecretKey     string
+	StripeWebhookSecret string
 }
 
 type bucket struct {
@@ -53,6 +55,7 @@ type Server struct {
 	db               *sql.DB
 	cfg              Config
 	client           *http.Client
+	paymentClient    *http.Client
 	handler          http.Handler
 	mu               sync.Mutex
 	limits           map[string]bucket
@@ -89,6 +92,7 @@ func Open(cfg Config) (*Server, error) {
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
+	s.paymentClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.pageClient = newModerationClient()
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
 	for _, raw := range cfg.TrustedProxies {
@@ -135,6 +139,8 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
+	mux.HandleFunc("POST /api/payments/checkout", s.auth(s.checkout))
+	mux.HandleFunc("POST /api/payments/webhook", s.stripeWebhook)
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))
 	mux.HandleFunc("DELETE /api/saved/{id}", s.auth(s.unsave))
@@ -165,7 +171,8 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		if r.Method != "GET" && r.Method != "HEAD" {
+		// Stripe authenticates the exact webhook body with its signature.
+		if r.Method != "GET" && r.Method != "HEAD" && !(r.Method == "POST" && r.URL.Path == "/api/payments/webhook") {
 			// The custom header prevents cross-site form posts, including login
 			// CSRF. No CORS permissions are granted. CLI requests omit Origin.
 			if r.Header.Get("X-Cosift-Client") != "community" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.cfg.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
