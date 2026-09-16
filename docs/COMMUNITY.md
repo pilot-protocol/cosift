@@ -9,7 +9,7 @@ People can:
 - Choose interests during onboarding and use them as search starting points.
 - Save, rerun, and remove requests in their own account. Each saved request retains its Search, Research, or Answer mode; older saved searches migrate automatically.
 - Submit public webpage URLs in a multiline field or a CSV upload.
-- See their most recent 200 contributions and delivery status.
+- See their most recent 200 contributions, indexing status and credit balance.
 - Submit the same URLs or CSV files using `cosift contribute`.
 
 Guests share **one successful Search, Research, Answer, or submission per 30 minutes per IP**.
@@ -29,29 +29,16 @@ Build the current code:
 go build -o cosift ./cmd/cosift
 ```
 
-Use an existing Pebble backend with its in-process crawler enabled. Merge these
-fields into its configuration, retaining its corpus paths and embedding setup:
+Use an existing Pebble backend with its in-process crawler enabled, an embedding
+provider, and a nonempty seeds file. Configure `chat.model` and its provider for
+Answer, Research and semantic content checks. Without a chat model, submissions
+remain pending.
 
-```json
-{
-  "crawler": {
-    "public_only": true,
-    "filter_adult": true,
-    "respect_robots": true,
-    "proxies": [],
-    "remote_fetcher_url": "",
-    "remote_fetcher_urls": []
-  },
-  "cluster": {
-    "peer_auth_token": "REPLACE_WITH_A_RANDOM_OPERATOR_TOKEN"
-  }
-}
-```
-
-The existing in-process crawler requires an embedding provider and a nonempty
-seeds file. Configure `chat.model` and its provider for Answer, Research, and the
-semantic contribution safety check. With no chat model, content checks remain
-pending and submissions do not reach the crawler. Start it using your normal configuration, for example:
+The backend creates a separate contribution crawler sharing the corpus and
+embedding budget. It always uses direct public-only HTTP, robots checks, adult
+filtering, and no link/sitemap discovery. The bulk crawler may retain its remote
+fetcher and its existing policies. No global `crawler.public_only` change is
+required for the community service.
 
 ```sh
 ./cosift -config /etc/cosift/cosift.json pebble-serve \
@@ -84,31 +71,50 @@ not proxy arbitrary backend paths or expose backend administration.
 
 ## Contribution delivery
 
-The app immediately rejects known adult domains, private/non-web URLs, and executable download links. Valid URL batches are stored for prevalidation. A background worker fetches each public webpage using restricted network egress and checks the destination, title, body text, image alt text, and metadata. It reuses Cosift’s adult-content classifier, then calls the authenticated `POST /admin/community-moderate` endpoint for a contextual safety decision. Only an explicit `allow/safe` result can be delivered to `POST /admin/community-enqueue`, which requires an active crawler with both `crawler.public_only=true` and `crawler.filter_adult=true`. An older backend or an unguarded
-crawler cannot accept community submissions through this endpoint.
+The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
 
-Public-only crawling resolves DNS, rejects private and special-purpose
-addresses, and connects to the checked IP on port 80 or 443. The same transport
-covers redirects, robots, and sitemap discovery. It uses direct HTTP egress;
-the in-process crawler rejects proxy/remote-fetcher configurations in this mode.
-For a cluster, enable it on every receiving shard. Forwarding from a guarded
-shard also uses the guarded endpoint.
+The receiving backend performs guarded direct indexing through a separate crawler. Bulk crawling retains its remote fetcher. Contributions never trigger link or sitemap discovery; existing domain inclusion/exclusion policy still applies. At most two contributions index concurrently, sharing the bulk crawler's embedding throttle. The delivery call is bounded to two minutes, with durable retries on transient failures.
 
-Content checks reject explicit adult material, malware/phishing, graphic violent abuse, extremist promotion, and serious illegal harm. The classifier policy distinguishes harmful promotion from neutral news, medical education, academic work, and defensive security research. Raw webpage text is treated as untrusted data, and malformed or contradictory classifier responses cannot authorize delivery.
+`pending` appears as **Checking**; `rejected` and `unverified` stay outside indexing. `indexed` means the backend acknowledged an indexable document. Older queue acknowledgements remain `queued`. An acknowledgement does not guarantee successful embedding of every passage; standard crawler embedding errors still apply.
 
-`pending` is shown as **Checking**; `rejected` and `unverified` remain out of the crawl queue and include a reason in contribution history. Unavailable services retry; unsupported media, login walls, insufficient text, excessive text, and inconclusive content decisions remain unverified. The page limit is 2 MB, with at most 32,000 bytes of readable text and 4,000 bytes of metadata for contextual classification.
+Checks reject adult material, malware/phishing, graphic violent abuse, extremist promotion and serious illegal harm while allowing neutral education, medicine, news and defensive security research. Malformed decisions cannot authorize indexing. These are automated URL/text checks, not a guarantee or antivirus scan. Images/video are not visually classified, and pages can change between validation and indexing. Unreadable or inconclusive pages remain unverified; unavailable services retry.
 
-These are automated URL/text safety checks, not a guarantee or an antivirus scan. Images and video are not visually classified; image-only pages cannot pass based on empty text. A site can also change after validation. The crawler independently checks adult content again before indexing.
+## Local indexing, credits and future payments
 
-Delivery uses the submitted frontier lane. Failed delivery remains `pending`
-with exponential retry delay, capped at roughly 43 minutes. Successful delivery
-becomes `queued`. A restart resumes pending work. A crash after enqueue can
-cause a duplicate delivery; frontier insertion is idempotent.
+Authenticated CLI users can fetch, parse, chunk and embed webpages locally, save them in their local SQLite index, and submit text, metadata and vectors:
 
-**Queued means delivered to the crawl queue, not indexed.** Existing robots,
-domain allow/exclude rules, fetch failures, and crawler policy still apply.
-The portal does not silently expand an operator's domain allowlist. Keep those
-rules aligned with the public sources you intend to accept.
+```sh
+# Configure data_dir plus embeddings.url, model and dim for your local embedder.
+# The model and dimensions must match the destination index.
+./cosift -config local.json contribute -server https://cosift.pilotprotocol.network \
+  -index-locally https://go.dev/doc/
+./cosift contribute -server https://cosift.pilotprotocol.network -credits
+```
+
+`-index-locally` also accepts `-csv`. It requires login, limits an artifact to
+32,000 text bytes and 64 chunks, and retains the total 1 MB request limit.
+The backend fetches the source independently, compares title/text, checks the
+model/dimensions, and verifies **every vector** against its own embedding model
+before reuse. Failed verification cannot inject vectors. This first version
+spends server compute on full verification; it does not claim compute savings.
+If chunk boundaries differ, the backend computes the missing vectors normally.
+
+A newly indexed member contribution earns **10 credits**. Rewards are globally
+idempotent by content hash, so retrying or mirroring the same content cannot earn
+multiple rewards. Existing corpus URLs and rejected/unverified submissions do
+not earn credits. Guests do not earn credits. After the free 30 requests/minute,
+each additional Search, Answer or Research costs **1 credit**, with a ceiling of
+120 requests/minute per account. Backend failures refund the debit. Credits are
+spent rather than granting permanent tiers. `GET /api/credits` returns the
+balance and policy; the web app displays the balance.
+
+The ledger and an idempotent payment-event table leave room for paid credit
+purchases. Payment checkout, payment-provider credentials and webhook handling
+are **not enabled**. No money is charged in this release. A future integration
+must verify signed provider events and credit the ledger transactionally.
+
+The guest/account limits apply to the community API. Existing public engine
+endpoints retain their own rate limits for compatibility with current clients.
 
 ## CLI and CSV
 
@@ -170,8 +176,9 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie.
 | `GET /api/saved` | Member | Own saved searches |
 | `POST /api/saved` | Member | `{query,mode}`; mode defaults to `search`; idempotent per account/query/mode |
 | `DELETE /api/saved/{id}` | Member | Removes an owned saved search |
+| `GET /api/credits` | Member | Credit balance, free allowance and extra-request cost |
 | `GET /api/submissions` | Member | Own recent contributions |
-| `POST /api/submissions` | Guest or member | `{urls:[...]}` or multipart CSV; returns HTTP 202 |
+| `POST /api/submissions` | Guest or member | `{urls:[...]}`, authenticated `{artifacts:[...]}`, or multipart CSV; returns HTTP 202 |
 
 ## Account data and operational scope
 

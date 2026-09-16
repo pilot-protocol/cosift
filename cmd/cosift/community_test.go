@@ -11,16 +11,17 @@ import (
 	"testing"
 
 	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/crawler"
 )
 
 func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 	called := 0
-	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlSeedLane: func(raw string, lane byte) error {
+	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact) (crawler.ContributionReceipt, error) {
 		called++
-		if raw != "https://example.com/guide" || lane != parseLaneName("submitted") {
-			t.Errorf("bad contribution %s lane %d", raw, lane)
+		if raw != "https://example.com/guide" {
+			t.Errorf("bad contribution %s", raw)
 		}
-		return nil
+		return crawler.ContributionReceipt{Indexed: true, Novel: true}, nil
 	}}
 	call := func(token, url string) int {
 		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`"}`))

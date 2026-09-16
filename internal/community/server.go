@@ -117,6 +117,7 @@ func Open(cfg Config) (*Server, error) {
 		mux.HandleFunc("GET /api/"+mode, s.optionalAuth(func(w http.ResponseWriter, r *http.Request, u User) { s.retrieve(w, r, u, mode) }))
 	}
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
+	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))
 	mux.HandleFunc("DELETE /api/saved/{id}", s.auth(s.unsave))
@@ -374,11 +375,19 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		problem(w, 400, "enter a search of 1–500 characters")
 		return
 	}
-	if u.ID != "" && !s.allow("retrieval:"+u.ID, 30, time.Minute) {
-		problem(w, 429, "request limit reached; try again in a minute")
-		return
-	}
 	completed := false
+	if u.ID != "" && !s.allow("retrieval:"+u.ID, 30, time.Minute) {
+		if !s.allow("extra:"+u.ID, 90, time.Minute) {
+			w.Header().Set("Retry-After", "60")
+			problem(w, 429, "account limit is 120 requests per minute")
+			return
+		}
+		finish, ok := s.reserveCredit(w, r, u)
+		if !ok {
+			return
+		}
+		defer func() { finish(completed) }()
+	}
 	if u.ID == "" {
 		finish, ok := s.reserveGuest(w, r)
 		if !ok {
@@ -527,6 +536,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	var values []string
+	artifacts := map[string]*crawler.LocalArtifact{}
 	var err error
 	kind, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if kind == "multipart/form-data" {
@@ -544,10 +554,35 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		values, err = ParseCSV(f)
 	} else {
 		var in struct {
-			URLs []string `json:"urls"`
+			URLs      []string                 `json:"urls"`
+			Artifacts []*crawler.LocalArtifact `json:"artifacts,omitempty"`
 		}
 		err = decode(r, &in)
 		values = in.URLs
+		if len(in.Artifacts) > 0 {
+			if u.ID == "" {
+				problem(w, 401, "local indexing contributions require login")
+				return
+			}
+			if len(values) > 0 {
+				problem(w, 400, "use URLs or local artifacts")
+				return
+			}
+			for _, a := range in.Artifacts {
+				if e := a.Validate(); e != nil {
+					problem(w, 400, e.Error())
+					return
+				}
+				canonical, e := NormalizeURL(a.URL)
+				if e != nil {
+					problem(w, 400, e.Error())
+					return
+				}
+				a.URL = canonical
+				values = append(values, canonical)
+				artifacts[canonical] = a
+			}
+		}
 	}
 	if err != nil {
 		problem(w, 400, err.Error())
@@ -585,7 +620,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		owner = u.ID
 	}
 	for _, v := range values {
-		res, e := tx.ExecContext(r.Context(), `INSERT INTO submissions(id,user_id,url,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,url) DO NOTHING`, randomID(), owner, v, now)
+		id := randomID()
+		res, e := tx.ExecContext(r.Context(), `INSERT INTO submissions(id,user_id,url,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,url) DO NOTHING`, id, owner, v, now)
 		if e != nil {
 			problem(w, 500, "could not save contribution")
 			return
@@ -595,6 +631,13 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 			duplicates++
 		} else {
 			accepted++
+			if a := artifacts[v]; a != nil {
+				payload, _ := json.Marshal(a)
+				if _, e := tx.ExecContext(r.Context(), `INSERT INTO submission_artifacts(submission_id,payload) VALUES(?,?)`, id, string(payload)); e != nil {
+					problem(w, 500, "could not save local index")
+					return
+				}
+			}
 		}
 	}
 	if count+accepted > 500 {
@@ -666,18 +709,45 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			continue
 		}
-		body, _ := json.Marshal(map[string]string{"url": j.url, "lane": "submitted"})
+		var artifact *crawler.LocalArtifact
+		var payload string
+		e := s.db.QueryRowContext(ctx, `SELECT payload FROM submission_artifacts WHERE submission_id=?`, j.id).Scan(&payload)
+		if e != nil && !errors.Is(e, sql.ErrNoRows) {
+			return e
+		}
+		if payload != "" {
+			if e := json.Unmarshal([]byte(payload), &artifact); e != nil {
+				return e
+			}
+		}
+		body, _ := json.Marshal(map[string]any{"url": j.url, "artifact": artifact})
 		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
-		res, sendErr := s.client.Do(req)
+		delivery := *s.client
+		delivery.Timeout = 150 * time.Second
+		res, sendErr := delivery.Do(req)
 		ok := false
+		indexed := false
 		if sendErr == nil {
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
 			if !ok {
 				log.Printf("community: contribution delivery returned HTTP %d; retained for retry", res.StatusCode)
 			}
-			io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+			var receipt struct {
+				Indexed     bool   `json:"indexed"`
+				Novel       bool   `json:"novel"`
+				ContentHash string `json:"content_hash"`
+			}
+			if ok && json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&receipt) == nil {
+				indexed = receipt.Indexed
+				if receipt.Indexed && receipt.Novel && len(receipt.ContentHash) == 64 {
+					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash); err != nil {
+						res.Body.Close()
+						return err
+					}
+				}
+			}
 			res.Body.Close()
 		} else if ctx.Err() == nil {
 			log.Printf("community: contribution backend unavailable; retained for retry")
@@ -687,6 +757,10 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if ok {
 			status = "queued"
 			reason = "Content checks passed; delivered to the crawl queue."
+			if indexed {
+				status = "indexed"
+				reason = "Content checks passed and webpage indexed."
+			}
 		}
 		delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
 		_, err = s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=attempts+1,next_attempt=? WHERE id=?`, status, reason, time.Now().Add(delay).Unix(), j.id)

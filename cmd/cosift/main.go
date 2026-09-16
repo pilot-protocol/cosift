@@ -132,7 +132,7 @@ func run(cfgPath string) error {
 	case "community":
 		return runCommunity(ctx, flag.Args()[1:])
 	case "contribute":
-		return runContribute(ctx, flag.Args()[1:])
+		return runContributeConfigured(ctx, cfg, flag.Args()[1:])
 	case "version":
 		fmt.Println(version)
 	case "init":

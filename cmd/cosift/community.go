@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/pilot-protocol/cosift/internal/config"
 	"io"
 	"log"
 	"net/http"
@@ -65,10 +66,16 @@ func runCommunity(ctx context.Context, args []string) error {
 }
 
 func runContribute(ctx context.Context, args []string) error {
+	return runContributeConfigured(ctx, nil, args)
+}
+
+func runContributeConfigured(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("contribute", flag.ContinueOnError)
 	server := fs.String("server", "http://127.0.0.1:7780", "community app origin")
 	email := fs.String("email", os.Getenv("COSIFT_EMAIL"), "account email (or COSIFT_EMAIL)")
 	file := fs.String("csv", "", "CSV file with webpage URLs; - reads stdin")
+	local := fs.Bool("index-locally", false, "fetch, index and embed locally, then contribute verified artifacts (requires login and embedding config)")
+	credits := fs.Bool("credits", false, "show the authenticated account credit balance")
 	guest := fs.Bool("guest", false, "submit without login (one request per 30 minutes per IP)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -110,7 +117,7 @@ func runContribute(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	if len(values) == 0 || len(values) > community.MaxURLs {
+	if !*credits && (len(values) == 0 || len(values) > community.MaxURLs) {
 		return fmt.Errorf("provide 1–100 webpage URLs or -csv FILE")
 	}
 	for i, v := range values {
@@ -123,7 +130,11 @@ func runContribute(ctx context.Context, args []string) error {
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	call := func(path string, body any) ([]byte, error) {
 		b, _ := json.Marshal(body)
-		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
+		method := "POST"
+		if body == nil {
+			method = "GET"
+		}
+		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +161,32 @@ func runContribute(ctx context.Context, args []string) error {
 		// Revoke this CLI session after use; browser sessions are separate.
 		defer func() { _, _ = call("logout", map[string]string{}) }()
 	}
-	result, err := call("submissions", map[string]any{"urls": values})
+	var body any = map[string]any{"urls": values}
+	path := "submissions"
+	if *local || *credits {
+		if *guest || *email == "" {
+			return fmt.Errorf("local indexing and credits require email/password login")
+		}
+		if *local && *credits {
+			return fmt.Errorf("use -index-locally or -credits")
+		}
+	}
+	if *local {
+		artifacts, e := indexLocalContributions(ctx, cfg, values)
+		if e != nil {
+			return e
+		}
+		body = map[string]any{"artifacts": artifacts}
+		encoded, _ := json.Marshal(body)
+		if len(encoded) > 1<<20 {
+			return fmt.Errorf("local artifacts exceed 1 MB; submit fewer URLs")
+		}
+	}
+	if *credits {
+		path = "credits"
+		body = nil
+	}
+	result, err := call(path, body)
 	if err != nil {
 		return err
 	}

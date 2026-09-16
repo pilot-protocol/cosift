@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up Cosift community accounts and credit ledger
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+UMask=0077
+ExecStart=/bin/bash /home/ubuntu/scripts/community-backup.sh
+TimeoutStartSec=15min

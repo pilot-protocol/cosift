@@ -1091,7 +1091,8 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// Publish only after all crawler hooks are initialized. The listener is
 	// already accepting requests while HNSW/crawler initialization runs.
 	s.crawlPublicOnly.Store(cfg.Crawler.PublicOnly)
-	s.crawlCommunityReady.Store(cfg.Crawler.PublicOnly && cfg.Crawler.FilterAdult)
+	s.crawlCommunityFetch = c.FetchContribution
+	s.crawlCommunityReady.Store(true)
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -1266,6 +1267,7 @@ type pebbleHTTP struct {
 	crawlSeed           func(url string) error
 	crawlPublicOnly     atomic.Bool
 	crawlCommunityReady atomic.Bool
+	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact) (crawler.ContributionReceipt, error)
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)

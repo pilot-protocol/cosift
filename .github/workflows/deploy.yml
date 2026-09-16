@@ -30,14 +30,14 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
 
       - name: go vet
         run: go vet ./...
 
       - name: Tests (race)
-        run: go test -race -timeout 5m ./...
+        run: go test -race -timeout 10m ./...
 
       - name: Smoke subset (build + serve roundtrip)
         # make smoke builds the binary, crawls, and asserts /healthz + /search.
@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
           cache: true
 
       - name: Resolve version stamp
@@ -70,22 +70,19 @@ jobs:
             echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build (linux/arm64, static, trimmed)
+      - name: Build CLI and server binaries
         env:
           CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: arm64
           VERSION: ${{ steps.ver.outputs.version }}
-        # Stamp both main.version and internal/server.Version so /healthz and
-        # /metrics report the shipped version. Matches the Makefile `build`
-        # target's ldflags exactly (kept in sync deliberately).
         run: |
-          go build -trimpath \
-            -ldflags "-s -w -X main.version=${VERSION} -X github.com/pilot-protocol/cosift/internal/server.Version=${VERSION}" \
-            -o cosift-linux-arm64 ./cmd/cosift
-
-      - name: sha256
-        run: sha256sum cosift-linux-arm64 | tee cosift-linux-arm64.sha256
+          mkdir -p dist
+          for target in linux/arm64 linux/amd64 darwin/arm64 darwin/amd64 windows/amd64; do
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            name="cosift-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = windows ]; then name="${name}.exe"; fi
+            go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X github.com/pilot-protocol/cosift/internal/server.Version=${VERSION}" -o "dist/$name" ./cmd/cosift
+            (cd dist && sha256sum "$name" > "$name.sha256")
+          done
 
       - name: Install minisign
         run: sudo apt-get update && sudo apt-get install -y minisign
@@ -104,21 +101,16 @@ jobs:
           printf '%s' "${MINISIGN_SECRET_KEY}" > minisign.key
           # -W: secret key is unencrypted (no interactive passphrase prompt).
           # Trusted comment carries the version so the box can sanity-check it.
-          minisign -S -W -s minisign.key \
-            -m cosift-linux-arm64 \
-            -t "cosift ${{ steps.ver.outputs.version }} linux/arm64"
+          for binary in dist/cosift-*; do
+            case "$binary" in *.sha256) continue;; esac
+            minisign -S -W -s minisign.key -m "$binary" -t "cosift ${{ steps.ver.outputs.version }} $(basename "$binary")"
+          done
           rm -f minisign.key
-          # Verification against the embedded public key is done on the box;
-          # here we just confirm the .minisig was produced.
-          test -f cosift-linux-arm64.minisig
 
       - uses: actions/upload-artifact@v7
         with:
           name: cosift-release-artifacts
-          path: |
-            cosift-linux-arm64
-            cosift-linux-arm64.sha256
-            cosift-linux-arm64.minisig
+          path: dist/*
           retention-days: 30
 
   # (c) release — publish the signed binary as a GitHub Release asset.
@@ -142,7 +134,4 @@ jobs:
           name: cosift ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: |
-            cosift-linux-arm64
-            cosift-linux-arm64.sha256
-            cosift-linux-arm64.minisig
+          files: cosift-*

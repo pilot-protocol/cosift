@@ -1,0 +1,22 @@
+[Unit]
+Description=Cosift community web app and authenticated CLI API
+After=network-online.target cosift-serve.service
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+EnvironmentFile=/etc/cosift/community.env
+ExecStart=/home/ubuntu/cosift -config /home/ubuntu/cosift.json community -addr 127.0.0.1:7780 -public-url https://cosift.pilotprotocol.network -backend http://127.0.0.1:7777 -data-dir /home/ubuntu/community-data -trusted-proxies 127.0.0.1/32,::1/128
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/community-data
+
+[Install]
+WantedBy=multi-user.target

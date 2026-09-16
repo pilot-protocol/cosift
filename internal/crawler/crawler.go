@@ -34,13 +34,16 @@ import (
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
 type Crawler struct {
-	cfg           config.Crawler
-	store         CrawlerStore
-	idx           LexicalIndexer
-	passageWriter PassageWriter // optional; nil = no vector write (Pebble path uses HNSW directly)
-	http          *http.Client
-	robots        *Robots
-	embedder      embed.Embedder // optional; nil = lexical-only ingest
+	contributionOnce    sync.Once
+	contributionCrawler *Crawler
+	contributionSlots   chan struct{}
+	cfg                 config.Crawler
+	store               CrawlerStore
+	idx                 LexicalIndexer
+	passageWriter       PassageWriter // optional; nil = no vector write (Pebble path uses HNSW directly)
+	http                *http.Client
+	robots              *Robots
+	embedder            embed.Embedder // optional; nil = lexical-only ingest
 
 	// When
 	// route returns ownsLocally=false, the crawler calls forward(url,

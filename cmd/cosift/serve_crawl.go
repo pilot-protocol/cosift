@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community"
+	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -35,12 +36,15 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
 		return
 	}
-	if !s.crawlCommunityReady.Load() || s.crawlSeedLane == nil {
-		writeProblem(w, http.StatusServiceUnavailable, "community submissions require an active crawler with crawler.public_only=true and crawler.filter_adult=true")
+	if !s.crawlCommunityReady.Load() || s.crawlCommunityFetch == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "community submissions require an active guarded contribution crawler")
 		return
 	}
-	var req crawlEnqueueReq
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var req struct {
+		URL      string                 `json:"url"`
+		Artifact *crawler.LocalArtifact `json:"artifact,omitempty"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if json.NewDecoder(r.Body).Decode(&req) != nil {
 		writeProblem(w, http.StatusBadRequest, "expected a webpage URL")
 		return
@@ -50,11 +54,15 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.crawlSeedLane(u, parseLaneName("submitted")); err != nil {
-		writeProblem(w, http.StatusInternalServerError, "could not queue webpage")
+	liftWriteDeadline(w)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	receipt, err := s.crawlCommunityFetch(ctx, u, req.Artifact)
+	if err != nil {
+		writeProblem(w, http.StatusBadGateway, "webpage could not be indexed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"queued": u})
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {

@@ -187,7 +187,16 @@ $("skip-interests").onclick = async () => {
     notify(e.message, true);
   }
 };
+async function refreshCredits() {
+  $("credit-balance").hidden = !user;
+  if (user) {
+    const c = await api("credits");
+    $("credit-balance").textContent =
+      `${c.balance} credits · 1 per extra request`;
+  }
+}
 async function enter() {
+  await refreshCredits();
   if (!currentQuery) {
     $("results").replaceChildren();
     $("search-heading").hidden = true;
@@ -400,7 +409,7 @@ async function runSearch(q, mode = selectedMode) {
       article.append(el("p", String(snippet).slice(0, 400)));
       $("results").append(article);
     }
-    if (!user) await refreshGuest();
+    if (!user) await refreshGuest(); else await refreshCredits();
   } catch (e) {
     if (sequence === searchSequence) {
       $("results").replaceChildren(el("div", e.message, "empty-state"));
@@ -524,10 +533,11 @@ $("contribution-form").onsubmit = (event) => {
           : ""),
     );
     await refreshContributions();
-    if (!user) await refreshGuest();
+    if (!user) await refreshGuest(); else await refreshCredits();
   });
 };
 async function refreshContributions() {
+  await refreshCredits();
   if (!user) {
     $("contribution-list").replaceChildren(
       el(
@@ -552,7 +562,7 @@ async function refreshContributions() {
     const row = el("div", undefined, "submission-row"),
       left = el("div");
     left.append(
-      item.status === "queued"
+      ["queued", "indexed"].includes(item.status)
         ? link(item.url, item.url)
         : el("span", item.url, "submitted-url"),
       el("p", date(item.created_at), "fine"),
@@ -564,12 +574,13 @@ async function refreshContributions() {
         "span",
         {
           queued: "Queued",
+          indexed: "Indexed",
           pending: "Checking",
           rejected: "Rejected",
           unverified: "Unverified",
         }[item.status] || "Checking",
         "status " +
-          (["queued", "rejected", "unverified"].includes(item.status)
+          (["queued", "indexed", "rejected", "unverified"].includes(item.status)
             ? item.status
             : "pending"),
       ),

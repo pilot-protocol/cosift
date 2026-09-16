@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS submissions (
 CREATE INDEX IF NOT EXISTS submissions_pending ON submissions(status,next_attempt);
 CREATE INDEX IF NOT EXISTS submissions_owner ON submissions(user_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS credit_ledger (
+ id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),delta INTEGER NOT NULL,
+ reason TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS credit_owner ON credit_ledger(user_id);
+CREATE TABLE IF NOT EXISTS submission_artifacts (
+ submission_id TEXT PRIMARY KEY REFERENCES submissions(id) ON DELETE CASCADE,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_events (
+ provider TEXT NOT NULL,event_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),
+ credits INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(provider,event_id));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS guest_usage (ip_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, reservation TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);`)

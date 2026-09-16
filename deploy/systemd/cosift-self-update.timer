@@ -5,8 +5,7 @@ Description=Poll for a newer signed cosift release every ~5 min
 # First poll 2 min after boot (let cosift-serve finish its HNSW load), then
 # every 5 min. RandomizedDelaySec smears load off the GitHub API and avoids
 # a thundering-herd if multiple boxes ever run this.
-OnBootSec=2min
-OnUnitInactiveSec=5min
+OnCalendar=*-*-* *:0/5:00 UTC
 RandomizedDelaySec=60
 AccuracySec=30s
 Persistent=true
