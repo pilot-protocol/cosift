@@ -158,7 +158,7 @@
     },
     "responses": {
       "TooManyRequests": {
-        "description": "Rate limit exceeded (per-IP token bucket; whitelist via COSIFT_RATELIMIT_WHITELIST)",
+        "description": "Rate limit exceeded (per-IP token bucket keyed on the resolved client IP). LLM-backed routes (/answer, /research, /query, /find, and /search or /find_similar with rerank/expand) also pass a tighter always-on tier: COSIFT_RATELIMIT_LLM_RPM / _BURST / _WHITELIST. Global tier: COSIFT_RATELIMIT_RPM / _BURST / _WHITELIST.",
         "headers": {"Retry-After": {"schema": {"type": "integer"}}},
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
       }

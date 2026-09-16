@@ -27,7 +27,7 @@ type queryLogRec struct {
 	Status int    `json:"status"`           // HTTP status
 	MS     int64  `json:"ms"`               // server-side latency
 	Bytes  int64  `json:"bytes"`            // response body bytes (empty-result proxy)
-	Caller string `json:"caller,omitempty"` // X-Forwarded-For or RemoteAddr — separates self/test from organic
+	Caller string `json:"caller,omitempty"` // resolved client IP — separates self/test from organic
 }
 
 // newQueryID returns a short random hex id for correlating a query with later
@@ -60,10 +60,6 @@ func (s *pebbleHTTP) qlog(h http.HandlerFunc) http.HandlerFunc {
 		// to the caller so feedback can reference this exact answer.
 		sw.Header().Set("X-Cosift-Query-Id", qid)
 		h(sw, r)
-		caller := r.Header.Get("X-Forwarded-For")
-		if caller == "" {
-			caller = r.RemoteAddr
-		}
 		s.writeQueryLog(queryLogRec{
 			Qid:    qid,
 			TS:     time.Now().UTC().Format(time.RFC3339),
@@ -72,7 +68,7 @@ func (s *pebbleHTTP) qlog(h http.HandlerFunc) http.HandlerFunc {
 			Status: sw.status,
 			MS:     time.Since(start).Milliseconds(),
 			Bytes:  sw.bytes,
-			Caller: caller,
+			Caller: s.resolveClientIP(r),
 		})
 	}
 }

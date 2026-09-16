@@ -121,11 +121,28 @@ not re-enable them without the confidentiality decision in that section.
 
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
-| `COSIFT_RATELIMIT_RPM` | float | unset / `<= 0` → **global limiter disabled** | Per-IP token-bucket refill rate (requests/min). Enabling this turns on the global rate limiter. | `serve_setup.go:1180` |
-| `COSIFT_RATELIMIT_BURST` | float | `10` (only when RPM set) | Token-bucket burst capacity for the global limiter; must be `> 0`. | `serve_setup.go:1189` |
-| `COSIFT_RATELIMIT_WHITELIST` | csv | empty → no whitelist | Comma-separated IPs that bypass the global limiter entirely. | `serve_setup.go:1195` |
-| `COSIFT_FEEDBACK_RPM` | int | `20` | Per-client RPM for the **always-on** `/feedback` limiter (stricter than global); must be `> 0`. | `serve_setup.go:319` |
-| `COSIFT_FEEDBACK_BURST` | int | `5` | Burst capacity for the `/feedback` limiter; must be `> 0`. | `serve_setup.go:320` |
+| `COSIFT_RATELIMIT_RPM` | float | unset / `<= 0` → **global limiter disabled** | Per-IP token-bucket refill rate (requests/min). Enabling this turns on the global rate limiter. | `serve_setup.go:1450` |
+| `COSIFT_RATELIMIT_BURST` | float | `10` (only when RPM set) | Token-bucket burst capacity for the global limiter; must be `> 0`. | `serve_setup.go:1458` |
+| `COSIFT_RATELIMIT_WHITELIST` | csv | empty → no whitelist | Comma-separated IPs that bypass the global limiter entirely. | `serve_setup.go:1464` |
+| `COSIFT_RATELIMIT_LLM_RPM` | int | `30` | Per-client RPM for the **always-on** second tier in front of `/answer`, `/research`, `/query`, `/find`, `/admin/eval-quick`, and `/search`/`/find_similar` when they ask for `rerank`/`expand`. Independent of `COSIFT_RATELIMIT_RPM`; non-positive or unparseable falls back to the default. | `serve_setup.go:288` |
+| `COSIFT_RATELIMIT_LLM_BURST` | int | `10` | Burst capacity for the LLM tier; must be `> 0`. | `serve_setup.go:289` |
+| `COSIFT_RATELIMIT_LLM_WHITELIST` | csv | empty → no whitelist | IPs that bypass the LLM tier. Separate from `COSIFT_RATELIMIT_WHITELIST` so the global whitelist cannot silently disable the LLM tier. | `serve_setup.go:290` |
+| `COSIFT_FEEDBACK_RPM` | int | `20` | Per-client RPM for the **always-on** `/feedback` limiter (stricter than global); must be `> 0`. | `serve_setup.go:282` |
+| `COSIFT_FEEDBACK_BURST` | int | `5` | Burst capacity for the `/feedback` limiter; must be `> 0`. | `serve_setup.go:283` |
+
+> Every per-IP limiter keys on the resolved client IP: the direct TCP peer, or
+> the forwarded client when the peer matches `server.trusted_proxies` in
+> `cosift.json` (from `server.client_ip_header` if set, else the
+> `X-Forwarded-For` walk). With `trusted_proxies` unset, a request whose peer is
+> loopback is treated as on-box and skips every limiter — otherwise a local
+> reverse proxy would collapse the whole internet into one bucket. `/healthz` is
+> never limited.
+>
+> Behind Cloudflare, prefer `"client_ip_header": "CF-Connecting-IP"` with
+> `"trusted_proxies": ["127.0.0.0/8"]` over listing Cloudflare's published
+> ranges: those ranges are multi-tenant (Workers, WARP), so trusting them lets
+> any client egressing from Cloudflare forge the `X-Forwarded-For` chain and mint
+> a fresh bucket per request.
 
 ---
 
@@ -196,6 +213,7 @@ not re-enable them without the confidentiality decision in that section.
 | `COSIFT_MAX_CONNS_PER_HOST` | int | `128` | `MaxConnsPerHost` / `MaxIdleConnsPerHost` for the crawler transport; must be `> 0`. | `internal/crawler/crawler.go:266` |
 | `COSIFT_AUTO_SITEMAP_CONCURRENCY` | int | `16` | Cap on concurrent background auto-sitemap discoveries; must be `> 0`. | `internal/crawler/crawler.go:332` |
 | `COSIFT_DYNAMIC_DOMAINS_FILE` | string (path) | unset → none | Path to a file of dynamic (JS-rendered) domains loaded at crawler init. | `internal/crawler/crawler.go:342` |
+| `COSIFT_ALLOW_PRIVATE_NETWORKS` | bool | unset → guard **on** everywhere | When truthy, outbound crawl/admin fetches may reach loopback, RFC1918, link-local and other non-public addresses; when falsy it forces the guard on. `crawler.block_private_networks` (default true) governs the **crawler transport only** — the `/contents` live fetch, the `/admin/*` fetchers and `cosift check-robots` are always guarded, and this variable is their only lever. It overrides the config field too. | `internal/netguard/dial.go` |
 | `COSIFT_DIRECT_HOSTS` | csv | unset → built-in `defaultDirectHosts` list | Comma-separated hosts that bypass the remote fetcher and fetch directly. Setting it **replaces** the default list. | `internal/crawler/remote_fetcher.go:70` |
 | `COSIFT_CRAWL_PDF` | bool (`"false"` disables) | unset → PDF parsing **enabled** (sandboxed) | Set to `"false"` to disable sandboxed PDF parsing. Any other value leaves it on. | `internal/crawler/crawler.go:1155` |
 | `COSIFT_REFETCH_AFTER_HOURS` | int (hours) | `0` → disabled (every revisit issues a conditional GET) | Skip re-fetching a healthy URL fetched within this window. Also defines the "fresh" window for prefer-new (defaults to 24h there) and the WET fresh window. Must be `> 0`. | `crawler.go:1107,1492`; `wet.go:94` |

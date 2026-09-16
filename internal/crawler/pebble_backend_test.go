@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -34,7 +33,7 @@ func TestCrawlerAgainstPebbleBackend(t *testing.T) {
 	}
 	defer ps.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
