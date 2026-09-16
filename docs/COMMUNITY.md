@@ -218,11 +218,13 @@ by building or running the app locally.
 
 ## Production service and release
 
+See [the operator rollout and rollback plan](COMMUNITY-ROLLOUT.md) before deployment. The current user instruction is to keep these changes in review; do not deploy automatically.
+
 `deploy/systemd/cosift-community.service` runs the portal on loopback port 7780.
 Create its private data directory before starting it and supply
 `COSIFT_COMMUNITY_ADMIN_TOKEN` through root-owned `/etc/cosift/community.env`.
 `deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
-portal while retaining existing engine endpoints. It trusts only loopback and
+portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. Other engine endpoints retain their original routing. It trusts only loopback and
 Cloudflare networks, then overwrites the forwarded client IP.
 
 The community backup timer snapshots SQLite consistently into the existing GCS
