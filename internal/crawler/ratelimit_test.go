@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 const rateLimitSampleHTML = `<html><head><title>Recovered</title></head>
@@ -30,7 +28,7 @@ func rateLimitedCrawlerT(t *testing.T, fail429 int64) (*Crawler, *httptest.Serve
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -105,7 +103,7 @@ func TestRateLimitedBackoffWithoutRetryAfter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.MaxDepth = 0
 	cfg.PerHostDelayMs = 0
 	cfg.MaxConcurrent = 1
@@ -138,7 +136,7 @@ func TestFetch503RetryAfterSemantics(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}))
-		cfg := config.Default().Crawler
+		cfg := testCrawlerCfg()
 		c := New(cfg, newStoreT(t))
 		_, err := c.fetch(context.Background(), srv.URL, nil)
 		var rle *rateLimitedError
@@ -153,7 +151,7 @@ func TestFetch503RetryAfterSemantics(t *testing.T) {
 }
 
 func TestMaxCrawlDelayDefaultAndOverride(t *testing.T) {
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	c := New(cfg, newStoreT(t))
 	if d := c.maxCrawlDelay(); d != 2*time.Minute {
 		t.Errorf("default clamp: got %v want 2m", d)

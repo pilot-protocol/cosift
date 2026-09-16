@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pilot-protocol/cosift/internal/netguard"
 )
 
 // loadFixturePDF reads the tiny hand-crafted PDF from testdata/. ~600 bytes
@@ -76,6 +78,8 @@ func TestParsePDFGarbageBody(t *testing.T) {
 // text. End-to-end exercise of fetch → content-type check → ParsePDF →
 // document upsert.
 func TestCrawlerHandlesPDFContentType(t *testing.T) {
+	// FetchOne's default client is guarded by env only, and this fixture is loopback.
+	t.Setenv(netguard.AllowPrivateEnv, "1")
 	pdfBytes := loadFixturePDF(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/spec.pdf", func(w http.ResponseWriter, _ *http.Request) {

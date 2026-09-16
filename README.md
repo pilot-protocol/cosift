@@ -115,6 +115,7 @@ The config file lives in the working directory by default; override with `-confi
     "max_body_bytes": 5242880,
     "max_depth": 3,
     "respect_robots": true,
+    "block_private_networks": true,
     "include_domains": ["docs.example.com"],
     "max_urls_per_host": 1000,
     "chunk_size": 320,
