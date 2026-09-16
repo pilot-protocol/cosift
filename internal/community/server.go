@@ -101,6 +101,8 @@ func Open(cfg Config) (*Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /signup", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /app.js", s.asset("app.js", "text/javascript; charset=utf-8"))
 	mux.HandleFunc("GET /style.css", s.asset("style.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /sample.csv", func(w http.ResponseWriter, r *http.Request) {

@@ -312,7 +312,7 @@ $("logout").onclick = async () => {
     $("search-heading").hidden = true;
     $("search-empty").hidden = false;
     $("query").value = "";
-    await enter();
+    showScreen("auth");
   } catch (e) {
     notify(e.message, true);
   }
@@ -597,7 +597,9 @@ $("refresh-contributions").onclick = () =>
     user = null;
   }
   try {
-    await enter();
+    if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
+    if (user) await enter();
+    else showScreen("auth");
   } catch (e) {
     showScreen("auth");
     notify(e.message, true);

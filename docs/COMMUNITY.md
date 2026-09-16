@@ -225,3 +225,16 @@ rollout also requires preserving the old binary, backend config and Caddy config
 Signed release assets include Linux ARM64/AMD64, macOS ARM64/AMD64 and Windows
 AMD64. Install the matching binary and use the same public server URL for both
 `contribute` and `request`. Payment purchase flows remain disabled.
+
+
+## Public entry and operations visibility
+
+Anonymous visitors land on the signup/sign-in screen. `/login` opens sign-in,
+`/signup` opens account creation, and an existing session opens the workspace.
+Guest browsing remains an explicit choice with the same 30-minute allowance.
+Signing out returns to authentication.
+
+The production proxy denies public access to `/stats`, `/metrics`, `/queue`,
+`/domains`, `/verify`, and `/sla` (including subpaths). Operators can still use
+these endpoints over SSH on the loopback engine listener. The old `/chat` UI
+redirects to `/login`. `/healthz` retains its minimal health response.

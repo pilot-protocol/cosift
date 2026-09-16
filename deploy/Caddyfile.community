@@ -15,7 +15,15 @@ cosift.pilotprotocol.network, origin.cosift.pilotprotocol.network {
  handle /debug/* {
   respond "not found" 404
  }
- @community path / /app.js /style.css /sample.csv /api/*
+ @operations path /stats /stats/* /metrics /metrics/* /queue /queue/* /domains /domains/* /verify /verify/* /sla /sla/*
+ handle @operations {
+  respond "not found" 404
+ }
+ @legacy_ui path /chat /chat/*
+ handle @legacy_ui {
+  redir /login 302
+ }
+ @community path / /login /signup /app.js /style.css /sample.csv /api/*
  handle @community {
   reverse_proxy 127.0.0.1:7780 {
    header_up X-Forwarded-For {client_ip}
