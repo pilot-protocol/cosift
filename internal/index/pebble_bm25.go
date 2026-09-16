@@ -55,46 +55,6 @@ func bm25TopKPoolFactor() int {
 	return 50
 }
 
-// bm25RankDepth floors the depth at which ranking decisions are made, so they
-// stop depending on the caller's k.
-//
-// Two decisions are k-shaped. The MaxScore break compares against
-// kthLargest(scores, k): a small k gives a higher theta, so the scan stops
-// earlier and produces a different score map. The resolution pool is factor*k:
-// a small k resolves fewer candidates. Measured on prod 2026-09-15 at factor
-// 200, 51 of 60 goldens returned a different top-10 at k=10 than at k=50, and a
-// median cap-bound query resolved 2,000 of ~68,500 in-band candidates.
-//
-// Running both at kEff = max(k, depth) and truncating afterwards makes the
-// top-k of any k <= depth a prefix of the same ranking. The cost is that every
-// query pays the depth-k price. 0 keeps the k-shaped behaviour.
-func bm25RankDepth() int {
-	if v := os.Getenv("COSIFT_BM25_RANK_DEPTH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			return n
-		}
-	}
-	return 0
-}
-
-// bm25EffectiveK is the internal ranking depth for a caller asking for k.
-func bm25EffectiveK(k int) int {
-	if k <= 0 {
-		return k
-	}
-	if d := bm25RankDepth(); d > k {
-		return d
-	}
-	return k
-}
-
-// bm25MaxScoreAuthorityBound reports whether the MaxScore early-termination
-// bound accounts for the authority multiplier applied after the scan. 0 selects
-// the pre-2026-09 behaviour, which prunes harder and is measurably less exact.
-func bm25MaxScoreAuthorityBound() bool {
-	return os.Getenv("COSIFT_BM25_MAXSCORE_AUTHORITY") != "0"
-}
-
 // PebbleBM25 mirrors BM25 but reads from a PebbleStore.
 type PebbleBM25 struct {
 	store *store.PebbleStore
@@ -132,14 +92,6 @@ func NewPebbleBM25(s *store.PebbleStore) *PebbleBM25 {
 func (b *PebbleBM25) WithAuthority(a *authority.Scorer) *PebbleBM25 {
 	b.authority = a
 	return b
-}
-
-// maxAuthorityMult upper-bounds Scorer.Multiplier (= 1 + alpha*score, score in [0,1]).
-func (b *PebbleBM25) maxAuthorityMult() float64 {
-	if b.authority == nil {
-		return 1.0
-	}
-	return 1.0 + b.authority.Alpha()
 }
 
 // WithBoost returns a shallow copy of b with the given docID→multiplier map
@@ -262,17 +214,13 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// The BM25 contribution of one term to any doc is bounded above by
 	// idf*(k1+1) — saturates as tf grows relative to docLen. Sum of these
 	// upper bounds across remaining terms = the maximum score a doc not
-	// yet seen can ever accumulate. Docs already in `scores` stop
-	// accumulating at the break too, so top-K membership is approximate,
-	// not lossless. COSIFT_BM25_DISABLE_MAXSCORE=1 disables the
-	// optimization for benchmark-grade lossless ranking. Phrase queries opt
-	// out: theta cannot threshold the phrase-filtered subset (empty results).
-	maxScoreEnabled := os.Getenv("COSIFT_BM25_DISABLE_MAXSCORE") == "" && len(phrases) == 0
-	kEff := bm25EffectiveK(k)
-	maxMult := 1.0
-	if bm25MaxScoreAuthorityBound() {
-		maxMult = b.maxAuthorityMult()
-	}
+	// yet seen can ever accumulate. If that sum drops below the current
+	// K-th best partial score, no future doc can enter top-K. Top-K
+	// membership stays lossless; in-top-K ranking can shift (the rerank
+	// pipeline re-orders anyway, and the score-decay/MMR stages tolerate
+	// approximate partial scores). COSIFT_BM25_DISABLE_MAXSCORE=1 disables
+	// the optimization for benchmark-grade lossless ranking.
+	maxScoreEnabled := os.Getenv("COSIFT_BM25_DISABLE_MAXSCORE") == ""
 	remainingMax := 0.0
 	if maxScoreEnabled {
 		for _, c := range active {
@@ -280,10 +228,18 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 		}
 	}
 	for i, c := range active {
-		// theta is raw; an unseen doc's final ceiling is remainingMax*maxMult.
-		if maxScoreEnabled && i > 0 && len(scores) >= kEff {
-			theta := kthLargest(scores, kEff)
-			if remainingMax*maxMult < theta {
+		// Pre-scan MaxScore check: decide whether term i (and everything
+		// after it, since active is sorted descending by IDF) can still push
+		// an unseen doc into top-K BEFORE paying to scan term i's postings.
+		// remainingMax here is the sum of max contributions of terms i..end
+		// (idf*(k1+1) each). A doc not yet in `scores` can gain at most
+		// remainingMax from the un-scanned terms; if that's below the current
+		// K-th best score, scanning i..end can only reorder within top-K —
+		// which the reranker fixes — so stop. This catches the common-term
+		// last-term full scan the old post-scan i==len-1 guard always paid.
+		if maxScoreEnabled && i > 0 && len(scores) >= k {
+			theta := kthLargest(scores, k)
+			if remainingMax < theta {
 				break
 			}
 		}
@@ -312,12 +268,13 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 
 	// Apply per-doc boosts (e.g. site= queries) before sorting. Boosted docs
 	// already present in `scores` (i.e. they matched ≥1 query term) get the
-	// full multiplier on their (possibly MaxScore-truncated) partial. Boosted
-	// docs with zero term overlap are absent from `scores`; for small boost
-	// sets we seed them with a tiny base score (boostSeedBase) before
-	// multiplying so they still enter the candidate pool — landing at
-	// boostSeedBase*mult (e.g. 0.05), below any genuine single-term BM25
-	// match but enough for the reranker to judge them.
+	// full multiplier. Boosted docs with zero term overlap are absent from
+	// `scores`; for small boost sets we seed them with a tiny base score
+	// (boostSeedBase) before multiplying so they still enter the candidate
+	// pool — landing at boostSeedBase*mult (e.g. 0.05), below any genuine
+	// single-term BM25 match but enough for the reranker to judge them. This
+	// also closes the MaxScore early-termination gap: a boosted doc whose only
+	// matching posting list was skipped still gets seeded and surfaced.
 	//
 	// Seeding is gated by boostSeedMaxIDs: large boost sets (big sites) would
 	// inject a GetDocMeta per zero-overlap doc and flood the pool, so above
@@ -336,14 +293,7 @@ func (b *PebbleBM25) Search(ctx context.Context, q string, k int) ([]Hit, error)
 	// resolved; COSIFT_BM25_DISABLE_TOPK_POOL restores the resolve-all
 	// path (also taken for k<=0 = "return everything").
 	if k > 0 && os.Getenv("COSIFT_BM25_DISABLE_TOPK_POOL") == "" {
-		hits, err := b.resolveTopKPool(ctx, scores, phrases, kEff)
-		if err != nil {
-			return nil, err
-		}
-		if len(hits) > k {
-			hits = hits[:k]
-		}
-		return hits, nil
+		return b.resolveTopKPool(ctx, scores, phrases, k)
 	}
 
 	hits := make([]Hit, 0, len(scores))
@@ -392,7 +342,10 @@ const topKResolveSlack = 16
 // the cap does bind (more than factor*k candidates inside that band) the
 // truncation is logged — the operator signal to raise the factor.
 func (b *PebbleBM25) resolveTopKPool(ctx context.Context, scores map[int64]float64, phrases []string, k int) ([]Hit, error) {
-	maxMult := b.maxAuthorityMult()
+	maxMult := 1.0
+	if b.authority != nil {
+		maxMult += b.authority.Alpha()
+	}
 
 	poolCap := bm25TopKPoolFactor() * k
 	pool := topCandidates(scores, poolCap)

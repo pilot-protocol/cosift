@@ -111,26 +111,6 @@ set (same cost as before the pool, plus a small selection overhead).
 `COSIFT_BM25_DISABLE_TOPK_POOL=1` restores the resolve-all path for lossless
 A/B comparison; both vars are read per query, no restart needed.
 
-### MaxScore pruning depth: `COSIFT_AUTHORITY_ALPHA`
-
-The MaxScore early-break compares the k-th *raw* score against
-`remainingMax * (1 + alpha)`, because a doc's final score is
-`raw × authority multiplier` and that multiplier tops out at `1 + alpha`. So
-alpha is a latency knob as well as a ranking knob: **higher alpha prunes less**
-(queries whose `theta / remainingMax` lands in `[1, 1+alpha)` now scan the
-lower-IDF term's full posting list and grow the per-query score map
-accordingly); **lower alpha prunes more**.
-
-If BM25 p50 regresses, lower alpha first — it narrows the non-pruning band
-proportionally and keeps ranking sound. `COSIFT_BM25_DISABLE_MAXSCORE=1` is the
-opposite of a mitigation: it removes pruning entirely and makes common-term
-queries strictly slower. Alpha is read once at server start, so changing it
-needs a restart (unlike the two pool vars above).
-
-Phrase queries (`"like this"`) skip MaxScore unconditionally and pay the full
-scan regardless of alpha: the threshold is a k-th over all scored docs, which
-says nothing about the k-th of the phrase-filtered subset.
-
 ## Latency budget
 
 ### Don't enrich what you don't need: `?enrich=false`
