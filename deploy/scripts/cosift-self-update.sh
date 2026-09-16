@@ -194,8 +194,14 @@ while (( $(date +%s) < deadline )); do
   sleep "$HEALTH_INTERVAL_S"
 done
 
+if (( healthy == 1 )) && systemctl is-enabled --quiet cosift-community.service; then
+  log "restarting community service"
+  if ! sudo systemctl restart cosift-community.service || ! curl -fsS --retry 5 --retry-delay 2 --retry-connrefused --max-time 5 http://127.0.0.1:7780/healthz >/dev/null; then
+    healthy=0
+  fi
+fi
 if (( healthy == 1 )); then
-  log "healthy on $latest_tag — update complete"
+  log "healthy on $latest_tag — update complete; check /stats.hnsw_load for dense readiness"
   exit 0
 fi
 
@@ -204,6 +210,9 @@ err "new version $latest_tag did not become healthy within ${HEALTH_TIMEOUT_S}s 
 if [[ -f "$prev" ]]; then
   mv -f "$prev" "$BIN"
   sudo systemctl restart "$SERVICE"
+  if systemctl is-enabled --quiet cosift-community.service; then
+    sudo systemctl restart cosift-community.service || true
+  fi
   # Give the rolled-back process a chance to come back so the box isn't
   # left dark. Best-effort; we still exit non-zero to flag the failure.
   rb_deadline=$(( $(date +%s) + HEALTH_TIMEOUT_S ))

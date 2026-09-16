@@ -110,6 +110,10 @@ type Server struct {
 // Crawler holds the politeness, concurrency, and discovery settings used
 // when fetching pages and expanding the frontier.
 type Crawler struct {
+	// PublicOnly pins outbound HTTP connections to public IPs on ports 80/443.
+	// Required by the community contribution endpoint. Uses direct HTTP egress.
+	PublicOnly bool `json:"public_only,omitempty"`
+
 	// UserAgent sent on every request. Include a contact path.
 	UserAgent string `json:"user_agent"`
 

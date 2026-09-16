@@ -19,6 +19,11 @@ seed URLs  ───▶  │  crawler  →  index  →  retriever     │  ─�
 
 ## Quick start
 
+For the contributor web app (guest access, email/password accounts, interest
+onboarding, Search/Research/Answer, saved requests, and checked URL/CSV contributions), see
+[Community app and CLI](docs/COMMUNITY.md). Run `cosift community` alongside a
+Pebble backend; guests get one search or submission every 30 minutes.
+
 ```bash
 # 1. Build
 go build -o cosift ./cmd/cosift

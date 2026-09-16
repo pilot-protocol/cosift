@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/community"
+	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -25,6 +28,46 @@ type crawlEnqueueReq struct {
 	// Lane optionally targets a frontier lane. Empty keeps the historical
 	// default (discovered) — parseLaneName("") would mean submitted.
 	Lane string `json:"lane,omitempty"`
+}
+
+// Community intake uses a separate endpoint so an older or unguarded backend
+// cannot silently accept public submissions through the historical admin API.
+func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Request) {
+	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
+		writeProblem(w, http.StatusUnauthorized, "missing or invalid admin token")
+		return
+	}
+	if !s.crawlCommunityReady.Load() || s.crawlCommunityFetch == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "community submissions require an active guarded contribution crawler")
+		return
+	}
+	var req struct {
+		URL      string                 `json:"url"`
+		Artifact *crawler.LocalArtifact `json:"artifact,omitempty"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeProblem(w, http.StatusBadRequest, "expected a webpage URL")
+		return
+	}
+	u, err := community.NormalizeURL(req.URL)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	liftWriteDeadline(w)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	receipt, err := s.crawlCommunityFetch(ctx, u, req.Artifact)
+	if err != nil {
+		if errors.Is(err, crawler.ErrContributionRejected) {
+			writeProblem(w, http.StatusUnprocessableEntity, "webpage or local artifact does not meet index validation policy")
+			return
+		}
+		writeProblem(w, http.StatusBadGateway, "webpage could not be indexed")
+		return
+	}
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 func (s *pebbleHTTP) handleCrawlEnqueue(w http.ResponseWriter, r *http.Request) {

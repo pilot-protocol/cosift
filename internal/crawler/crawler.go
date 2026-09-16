@@ -34,13 +34,16 @@ import (
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
 type Crawler struct {
-	cfg           config.Crawler
-	store         CrawlerStore
-	idx           LexicalIndexer
-	passageWriter PassageWriter // optional; nil = no vector write (Pebble path uses HNSW directly)
-	http          *http.Client
-	robots        *Robots
-	embedder      embed.Embedder // optional; nil = lexical-only ingest
+	contributionOnce    sync.Once
+	contributionCrawler *Crawler
+	contributionSlots   chan struct{}
+	cfg                 config.Crawler
+	store               CrawlerStore
+	idx                 LexicalIndexer
+	passageWriter       PassageWriter // optional; nil = no vector write (Pebble path uses HNSW directly)
+	http                *http.Client
+	robots              *Robots
+	embedder            embed.Embedder // optional; nil = lexical-only ingest
 
 	// When
 	// route returns ownsLocally=false, the crawler calls forward(url,
@@ -299,7 +302,7 @@ func newBare(cfg config.Crawler) *Crawler {
 	// Each request picks a random proxy
 	// from cfg.Proxies; empty list = direct connection.
 	var inner http.RoundTripper = transport
-	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 {
+	if proxies := parseProxies(cfg.Proxies); len(proxies) > 0 && !cfg.PublicOnly {
 		var pmu sync.Mutex
 		var prng = rand.New(rand.NewSource(time.Now().UnixNano()))
 		transport.Proxy = func(req *http.Request) (*url.URL, error) {
@@ -325,9 +328,13 @@ func newBare(cfg config.Crawler) *Crawler {
 	if len(urls) == 0 && cfg.RemoteFetcherURL != "" {
 		urls = []string{cfg.RemoteFetcherURL}
 	}
-	if len(urls) > 0 {
+	if len(urls) > 0 && !cfg.PublicOnly {
 		rt = newRemoteFetcherTransport(urls, cfg.RemoteFetcherToken, inner)
 		log.Printf("crawler: remote fetcher enabled (%d workers in pool)", len(urls))
+	}
+	if cfg.PublicOnly {
+		transport.DialContext = newPublicDialer().DialContext
+		log.Printf("crawler: public-only direct HTTP egress enabled")
 	}
 	// 30s overall timeout was generous to a fault — most useful
 	// fetches finish in <3s. Drop to 12s so dead URLs free up the worker

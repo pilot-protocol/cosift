@@ -22,6 +22,8 @@ usage:
   cosift init               write a sensible default cosift.json to ./
   cosift init -site URL     same, with include_domains pre-populated
   cosift serve              run the HTTP API (port from config)
+  cosift community          run the contributor web app (login, interests, saved searches, URL/CSV submissions)
+  cosift contribute [-server URL] [-guest] [-email EMAIL] [-csv FILE] <url...>   submit URLs as a guest or member
   cosift crawl <url...>     one-shot crawl of seed URLs
   cosift check-robots <url...>   report whether each URL is crawlable per the site's robots.txt
   cosift crawl-errors [-limit N] list recently-errored frontier URLs with their failure reason
@@ -51,6 +53,8 @@ usage:
   cosift answer-eval-compare A.json B.json   diff two saved answer-eval reports
   cosift bench [flags]      synthetic micro-benchmarks (vector + BM25 + crawl)
   cosift bench-compare A.json B.json   diff two saved bench JSON outputs (NDJSON, one record per mode)
+  cosift request            Search/Answer/Research through the community API
+  cosift contribute         submit URLs, CSV or locally indexed artifacts
   cosift version            print version
 
 eval flags:
@@ -127,6 +131,12 @@ func run(cfgPath string) error {
 	defer cancel()
 
 	switch cmd := flag.Arg(0); cmd {
+	case "community":
+		return runCommunity(ctx, flag.Args()[1:])
+	case "request":
+		return runContributeConfigured(ctx, cfg, append([]string{"-request"}, flag.Args()[1:]...))
+	case "contribute":
+		return runContributeConfigured(ctx, cfg, flag.Args()[1:])
 	case "version":
 		fmt.Println(version)
 	case "init":
