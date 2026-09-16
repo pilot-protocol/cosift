@@ -24,7 +24,7 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 		return ContributionReceipt{}, err
 	}
 	if !c.allowedDomain(canon) {
-		return ContributionReceipt{}, fmt.Errorf("contribution domain is excluded by crawler policy")
+		return ContributionReceipt{}, fmt.Errorf("%w: contribution domain is excluded by crawler policy", ErrContributionRejected)
 	}
 	c.contributionOnce.Do(func() {
 		cfg := c.cfg
@@ -55,7 +55,7 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	safe := c.contributionCrawler
 	if artifact != nil {
 		if artifact.URL != raw {
-			return ContributionReceipt{}, fmt.Errorf("artifact URL mismatch")
+			return ContributionReceipt{}, fmt.Errorf("%w: artifact URL mismatch", ErrContributionRejected)
 		}
 		allowed, _, err := safe.robots.Allowed(ctx, canon)
 		if err != nil || !allowed {

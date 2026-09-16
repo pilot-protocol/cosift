@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -41,8 +42,8 @@ func TestArtifactVerificationRejectsPoisoning(t *testing.T) {
 		t.Fatal("changed source reused stale vectors")
 	}
 	a.Chunks[0].Embedding = []float32{2, 1}
-	if _, err := VerifyArtifact(context.Background(), a, a.Title, a.Text, ref); err == nil {
-		t.Fatal("poisoned vector accepted")
+	if _, err := VerifyArtifact(context.Background(), a, a.Title, a.Text, ref); !errors.Is(err, ErrContributionRejected) {
+		t.Fatalf("poisoned vector did not get permanent rejection: %v", err)
 	}
 	a.Chunks[0].Embedding = []float32{1, 2}
 	a.Model = "wrong"

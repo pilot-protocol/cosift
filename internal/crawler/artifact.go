@@ -2,12 +2,16 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
 )
+
+// ErrContributionRejected identifies a permanent policy or artifact mismatch.
+var ErrContributionRejected = errors.New("contribution cannot be verified")
 
 type IndexedChunk struct {
 	Text      string    `json:"text"`
@@ -50,18 +54,18 @@ func (a *LocalArtifact) Validate() error {
 // client vectors would allow index poisoning and fraudulent contribution credit.
 func VerifyArtifact(ctx context.Context, a *LocalArtifact, title, text string, reference embed.Embedder) (embed.Embedder, error) {
 	if err := a.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrContributionRejected, err)
 	}
 	if a.Title != title || a.Text != text {
-		return nil, fmt.Errorf("local content does not match the current webpage")
+		return nil, fmt.Errorf("%w: local content does not match the current webpage", ErrContributionRejected)
 	}
 	if reference == nil || a.Model != reference.Model() {
-		return nil, fmt.Errorf("embedding model does not match the index")
+		return nil, fmt.Errorf("%w: embedding model does not match the index", ErrContributionRejected)
 	}
 	texts := make([]string, len(a.Chunks))
 	for i, ch := range a.Chunks {
 		if len(ch.Embedding) != reference.Dim() {
-			return nil, fmt.Errorf("embedding dimension does not match the index")
+			return nil, fmt.Errorf("%w: embedding dimension does not match the index", ErrContributionRejected)
 		}
 		texts[i] = ch.Text
 	}
@@ -85,7 +89,7 @@ func VerifyArtifact(ctx context.Context, a *LocalArtifact, title, text string, r
 			norm += r * r
 		}
 		if norm == 0 || math.IsNaN(norm) || math.IsInf(norm, 0) || math.IsNaN(difference) || difference/norm > 0.0001 {
-			return nil, fmt.Errorf("local embedding failed verification")
+			return nil, fmt.Errorf("%w: local embedding failed verification", ErrContributionRejected)
 		}
 		verified.vectors[ch.Text] = ch.Embedding
 	}

@@ -729,10 +729,12 @@ func (s *Server) dispatch(ctx context.Context) error {
 		res, sendErr := delivery.Do(req)
 		ok := false
 		indexed := false
+		permanent := false
 		if sendErr == nil {
+			permanent = res.StatusCode == http.StatusUnprocessableEntity
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
 			if !ok {
-				log.Printf("community: contribution delivery returned HTTP %d; retained for retry", res.StatusCode)
+				log.Printf("community: contribution delivery returned HTTP %d", res.StatusCode)
 			}
 			var receipt struct {
 				Indexed     bool   `json:"indexed"`
@@ -754,6 +756,10 @@ func (s *Server) dispatch(ctx context.Context) error {
 		}
 		status = "pending"
 		reason = "Content checks passed; waiting for crawler delivery."
+		if permanent {
+			status = "unverified"
+			reason = "The webpage or local artifact does not meet index validation policy. Check the allowed domain, current page content, and embedding model."
+		}
 		if ok {
 			status = "queued"
 			reason = "Content checks passed; delivered to the crawl queue."

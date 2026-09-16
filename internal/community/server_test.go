@@ -335,3 +335,29 @@ func TestNormalizeURL(t *testing.T) {
 		t.Fatalf("normalize %q %v", got, err)
 	}
 }
+
+func TestPermanentArtifactRejectionIsNotRetried(t *testing.T) {
+	calls := 0
+	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin/community-moderate" {
+			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
+			return
+		}
+		calls++
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	cookie := account(t, s, "held@example.com")
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
+	for i := 0; i < 2; i++ {
+		if err := s.dispatch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var state string
+	if err := s.db.QueryRow(`SELECT status FROM submissions`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "unverified" || calls != 1 {
+		t.Fatalf("state=%s deliveries=%d", state, calls)
+	}
+}

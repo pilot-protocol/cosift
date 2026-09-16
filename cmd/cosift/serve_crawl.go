@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -59,6 +60,10 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 	receipt, err := s.crawlCommunityFetch(ctx, u, req.Artifact)
 	if err != nil {
+		if errors.Is(err, crawler.ErrContributionRejected) {
+			writeProblem(w, http.StatusUnprocessableEntity, "webpage or local artifact does not meet index validation policy")
+			return
+		}
 		writeProblem(w, http.StatusBadGateway, "webpage could not be indexed")
 		return
 	}
