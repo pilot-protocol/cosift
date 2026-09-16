@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/promptsafe"
 )
 
 // /find is the live resource-federation endpoint. Where /search and /research
@@ -255,9 +256,10 @@ func (s *pebbleHTTP) handleFind(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := ""
 	if s.chat != nil {
+		env := promptsafe.New()
 		out, err := s.doChat(r.Context(), s.chat, []embed.ChatMsg{
-			{Role: "system", Content: findSynthPrompt},
-			{Role: "user", Content: "Request: " + q + "\n\nCandidate resources:\n" + sb.String()},
+			{Role: "system", Content: env.System(findSynthPrompt)},
+			{Role: "user", Content: findSynthUserMsg(env, q, sb.String())},
 		})
 		if err == nil {
 			answer = out

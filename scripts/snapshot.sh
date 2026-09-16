@@ -53,9 +53,19 @@ log "checkpoint dir: $ckpt"
 
 archive="$tmp/cosift-snapshot.tar.gz"
 log "tarring $ckpt + $CONFIG → $archive"
-tar -C "$(dirname "$ckpt")" -I "pigz -p ${COSIFT_PIGZ_THREADS:-8}" -cf "$archive" \
+# tar rc 1 (file changed as we read it) is harmless: checkpoint SSTs are hard-linked and immutable
+set +e
+tar --warning=no-file-changed -C "$(dirname "$ckpt")" -I "pigz -p ${COSIFT_PIGZ_THREADS:-8}" -cf "$archive" \
     "$(basename "$ckpt")" \
     -C "$(dirname "$CONFIG")" "$(basename "$CONFIG")"
+tar_rc=$?
+set -e
+if (( tar_rc > 1 )); then
+  echo "snapshot: tar failed (rc $tar_rc)" >&2
+  exit "$tar_rc"
+elif (( tar_rc == 1 )); then
+  log "tar reported changed files (rc 1); continuing"
+fi
 size=$(stat -c%s "$archive")
 log "$((size / 1024 / 1024)) MiB"
 

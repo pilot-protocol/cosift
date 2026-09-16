@@ -50,7 +50,7 @@ type Server struct {
 	contentsLimiter *ipLimiter         // protects /contents (batch fetch / enumeration)
 	adminLimiter    *ipLimiter         // protects /admin/* (defense-in-depth on token leak)
 	metrics         *Metrics           // never nil — initialized in New()
-	ipResolver      *clientIPResolver  // nil = direct peer only
+	ipResolver      *ClientIPResolver  // nil = direct peer only
 	paraphraser     *paraphraser       // nil disables ?expand=true
 	hyde            *hydePassager      // nil disables ?hyde=true. Initialized in WithChat alongside chat.
 	defaults        Defaults           // instance-wide retrieval defaults
@@ -354,7 +354,7 @@ func (s *Server) WithAdminToken(token string) *Server {
 // for rate limiting. Returns an error on malformed CIDRs so misconfiguration
 // fails loud instead of silently falling back to "trust nothing."
 func (s *Server) WithTrustedProxies(cidrs []string) (*Server, error) {
-	r, err := newClientIPResolver(cidrs)
+	r, err := NewClientIPResolver(cidrs)
 	if err != nil {
 		return nil, err
 	}

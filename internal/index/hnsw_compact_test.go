@@ -92,9 +92,10 @@ func TestHNSWZombieCompaction(t *testing.T) {
 	}
 	t.Logf("zombified %d of %d nodes", zombified, len(h.nodes))
 
+	// Zombies are transit-only in searchLayer, so they cost nothing in recall.
 	zombied := measure("with-zombies")
-	if zombied >= clean*0.9 {
-		t.Logf("note: zombies didn't drag recall enough on this seed (clean=%.3f, zombied=%.3f); test still validates compact()'s round-trip", clean, zombied)
+	if zombied < clean*0.95 {
+		t.Errorf("zombies dragged recall: clean=%.3f zombied=%.3f", clean, zombied)
 	}
 
 	removed := h.Compact()
@@ -102,12 +103,11 @@ func TestHNSWZombieCompaction(t *testing.T) {
 		t.Fatalf("compact removed %d, expected %d", removed, zombified)
 	}
 
+	// Compact drops edges through removed nodes without re-linking survivors
+	// (Rebuild's job); recall may dip but must stay close to clean.
 	compacted := measure("compacted")
-	// Compact doesn't restore edges to surviving nodes — it only removes
-	// dangling refs. Same recall as the zombied state (slightly higher is
-	// possible if traversal now skips fewer dead branches).
-	if compacted < zombied*0.95 {
-		t.Errorf("compaction regressed recall: zombied=%.3f compacted=%.3f", zombied, compacted)
+	if compacted < clean*0.9 {
+		t.Errorf("compaction regressed recall: clean=%.3f compacted=%.3f", clean, compacted)
 	}
 
 	// Rebuild does restore: fresh graph topology with full M-neighbor
@@ -149,5 +149,36 @@ func TestHNSWCompactProgressLogs(t *testing.T) {
 	}
 	if !strings.Contains(out, "hnsw compact: rewiring neighbors") {
 		t.Errorf("missing rewiring progress line in:\n%s", out)
+	}
+	for _, want := range []string{"rebuilding url index", "url index rebuilt in", "for entry point", "hnsw compact: entry point"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q progress line in:\n%s", want, out)
+		}
+	}
+}
+
+func TestHNSWCompactPersistReportsSubPhases(t *testing.T) {
+	ps := openTestStore(t)
+	ctx := context.Background()
+	h := buildTestHNSW(120, 8, 3, 5)
+	if err := h.Persist(ctx, ps); err != nil {
+		t.Fatal(err)
+	}
+	h.MarkURLPassagesInvalid("https://x/3")
+	var phases []string
+	res, err := h.CompactPersist(ctx, ps, false, nil, func(p CompactProgress) {
+		if n := len(phases); n == 0 || phases[n-1] != p.Phase {
+			phases = append(phases, p.Phase)
+		}
+	})
+	if err != nil || res.Removed != 1 {
+		t.Fatalf("compact: %+v %v", res, err)
+	}
+	want := []string{"compact", "compact:url-index", "compact:entry-point", "persist", "cleanup", "done"}
+	if fmt.Sprint(phases) != fmt.Sprint(want) {
+		t.Fatalf("phases: got %v want %v", phases, want)
+	}
+	if h.entryPoint < 0 || h.entryPoint >= h.Len() {
+		t.Fatalf("entry point %d out of range", h.entryPoint)
 	}
 }

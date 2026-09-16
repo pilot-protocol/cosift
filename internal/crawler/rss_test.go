@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 func feedCrawlerT(t *testing.T, body string) (*Crawler, string) {
@@ -16,7 +14,7 @@ func feedCrawlerT(t *testing.T, body string) (*Crawler, string) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.PerHostDelayMs = 0
 	cfg.RespectRobots = false
 	return New(cfg, newStoreT(t)), srv.URL
@@ -73,7 +71,7 @@ func TestFetchRSSHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	c := New(cfg, newStoreT(t))
 	if _, err := c.fetchRSS(t.Context(), srv.URL); err == nil {
 		t.Error("expected error for HTTP 418 feed")

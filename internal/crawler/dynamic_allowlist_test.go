@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/pilot-protocol/cosift/internal/config"
 )
 
 // TestDynamicAllowlist verifies that AddAllowedDomain promotes a domain so
@@ -15,7 +13,7 @@ func TestDynamicAllowlist(t *testing.T) {
 	dynFile := filepath.Join(t.TempDir(), "dyn-domains.txt")
 	t.Setenv("COSIFT_DYNAMIC_DOMAINS_FILE", dynFile)
 
-	cfg := config.Default().Crawler
+	cfg := testCrawlerCfg()
 	cfg.RespectRobots = false
 	cfg.IncludeDomains = []string{"arxiv.org"} // static allowlist (non-empty)
 	c := newBare(cfg)

@@ -24,6 +24,7 @@ content pipeline is reproducible from git, not only on the box.
 | wet-refresh | CommonCrawl WET (rotating offset, lexical-only) | daily 03:00 |
 | pypi/hf-task/github-topic | popular PyPI / HF-by-task / GitHub-by-topic | weekly |
 | sitemap-refresh | (disabled — net-negative on single box) | — |
+| cosift-compact | `POST /admin/hnsw-compact` when `/stats` zombies ≥ 15% (async job, polls `hnsw_compact`) | weekly Sun 04:30 |
 
 ## Notes
 - Curated ingester: `disable_link_following=true` + `include_domains` allowlist in

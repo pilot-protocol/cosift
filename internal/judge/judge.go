@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
+	"github.com/pilot-protocol/cosift/internal/promptsafe"
 )
 
 // Candidate is the minimal shape the judge needs. Excerpt is what the
@@ -88,10 +89,12 @@ func Judge(ctx context.Context, chat embed.ChatClient, query string, cands []Can
 		}
 		fmt.Fprintf(&sb, "[%d] %s\n\n", i, text)
 	}
-	user := fmt.Sprintf("Query: %s\n\nCandidates:\n%s\nFor each candidate, output a JSON object on its own line: {\"id\": <number>, \"score\": <float 0.0-1.0>}. score=0 means completely irrelevant; score=1 means directly answers the query. Output only the JSON lines, nothing else.", query, sb.String())
+	env := promptsafe.New()
+	user := fmt.Sprintf("Query: %s\n\nCandidates:\n%s\nFor each candidate, output a JSON object on its own line: {\"id\": <number>, \"score\": <float 0.0-1.0>}. score=0 means completely irrelevant; score=1 means directly answers the query. Output only the JSON lines, nothing else.",
+		query, env.Wrap(promptsafe.LabelCandidates, sb.String()))
 
 	resp, err := chat.Chat(ctx, []embed.ChatMsg{
-		{Role: "system", Content: opts.SystemPrompt},
+		{Role: "system", Content: env.System(opts.SystemPrompt)},
 		{Role: "user", Content: user},
 	})
 	if err != nil {

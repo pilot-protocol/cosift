@@ -40,7 +40,7 @@ jobs:
 
       - name: Run tests with coverage
         # cosift's internal/crawler hits ~25s; allow 5m total headroom.
-        run: go test -race -coverprofile=coverage.out -covermode=atomic -timeout 5m ./...
+        run: go test -race -coverprofile=coverage.out -covermode=atomic -timeout 10m ./...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

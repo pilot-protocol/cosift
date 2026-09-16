@@ -1,6 +1,13 @@
 package index
 
-import "log"
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/pilot-protocol/cosift/internal/store"
+)
 
 // compactProgressEvery paces the in-compact progress logs; the whole pass
 // runs under the write lock, so these lines are the only liveness signal.
@@ -30,6 +37,7 @@ func (h *HNSW) Rebuild() *HNSW {
 	fresh.efConstruction = h.efConstruction
 	fresh.efSearch = h.efSearch
 	fresh.levelMult = h.levelMult
+	fresh.slot = h.slot
 
 	for i := range h.nodes {
 		if len(h.nodes[i].vec) == 0 {
@@ -60,8 +68,120 @@ func (h *HNSW) Rebuild() *HNSW {
 // even without PQ. Compaction restores the recall the underlying corpus
 // can support.
 func (h *HNSW) Compact() (removed int) {
+	h.persistMu.Lock()
+	defer h.persistMu.Unlock()
+	return h.compactLocked(nil)
+}
+
+// DirtyCount reports how many nodes await an incremental persist.
+func (h *HNSW) DirtyCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.dirty)
+}
+
+// CompactProgress is the observable state of a CompactPersist run.
+type CompactProgress struct {
+	Phase                            string // compact | compact:url-index | compact:entry-point | persist | cleanup | done | error
+	NodesBefore, NodesAfter, Removed int
+	Written, Total                   int // persist progress
+}
+
+// CompactResult summarizes a finished CompactPersist.
+type CompactResult struct {
+	NodesBefore, NodesAfter, Removed  int
+	CompactDur, PersistDur            time.Duration
+	Persisted, Forced, CleanupSkipped bool
+}
+
+// CompactPersist compacts the graph and, unless nothing was removed and
+// !forcePersist, rewrites it into the inactive slot, then clears the previous
+// slot and the PQ family (codes are keyed by node id). Incremental persists
+// wait for the swap; the cleanup runs outside persistMu so checkpoints resume
+// during it. When stop is closed the cleanup is skipped (the next load
+// reclaims the stale slot). progress and stop may be nil.
+func (h *HNSW) CompactPersist(ctx context.Context, ps *store.PebbleStore, forcePersist bool, stop <-chan struct{}, progress func(CompactProgress)) (CompactResult, error) {
+	h.persistMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			h.persistMu.Unlock()
+		}
+	}()
+	report := func(p CompactProgress) {
+		if progress != nil {
+			progress(p)
+		}
+	}
+	res := CompactResult{NodesBefore: h.Len()}
+	report(CompactProgress{Phase: "compact", NodesBefore: res.NodesBefore})
+	t0 := time.Now()
+	res.Removed = h.compactLocked(func(phase string) {
+		report(CompactProgress{Phase: phase, NodesBefore: res.NodesBefore})
+	})
+	res.CompactDur = time.Since(t0)
+	res.NodesAfter = h.Len()
+	base := CompactProgress{NodesBefore: res.NodesBefore, NodesAfter: res.NodesAfter, Removed: res.Removed}
+	if res.Removed == 0 && !forcePersist {
+		base.Phase = "done"
+		report(base)
+		return res, nil
+	}
+	res.Forced = forcePersist && res.Removed == 0
+
+	base.Phase = "persist"
+	report(base)
+	t0 = time.Now()
+	old := h.Slot()
+	if err := h.persistSwapLocked(ctx, ps, func(p PersistProgress) {
+		pp := base
+		pp.Written, pp.Total = p.Written, p.Total
+		report(pp)
+	}); err != nil {
+		base.Phase = "error"
+		report(base)
+		return res, err
+	}
+	res.PersistDur = time.Since(t0)
+	res.Persisted = true
+	h.persistMu.Unlock()
+	locked = false
+
+	if stop != nil {
+		select {
+		case <-stop:
+			res.CleanupSkipped = true
+			base.Phase = "done"
+			report(base)
+			return res, nil
+		default:
+		}
+	}
+	base.Phase = "cleanup"
+	report(base)
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+	if err := ps.ClearVectorSlot(ctx, old); err != nil {
+		base.Phase = "error"
+		report(base)
+		return res, fmt.Errorf("clear old slot: %w", err)
+	}
+	if err := ps.ClearPQFamily(ctx); err != nil {
+		base.Phase = "error"
+		report(base)
+		return res, fmt.Errorf("clear pq family: %w", err)
+	}
+	base.Phase = "done"
+	report(base)
+	return res, nil
+}
+
+func (h *HNSW) compactLocked(phase func(string)) (removed int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if phase == nil {
+		phase = func(string) {}
+	}
 
 	if len(h.nodes) == 0 {
 		return 0
@@ -94,6 +214,9 @@ func (h *HNSW) Compact() (removed int) {
 		}
 	}
 	removed = len(h.nodes) - len(newNodes)
+	if removed == 0 {
+		return 0
+	}
 
 	// 2. Remap neighbor lists. Iterating in increasing order so writes only
 	//    touch slots we've already read from the source array.
@@ -115,21 +238,34 @@ func (h *HNSW) Compact() (removed int) {
 		}
 	}
 
-	// 3. Pick new entry point as the highest-level surviving node.
+	// 3. Rebuild the URL index and counters; every id changed, so the dirty
+	//    set is meaningless until the caller's full persist rewrites the graph.
+	phase("compact:url-index")
+	t0 := time.Now()
+	log.Printf("hnsw compact: rebuilding url index for %d nodes", len(newNodes))
 	h.nodes = newNodes
 	h.codes = newCodes
-	if len(h.nodes) == 0 {
-		h.entryPoint = -1
-		h.maxLevel = 0
-		return removed
+	h.byURL = make(map[string][]int32, len(h.byURL))
+	for i := range h.nodes {
+		h.byURL[h.nodes[i].url] = append(h.byURL[h.nodes[i].url], int32(i))
 	}
-	h.entryPoint = 0
-	h.maxLevel = h.nodes[0].level
-	for i := 1; i < len(h.nodes); i++ {
-		if h.nodes[i].level > h.maxLevel {
+	h.valid = len(h.nodes)
+	h.dirty = make(map[int32]struct{})
+	h.renumbered = true
+	log.Printf("hnsw compact: url index rebuilt in %s", time.Since(t0).Round(time.Millisecond))
+
+	// 4. Pick new entry point as the highest-level surviving node.
+	phase("compact:entry-point")
+	t0 = time.Now()
+	log.Printf("hnsw compact: scanning %d nodes for entry point", len(h.nodes))
+	h.entryPoint = -1
+	h.maxLevel = 0
+	for i := range h.nodes {
+		if i == 0 || h.nodes[i].level > h.maxLevel {
 			h.entryPoint = i
 			h.maxLevel = h.nodes[i].level
 		}
 	}
+	log.Printf("hnsw compact: entry point %d (level %d) in %s", h.entryPoint, h.maxLevel, time.Since(t0).Round(time.Millisecond))
 	return removed
 }
