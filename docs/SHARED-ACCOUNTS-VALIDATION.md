@@ -3,9 +3,10 @@
 Cosift PR #58 merged at `c8ea845913829d5eece571c6facbb4462ab313c9`. The
 auth/MCP/installer companions have also merged and released; this record
 separates the original local tests from the verified deployment checks below.
-The v0.2.7 engine/CLI release finished and existing-host cutover was in progress
-at the 2026-09-17 18:11 UTC checkpoint. Real email and authenticated service
-checks are recorded below; no Stripe charge is claimed.
+The v0.2.7 engine/CLI release finished and the existing-host public cutover
+completed on 2026-09-17 at 18:23:08 UTC. Real email and authenticated service
+checks are recorded below; final public-client acceptance remained in progress
+at that checkpoint. No Stripe charge is claimed.
 
 ## Checks completed
 
@@ -76,6 +77,11 @@ cross-repository and browser checks.
 | Credential boundaries | Public auth revoke without a credential returned Cosift JSON 401; public MCP calls with missing or fabricated canonical tokens returned application JSON 401, not infrastructure 503. Production debug routes returned 404; staging debug routes were disabled again after attribution checks |
 | Proxy attribution | The actual gateway egress was measured. Private staging kept two different forwarded client addresses in separate buckets; a direct forged forwarding chain resolved to the actual caller. Production trusts only the measured gateway `/32` and Cloud Run peer `/32` |
 | Real shared account | Production email-code login succeeded. Against the gateway on host loopback, anonymous `/api/me` returned 401; repeated authenticated identity was stable, credits returned the expected shape, gateway/direct-production-MCP topic lists matched, and authenticated BM25 `k=20` search returned 20 hits. This exercised live Firestore, Secret Manager and MCP with the same real account; no topic mutation was required |
+| Signed engine upgrade | Official v0.2.7 Linux ARM64 artifact passed SHA-256/minisign verification against the host trust anchor. One graceful restart completed; HNSW finished loading and the existing engine returned healthy responses. The full-corpus process was not duplicated |
+| Retrieval comparison | Both BM25 baseline queries preserved all six results and their order. Hybrid TLS preserved all six URLs, with ranks 3/4 swapped. Search returned 200 in 122–265 ms, Answer in 3.506 s, Research in 2.031 s. The existing weak Go evidence remained visible: Answer declined and Research noted missing specific evidence |
+| Live moderation | Useful text was allowed, garbage rejected as low quality, and harmful promotion with embedded prompt injection rejected as phishing. Anonymous moderation returned 401. These moderation fixtures were not indexed |
+| Public cutover | Caddy reloaded successfully at 18:23:08 UTC; public/origin `/api/auth/config` report shared mode, root opens login, and operational routes are blocked. The community unit uses the same v0.2.7 binary path as the engine with its old standalone override removed. Community backup upload succeeded and its timer is enabled |
+| Local contribution | An authenticated Rust text/metadata/local-embedding artifact passed validation and reached Indexed. The account balance remained zero for this existing-page check; new-content credit fulfillment and durable receipt acceptance are separate checks. Repeating the URL through CSV reported one duplicate and zero accepted |
 | Public installer | [PR #1](https://github.com/pilot-protocol/cosift-install/pull/1) merged at `d18edef`. Full Git history and all issue/PR/release content had zero Gitleaks findings; custom-token inspection found only deterministic fixtures. The repository is public. `v0.4.0` and `v1` resolve to that merge; unauthenticated downloads returned 200 and the exact tested SHA-256 `fca1e4887b98e4b18957e48932203e3f0510e249b37baeaddd9292bcc4f8945b` |
 
 The original Google-login blocker is resolved. These checks establish deployed
@@ -84,9 +90,9 @@ themselves establish a completed authenticated web/CLI/MCP workflow.
 
 ## Acceptance still recorded separately
 
-After the host cutover, repeat the shared-account checks through the public web
-app, CLI and MCP; exercise revocation, saved requests, quota/credit handling and
-safe contributions. Observe credential
+Complete the shared-account checks through the public web app, CLI and MCP;
+exercise revocation, saved requests, quota/credit handling and new-content
+rewards. Observe credential
 refresh over its real lifetime. Retain the existing model and capacity gates;
 the pre-upgrade search/Answer/Research baseline records relevance limitations,
 so a healthy endpoint is not evidence of strong answer quality.

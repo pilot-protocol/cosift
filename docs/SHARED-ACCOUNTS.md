@@ -3,10 +3,12 @@
 The integration merged in [Cosift PR #58](https://github.com/pilot-protocol/cosift/pull/58)
 at `c8ea845913829d5eece571c6facbb4462ab313c9` on 2026-09-17. The authorized
 v0.2.7 release completed successfully in [workflow 35255963898](https://github.com/pilot-protocol/cosift/actions/runs/35255963898).
-At the 18:11 UTC rollout checkpoint, all five signed platform binaries and the
-public verification key were published. Production email-code login and the
-authenticated gateway/Firestore/MCP account checks had passed. Existing-host
-engine/gateway cutover and public client acceptance were still separate checks.
+All five signed platform binaries and the public verification key are published.
+The existing-host engine/gateway cutover completed at 18:23:08 UTC: Caddy
+reloaded successfully, both public/origin auth-config endpoints report shared
+mode, the public entry opens login, and operational routes are blocked.
+Production email-code login and authenticated gateway/Firestore/MCP account
+checks passed. Final public client acceptance is recorded separately below.
 The companion services and public installer are released as recorded below.
 
 The web UI and CLI add saved requests, contribution moderation, quotas and a
@@ -233,8 +235,11 @@ contains topic/lookup/request tools, not search, so this route does not loop.
 The repository patch files remain historical reproduction artifacts. The live
 MCP image includes the merged forwarding/runtime changes; its subsequent
 deployment-script-only commit selected the project explicitly.
-The [community rollout gates](COMMUNITY-ROLLOUT.md) still apply to the existing
-host's engine/gateway cutover and signed CLI release.
+The signed v0.2.7 engine is healthy with HNSW ready; the existing community unit
+uses the same binary path, and its old standalone override has been removed.
+The community backup completed an upload and its timer is enabled. The
+[community rollout gates](COMMUNITY-ROLLOUT.md) remain the acceptance and
+rollback procedure for this deployment.
 Back up the local database before linking existing users; do not downgrade a
 linked database to standalone password auth or restore a stale credit ledger.
 
@@ -246,9 +251,11 @@ login blocker has been resolved; auth/MCP deployment and ingress checks used
 authenticated cloud access. Their public health and invalid-token contracts pass.
 Production email login passed, followed by stable account identity and credits
 responses, matching gateway/direct-MCP topic lists, and a gateway BM25 search
-returning 20 hits. These used a real account and production services. Public
-client checks after cutover, revocation, saved requests and safe contribution
-handling remain distinct acceptance work. Do not count synthetic fixtures as
+returning 20 hits. These used a real account and production services. Final
+public Search/Answer/Research and MCP client checks, revocation, saved requests
+and new-content credit fulfillment remain distinct acceptance work. A real
+local Rust artifact passed validation and reached Indexed; a repeated CSV URL
+was deduplicated. Do not count synthetic moderation fixtures as
 real production content. Stripe remains disabled pending its API key and
 webhook signing secret plus the checks in [STRIPE.md](STRIPE.md).
 
