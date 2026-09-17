@@ -23,12 +23,13 @@ failed backend requests do not consume the allowance. HTTP 429 includes
 `Retry-After`, `retry_at`, and `retry_after_seconds`. People on a shared public IP
 share this persistent, atomic guest allowance. **Contributions require login.**
 
-Members receive **60 shared free requests per minute plus 1,000 free credits each
-UTC calendar month**, 1,000 new contributed URLs per rolling 24 hours, and 200
+Members receive **1,000 free credits each UTC calendar month**,
+1,000 new contributed URLs per rolling 24 hours, and 200
 saved searches. The monthly grant is applied once per account for the current
 month on authenticated use; it does not accumulate grants for inactive past
-months. All unused credits carry over. Mode caps and credit costs are described
-below.
+months. All unused credits carry over. Every successful authenticated Search,
+Answer, or Research request spends credits, including the first request. There
+is no free per-minute member bypass. Mode caps and credit costs are described below.
 
 ## Start the services
 
@@ -115,9 +116,9 @@ multiple rewards. Existing corpus URLs and rejected/unverified submissions do
 not earn credits. A submission acknowledgement is not a reward: the backend must
 confirm approved new content was indexed.
 
-After the shared free 60 requests/minute, successful extra requests spend credits:
+Every successful authenticated retrieval spends credits:
 
-| Mode | Credits per extra request | Hard cap per account |
+| Mode | Credits per successful request | Hard cap per account |
 | --- | --- | --- |
 | Search | 1 | 120/minute |
 | Answer | 2 | 20/minute |
@@ -129,12 +130,18 @@ Credits cannot bypass hard caps. Mode limits persist across restarts and are
 shared by sessions and public endpoint aliases. Failed backend requests release
 reservations and refund debits. `GET /api/credits` returns the balance, current UTC
 month's free/earned/purchased/spent activity, and policy. MCP search uses this same
-gateway ledger; the MCP service also has a separate daily tool-call cap.
+gateway ledger; the MCP service also has a separate daily tool-call cap. Credits
+are reserved atomically before retrieval and retained only for a successful
+backend response. Insufficient credit rejects the request before backend work;
+contribute approved new content, add credits when billing is available, or wait
+for the next monthly grant. Reading a balance or managing saved requests does
+not itself spend retrieval credits.
 
 ## Plans and payments
 
-The **Free plan requires no subscription** and includes the monthly 1,000 credits
-and 60 free requests/minute. An optional **$5/month subscription adds 50,000 credits
+The **Free plan requires no subscription** and includes the monthly 1,000 credits.
+Those credits pay for requests at the same 1/2/3 rates. An optional
+**$5/month subscription adds 50,000 credits
 per paid month** and unlocks one-time **$5/50,000-credit top-ups**. Subscribers still
 receive the free monthly credits. Unused credits carry over; cancellation does
 not erase remaining earned or purchased credits. Refunds revoke the corresponding
@@ -153,13 +160,15 @@ through the same portal policy as `/api/*`. These public aliases support GET wit
 portal. Unlisted native routes return 404 to prevent quota bypasses. The internal
 loopback engine remains available to trusted operators.
 `GET /api/limits` publishes current limits. Operators can configure
-`-guest-interval`, `-member-free-rpm`, `-search-rpm`, `-answer-rpm`, and
-`-research-per-10m` on the community command. A guest interval change preserves
-the original request time instead of resetting all allowances. In-flight requests
-reserve a mode slot; backend failures release it and refund charged credits.
-The shared free member allowance also persists across restarts. Failed backend
-requests release both free and mode reservations. At the defaults, Search-only
-usage can consume 60 free requests and then 60 credit-funded requests per minute.
+`-guest-interval`, `-search-rpm`, `-answer-rpm`, and `-research-per-10m` on
+the community command. `-member-free-rpm` is deprecated and ignored: it cannot
+restore the old uncharged member allowance. A guest interval change preserves
+the original request time instead of resetting allowances. In-flight requests
+reserve a mode slot and, for authenticated retrieval, the mode's credit cost.
+Failed backend requests release the mode reservation and refund credits. Mode
+limits and balances persist across restarts. At the defaults, an account with
+sufficient balance can make up to 120 Search requests/minute, spending one credit
+for each successful response.
 
 ## CLI and CSV
 
@@ -248,7 +257,7 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. 
 | `GET /api/saved` | Member | Own saved searches |
 | `POST /api/saved` | Member | `{query,mode}`; mode defaults to `search`; idempotent per account/query/mode |
 | `DELETE /api/saved/{id}` | Member | Removes an owned saved search |
-| `GET /api/credits` | Member | Balance, monthly activity, weighted request costs, subscription state, top-up eligibility, and payment mode |
+| `GET /api/credits` | Member | Balance, monthly activity, `all_authenticated_requests_metered:true`, weighted request costs, subscription state, top-up eligibility, and payment mode |
 | `POST /api/payments/checkout` | Member | `{kind:"subscription"\|"topup",idempotency_key}`; returns a hosted Stripe Checkout URL |
 | `POST /api/payments/portal` | Member | `{}`; returns an existing subscriber's restricted billing portal URL |
 | `POST /api/payments/webhook` | Stripe signature | Paid invoice/top-up fulfillment, subscription state, and refund reconciliation |
