@@ -56,7 +56,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	sessionFile := fs.String("session-file", os.Getenv("COSIFT_SESSION_FILE"), "private saved CLI session (or COSIFT_SESSION_FILE)")
 	login := fs.Bool("login", false, "save an authenticated CLI session")
 	logout := fs.Bool("logout", false, "revoke and delete the saved CLI session")
-	guest := fs.Bool("guest", false, "submit without login (server guest limits apply)")
+	guest := fs.Bool("guest", false, "perform Search, Answer or Research without login; contributions require login")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -146,7 +146,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		return fmt.Errorf("choose COSIFT_TOKEN or a saved session, not both")
 	}
 	if token == "" && !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
-		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest")
+		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest for retrieval")
 	}
 	origin := strings.TrimRight(*server, "/")
 	values := fs.Args()
@@ -161,6 +161,9 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		return fmt.Errorf("login requires COSIFT_TOKEN from cosift-install, or COSIFT_EMAIL and COSIFT_PASSWORD for standalone servers")
 	}
 	// Validate intent before login, reading stdin, or touching the local index.
+	if *guest && !*requestMode {
+		return fmt.Errorf("contributions and account operations require login; -guest is only for -request")
+	}
 	if *requestMode {
 		if *local || *credits || len(values) > 0 || *file != "" {
 			return fmt.Errorf("request cannot be combined with contributions or credits")

@@ -109,7 +109,7 @@ func TestCommunityContributeCLI(t *testing.T) {
 	}
 }
 
-func TestCommunityGuestCLI(t *testing.T) {
+func TestCommunityGuestContributionCLIRejected(t *testing.T) {
 	t.Setenv("COSIFT_EMAIL", "")
 	t.Setenv("COSIFT_PASSWORD", "")
 	called := 0
@@ -122,10 +122,10 @@ func TestCommunityGuestCLI(t *testing.T) {
 		w.Write([]byte(`{"accepted":1}`))
 	}))
 	defer backend.Close()
-	if err := runContribute(context.Background(), []string{"-server", backend.URL, "-guest", "https://example.com/guide"}); err != nil {
-		t.Fatal(err)
+	if err := runContribute(context.Background(), []string{"-server", backend.URL, "-guest", "https://example.com/guide"}); err == nil {
+		t.Fatal("guest contribution was accepted")
 	}
-	if called != 1 {
+	if called != 0 {
 		t.Fatalf("requests %d", called)
 	}
 }
