@@ -21,6 +21,7 @@ func stripeTestServer(t *testing.T) (*Server, *http.Cookie, User) {
 	s := testServer(t, nil)
 	s.cfg.StripeSecretKey = "sk_test_fake_for_unit_tests"
 	s.cfg.StripeWebhookSecret = "whsec_fake_for_unit_tests"
+	s.cfg.AllowTestPayments = true // This fixture always has an isolated temporary ledger.
 	cookie := account(t, s, "payments@example.com")
 	var u User
 	if err := json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &u); err != nil {
@@ -90,6 +91,9 @@ func TestStripeCheckoutConfigurationAuthAndServerPrice(t *testing.T) {
 			if r.Form.Get(key) != want {
 				t.Errorf("%s=%q want %q", key, r.Form.Get(key), want)
 			}
+		}
+		if !strings.Contains(r.Form.Get("line_items[0][price_data][product_data][description]"), "Search 1, Answer 2, Research 3") {
+			t.Error("checkout did not disclose the different request costs")
 		}
 		order := r.Form.Get("metadata[cosift_order_id]")
 		if order == "" || r.Header.Get("Idempotency-Key") != order || r.Form.Get("payment_intent_data[metadata][cosift_order_id]") != order {
@@ -302,5 +306,53 @@ func TestStripeModeUsesOnlyKeyPrefix(t *testing.T) {
 	s.cfg.StripeSecretKey = "rk_live_test_value"
 	if !s.stripeLive() {
 		t.Fatal("restricted live key not recognized")
+	}
+}
+
+func TestStripeTestPaymentsRequireExplicitIsolatedQAOptIn(t *testing.T) {
+	s, cookie, u := stripeTestServer(t)
+	seedOrder(t, s, u, "test-mode-order")
+	s.cfg.AllowTestPayments = false
+	before := paymentBalance(t, s, u)
+	for _, prefix := range []string{"sk_test_", "rk_test_"} {
+		s.cfg.StripeSecretKey = prefix + "unit_test_only"
+		if s.paymentsEnabled() || s.paymentMode() != "unavailable" {
+			t.Fatal("test key enabled public credit purchases by default")
+		}
+		expect(t, request(t, s, "POST", "/api/payments/checkout", map[string]string{"idempotency_key": "disabled-test-checkout"}, cookie), 503)
+		expect(t, deliver(s, "evt_test_disabled", "checkout.session.completed", paidObject(u, "test-mode-order")), 503)
+		if paymentBalance(t, s, u) != before {
+			t.Fatal("disabled test event minted credits")
+		}
+	}
+	s.cfg.AllowTestPayments = true
+	if !s.paymentsEnabled() || s.paymentMode() != "test" {
+		t.Fatal("isolated QA opt-in did not enable test mode")
+	}
+	expect(t, deliver(s, "evt_test_enabled", "checkout.session.completed", paidObject(u, "test-mode-order")), 200)
+	if paymentBalance(t, s, u) != before+50000 {
+		t.Fatal("isolated test fulfillment failed")
+	}
+	s.cfg.AllowTestPayments = false
+	s.cfg.StripeSecretKey = "sk_live_unit_test_only"
+	if !s.paymentsEnabled() || s.paymentMode() != "live" {
+		t.Fatal("live configuration incorrectly requires test opt-in")
+	}
+	s.cfg.StripeWebhookSecret = ""
+	if s.paymentsEnabled() || s.paymentMode() != "unavailable" {
+		t.Fatal("missing webhook secret enabled purchases")
+	}
+}
+
+func TestStripeCreditPackDisclosesModePrices(t *testing.T) {
+	pack := creditPack()
+	if pack["amount_cents"] != 500 || pack["credits"] != 50000 || pack["usd_per_1000_requests"] != "0.10" || pack["usd_per_1000_credits"] != "0.10" {
+		t.Fatal("credit pack price changed")
+	}
+	prices := pack["usd_per_1000_requests_by_mode"].(map[string]string)
+	for mode, want := range map[string]string{"search": "0.10", "answer": "0.20", "research": "0.30"} {
+		if prices[mode] != want {
+			t.Fatalf("%s price=%s want %s", mode, prices[mode], want)
+		}
 	}
 }

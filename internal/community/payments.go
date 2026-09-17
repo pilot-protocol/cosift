@@ -24,14 +24,32 @@ const packCredits = 50000
 var checkoutKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 
 func creditPack() map[string]any {
-	return map[string]any{"amount_cents": packAmountCents, "currency": "usd", "credits": packCredits, "usd_per_1000_requests": "0.10"}
+	prices := map[string]string{}
+	for mode, cost := range requestCreditCosts() {
+		prices[mode] = fmt.Sprintf("%.2f", float64(packAmountCents*10*cost)/float64(packCredits))
+	}
+	// The legacy field remains the Search/base rate for existing clients.
+	return map[string]any{"amount_cents": packAmountCents, "currency": "usd", "credits": packCredits, "usd_per_1000_requests": prices["search"], "usd_per_1000_credits": "0.10", "usd_per_1000_requests_by_mode": prices}
 }
 func (s *Server) paymentsEnabled() bool {
 	key := s.cfg.StripeSecretKey
-	return (strings.HasPrefix(key, "sk_test_") || strings.HasPrefix(key, "sk_live_") || strings.HasPrefix(key, "rk_test_") || strings.HasPrefix(key, "rk_live_")) && strings.HasPrefix(s.cfg.StripeWebhookSecret, "whsec_")
+	testKey := strings.HasPrefix(key, "sk_test_") || strings.HasPrefix(key, "rk_test_")
+	// Test cards must never mint spendable production credits. Only an
+	// explicitly isolated QA ledger may opt into processing test payments.
+	return (s.stripeLive() || (testKey && s.cfg.AllowTestPayments)) && strings.HasPrefix(s.cfg.StripeWebhookSecret, "whsec_")
 }
 func (s *Server) stripeLive() bool {
 	return strings.HasPrefix(s.cfg.StripeSecretKey, "sk_live_") || strings.HasPrefix(s.cfg.StripeSecretKey, "rk_live_")
+}
+
+func (s *Server) paymentMode() string {
+	if !s.paymentsEnabled() {
+		return "unavailable"
+	}
+	if s.stripeLive() {
+		return "live"
+	}
+	return "test"
 }
 
 type checkoutOrder struct {
@@ -77,6 +95,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 		respond(w, 200, map[string]string{"url": order.CheckoutURL})
 		return
 	}
+	costs := requestCreditCosts()
 	form := url.Values{
 		"mode": {"payment"}, "payment_method_types[0]": {"card"},
 		"adaptive_pricing[enabled]":                      {"false"},
@@ -85,7 +104,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 		"line_items[0][price_data][currency]":                  {order.Currency},
 		"line_items[0][price_data][unit_amount]":               {strconv.FormatInt(order.Amount, 10)},
 		"line_items[0][price_data][product_data][name]":        {"Cosift prepaid credits"},
-		"line_items[0][price_data][product_data][description]": {fmt.Sprintf("%d credits; one per extra request within account rate limits. One-time purchase.", order.Credits)},
+		"line_items[0][price_data][product_data][description]": {fmt.Sprintf("%d credits; extra Search %d, Answer %d, Research %d credits within account rate limits. One-time purchase.", order.Credits, costs["search"], costs["answer"], costs["research"])},
 		"line_items[0][quantity]":                              {"1"},
 		"success_url":                                          {s.cfg.PublicURL + "/?payment=success"}, "cancel_url": {s.cfg.PublicURL + "/?payment=cancelled"},
 	}
