@@ -123,23 +123,29 @@ uses server compute; local embeddings do not bypass validation.
 
 ## Allowance and credits
 
-Web, CLI, and MCP searches share the account's gateway allowance and credit ledger.
-Every account gets **60 shared free requests per minute plus 1,000 free credits
-per UTC calendar month**, with no subscription required. The monthly grant is
+Web, CLI, and MCP searches share the account's gateway limits and credit ledger.
+Every account gets **1,000 free credits per UTC calendar month**, with no
+subscription required. The monthly grant is
 applied once on authenticated use in the current month; inactive past months are
 not backfilled. Unused credits carry over.
 
 A verified new contribution earns **10 credits** once per unique content.
-Rejected, unverified, duplicate, or already-indexed pages earn none. After the
-shared free requests, an extra successful request spends:
+Rejected, unverified, duplicate, or already-indexed pages earn none. Every
+successful authenticated retrieval spends credits, starting with the first request:
 
-| Mode | Credits | Hard cap per account |
+| Mode | Credits per successful request | Hard cap per account |
 | --- | --- | --- |
 | Search | 1 | 120/minute |
 | Answer | 2 | 20/minute |
 | Research | 3 | 3/10 minutes |
 
-Failed backend requests release reservations and refund credits. Credits do not
+There is no free per-minute member bypass. Credits are reserved before backend
+work; insufficient credit stops the request. Failed backend requests release
+reservations and refund credits. The monthly free grant, earned credits, and
+purchases all fund the same balance. Guest retrieval has one shared cooldown per
+public IP: successful Search waits 30 minutes, Answer 60, and Research 90. The
+cooldown blocks every mode, so changing modes does not bypass it; failed backend
+requests do not consume it. Web and CLI use the same guest policy. Credits do not
 bypass mode limits or MCP's separate daily call cap. Check
 [`/api/limits`](https://cosift.pilotprotocol.network/api/limits) and the authenticated
 credits view for current policy. Respect retry guidance after a rate limit.

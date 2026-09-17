@@ -38,13 +38,14 @@ const dailyContributionLimit = 1000
 
 type Config struct {
 	Shared                      sharedaccount.Provider
+	SharedPasswordEnabled       bool // Enable only after the upstream password service is deployed.
 	DataDir                     string
 	Backend                     string
 	PublicURL                   string
 	AdminToken                  string // Only used for crawl-enqueue, never forwarded with searches.
 	TrustedProxies              []string
 	GuestInterval               time.Duration
-	MemberFreeRPM               int
+	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
 	SearchRPM                   int
 	AnswerRPM                   int
 	ResearchPer10Min            int
@@ -133,10 +134,11 @@ func Open(cfg Config) (*Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/auth/config", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil})
+		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil, "supports_password": s.sharedPasswordProvider() != nil})
 	})
 	mux.HandleFunc("POST /api/auth/start", s.sharedStart)
 	mux.HandleFunc("POST /api/auth/verify", s.sharedFinish)
+	mux.HandleFunc("POST /api/auth/password", s.sharedPassword)
 	mux.HandleFunc("POST /api/shared", s.auth(s.sharedTool))
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
@@ -475,30 +477,22 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	}
 	completed := false
 	if u.ID == "" {
-		finish, ok := s.reserveGuest(w, r)
+		finish, ok := s.reserveGuest(w, r, mode)
 		if !ok {
 			return
 		}
 		defer func() { finish(completed) }()
 	}
-	// Hard mode caps apply before free allowance or credit charging.
+	// Hard mode caps apply before charging every authenticated request.
 	finishMode, ok := s.allowRetrieval(w, r, u, mode)
 	if !ok {
 		return
 	}
 	defer func() { finishMode(completed) }()
 	if u.ID != "" {
-		finish, free, err := s.reserveFree(r, u)
-		if err != nil {
-			problem(w, 503, "request allowance unavailable")
+		finish, ok := s.reserveCredit(w, r, u, mode)
+		if !ok {
 			return
-		}
-		if !free {
-			var ok bool
-			finish, ok = s.reserveCredit(w, r, u, mode)
-			if !ok {
-				return
-			}
 		}
 		defer func() { finish(completed) }()
 	}

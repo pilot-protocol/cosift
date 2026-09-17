@@ -83,8 +83,10 @@ preserved. No new ranking change is included.
 - Search, Answer, Research, saved requests, URL/CSV contributions, local text /
   metadata / embedding contributions, moderation, credits and disabled-by-default
   Stripe purchases retain the existing community implementation.
-- Web, CLI and MCP searches share each account's local allowance and
-  credit ledger. MCP retains its own upstream daily call cap (currently 1,000),
+- Web, CLI, and MCP searches share one account ledger. Every successful
+  authenticated Search/Answer/Research costs 1/2/3 credits from its first request;
+  the free plan grants 1,000 credits each UTC month. There is no uncharged
+  per-minute member allowance. MCP retains its upstream daily call cap (currently 1,000),
   including topic tools. Credits do not bypass that cap or buy an article.
 
 Andrei's current MCP uses `NullArticleStore` with articles disabled. This work

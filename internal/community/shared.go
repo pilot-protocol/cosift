@@ -195,20 +195,95 @@ func (s *Server) sharedFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		RequestID string `json:"request_id"`
-		Code      string `json:"code"`
+		RequestID string  `json:"request_id"`
+		Code      string  `json:"code"`
+		Password  *string `json:"password"`
 	}
 	if decode(r, &in) != nil || len(in.RequestID) != 26 || len(in.Code) != 6 || strings.Trim(in.Code, "0123456789") != "" {
 		sharedProblem(w, sharedaccount.ErrInvalid)
 		return
 	}
-	issued, err := s.cfg.Shared.Finish(sharedaccount.WithClientIP(r.Context(), s.clientIP(r)), in.RequestID, in.Code)
+	ctx := sharedaccount.WithClientIP(r.Context(), s.clientIP(r))
+	var issued sharedaccount.Issued
+	var err error
+	if in.Password != nil {
+		provider := s.sharedPasswordProvider()
+		if provider == nil {
+			problem(w, 404, "shared password login is not enabled")
+			return
+		}
+		if len(*in.Password) < 12 || len(*in.Password) > 256 {
+			problem(w, 400, "password must contain 12–256 UTF-8 bytes")
+			return
+		}
+		issued, err = provider.FinishPassword(ctx, in.RequestID, in.Code, *in.Password)
+	} else {
+		issued, err = s.cfg.Shared.Finish(ctx, in.RequestID, in.Code)
+	}
 	if err != nil {
 		sharedProblem(w, err)
 		return
 	}
-	identity, err := s.cfg.Shared.Verify(r.Context(), issued.Token)
-	if err == nil && identity.UID != issued.UID {
+	s.sharedIssued(w, r, issued, "")
+}
+
+func (s *Server) sharedPasswordProvider() sharedaccount.PasswordProvider {
+	if !s.cfg.SharedPasswordEnabled || s.cfg.Shared == nil {
+		return nil
+	}
+	provider, _ := s.cfg.Shared.(sharedaccount.PasswordProvider)
+	return provider
+}
+
+func sharedPasswordProblem(w http.ResponseWriter, err error) {
+	if errors.Is(err, sharedaccount.ErrUnauthorized) || errors.Is(err, sharedaccount.ErrBanned) {
+		problem(w, 401, "invalid email or password")
+		return
+	}
+	sharedProblem(w, err)
+}
+
+func (s *Server) sharedPassword(w http.ResponseWriter, r *http.Request) {
+	provider := s.sharedPasswordProvider()
+	if provider == nil {
+		problem(w, 404, "shared password login is not enabled")
+		return
+	}
+	if !s.allow("shared-password:"+s.clientIP(r), 10, time.Minute) {
+		sharedProblem(w, sharedaccount.ErrLimited)
+		return
+	}
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if decode(r, &in) != nil {
+		sharedProblem(w, sharedaccount.ErrInvalid)
+		return
+	}
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	a, err := mail.ParseAddress(in.Email)
+	if err != nil || a.Address != in.Email || len(in.Email) > 254 || len(in.Password) < 12 || len(in.Password) > 256 {
+		sharedPasswordProblem(w, sharedaccount.ErrUnauthorized)
+		return
+	}
+	issued, err := provider.Password(sharedaccount.WithClientIP(r.Context(), s.clientIP(r)), in.Email, in.Password)
+	if err != nil {
+		sharedPasswordProblem(w, err)
+		return
+	}
+	s.sharedIssued(w, r, issued, in.Email)
+}
+
+// Both entry points establish the same verified UID and canonical token cookie.
+// Password sign-in also binds the verified email to the submitted account.
+func (s *Server) sharedIssued(w http.ResponseWriter, r *http.Request, issued sharedaccount.Issued, email string) {
+	_, err := sharedaccount.Parse(issued.Token)
+	var identity sharedaccount.Identity
+	if err == nil {
+		identity, err = s.cfg.Shared.Verify(r.Context(), issued.Token)
+	}
+	if err == nil && (identity.UID != issued.UID || email != "" && identity.Email != email) {
 		err = sharedaccount.ErrUnauthorized
 	}
 	var u User
@@ -219,7 +294,11 @@ func (s *Server) sharedFinish(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.cfg.Shared.Revoke(ctx, issued.Token)
-		sharedProblem(w, err)
+		if email != "" {
+			sharedPasswordProblem(w, err)
+		} else {
+			sharedProblem(w, err)
+		}
 		return
 	}
 	http.SetCookie(w, s.sharedCookie(issued.Token, int(sessionAge.Seconds())))

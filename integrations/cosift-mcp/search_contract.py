@@ -36,7 +36,7 @@ async def main():
         first, second = await asyncio.gather(search(TOKENS[0]), search(TOKENS[1]))
         assert not first.get("unavailable") and not second.get("unavailable"), (first, second)
         assert first["retriever"] == "bm25" and second["retriever"] == "bm25"
-        # A second request by Alice hits her free quota; Bob never used Alice's allowance.
+        # Alice's second request hits her hard cap; Bob's separate paid request succeeds.
         limited = await search(TOKENS[0])
         assert limited.get("unavailable"), limited
     print("MCP → community → engine: identity isolation, quota enforcement, BM25/k contract passed")

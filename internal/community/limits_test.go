@@ -39,7 +39,7 @@ func TestModeCapsShareAliasesAndCannotSpendPastCap(t *testing.T) {
 	}
 	var balance int
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != monthlyFreeCredits+94 {
+	if balance != monthlyFreeCredits+93 {
 		t.Fatalf("charged rejected request: %d", balance)
 	}
 	// A new process must not grant a new expensive Research allowance.
@@ -98,6 +98,7 @@ func TestGuestResearchSeparateFromSharedAllowance(t *testing.T) {
 
 func TestGuestPolicyMigrationPreservesRequestTime(t *testing.T) {
 	s := testServer(t, nil)
+	s.cfg.GuestInterval = time.Minute
 	usedAt := time.Now().Unix() - 10
 	s.db.Exec(`DELETE FROM settings WHERE key='guest_interval_seconds'`)
 	s.db.Exec(`INSERT INTO guest_usage VALUES('legacy',?,'reservation')`, usedAt+1800)
@@ -113,7 +114,7 @@ func TestGuestPolicyMigrationPreservesRequestTime(t *testing.T) {
 	}
 }
 
-func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
+func TestDefaultSearchMeteringAndCapsSurviveRestart(t *testing.T) {
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"hits":[]}`)) }))
 	cookie := account(t, s, "default-credits@example.com")
 	var u User
@@ -124,7 +125,7 @@ func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
 	if _, err := s.db.Exec(`INSERT INTO credit_ledger VALUES('seed-default',?,100,'test',0)`, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The 61st request must work once credits are available under the defaults.
+	// Every request spends credits, including the first60 and requests after restart.
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
 	reopened, err := Open(s.cfg)
 	if err != nil {
@@ -134,20 +135,20 @@ func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
 	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 200)
 	var balance int
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != monthlyFreeCredits+98 {
-		t.Fatalf("restart reset free allowance: balance=%d want1098", balance)
+	if balance != monthlyFreeCredits+38 {
+		t.Fatalf("restart changed metering: balance=%d want1038", balance)
 	}
 	for range 58 {
 		expect(t, request(t, reopened, "GET", "/api/search?q=test", nil, cookie), 200)
 	}
 	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 429)
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != monthlyFreeCredits+40 {
+	if balance != monthlyFreeCredits-20 {
 		t.Fatalf("wrong charge total: %d", balance)
 	}
 }
 
-func TestFailedRetrievalRefundsFreeAllowance(t *testing.T) {
+func TestFailedRetrievalRefundsMeteredCredits(t *testing.T) {
 	fail := true
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if fail {
@@ -163,7 +164,7 @@ func TestFailedRetrievalRefundsFreeAllowance(t *testing.T) {
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
 	var debits int
-	if err := s.db.QueryRow(`SELECT count(*) FROM credit_ledger WHERE reason='extra_request'`).Scan(&debits); err != nil || debits != 1 {
+	if err := s.db.QueryRow(`SELECT count(*) FROM credit_ledger WHERE reason='extra_request'`).Scan(&debits); err != nil || debits != 2 {
 		t.Fatalf("failed request was charged: %d %v", debits, err)
 	}
 }

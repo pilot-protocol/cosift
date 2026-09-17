@@ -76,7 +76,7 @@ func TestSharedLoginDisabledAndAdvertised(t *testing.T) {
 	s := testServer(t, nil)
 	w := request(t, s, "GET", "/api/auth/config", nil, nil)
 	expect(t, w, 200)
-	if strings.TrimSpace(w.Body.String()) != `{"shared":false}` {
+	if strings.TrimSpace(w.Body.String()) != `{"shared":false,"supports_password":false}` {
 		t.Fatal(w.Body.String())
 	}
 	for _, path := range []string{"/api/auth/start", "/api/auth/verify"} {
@@ -89,7 +89,7 @@ func TestSharedLoginDisabledAndAdvertised(t *testing.T) {
 	s.cfg.Shared = &fakeShared{}
 	w = request(t, s, "GET", "/api/auth/config", nil, nil)
 	expect(t, w, 200)
-	if strings.TrimSpace(w.Body.String()) != `{"shared":true}` {
+	if strings.TrimSpace(w.Body.String()) != `{"shared":true,"supports_password":false}` {
 		t.Fatal(w.Body.String())
 	}
 }

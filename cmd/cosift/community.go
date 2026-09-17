@@ -28,8 +28,8 @@ func runCommunity(ctx context.Context, args []string) error {
 	backend := fs.String("backend", "http://127.0.0.1:7777", "Cosift Pebble server origin")
 	dir := fs.String("data-dir", "./community-data", "private account database directory")
 	proxies := fs.String("trusted-proxies", "", "comma-separated proxy CIDRs allowed to supply X-Forwarded-For")
-	guestInterval := fs.Duration("guest-interval", time.Minute, "shared guest allowance interval")
-	freeRPM := fs.Int("member-free-rpm", 60, "shared free member requests per minute")
+	guestInterval := fs.Duration("guest-interval", 30*time.Minute, "guest Search cooldown; Answer uses twice this interval and Research three times, shared across modes")
+	freeRPM := fs.Int("member-free-rpm", 0, "deprecated and ignored; every successful authenticated request costs credits")
 	searchRPM := fs.Int("search-rpm", 120, "member Search hard cap per minute, including credit requests")
 	answerRPM := fs.Int("answer-rpm", 20, "member Answer hard cap per minute, including credit requests")
 	researchLimit := fs.Int("research-per-10m", 3, "member Research hard cap per ten minutes, including credit requests")
@@ -56,7 +56,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID")})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID")})
 	if err != nil {
 		return err
 	}

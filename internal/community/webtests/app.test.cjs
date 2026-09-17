@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
-const policy = {guest_interval_seconds:60, guest:{search:{requests:1, window_seconds:60}},member:{search:{requests:60,window_seconds:60}},member_free_requests_per_minute:60};
+const policy = {guest_interval_seconds:1800, guest:{search:{requests:1, window_seconds:1800},answer:{requests:1,window_seconds:3600},research:{requests:1,window_seconds:5400}},member:{search:{requests:120,window_seconds:60}},member_free_requests_per_minute:0};
 const tick = () => new Promise(setImmediate);
 function node() {
  return {hidden:false, disabled:false, value:'', textContent:'', children:[], dataset:{}, files:[],
@@ -45,6 +45,13 @@ test('logout during search clears private state and permits another search',asyn
  assert.equal(a.run('currentQuery'),'');
  assert.equal(a.get('results').children.length,0);
  assert.equal(a.get('auth').hidden,false);
+});
+test('guest policy explains one shared weighted cooldown', async () => {
+ const a=await app(); a.run('user=null');
+ const loading=a.run('refreshLimits()'); await tick();
+ a.respond('limits',policy); await loading;
+ assert.equal(a.get('guest-policy').textContent,'Shared guest cooldown: Search 30 min · Answer 60 min · Research 90 min. A request pauses all three modes.');
+ assert.equal(a.get('request-limits').textContent,a.get('guest-policy').textContent);
 });
 test('late saved response cannot repopulate a logged-out account',async()=>{
  const a=await app(); const saved=a.run('refreshSaved()').catch(()=>{}); await tick();
@@ -231,4 +238,49 @@ test('logout prevents a delayed billing portal response from navigating', async 
  const logout=a.get('logout').onclick(); await tick(); a.respond('logout',{}); await logout;
  a.respond('payments/portal',{url:'https://billing.stripe.com/p/session/test'}); await portal;
  assert.equal(a.context.destination,undefined);
+});
+test('shared login defaults to OTP with password behind an optional secondary control', async () => {
+ const a=await app(); a.run('resetAccount(); sharedAuth=true; supportsPassword=true; renderSharedAuth()');
+ assert.equal(a.get('password-field').hidden,true);
+ assert.equal(a.get('auth-password-switch').hidden,false);
+ assert.equal(a.get('auth-submit').textContent,'Email me a code →');
+ a.get('auth-password-switch').onclick();
+ assert.equal(a.get('password-field').hidden,false);
+ assert.equal(a.get('auth-password-reset').hidden,false);
+ a.get('auth-password-switch').onclick();
+ assert.equal(a.get('password-field').hidden,true);
+ a.run('supportsPassword=false; renderSharedAuth()');
+ assert.equal(a.get('auth-password-switch').hidden,true);
+});
+test('password login sends the password endpoint and retains input after a generic failure', async () => {
+ const a=await app(); a.run('resetAccount(); sharedAuth=true; supportsPassword=true; renderSharedAuth()');
+ a.get('auth-password-switch').onclick(); const form=a.get('auth-form');
+ form.elements.email.value='shared@example.com';form.elements.password.value='a test-only password';
+ a.context.FormData=class {constructor(form){this.form=form}get(key){return this.form.elements[key]?.value||''}};
+ const login=form.onsubmit({preventDefault(){},target:form});await tick();
+ assert.deepEqual(JSON.parse(a.pending.find(p=>p.url==='/api/auth/password').opts.body),{email:'shared@example.com',password:'a test-only password'});
+ a.get('auth-password-switch').onclick();assert.equal(a.run('sharedLoginMode'),'password');
+ a.respond('auth/password',{error:'invalid email or password'},401);await login;
+ assert.equal(a.run('user'),null);
+ assert.equal(form.elements.password.value,'a test-only password');
+ assert.equal(form.querySelector().disabled,false);
+});
+test('password setup requires an email code and passes the new password only to verification', async () => {
+ const a=await app();a.run('resetAccount(); sharedAuth=true; supportsPassword=true; renderSharedAuth()');
+ a.get('auth-password-switch').onclick();a.get('auth-password-reset').onclick();
+ const form=a.get('auth-form');form.elements.email.value='shared@example.com';
+ a.context.FormData=class {constructor(form){this.form=form}get(key){return this.form.elements[key]?.value||''}};
+ const start=form.onsubmit({preventDefault(){},target:form});await tick();
+ assert.equal(a.get('password-field').hidden,true);
+ assert.deepEqual(JSON.parse(a.pending.find(p=>p.url==='/api/auth/start').opts.body),{email:'shared@example.com'});
+ a.respond('auth/start',{request_id:'fresh-otp-request'});await start;
+ assert.equal(a.get('password-field').hidden,false);
+ assert.equal(form.elements.password.autocomplete,'new-password');
+ form.elements.password.value='fresh test-only password';form.elements.code.value='123456';
+ const verify=form.onsubmit({preventDefault(){},target:form});await tick();
+ assert.deepEqual(JSON.parse(a.pending.find(p=>p.url==='/api/auth/verify').opts.body),{request_id:'fresh-otp-request',code:'123456',password:'fresh test-only password'});
+ a.respond('auth/verify',{error:'invalid or expired code'},401);await verify;
+ a.get('auth-restart').onclick();
+ assert.equal(a.get('password-field').hidden,true);
+ assert.equal(form.elements.password.value,'');
 });

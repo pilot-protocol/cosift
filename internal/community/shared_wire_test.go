@@ -30,7 +30,7 @@ func TestMCPGatewayContract(t *testing.T) {
 		_, _ = w.Write([]byte(`{"query":"rust","retriever":"bm25","hits":[]}`))
 	}))
 	s.cfg.Shared = &fakeShared{}
-	s.cfg.MemberFreeRPM = 1
+	s.cfg.SearchRPM = 1
 	gateway := httptest.NewServer(s)
 	defer gateway.Close()
 	script, err := filepath.Abs("../../integrations/cosift-mcp/search_contract.py")
@@ -48,6 +48,10 @@ func TestMCPGatewayContract(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Fatalf("engine received %d requests, want two accounts once", hits.Load())
+	}
+	var balance int
+	if err := s.db.QueryRow(`SELECT sum(delta) FROM credit_ledger`).Scan(&balance); err != nil || balance != 2*monthlyFreeCredits-2 {
+		t.Fatalf("MCP requests did not debit both accounts: %d %v", balance, err)
 	}
 	t.Log(string(out))
 }

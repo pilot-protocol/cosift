@@ -94,7 +94,7 @@ func TestSharedTokensAccountIsolationQuotasAndMCPParameters(t *testing.T) {
 		t.Fatal("quota did not isolate users", hits)
 	}
 	var creditBalance int
-	if err := s.db.QueryRow(`SELECT sum(delta) FROM credit_ledger`).Scan(&creditBalance); err != nil || creditBalance != monthlyFreeCredits-1 {
+	if err := s.db.QueryRow(`SELECT sum(delta) FROM credit_ledger`).Scan(&creditBalance); err != nil || creditBalance != 2*monthlyFreeCredits-3 {
 		t.Fatalf("shared bearer request did not use monthly credits: %d %v", creditBalance, err)
 	}
 	f.err = sharedaccount.ErrUnavailable

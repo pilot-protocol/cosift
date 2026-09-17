@@ -42,6 +42,13 @@ type Provider interface {
 	Call(context.Context, string, string, map[string]any) (map[string]any, error)
 }
 
+// PasswordProvider is optional so existing shared OTP providers remain usable.
+// Password credentials are held and verified only by the authoritative service.
+type PasswordProvider interface {
+	FinishPassword(context.Context, string, string, string) (Issued, error)
+	Password(context.Context, string, string) (Issued, error)
+}
+
 var tokenPattern = regexp.MustCompile(`^ck_([1-9][0-9]{0,5})_([A-Z2-7]{39})$`)
 var UIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 

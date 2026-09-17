@@ -1,12 +1,13 @@
 # Stripe subscriptions and credit top-ups
 
-Every account has a **Free plan: 1,000 credits per UTC calendar month plus 60
-shared free requests/minute**, with no subscription required. The optional
+Every account has a **Free plan: 1,000 credits per UTC calendar month**, with no
+subscription required. The optional
 **$5/month paid plan adds 50,000 credits per paid month** and permits **one-time
 $5/50,000-credit top-ups**. Subscribers still receive their free monthly credits.
 Unused free, earned, and purchased credits carry over.
 
-After the free request allowance, Search costs 1 credit, Answer 2, and Research 3.
+Every successful authenticated Search costs 1 credit, Answer 2, and Research 3.
+This applies from the first request; there is no free per-minute member bypass.
 At this pack price, 1,000 paid requests cost $0.10 for Search, $0.20 for Answer, or
 $0.30 for Research. Credits do not bypass request caps. There are no automatic
 top-ups; the subscription itself renews monthly until canceled.
@@ -98,6 +99,8 @@ See Stripe's [hosted Checkout guide](https://docs.stripe.com/checkout/quickstart
 - `subscription_plan`: server-owned `amount_cents`, `currency`, `credits`, and
   `interval` (`month`), alongside the existing one-time `credit_pack`.
 - `monthly_free_credits`, monthly activity, and `request_credit_costs`.
+- `all_authenticated_requests_metered: true`; the compatibility
+  `free_requests_per_minute` field is zero.
 
 Top-up eligibility requires an active subscription and a paid current period;
 merely starting Checkout or holding a credit balance is insufficient. The
@@ -155,7 +158,10 @@ Before activating live billing, use the isolated test environment to:
    Confirm the free monthly allowance and remaining balance survive cancellation.
 4. Exercise partial/full refunds and duplicate deliveries; inspect the balance
    and Stripe delivery status.
-5. Confirm public production still reports unavailable until live credentials,
+5. Verify Search, Answer, and Research immediately deduct 1, 2, and 3 credits
+   respectively, including an account's first request. Backend failures must
+   refund their reservations; an insufficient balance must stop backend work.
+6. Confirm public production still reports unavailable until live credentials,
    the correct live webhook, and the dedicated portal configuration are ready.
 
 Record actual hosted Checkout and webhook outcomes separately from local tests.

@@ -1268,3 +1268,6 @@ select { -webkit-appearance: none; appearance: none; min-height: 46px; line-heig
   .billing-activity dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin: 0; }
   .activity-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
+:root .auth-options { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 8px 0; }
+:root .auth-options .text-button { min-height: 36px; padding: 8px 12px; font-size: 13px; font-weight: 400; color: var(--muted); }
+:root .auth-options .text-button:hover { color: var(--accent); }

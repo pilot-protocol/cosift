@@ -32,6 +32,7 @@
           <p id="auth-description" class="muted">
             Use the same email as your CLI and agents.
           </p>
+          <p class="fine">Sign in for 1,000 free credits every month. No subscription required.</p>
           <form id="auth-form">
             <label id="name-field"
               >Your name<input
@@ -62,6 +63,10 @@
             </button>
           </form>
           <button id="auth-restart" class="text-button" type="button" hidden>Use another email or request a new code</button>
+          <div class="auth-options">
+            <button id="auth-password-switch" class="text-button" type="button" hidden>Use email &amp; password</button>
+            <button id="auth-password-reset" class="text-button" type="button" hidden>Set or reset your password</button>
+          </div>
           <p class="muted switch" id="auth-switch">
             <span id="auth-switch-copy">Already have an account?</span>
             <button id="auth-toggle" class="text-button">Sign in</button>
@@ -145,7 +150,7 @@
         </div>
         <div id="guest-banner" class="guest-banner" hidden>
           <div>
-            <strong>Guest session</strong
+            <strong>Sign in for 1,000 free credits every month</strong
             ><span id="guest-allowance"
               >Checking your allowance…</span
             >
@@ -298,7 +303,7 @@
         </section>
         <section id="view-billing" class="view" hidden>
           <h1>Credits &amp; billing</h1>
-          <p class="muted">Every account gets 1,000 free credits each month, plus 60 free requests per minute. Unused credits carry over.</p>
+          <p class="muted">Every account gets 1,000 free credits each month. Unused credits carry over.</p>
           <div class="billing-overview">
             <article class="panel"><p class="fine">Credit balance</p><strong id="billing-balance" class="billing-value">—</strong><p class="fine">One balance across web, CLI, and agents.</p></article>
             <article class="panel"><p class="fine">Your plan</p><strong id="billing-subscription-status" class="billing-plan-status">Free plan</strong><button id="manage-subscription" class="text-button" type="button" hidden>Manage subscription ↗</button></article>
@@ -309,7 +314,7 @@
               <p class="purchase-price"><strong>$0</strong><span>per month</span></p>
               <p class="plan-allowance"><strong id="billing-free">1,000</strong> credits each month</p>
               <p class="muted">No subscription required. Earn more by contributing useful public pages.</p>
-              <p class="fine">Includes 60 free requests per minute.</p>
+              <p class="fine">Search costs 1 credit, Answer 2, and Research 3.</p>
             </article>
             <article class="panel purchase-card plan-card">
               <div class="purchase-heading"><h2>Paid</h2><span class="billing-tag">Monthly subscription</span></div>
@@ -326,7 +331,6 @@
             <button id="buy-credits" class="secondary" type="button" hidden>Top up 50,000 credits · $5 ↗</button>
           </article>
           <div class="billing-footnote">
-            <p>Extra requests: <strong>Search 1 · Answer 2 · Research 3 credits.</strong> Rate limits still apply.</p>
             <p>New content that passes validation earns 10 credits. Duplicates earn no more. <button data-view="contribute" class="text-button" type="button">Contribute pages ↗</button></p>
             <p>Canceling your subscription keeps your remaining credits.</p>
           </div>

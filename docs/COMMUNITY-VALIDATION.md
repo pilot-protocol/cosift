@@ -94,3 +94,18 @@ require internet access. JavaScript regressions are now included in PR CI.
   receipt keys are included with the engine's Pebble data and must be retained
   alongside community ledger backups. Upgrade the backend before the portal;
   an older backend cannot provide durable reward receipts.
+
+
+## Metering policy changed after this validation
+
+The recorded free-per-minute member allowance is historical. Current policy
+charges every successful authenticated Search/Answer/Research request 1/2/3
+credits, including the first request, and grants each account 1,000 free credits
+per UTC month. Guest limits also changed after the original validation: a
+successful Search/Answer/Research starts one shared IP cooldown of 30/60/90
+minutes, respectively; mode changes cannot bypass it. Prior tests that count
+free member requests establish behavior before this change; they do not verify
+current deductions. New rollout acceptance must check actual ledger debits from
+the first request across web, CLI, and MCP search, no debit after backend failure,
+and refusal before backend work when the balance is insufficient. See
+[the current operator policy](COMMUNITY-ROLLOUT.md#default-quotas-and-public-api-compatibility).

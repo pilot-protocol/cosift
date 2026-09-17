@@ -83,14 +83,21 @@ and text/metadata checks do not guarantee image or video moderation. Do not
 modify content or vectors to evade a rejection.
 
 Verified new content earns 10 credits once; existing, duplicate, rejected and
-unverified pages earn none. Every account gets 60 shared free requests/minute
-plus 1,000 free credits per UTC calendar month, without a subscription. The
+unverified pages earn none. Every account gets 1,000 free credits per UTC calendar
+month, without a subscription. The
 current month's grant is applied once on authenticated use; inactive past months
-are not backfilled. Unused credits carry over. Extra successful requests cost
-1 credit for Search, 2 for Answer, and 3 for Research after the shared free
-allowance. Web, CLI, and MCP searches use the same gateway balance; mode caps
+are not backfilled. Unused credits carry over. Every successful authenticated
+retrieval costs 1 credit for Search, 2 for Answer, and 3 for Research, including
+the first request. There is no free per-minute member bypass. Insufficient credit
+stops backend work; backend failures refund reserved credits. Web, CLI, and MCP
+searches use the same gateway balance; mode caps
 and MCP's separate daily cap still apply. Inspect current policy rather than
 assuming a balance buys unrestricted usage.
+
+If the user chooses guest retrieval, one shared cooldown applies per public IP:
+30 minutes after successful Search, 60 after Answer, and 90 after Research.
+Changing modes does not bypass that cooldown; backend failures do not consume it.
+Respect the server's retry guidance rather than repeatedly retrying.
 
 The optional paid plan costs $5/month and adds 50,000 credits per paid month.
 Subscribers also keep their free monthly allowance and may buy $5/50,000-credit

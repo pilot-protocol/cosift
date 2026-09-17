@@ -14,6 +14,7 @@ const pendingRequests = new Set();
 let searchRequest;
 let authBusy = false;
 let sharedAuth = false, authChallenge = null, authConfigured = false;
+let supportsPassword = false, sharedLoginMode = "otp";
 function resetAccount(nextUser = null) {
   accountGeneration++;
   for (const controller of pendingRequests) controller.abort();
@@ -205,25 +206,28 @@ $("auth-form").onsubmit = (event) => {
     resetAccount();
     const form = new FormData(event.target);
     if (sharedAuth) {
+      if (sharedLoginMode === "password" && supportsPassword) {
+        user = await api("auth/password", "POST", {email: form.get("email"), password: form.get("password")});
+        sharedLoginMode = "otp";
+        event.target.reset();
+        renderSharedAuth();
+        await enterAfterLogin();
+        return;
+      }
       if (!authChallenge) {
         authChallenge = await api("auth/start", "POST", {email: form.get("email")});
-        $("code-field").hidden = false;
-        $("auth-restart").hidden = false;
-        event.target.elements.code.required = true;
-        event.target.elements.email.readOnly = true;
-        $("auth-submit").textContent = "Verify and sign in →";
+        renderSharedAuth();
         notify("If the address is eligible, a verification code is on its way. Check your email.");
         return;
       }
-      user = await api("auth/verify", "POST", {request_id: authChallenge.request_id, code: form.get("code")});
+      const verification = {request_id: authChallenge.request_id, code: form.get("code")};
+      if (sharedLoginMode === "setup" && supportsPassword) verification.password = form.get("password");
+      user = await api("auth/verify", "POST", verification);
       authChallenge = null;
-      $("code-field").hidden = true;
-      $("auth-restart").hidden = true;
-      event.target.elements.code.required = false;
-      event.target.elements.email.readOnly = false;
-      $("auth-submit").textContent = "Email me a code →";
+      sharedLoginMode = "otp";
       event.target.reset();
-      await enter();
+      renderSharedAuth();
+      await enterAfterLogin();
       return;
     }
     user = await api(signingUp ? "register" : "login", "POST", {
@@ -235,6 +239,50 @@ $("auth-form").onsubmit = (event) => {
     await enter();
   }).finally(() => { authBusy = false; });
 };
+function renderSharedAuth() {
+  const form = $("auth-form"), checkingCode = !!authChallenge;
+  const passwordLogin = sharedLoginMode === "password", settingPassword = sharedLoginMode === "setup";
+  $("name-field").hidden = true;
+  form.elements.name.required = false;
+  $("auth-switch").hidden = true;
+  $("password-field").hidden = !(passwordLogin || settingPassword && checkingCode);
+  form.elements.password.required = !$("password-field").hidden;
+  form.elements.password.autocomplete = settingPassword ? "new-password" : "current-password";
+  form.elements.password.placeholder = settingPassword ? "Choose a password (at least 12 characters)" : "Your password";
+  $("code-field").hidden = !checkingCode;
+  form.elements.code.required = checkingCode;
+  form.elements.email.readOnly = checkingCode;
+  $("auth-restart").hidden = !checkingCode;
+  $("auth-password-switch").hidden = !supportsPassword;
+  $("auth-password-switch").textContent = sharedLoginMode === "otp" ? "Use email & password" : "Use an email code instead";
+  $("auth-password-reset").hidden = !supportsPassword || !passwordLogin;
+  $("auth-title").textContent = settingPassword ? "Set your password" : "Sign in to Cosift";
+  $("auth-description").textContent = settingPassword ? "Verify your email to set or reset your password. Your account and credits stay the same."
+    : passwordLogin ? "Use the password you set for your Cosift account." : "We’ll email you a sign-in code. No password needed.";
+  $("auth-submit").textContent = passwordLogin ? "Sign in →" : checkingCode ? settingPassword ? "Set password and sign in →" : "Verify and sign in →" : "Email me a code →";
+}
+function selectSharedLogin(mode) {
+  if (authBusy || !sharedAuth || !supportsPassword) return;
+  sharedLoginMode = mode;
+  authChallenge = null;
+  $("auth-form").elements.password.value = "";
+  $("auth-form").elements.code.value = "";
+  renderSharedAuth();
+}
+$("auth-password-switch").onclick = () => selectSharedLogin(sharedLoginMode === "otp" ? "password" : "otp");
+$("auth-password-reset").onclick = () => selectSharedLogin("setup");
+async function enterAfterLogin() {
+  showScreen("boot");
+  try { await enter(); }
+  catch (e) {
+    if (user) {
+      $("boot-message").textContent = "You’re signed in, but your workspace couldn’t load. Please try again.";
+      $("boot-spinner").hidden = true;
+      $("boot-retry").hidden = false;
+    }
+    throw e;
+  }
+}
 function onboarding() {
   selected = new Set(user.interests.filter((v) => topics.includes(v)));
   $("custom-interests").value = user.interests
@@ -325,7 +373,7 @@ async function refreshCredits() {
       $("buy-credits").textContent = `Top up ${pack.credits.toLocaleString()} credits · ${price}`;
       $("buy-credits").hidden = !c.payments_enabled || !c.can_top_up;
       $("payment-info").hidden = false;
-      $("payment-info").textContent = "Extra requests: Search 1 credit · Answer 2 credits · Research 3 credits. Existing rate caps apply.";
+      $("payment-info").textContent = "Request costs: Search 1 credit · Answer 2 credits · Research 3 credits. Existing rate caps apply.";
     }
   }
 }
@@ -788,14 +836,16 @@ $("refresh-contributions").onclick = () =>
 let requestPolicy;
 async function refreshLimits() {
   requestPolicy = await api("limits");
-  const interval = requestPolicy.guest_interval_seconds;
   const duration = (seconds) => seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
   const describe = (limits) => Object.entries(limits).map(([mode, limit]) =>
     `${modeLabels[mode]} ${limit.requests}/${duration(limit.window_seconds)}`).join(" · ");
-  $("guest-policy").textContent = `Guests: one shared request every ${duration(interval)}. ${describe(requestPolicy.guest)}.`;
+  const guestCooldowns = ["search", "answer", "research"].map((mode) =>
+    `${modeLabels[mode]} ${duration(requestPolicy.guest[mode].window_seconds)}`).join(" · ");
+  const guestPolicy = `Shared guest cooldown: ${guestCooldowns}. A request pauses all three modes.`;
+  $("guest-policy").textContent = guestPolicy;
   $("request-limits").textContent = user
-    ? `${requestPolicy.member_free_requests_per_minute} free requests/min. Extra: Search 1 credit · Answer 2 · Research 3. ${describe(requestPolicy.member)}.`
-    : describe(requestPolicy.guest);
+    ? `Search 1 credit · Answer 2 · Research 3. ${describe(requestPolicy.member)}.`
+    : guestPolicy;
 }
 let startupPending = false;
 async function initialize() {
@@ -809,17 +859,11 @@ async function initialize() {
   try {
     const authConfig = await api("auth/config");
     sharedAuth = authConfig.shared === true;
+    supportsPassword = sharedAuth && authConfig.supports_password === true;
     authConfigured = true;
     $("auth-submit").disabled = false;
     if (sharedAuth) {
-      $("name-field").hidden = true;
-      $("password-field").hidden = true;
-      $("auth-switch").hidden = true;
-      $("auth-form").elements.name.required = false;
-      $("auth-form").elements.password.required = false;
-      $("auth-title").textContent = "Sign in to Cosift.";
-      $("auth-description").textContent = "Use the same email as your connected agents. We’ll send you a verification code.";
-      $("auth-submit").textContent = "Email me a code →";
+      renderSharedAuth();
       $("interests-explanation").textContent = "Save interests to follow these topics across Cosift and your connected agents. Existing agent topics stay followed; remove them in Followed topics.";
     }
     try { user = await api("me"); }
@@ -1007,6 +1051,8 @@ $("auth-restart").onclick = () => {
   $("code-field").hidden = true;
   $("auth-restart").hidden = true;
   $("auth-submit").textContent = "Email me a code →";
+  form.elements.password.value = "";
+  if (sharedAuth) renderSharedAuth();
 };
 
 // The application sends only sanitized pageviews, with no search/account payload.
