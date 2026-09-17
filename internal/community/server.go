@@ -477,7 +477,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	}
 	completed := false
 	if u.ID == "" {
-		finish, ok := s.reserveGuest(w, r)
+		finish, ok := s.reserveGuest(w, r, mode)
 		if !ok {
 			return
 		}

@@ -12,7 +12,7 @@ import (
 
 func (c *Config) defaultLimits() error {
 	if c.GuestInterval == 0 {
-		c.GuestInterval = time.Minute
+		c.GuestInterval = 30 * time.Minute
 	}
 	if c.SearchRPM == 0 {
 		c.SearchRPM = 120
@@ -35,15 +35,25 @@ func (c *Config) defaultLimits() error {
 }
 
 func (s *Server) limitPolicy() map[string]any {
+	guest := s.guestIntervals()
 	return map[string]any{
 		"guest_interval_seconds":             int(s.cfg.GuestInterval.Seconds()),
-		"guest":                              map[string]any{"search": modeLimit{1, int(s.cfg.GuestInterval.Seconds())}, "answer": modeLimit{1, max(int(s.cfg.GuestInterval.Seconds()), 300)}, "research": modeLimit{1, max(int(s.cfg.GuestInterval.Seconds()), 1800)}},
+		"guest":                              map[string]any{"search": modeLimit{1, guest["search"]}, "answer": modeLimit{1, guest["answer"]}, "research": modeLimit{1, guest["research"]}},
 		"member":                             map[string]any{"search": modeLimit{s.cfg.SearchRPM, 60}, "answer": modeLimit{s.cfg.AnswerRPM, 60}, "research": modeLimit{s.cfg.ResearchPer10Min, 600}},
 		"member_free_requests_per_minute":    0,
 		"all_authenticated_requests_metered": true,
 		"request_credit_costs":               requestCreditCosts(),
 		"credits_bypass_caps":                false,
 	}
+}
+
+func (s *Server) guestIntervals() map[string]int {
+	base := int(s.cfg.GuestInterval.Seconds())
+	intervals := make(map[string]int, 3)
+	for mode, cost := range requestCreditCosts() {
+		intervals[mode] = base * cost
+	}
+	return intervals
 }
 
 type modeLimit struct {
@@ -65,13 +75,7 @@ func (s *Server) allowRetrieval(w http.ResponseWriter, r *http.Request, u User, 
 	}
 	if u.ID == "" {
 		identity = "guest:" + s.guestKey(r)
-		limit, window = 1, int64(s.cfg.GuestInterval.Seconds())
-		switch mode {
-		case "answer":
-			window = max(window, 300)
-		case "research":
-			window = max(window, 1800)
-		}
+		limit, window = 1, int64(s.guestIntervals()[mode])
 	}
 	now := time.Now().Unix()
 	var until int64
@@ -120,7 +124,9 @@ func (s *Server) migrateGuestInterval() error {
 	}
 	next := int64(s.cfg.GuestInterval.Seconds())
 	if old != next {
-		if _, err = tx.Exec(`UPDATE guest_usage SET expires_at=expires_at-?+?`, old, next); err != nil {
+		// Legacy reservations had no mode prefix and used one uniform interval.
+		// New reservations retain their weight when an operator changes the base.
+		if _, err = tx.Exec(`UPDATE guest_usage SET expires_at=expires_at+(?-?)*CASE WHEN reservation LIKE 'research:%' THEN 3 WHEN reservation LIKE 'answer:%' THEN 2 ELSE 1 END`, next, old); err != nil {
 			return err
 		}
 	}

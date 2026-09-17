@@ -28,7 +28,7 @@ func runCommunity(ctx context.Context, args []string) error {
 	backend := fs.String("backend", "http://127.0.0.1:7777", "Cosift Pebble server origin")
 	dir := fs.String("data-dir", "./community-data", "private account database directory")
 	proxies := fs.String("trusted-proxies", "", "comma-separated proxy CIDRs allowed to supply X-Forwarded-For")
-	guestInterval := fs.Duration("guest-interval", time.Minute, "shared guest allowance interval")
+	guestInterval := fs.Duration("guest-interval", 30*time.Minute, "guest Search cooldown; Answer uses twice this interval and Research three times, shared across modes")
 	freeRPM := fs.Int("member-free-rpm", 0, "deprecated and ignored; every successful authenticated request costs credits")
 	searchRPM := fs.Int("search-rpm", 120, "member Search hard cap per minute, including credit requests")
 	answerRPM := fs.Int("answer-rpm", 20, "member Answer hard cap per minute, including credit requests")

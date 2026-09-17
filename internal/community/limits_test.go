@@ -98,6 +98,7 @@ func TestGuestResearchSeparateFromSharedAllowance(t *testing.T) {
 
 func TestGuestPolicyMigrationPreservesRequestTime(t *testing.T) {
 	s := testServer(t, nil)
+	s.cfg.GuestInterval = time.Minute
 	usedAt := time.Now().Unix() - 10
 	s.db.Exec(`DELETE FROM settings WHERE key='guest_interval_seconds'`)
 	s.db.Exec(`INSERT INTO guest_usage VALUES('legacy',?,'reservation')`, usedAt+1800)

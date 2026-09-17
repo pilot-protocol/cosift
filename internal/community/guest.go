@@ -65,15 +65,22 @@ func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not check guest allowance")
 		return
 	}
-	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(s.cfg.GuestInterval.Seconds())})
+	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(s.cfg.GuestInterval.Seconds()), "mode_intervals_seconds": s.guestIntervals()})
 }
 
 // reserveGuest is atomic across concurrent requests and survives restarts.
 // Failure paths release this exact reservation; success commits the cooldown.
-func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish func(bool), ok bool) {
-	key, token := s.guestKey(r), randomID()
+func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request, mode string) (finish func(bool), ok bool) {
+	interval := s.guestIntervals()[mode]
+	if interval == 0 {
+		problem(w, 400, "mode must be search, answer or research")
+		return nil, false
+	}
+	// Carry the mode inside the opaque reservation so configuration migrations
+	// can preserve the original request time without adding a second quota table.
+	key, token := s.guestKey(r), mode+":"+randomID()
 	now := time.Now().Unix()
-	until := now + int64(s.cfg.GuestInterval.Seconds())
+	until := now + int64(interval)
 	_, err := s.db.ExecContext(r.Context(), `DELETE FROM guest_usage WHERE expires_at<=?`, now)
 	if err != nil {
 		problem(w, 500, "guest allowance unavailable")
