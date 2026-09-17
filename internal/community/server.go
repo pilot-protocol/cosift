@@ -746,7 +746,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				return e
 			}
 		}
-		body, _ := json.Marshal(map[string]any{"url": j.url, "artifact": artifact})
+		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact})
 		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
@@ -766,8 +766,21 @@ func (s *Server) dispatch(ctx context.Context) error {
 				Indexed     bool   `json:"indexed"`
 				Novel       bool   `json:"novel"`
 				ContentHash string `json:"content_hash"`
+				Queued      string `json:"queued"` // explicit acknowledgement from older guarded backends
 			}
-			if ok && json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&receipt) == nil {
+			if ok {
+				data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
+				ok = readErr == nil && len(data) <= 4096 && json.Unmarshal(data, &receipt) == nil
+				if ok {
+					hash, hashErr := hex.DecodeString(receipt.ContentHash)
+					if receipt.Indexed {
+						ok = hashErr == nil && len(hash) == sha256.Size
+					} else {
+						ok = receipt.Queued == j.url && !receipt.Novel
+					}
+				}
+			}
+			if ok {
 				indexed = receipt.Indexed
 				if receipt.Indexed && receipt.Novel && len(receipt.ContentHash) == 64 {
 					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash); err != nil {

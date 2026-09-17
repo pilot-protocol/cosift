@@ -100,6 +100,24 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest")
 	}
 	values := fs.Args()
+	// Validate intent before login, reading stdin, or touching the local index.
+	if *requestMode {
+		if *local || *credits || len(values) > 0 || *file != "" {
+			return fmt.Errorf("request cannot be combined with contributions or credits")
+		}
+		*query = strings.TrimSpace(*query)
+		if len(*query) == 0 || len(*query) > 500 || (*mode != "search" && *mode != "answer" && *mode != "research") {
+			return fmt.Errorf("provide a 1–500 byte -query and a valid -mode")
+		}
+	} else if *query != "" || *mode != "search" {
+		return fmt.Errorf("-query and -mode require request")
+	}
+	if *credits && (*local || len(values) > 0 || *file != "") {
+		return fmt.Errorf("credits cannot be combined with contributions")
+	}
+	if (*local || *credits) && (*guest || *email == "") {
+		return fmt.Errorf("local indexing and credits require email/password login")
+	}
 	if *file != "" {
 		if len(values) > 0 {
 			return fmt.Errorf("use either -csv or positional URLs")
@@ -136,13 +154,13 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	}
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	call := func(path string, body any) ([]byte, error) {
+	call := func(callCtx context.Context, path string, body any) ([]byte, error) {
 		b, _ := json.Marshal(body)
 		method := "POST"
 		if body == nil {
 			method = "GET"
 		}
-		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
+		req, err := http.NewRequestWithContext(callCtx, method, strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
 		if err != nil {
 			return nil, err
 		}
@@ -153,32 +171,34 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 			return nil, err
 		}
 		defer res.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		data, err := io.ReadAll(io.LimitReader(res.Body, (4<<20)+1))
 		if err != nil {
 			return nil, err
+		}
+		if len(data) > 4<<20 {
+			return nil, fmt.Errorf("community response exceeds 4 MB")
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			return nil, fmt.Errorf("community %s: HTTP %d: %s", path, res.StatusCode, strings.TrimSpace(string(data)))
 		}
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("community returned invalid JSON")
+		}
 		return data, nil
 	}
 	if !*guest && *email != "" {
-		if _, err := call("login", map[string]string{"email": *email, "password": password}); err != nil {
+		if _, err := call(ctx, "login", map[string]string{"email": *email, "password": password}); err != nil {
 			return err
 		}
 		// Revoke this CLI session after use; browser sessions are separate.
-		defer func() { _, _ = call("logout", map[string]string{}) }()
+		defer func() {
+			logoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = call(logoutCtx, "logout", map[string]string{})
+		}()
 	}
 	var body any = map[string]any{"urls": values}
 	path := "submissions"
-	if *local || *credits {
-		if *guest || *email == "" {
-			return fmt.Errorf("local indexing and credits require email/password login")
-		}
-		if *local && *credits {
-			return fmt.Errorf("use -index-locally or -credits")
-		}
-	}
 	if *local {
 		artifacts, e := indexLocalContributions(ctx, cfg, values)
 		if e != nil {
@@ -191,12 +211,6 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		}
 	}
 	if *requestMode {
-		if *local || *credits || len(values) > 0 || *file != "" {
-			return fmt.Errorf("request cannot be combined with contributions or credits")
-		}
-		if strings.TrimSpace(*query) == "" || (*mode != "search" && *mode != "answer" && *mode != "research") {
-			return fmt.Errorf("provide -query and a valid -mode")
-		}
 		path = *mode + "?q=" + url.QueryEscape(*query)
 		body = nil
 		client.Timeout = 4 * time.Minute
@@ -205,7 +219,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		path = "credits"
 		body = nil
 	}
-	result, err := call(path, body)
+	result, err := call(ctx, path, body)
 	if err != nil {
 		return err
 	}

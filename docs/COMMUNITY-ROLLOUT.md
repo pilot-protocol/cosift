@@ -34,9 +34,13 @@ GOWORK=off go test -race -timeout 10m ./...
 GOWORK=off make smoke
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOWORK=off go build -o /tmp/cosift-community-candidate ./cmd/cosift
 node --check internal/community/web/app.js
+node --test internal/community/webtests/*.test.cjs
 ```
 
-Normal PR CI runs formatting, vet, Linux ARM64 compilation, full race tests and
+The [validation report](COMMUNITY-VALIDATION.md) records the real browser/CLI
+flows, regression fixes, fixture boundaries and remaining activation checks.
+
+Normal PR CI runs formatting, web logic regressions, vet, Linux ARM64 compilation, full race tests and
 coverage. It does not deploy. After approval, the release workflow builds and
 signs five platform binaries. Pin the approved commit and verify SHA256 and
 minisign against the installed public key before installing any binary. Never
@@ -78,6 +82,9 @@ reuse the withdrawn v0.2.6 artifacts.
 7. Verify a controlled safe URL contribution and a local artifact submission
    using matching text, metadata and embeddings. Credit only newly indexed
    content; repeat the same contribution and confirm no duplicate reward.
+   Retry a completed submission with its original ID and confirm that the engine
+   replays its durable receipt. Include Pebble receipt metadata in backups;
+   upgrade the engine before the portal to preserve rewards on delivery retries.
    Remove only explicitly created QA accounts/data according to retention
    requirements. Reject garbage and unsafe fixtures without sending harmful
    material to the corpus. Classifier uncertainty must remain held.

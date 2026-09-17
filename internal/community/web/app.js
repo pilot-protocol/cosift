@@ -9,6 +9,37 @@ let user = null,
   selected = new Set(),
   noticeTimer,
   guestUntil = 0;
+let accountGeneration = 0;
+const pendingRequests = new Set();
+let searchRequest;
+let authBusy = false;
+function resetAccount(nextUser = null) {
+  accountGeneration++;
+  for (const controller of pendingRequests) controller.abort();
+  pendingRequests.clear();
+  searchSequence++;
+  user = nextUser;
+  saved = [];
+  currentQuery = "";
+  currentMode = "search";
+  selected = new Set();
+  checkoutKey = undefined;
+  guestUntil = 0;
+  for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions"])
+    $(id).replaceChildren();
+  for (const id of ["query", "urls", "csv", "custom-interests"]) $(id).value = "";
+  $("saved-count").textContent = "0";
+  $("credit-balance").textContent = "";
+  $("credit-balance").hidden = true;
+  $("buy-credits").hidden = true;
+  $("buy-credits").disabled = false;
+  $("payment-info").hidden = true;
+  $("search-heading").hidden = true;
+  $("search-empty").hidden = false;
+  $("search-form").querySelector("button").disabled = false;
+  selectMode("search");
+  updateSaveButton();
+}
 const topics = [
   "Technology",
   "Science",
@@ -24,6 +55,7 @@ const topics = [
   "Food & travel",
 ];
 function notify(message, error = false) {
+  if (!message) return;
   clearTimeout(noticeTimer);
   $("notice").textContent = message;
   $("notice").className = error ? "error" : "";
@@ -33,36 +65,50 @@ function notify(message, error = false) {
     error ? 10000 : 5500,
   );
 }
-async function api(path, method = "GET", body) {
-  const headers = { "X-Cosift-Client": "community" };
-  if (body && !(body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(body);
-  }
-  const response = await fetch("/api/" + path, {
-    method,
-    headers,
-    body,
-    credentials: "same-origin",
-  });
-  let data;
+async function api(path, method = "GET", body, controller = new AbortController()) {
+  const generation = accountGeneration;
+  pendingRequests.add(controller);
   try {
-    data = await response.json();
-  } catch {
-    throw new Error("The server is unavailable. Please try again.");
-  }
-  if (!response.ok) {
-    if (data.retry_at && !data.mode && !user) {
-      guestUntil = data.retry_at;
-      renderGuestAllowance();
+    const headers = { "X-Cosift-Client": "community" };
+    if (body && !(body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(body);
     }
-    if (response.status === 401 && user) {
-      user = null;
-      showScreen("auth");
+    const response = await fetch("/api/" + path, {
+      method,
+      headers,
+      body,
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("The server is unavailable. Please try again.");
     }
-    throw new Error(data.error || "Something went wrong. Please try again.");
+    if (generation !== accountGeneration || controller.signal.aborted)
+      throw new DOMException("", "AbortError");
+    if (!response.ok) {
+      if (data.retry_at && !data.mode && !user) {
+        guestUntil = data.retry_at;
+        renderGuestAllowance();
+      }
+      if (response.status === 401 && user) {
+        resetAccount();
+        showScreen("auth");
+      }
+      throw new Error(data.error || "Something went wrong. Please try again.");
+    }
+    return data;
+  } catch (error) {
+    // A superseded account/request must not render data or errors in the next view.
+    if (generation !== accountGeneration || controller.signal.aborted)
+      throw new DOMException("", "AbortError");
+    throw error;
+  } finally {
+    pendingRequests.delete(controller);
   }
-  return data;
 }
 function showScreen(id) {
   $("notice").hidden = true;
@@ -132,7 +178,9 @@ $("auth-toggle").onclick = () => {
 };
 $("auth-form").onsubmit = (event) => {
   event.preventDefault();
+  if (authBusy) return;
   busy(event.target, async () => {
+    resetAccount();
     const form = new FormData(event.target);
     user = await api(signingUp ? "register" : "login", "POST", {
       name: form.get("name"),
@@ -343,19 +391,18 @@ $("logout").onclick = async () => {
     showScreen("auth");
     return;
   }
+  if (authBusy) return;
+  authBusy = true;
   try {
-    searchSequence++;
+    // Invalidate outstanding responses before waiting for server-side revocation.
+    resetAccount(user);
     await api("logout", "POST", {});
-    user = null;
-    saved = [];
-    currentQuery = "";
-    $("results").replaceChildren();
-    $("search-heading").hidden = true;
-    $("search-empty").hidden = false;
-    $("query").value = "";
+    resetAccount();
     showScreen("auth");
   } catch (e) {
     notify(e.message, true);
+  } finally {
+    authBusy = false;
   }
 };
 let searchSequence = 0;
@@ -387,6 +434,8 @@ async function runSearch(q, mode = selectedMode) {
   selectMode(mode);
   q = q.trim();
   if (!q) return;
+  searchRequest?.abort();
+  searchRequest = new AbortController();
   const sequence = ++searchSequence;
   view("search");
   $("query").value = q;
@@ -412,7 +461,7 @@ async function runSearch(q, mode = selectedMode) {
   );
   currentQuery = "";
   try {
-    const data = await api(mode + "?q=" + encodeURIComponent(q));
+    const data = await api(mode + "?q=" + encodeURIComponent(q), "GET", undefined, searchRequest);
     if (sequence !== searchSequence) return;
     currentQuery = q;
     currentMode = mode;
@@ -644,9 +693,11 @@ async function refreshLimits() {
     : describe(requestPolicy.guest);
 }
 (async () => {
+  const generation = accountGeneration;
   try {
     user = await api("me");
   } catch {
+    if (generation !== accountGeneration) return;
     user = null;
   }
   try {
