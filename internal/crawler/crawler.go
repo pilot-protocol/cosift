@@ -1227,6 +1227,7 @@ func (c *Crawler) FetchAndIndexNow(ctx context.Context, url string) error {
 }
 
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
+	approvedHash, _ := ctx.Value(approvedContentKey{}).(string)
 	u, _ := url.Parse(item.URL)
 	// Prior enqueueLinks already
 	// filters via allowedDomain, but stale frontier entries from before
@@ -1289,7 +1290,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// revisits at the cost of missing freshly-updated content during the
 	// staleness window. Default 0 = disabled (every revisit issues a
 	// conditional GET, matching behavior).
-	if prior != nil && len(prior.ContentSHA) > 0 {
+	if approvedHash == "" && prior != nil && len(prior.ContentSHA) > 0 {
 		refetchHours := 0
 		if v := os.Getenv("COSIFT_REFETCH_AFTER_HOURS"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -1303,9 +1304,18 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		}
 	}
 
-	res, err := c.fetch(ctx, item.URL, prior)
+	fetchPrior := prior
+	if approvedHash != "" {
+		// A fresh full body must match moderation; cached/304 shortcuts cannot
+		// establish which content this contribution actually approved.
+		fetchPrior = nil
+	}
+	res, err := c.fetch(ctx, item.URL, fetchPrior)
 	if err != nil {
 		return err
+	}
+	if approvedHash != "" && res.notModified {
+		return fmt.Errorf("%w: moderation requires a fresh response body", ErrContributionRejected)
 	}
 
 	// 304 Not Modified: server confirmed nothing changed. Update validators
@@ -1349,6 +1359,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if perr != nil {
 		return perr
 	}
+	if approvedHash != "" && ApprovedContentHash(parsed.Title, parsed.Text) != approvedHash {
+		return fmt.Errorf("%w: webpage changed after moderation", ErrContributionRejected)
+	}
 	if strings.TrimSpace(parsed.Text) == "" {
 		return errors.New("empty content")
 	}
@@ -1372,7 +1385,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// the index work is already done. Update validators + fetched_at and exit.
 	// Catches servers that don't send ETag/Last-Modified (so 304 isn't available).
 	if existing := prior; existing != nil {
-		if bytes.Equal(existing.ContentSHA, sha[:]) {
+		if bytes.Equal(existing.ContentSHA, sha[:]) && (approvedHash == "" || existing.Title == parsed.Title) {
 			existing.FetchedAt = time.Now()
 			if res.etag != "" {
 				existing.ETag = res.etag

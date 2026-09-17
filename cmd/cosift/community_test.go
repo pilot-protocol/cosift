@@ -18,7 +18,7 @@ import (
 
 func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 	called := 0
-	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact) (crawler.ContributionReceipt, error) {
+	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact, approvedHash string) (crawler.ContributionReceipt, error) {
 		called++
 		if raw != "https://example.com/guide" {
 			t.Errorf("bad contribution %s", raw)
@@ -26,7 +26,7 @@ func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 		return crawler.ContributionReceipt{Indexed: true, Novel: true}, nil
 	}}
 	call := func(token, url string) int {
-		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`"}`))
+		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`","approved_content_hash":"`+strings.Repeat("a", 64)+`"}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		s.handleCommunityEnqueue(w, r)

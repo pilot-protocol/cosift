@@ -42,13 +42,18 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req struct {
-		SubmissionID string                 `json:"submission_id,omitempty"`
-		URL          string                 `json:"url"`
-		Artifact     *crawler.LocalArtifact `json:"artifact,omitempty"`
+		SubmissionID        string                 `json:"submission_id,omitempty"`
+		URL                 string                 `json:"url"`
+		Artifact            *crawler.LocalArtifact `json:"artifact,omitempty"`
+		ApprovedContentHash string                 `json:"approved_content_hash"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if json.NewDecoder(r.Body).Decode(&req) != nil {
 		writeProblem(w, http.StatusBadRequest, "expected a webpage URL")
+		return
+	}
+	if !crawler.ValidApprovedContentHash(req.ApprovedContentHash) {
+		writeProblem(w, http.StatusUnprocessableEntity, "approved content hash is required")
 		return
 	}
 	if req.SubmissionID != "" {
@@ -67,7 +72,7 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 	liftWriteDeadline(w)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	receipt, err := s.fetchCommunityReceipt(ctx, req.SubmissionID, u, req.Artifact)
+	receipt, err := s.fetchCommunityReceipt(ctx, req.SubmissionID, u, req.Artifact, req.ApprovedContentHash)
 	if err != nil {
 		if errors.Is(err, errCommunityReceiptConflict) {
 			writeProblem(w, http.StatusConflict, "submission id belongs to another payload")
