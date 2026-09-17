@@ -32,6 +32,7 @@ function resetAccount(nextUser = null) {
   $("saved-count").textContent = "0";
   $("credit-balance").textContent = "";
   $("credit-balance").hidden = true;
+  $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
   $("buy-credits").disabled = false;
   $("payment-info").hidden = true;
@@ -262,12 +263,18 @@ $("skip-interests").onclick = async () => {
 };
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
+  $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
   $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
     $("credit-balance").textContent =
-      `${c.balance} credits · 1 per extra request`;
+      `${Number(c.balance).toLocaleString()} credits available`;
+    if (c.monthly) {
+      $("monthly-credits").hidden = false;
+      $("credit-month").textContent = `This month · ${c.monthly.month} (UTC)`;
+      for (const name of ["earned", "purchased", "spent"]) $("month-" + name).textContent = Number(c.monthly[name] || 0).toLocaleString();
+    }
     if (c.payments_enabled) {
       const pack = c.credit_pack;
       const price = new Intl.NumberFormat("en-US", {style: "currency", currency: pack.currency}).format(pack.amount_cents / 100);
@@ -361,8 +368,9 @@ function suggestions() {
   }
 }
 async function view(name) {
+  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
   if (name === "shared" && (!sharedAuth || !user)) return;
-  for (const value of ["search", "saved", "contribute", "shared"])
+  for (const value of ["search", "saved", "contribute", "shared", "connect"])
     $("view-" + value).hidden = value !== name;
   document.querySelectorAll("nav [data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
@@ -393,6 +401,7 @@ document
   .forEach((button) => (button.onclick = () => view(button.dataset.view)));
 $("edit-interests").onclick = () => (user ? onboarding() : showScreen("auth"));
 $("guest-signup").onclick = () => showScreen("auth");
+$("entry-connect").onclick = async () => { try { await enter(); await view("connect"); } catch (e) { notify(e.message, true); } };
 $("continue-guest").onclick = () => {
   if (authBusy) return;
   return enter().catch((e) => notify(e.message, true));
@@ -412,7 +421,7 @@ function renderGuestAllowance() {
       "m " +
       String(seconds % 60).padStart(2, "0") +
       "s."
-    : "One request available across Search, Research, Answer, and contributions.";
+    : "One request available across Search, Research, and Answer. Sign in to contribute.";
 }
 setInterval(renderGuestAllowance, 1000);
 $("logout").onclick = async () => {
@@ -617,6 +626,7 @@ async function refreshSaved() {
 }
 $("contribution-form").onsubmit = (event) => {
   event.preventDefault();
+  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
   busy(event.target, async () => {
     const text = $("urls").value.trim(),
       file = $("csv").files[0];
@@ -661,7 +671,7 @@ async function refreshContributions() {
     $("contribution-list").replaceChildren(
       el(
         "div",
-        "Sign in to keep a personal contribution history. Guest submissions are saved for crawling without an account.",
+        "Sign in to contribute public webpages and track your contributions.",
         "empty-state",
       ),
     );
@@ -923,3 +933,26 @@ $("auth-restart").onclick = () => {
   $("auth-restart").hidden = true;
   $("auth-submit").textContent = "Email me a code →";
 };
+
+// The application sends only sanitized pageviews, with no search/account payload.
+// Disable Enhanced Measurement in the GA stream for a pageview-only setup.
+async function loadAnalytics() {
+  if (typeof window === "undefined") return;
+  try {
+    const response = await fetch("/api/analytics", {credentials: "same-origin"});
+    if (!response.ok) return;
+    const config = await response.json();
+    if (!/^G-[A-Z0-9]+$/.test(config.measurement_id || "")) return;
+    window.dataLayer = window.dataLayer || [];
+    const gtag = function () { window.dataLayer.push(arguments); };
+    window.gtag = gtag;
+    gtag("js", new Date());
+    gtag("config", config.measurement_id, {send_page_view: false, allow_google_signals: false, allow_ad_personalization_signals: false, page_location: location.origin + location.pathname, page_referrer: ""});
+    gtag("event", "page_view", {page_location: location.origin + location.pathname, page_title: "Cosift", page_referrer: ""});
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "https://www.googletagmanager.com/gtag/js?id=" + config.measurement_id;
+    document.head.append(script);
+  } catch (_) { /* Analytics failure must not block the app. */ }
+}
+loadAnalytics();
