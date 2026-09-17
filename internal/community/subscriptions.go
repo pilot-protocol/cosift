@@ -187,7 +187,7 @@ func (s *Server) checkoutSubscription(w http.ResponseWriter, r *http.Request, u 
 		"mode": {"subscription"}, "payment_method_types[0]": {"card"}, "adaptive_pricing[enabled]": {"false"},
 		"client_reference_id": {u.ID}, "metadata[cosift_order_id]": {id}, "subscription_data[metadata][cosift_order_id]": {id},
 		"line_items[0][price_data][currency]": {"usd"}, "line_items[0][price_data][unit_amount]": {"500"}, "line_items[0][price_data][recurring][interval]": {"month"}, "line_items[0][price_data][recurring][interval_count]": {"1"},
-		"line_items[0][price_data][product_data][name]": {"Cosift monthly credits"}, "line_items[0][price_data][product_data][description]": {"50,000 credits per paid month. Unused credits carry over. Search 1, Answer 2, Research 3 credits per extra request."}, "line_items[0][quantity]": {"1"},
+		"line_items[0][price_data][product_data][name]": {"Cosift monthly credits"}, "line_items[0][price_data][product_data][description]": {"50,000 credits per paid month. Unused credits carry over. Search 1, Answer 2, Research 3 credits per request."}, "line_items[0][quantity]": {"1"},
 		"expires_at": {strconv.FormatInt(created+23*3600, 10)}, "success_url": {s.cfg.PublicURL + "/?payment=success"}, "cancel_url": {s.cfg.PublicURL + "/?payment=cancelled"},
 	}
 	var session stripe.CheckoutSession

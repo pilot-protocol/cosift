@@ -38,10 +38,9 @@ func TestCreditsRewardOnceSpendAndRefund(t *testing.T) {
 	if balance() != monthlyFreeCredits+10 {
 		t.Fatal("duplicate reward")
 	}
-	s.db.Exec(`INSERT INTO retrieval_usage VALUES(?,'free',?,?)`, "member:"+u.ID, s.cfg.MemberFreeRPM, time.Now().Add(time.Minute).Unix())
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
 	if balance() != monthlyFreeCredits+9 {
-		t.Fatal("extra request not charged")
+		t.Fatal("first request not charged")
 	}
 	fail = true
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 502)

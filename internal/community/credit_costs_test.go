@@ -42,9 +42,6 @@ func TestModeCreditCostsInsufficientBalanceAndFullRefund(t *testing.T) {
 				w.Write([]byte(`{}`))
 			}))
 			u, cookie := fundedCreditAccount(t, s, cost-1)
-			if _, err := s.db.Exec(`INSERT INTO retrieval_usage VALUES(?,'free',?,?)`, "member:"+u.ID, s.cfg.MemberFreeRPM, time.Now().Add(time.Minute).Unix()); err != nil {
-				t.Fatal(err)
-			}
 			denied := request(t, s, "GET", "/api/"+mode+"?q=test", nil, cookie)
 			expect(t, denied, 429)
 			if calls != 0 || !strings.Contains(denied.Body.String(), "requires") {

@@ -29,7 +29,7 @@ func runCommunity(ctx context.Context, args []string) error {
 	dir := fs.String("data-dir", "./community-data", "private account database directory")
 	proxies := fs.String("trusted-proxies", "", "comma-separated proxy CIDRs allowed to supply X-Forwarded-For")
 	guestInterval := fs.Duration("guest-interval", time.Minute, "shared guest allowance interval")
-	freeRPM := fs.Int("member-free-rpm", 60, "shared free member requests per minute")
+	freeRPM := fs.Int("member-free-rpm", 0, "deprecated and ignored; every successful authenticated request costs credits")
 	searchRPM := fs.Int("search-rpm", 120, "member Search hard cap per minute, including credit requests")
 	answerRPM := fs.Int("answer-rpm", 20, "member Answer hard cap per minute, including credit requests")
 	researchLimit := fs.Int("research-per-10m", 3, "member Research hard cap per ten minutes, including credit requests")

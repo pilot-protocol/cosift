@@ -45,7 +45,7 @@ type Config struct {
 	AdminToken                  string // Only used for crawl-enqueue, never forwarded with searches.
 	TrustedProxies              []string
 	GuestInterval               time.Duration
-	MemberFreeRPM               int
+	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
 	SearchRPM                   int
 	AnswerRPM                   int
 	ResearchPer10Min            int
@@ -483,24 +483,16 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		}
 		defer func() { finish(completed) }()
 	}
-	// Hard mode caps apply before free allowance or credit charging.
+	// Hard mode caps apply before charging every authenticated request.
 	finishMode, ok := s.allowRetrieval(w, r, u, mode)
 	if !ok {
 		return
 	}
 	defer func() { finishMode(completed) }()
 	if u.ID != "" {
-		finish, free, err := s.reserveFree(r, u)
-		if err != nil {
-			problem(w, 503, "request allowance unavailable")
+		finish, ok := s.reserveCredit(w, r, u, mode)
+		if !ok {
 			return
-		}
-		if !free {
-			var ok bool
-			finish, ok = s.reserveCredit(w, r, u, mode)
-			if !ok {
-				return
-			}
 		}
 		defer func() { finish(completed) }()
 	}

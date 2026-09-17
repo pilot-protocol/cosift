@@ -49,7 +49,7 @@ FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end
 		problem(w, 503, "billing status unavailable")
 		return
 	}
-	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
+	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": 0, "all_authenticated_requests_metered": true, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
 	for key, value := range billing {
 		out[key] = value
 	}
@@ -77,10 +77,9 @@ SELECT ?,?,-?,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		w.Header().Set("Retry-After", "60")
-		message := fmt.Sprintf("free request limit reached; %s requires %d credits; contribute verified new webpages or try again in a minute", mode, cost)
+		message := fmt.Sprintf("insufficient credits: %s requires %d credits; contribute verified new webpages or use your next monthly grant", mode, cost)
 		if s.paymentsEnabled() {
-			message = fmt.Sprintf("free request limit reached; %s requires %d credits; buy credits in the web app, contribute verified webpages, or try again in a minute", mode, cost)
+			message = fmt.Sprintf("insufficient credits: %s requires %d credits; add credits in Billing, contribute verified webpages, or use your next monthly grant", mode, cost)
 		}
 		problem(w, 429, message)
 		return nil, false

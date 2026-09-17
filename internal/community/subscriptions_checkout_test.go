@@ -93,7 +93,7 @@ func TestSubscriptionCheckoutCompletionNeverGrantsMonthlyCredits(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info["can_top_up"] != false || info["monthly_free_credits"] != float64(1000) || info["free_requests_per_minute"] != float64(60) {
+	if info["can_top_up"] != false || info["monthly_free_credits"] != float64(1000) || info["free_requests_per_minute"] != float64(0) || info["all_authenticated_requests_metered"] != true {
 		t.Fatal("unpaid subscription changed free plan or enabled top-ups")
 	}
 	if info["subscription"].(map[string]any)["active"] != false {
