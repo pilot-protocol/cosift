@@ -50,6 +50,7 @@ type Config struct {
 	ResearchPer10Min    int
 	StripeSecretKey     string
 	StripeWebhookSecret string
+	AllowTestPayments   bool // Explicit opt-in for an isolated QA ledger only.
 	GAMeasurementID     string
 }
 
@@ -491,7 +492,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		}
 		if !free {
 			var ok bool
-			finish, ok = s.reserveCredit(w, r, u)
+			finish, ok = s.reserveCredit(w, r, u, mode)
 			if !ok {
 				return
 			}

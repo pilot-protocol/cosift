@@ -56,7 +56,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1"})
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	query := fs.String("query", "", "query for a community request")
 	mode := fs.String("mode", "search", "search, answer or research")
 	local := fs.Bool("index-locally", false, "fetch, index and embed locally, then contribute verified artifacts (requires login and embedding config)")
-	credits := fs.Bool("credits", false, "show the authenticated account credit balance")
+	credits := fs.Bool("credits", false, "show balance, monthly grant and Search/Answer/Research credit costs as JSON")
 	sessionFile := fs.String("session-file", os.Getenv("COSIFT_SESSION_FILE"), "private saved CLI session (or COSIFT_SESSION_FILE)")
 	login := fs.Bool("login", false, "save an authenticated CLI session")
 	logout := fs.Bool("logout", false, "revoke and delete the saved CLI session")

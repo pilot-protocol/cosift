@@ -39,7 +39,7 @@ func TestModeCapsShareAliasesAndCannotSpendPastCap(t *testing.T) {
 	}
 	var balance int
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != monthlyFreeCredits+97 {
+	if balance != monthlyFreeCredits+94 {
 		t.Fatalf("charged rejected request: %d", balance)
 	}
 	// A new process must not grant a new expensive Research allowance.

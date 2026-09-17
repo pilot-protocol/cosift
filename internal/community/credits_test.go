@@ -66,7 +66,7 @@ func TestCreditConcurrentSpendingCannotOverdraw(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			finish, ok := s.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), u)
+			finish, ok := s.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), u, "search")
 			if ok {
 				wins.Add(1)
 				finish(true)

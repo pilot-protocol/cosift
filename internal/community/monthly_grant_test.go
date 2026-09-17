@@ -34,7 +34,7 @@ func TestMonthlyGrantConcurrentReadsAndSpendingAcrossProcesses(t *testing.T) {
 				expect(t, request(t, instance, "GET", "/api/credits", nil, cookie), 200)
 				return
 			}
-			finish, ok := instance.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/search", nil), user)
+			finish, ok := instance.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/search", nil), user, "search")
 			if !ok {
 				t.Error("monthly spending failed")
 				return
