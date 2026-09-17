@@ -57,7 +57,7 @@ Firestore provides typed timestamps, collection-group token lookup and account
 reads; Secret Manager returns the **raw**, versioned token pepper. Google's
 ADC/ID-token clients handle credential refresh, service-account and supported
 impersonation flows for private Cloud Run. Firestore, Secret Manager and Google API versions match Andrei's auth
-service's dependency set. gRPC is upgraded to v1.83.1 for the security fixes in
+service's dependency set. gRPC is upgraded to v1.83.2 for the security fixes in
 GO-2026-6348, GO-2026-6441 and GO-2026-6443. The transitive Google auth, gRPC, protobuf and telemetry
 dependencies increase binary size and compile time; the Linux ARM64 build still
 uses `CGO_ENABLED=0` and requires no external runtime.
@@ -76,5 +76,5 @@ wire-format tests. It was already required transitively; no extra runtime is
 introduced to construct the local gRPC fixture responses.
 
 CI installs the pinned official `govulncheck` v1.8.0 development tool to gate
-reachable Go vulnerabilities. It is not a dependency of the shipped binary.
+vulnerabilities in imported Go packages. It is not a dependency of the shipped binary.
 The minimum Go toolchain is 1.26.8 so builds include current 1.26 security fixes.

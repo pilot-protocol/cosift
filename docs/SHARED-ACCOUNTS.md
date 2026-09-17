@@ -203,6 +203,6 @@ companion, and completing the existing model, capacity and payment rollout gates
 
 Security note: the audited auth revision also pins gRPC v1.82.1. Its owner should
 review/update that dependency before its production release; our gateway uses
-v1.83.1 to address [GO-2026-6348](https://pkg.go.dev/vuln/GO-2026-6348) and the
+v1.83.2 to address [GO-2026-6348](https://pkg.go.dev/vuln/GO-2026-6348) and the
 related gRPC advisories. The auth companion in this PR changes proxy deployment
 configuration only, not its dependencies or live services.

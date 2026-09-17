@@ -28,11 +28,12 @@ The first integration commit's Snyk check failed; the Snyk report was gated by
 login. An independent official `govulncheck` scan found affected gRPC v1.82.1
 call paths ([GO-2026-6348](https://pkg.go.dev/vuln/GO-2026-6348)) and Go 1.26.0
 standard-library paths with later security fixes. The PR now requires Go 1.26.8
-and gRPC v1.83.1; CI also runs pinned `govulncheck` v1.8.0. The independent scan
-is not a substitute for a successful Snyk check on the final commit. The updated
-scan reports **0 vulnerabilities called by the application**; it also reports
-non-called package/module advisories, which must not be described as a completely
-empty advisory inventory.
+and gRPC v1.83.2; CI also runs pinned `govulncheck` v1.8.0. The independent scan
+is not a substitute for a successful Snyk check on the final commit. The final
+package-level scan reports **0 vulnerabilities in imported packages**. It still
+lists GO-2026-5932 for the unused OpenPGP package within the required x/crypto
+module; the application does not import that package. CI gates imported packages,
+not just the call paths detected by static analysis.
 
 ## Manual browser check
 

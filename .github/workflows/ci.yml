@@ -38,10 +38,10 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: Check reachable Go vulnerabilities
+      - name: Check imported Go packages for vulnerabilities
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-          govulncheck ./...
+          govulncheck -scan=package ./...
 
       - name: Cross-compile for prod target (linux/arm64)
         # Production runs on a GH200 (linux/arm64). Pure-Go + CGO_ENABLED=0
