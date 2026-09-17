@@ -102,6 +102,9 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	if err != nil || doc == nil {
 		return ContributionReceipt{}, fmt.Errorf("contribution did not produce an indexable document")
 	}
+	if ApprovedContentHash(doc.Title, doc.Text) != approvedHash {
+		return ContributionReceipt{}, fmt.Errorf("%w: stored webpage differs from moderated content", ErrContributionRejected)
+	}
 	sum := sha256.Sum256([]byte(doc.Text))
 	return ContributionReceipt{Indexed: true, Novel: prior == nil, ContentHash: hex.EncodeToString(sum[:])}, nil
 }
