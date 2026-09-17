@@ -118,7 +118,7 @@
         <button data-view="connect" class="nav-item"><span aria-hidden="true">⌘</span> Agents</button>
         <button data-view="billing" class="nav-item"><span aria-hidden="true">◇</span> Billing</button></nav>
         <div class="credits-section"><p id="credit-balance" class="credit-balance" hidden></p>
-        <div id="monthly-credits" class="monthly-credits" hidden><p id="credit-month" class="fine"></p><dl><div class="monthly-free"><dt>Free this month</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl><p class="fine">Extra requests: Search 1 · Answer 2 · Research 3 credits. Unused credits carry over.</p></div>
+        <p class="sidebar-allowance">1,000 free credits / month</p>
         <button data-view="billing" class="text-button manage-credits" type="button">Manage credits ↗</button></div>
         <div class="account">
           <div id="avatar" class="avatar">C</div>
@@ -139,8 +139,10 @@
         </div>
       </aside>
       <main>
-        <p id="request-limits" class="fine"></p>
-        <p class="corpus-note">Coverage is growing. Contribute useful pages to help fill the gaps.</p>
+        <div class="workspace-meta">
+          <p class="corpus-note">Coverage is growing. Contribute useful pages to help fill the gaps.</p>
+          <details class="usage-limits"><summary>Usage limits</summary><p id="request-limits" class="fine"></p></details>
+        </div>
         <div id="guest-banner" class="guest-banner" hidden>
           <div>
             <strong>Guest session</strong
@@ -328,6 +330,10 @@
             <p>New content that passes validation earns 10 credits. Duplicates earn no more. <button data-view="contribute" class="text-button" type="button">Contribute pages ↗</button></p>
             <p>Canceling your subscription keeps your remaining credits.</p>
           </div>
+          <section id="monthly-credits" class="panel monthly-credits billing-activity" hidden aria-label="Monthly credit activity">
+            <div class="activity-heading"><h2>Credit activity</h2><p id="credit-month" class="fine"></p></div>
+            <dl><div class="monthly-free"><dt>Free credits</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl>
+          </section>
         </section>
         <section id="view-connect" class="view" hidden>
           <h1>Agents &amp; CLI</h1>
