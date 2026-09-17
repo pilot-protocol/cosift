@@ -106,6 +106,25 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	var explicitServer, explicitSession bool
+	fs.Visit(func(f *flag.Flag) {
+		explicitServer = explicitServer || f.Name == "server"
+		explicitSession = explicitSession || f.Name == "session-file"
+	})
+	// The installer can provision this one well-known session. Explicit
+	// credentials and guest mode always win; no harness config is inspected.
+	if !*guest && !*login && !explicitSession && *sessionFile == "" && os.Getenv("COSIFT_TOKEN") == "" && *email == "" && os.Getenv("COSIFT_PASSWORD") == "" {
+		path, saved, err := installedCommunitySession(*logout)
+		if err != nil {
+			return err
+		}
+		if path != "" {
+			*sessionFile = path
+			if !explicitServer {
+				*server = saved.Origin
+			}
+		}
+	}
 	u, err := url.Parse(*server)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("server must be an http(s) origin")

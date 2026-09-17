@@ -154,6 +154,15 @@ The repo's IP-resolver tests pass, but these deployment-chain checks remain open
 
 ## CLI usage
 
+The connected installer can provision an already installed, compatible Cosift
+CLI with the same token used by the agent. It writes a 0600, origin-bound session
+to `${XDG_CONFIG_HOME:-$HOME/.config}/cosift/community-session.json`. Subsequent
+`cosift request -query 'Rust async runtimes'` or `cosift contribute -credits`
+commands discover that one session and its server automatically. Explicit
+credentials and session selection take precedence; an explicit different server
+is rejected before any credential is sent. Guest mode never reads the installed
+session. Existing installer sessions are preserved rather than overwritten.
+
 Reuse the `ck_` credential already issued by Andrei's installer by providing it
 as `COSIFT_TOKEN` in the calling process. Do not put it in shell command arguments
 or commit it to config. The community CLI does not automatically scan harness
@@ -176,6 +185,9 @@ unset `COSIFT_TOKEN` before selecting that session file; conflicting credentials
 are rejected. Explicit CLI logout revokes the saved credential upstream, so a
 saved installer token is also revoked for any agent still using that same token.
 Standalone email/password and existing session-file workflows remain supported.
+`cosift logout` discovers and revokes the installed session too, including an
+expired one; a temporary upstream failure retains the file so logout can be
+retried. Revoking that token also invalidates agents using the same token.
 
 ## MCP companion change and rollout boundary
 

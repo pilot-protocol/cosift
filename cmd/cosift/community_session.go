@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -23,6 +24,40 @@ func (s communitySession) cookie() *http.Cookie {
 }
 
 func readCommunitySession(path, origin string, allowExpired bool) (communitySession, error) {
+	s, err := readCommunitySessionFile(path, allowExpired)
+	if err != nil {
+		return s, err
+	}
+	if s.Origin != origin {
+		return s, fmt.Errorf("session belongs to a different server")
+	}
+	return s, nil
+}
+
+// Only the installer's documented session path participates in discovery. The
+// origin still passes runContribute's HTTPS/origin checks before any request.
+func installedCommunitySession(allowExpired bool) (string, communitySession, error) {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// A process without a home has no implicit session location.
+			return "", communitySession{}, nil
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	path := filepath.Join(dir, "cosift", "community-session.json")
+	saved, err := readCommunitySessionFile(path, allowExpired)
+	if os.IsNotExist(err) {
+		return "", communitySession{}, nil
+	}
+	if err != nil {
+		return "", communitySession{}, fmt.Errorf("installed CLI session: %w", err)
+	}
+	return path, saved, nil
+}
+
+func readCommunitySessionFile(path string, allowExpired bool) (communitySession, error) {
 	var s communitySession
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -49,9 +84,6 @@ func readCommunitySession(path, origin string, allowExpired bool) (communitySess
 	}
 	if len(data) > 8192 || json.Unmarshal(data, &s) != nil {
 		return s, fmt.Errorf("invalid session file; log in again")
-	}
-	if s.Origin != origin {
-		return s, fmt.Errorf("session belongs to a different server")
 	}
 	if s.Token == "" || s.cookie().Valid() != nil || s.Expires.IsZero() {
 		return s, fmt.Errorf("invalid session file; log in again")

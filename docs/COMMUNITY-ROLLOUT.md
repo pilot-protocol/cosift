@@ -2,10 +2,10 @@
 
 **Shared-account integration update:** see [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and [its verification record](SHARED-ACCOUNTS-VALIDATION.md). Shared mode now connects to Andrei’s auth/MCP infrastructure. Its live staging and companion-change gates must pass before rollout; earlier standalone checks do not establish shared-mode production readiness.
 
-This is a deployment plan, not an instruction to deploy automatically. The user
-requested that the implementation remain in a PR until reviewed. Do not create a
-release tag, publish assets, enable the updater, or modify production as part of
-reviewing or testing this PR.
+Deploy only an explicitly approved commit after its review and release gates
+pass. Reviewing or testing this PR does not itself authorize a release tag,
+published assets, updater activation, or production changes. Use the controlled
+sequence below for an authorized rollout.
 
 ## Current production baseline (2026-09-16)
 
