@@ -836,14 +836,16 @@ $("refresh-contributions").onclick = () =>
 let requestPolicy;
 async function refreshLimits() {
   requestPolicy = await api("limits");
-  const interval = requestPolicy.guest_interval_seconds;
   const duration = (seconds) => seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
   const describe = (limits) => Object.entries(limits).map(([mode, limit]) =>
     `${modeLabels[mode]} ${limit.requests}/${duration(limit.window_seconds)}`).join(" · ");
-  $("guest-policy").textContent = `Guests: one shared request every ${duration(interval)}. ${describe(requestPolicy.guest)}.`;
+  const guestCooldowns = ["search", "answer", "research"].map((mode) =>
+    `${modeLabels[mode]} ${duration(requestPolicy.guest[mode].window_seconds)}`).join(" · ");
+  const guestPolicy = `Shared guest cooldown: ${guestCooldowns}. A request pauses all three modes.`;
+  $("guest-policy").textContent = guestPolicy;
   $("request-limits").textContent = user
     ? `Search 1 credit · Answer 2 · Research 3. ${describe(requestPolicy.member)}.`
-    : describe(requestPolicy.guest);
+    : guestPolicy;
 }
 let startupPending = false;
 async function initialize() {

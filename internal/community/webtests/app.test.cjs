@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
-const policy = {guest_interval_seconds:60, guest:{search:{requests:1, window_seconds:60}},member:{search:{requests:60,window_seconds:60}},member_free_requests_per_minute:60};
+const policy = {guest_interval_seconds:1800, guest:{search:{requests:1, window_seconds:1800},answer:{requests:1,window_seconds:3600},research:{requests:1,window_seconds:5400}},member:{search:{requests:120,window_seconds:60}},member_free_requests_per_minute:0};
 const tick = () => new Promise(setImmediate);
 function node() {
  return {hidden:false, disabled:false, value:'', textContent:'', children:[], dataset:{}, files:[],
@@ -45,6 +45,13 @@ test('logout during search clears private state and permits another search',asyn
  assert.equal(a.run('currentQuery'),'');
  assert.equal(a.get('results').children.length,0);
  assert.equal(a.get('auth').hidden,false);
+});
+test('guest policy explains one shared weighted cooldown', async () => {
+ const a=await app(); a.run('user=null');
+ const loading=a.run('refreshLimits()'); await tick();
+ a.respond('limits',policy); await loading;
+ assert.equal(a.get('guest-policy').textContent,'Shared guest cooldown: Search 30 min · Answer 60 min · Research 90 min. A request pauses all three modes.');
+ assert.equal(a.get('request-limits').textContent,a.get('guest-policy').textContent);
 });
 test('late saved response cannot repopulate a logged-out account',async()=>{
  const a=await app(); const saved=a.run('refreshSaved()').catch(()=>{}); await tick();
