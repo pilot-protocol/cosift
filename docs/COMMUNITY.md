@@ -16,12 +16,14 @@ People can:
 - Follow topics across the web and MCP, check article coverage, and record requests for missing articles. Automatic article authoring is still in development.
 - View monthly credits and manage an optional paid subscription or subscriber top-up when live payments are configured.
 
-Guests share **one successful Search, Research, or Answer request per minute per IP**.
-Guest Answer is additionally capped at one per 5 minutes and Research at one per
-30 minutes. Reading pages or checking the allowance is free. Invalid input and
-failed backend requests do not consume the allowance. HTTP 429 includes
-`Retry-After`, `retry_at`, and `retry_after_seconds`. People on a shared public IP
-share this persistent, atomic guest allowance. **Contributions require login.**
+Guests share one persistent cooldown per public IP. A successful **Search holds
+it for 30 minutes, Answer for 60 minutes, or Research for 90 minutes**. The
+cooldown applies across all three modes: after Answer, even Search must wait
+60 minutes. Changing modes does not create another allowance. People sharing a
+public IP also share this cooldown. Invalid input and failed backend requests
+do not consume it; reading the app or checking the allowance is free. HTTP 429
+includes `Retry-After`, `retry_at`, and `retry_after_seconds`.
+**Contributions require login.**
 
 Members receive **1,000 free credits each UTC calendar month**,
 1,000 new contributed URLs per rolling 24 hours, and 200
@@ -161,7 +163,9 @@ portal. Unlisted native routes return 404 to prevent quota bypasses. The interna
 loopback engine remains available to trusted operators.
 `GET /api/limits` publishes current limits. Operators can configure
 `-guest-interval`, `-search-rpm`, `-answer-rpm`, and `-research-per-10m` on
-the community command. `-member-free-rpm` is deprecated and ignored: it cannot
+the community command. `-guest-interval` defaults to `30m`: successful Search,
+Answer, and Research hold the shared guest cooldown for 1, 2, and 3 times that
+base interval, respectively. The web app and CLI use the same server policy. `-member-free-rpm` is deprecated and ignored: it cannot
 restore the old uncharged member allowance. A guest interval change preserves
 the original request time instead of resetting allowances. In-flight requests
 reserve a mode slot and, for authenticated retrieval, the mode's credit cost.
@@ -250,7 +254,7 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. 
 | `POST /api/logout` | Member | Revokes current session |
 | `GET /api/me` | Member | Profile and interests |
 | `PUT /api/interests` | Member | `{interests:[...]}`; completes onboarding, including an empty list |
-| `GET /api/guest` | Public | Current IP's allowance and next available time |
+| `GET /api/guest` | Public | Current IP's shared cooldown and next available time |
 | `GET /api/search?q=...` | Guest or member | Cosift `/search`, preserving backend defaults |
 | `GET /api/research?q=...` | Guest or member | Cosift `/research`; plan, synthesized answer and cited sources |
 | `GET /api/answer?q=...` | Guest or member | Cosift `/answer`; direct answer and cited sources |

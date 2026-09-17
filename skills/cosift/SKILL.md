@@ -94,6 +94,11 @@ searches use the same gateway balance; mode caps
 and MCP's separate daily cap still apply. Inspect current policy rather than
 assuming a balance buys unrestricted usage.
 
+If the user chooses guest retrieval, one shared cooldown applies per public IP:
+30 minutes after successful Search, 60 after Answer, and 90 after Research.
+Changing modes does not bypass that cooldown; backend failures do not consume it.
+Respect the server's retry guidance rather than repeatedly retrying.
+
 The optional paid plan costs $5/month and adds 50,000 credits per paid month.
 Subscribers also keep their free monthly allowance and may buy $5/50,000-credit
 top-ups. Top-ups require a paid current subscription period. Cancellation retains

@@ -142,8 +142,10 @@ successful authenticated retrieval spends credits, starting with the first reque
 There is no free per-minute member bypass. Credits are reserved before backend
 work; insufficient credit stops the request. Failed backend requests release
 reservations and refund credits. The monthly free grant, earned credits, and
-purchases all fund the same balance. Guest retrieval remains a separate option
-with its existing IP and mode limits. Credits do not
+purchases all fund the same balance. Guest retrieval has one shared cooldown per
+public IP: successful Search waits 30 minutes, Answer 60, and Research 90. The
+cooldown blocks every mode, so changing modes does not bypass it; failed backend
+requests do not consume it. Web and CLI use the same guest policy. Credits do not
 bypass mode limits or MCP's separate daily call cap. Check
 [`/api/limits`](https://cosift.pilotprotocol.network/api/limits) and the authenticated
 credits view for current policy. Respect retry guidance after a rate limit.

@@ -116,18 +116,21 @@ reuse the withdrawn v0.2.6 artifacts.
 
 ## Default quotas and public API compatibility
 
-| Operation | Credits per successful authenticated request | Member hard cap | Guest hard cap |
+| Operation | Credits per successful authenticated request | Member hard cap | Shared guest cooldown after success |
 | --- | --- | --- | --- |
-| Search | 1 | 120/minute | 1/minute |
-| Answer | 2 | 20/minute | 1/5 minutes |
-| Research | 3 | 3/10 minutes | 1/30 minutes |
+| Search | 1 | 120/minute | 30 minutes |
+| Answer | 2 | 20/minute | 60 minutes |
+| Research | 3 | 3/10 minutes | 90 minutes |
 
 Every successful authenticated retrieval spends credits from its first request.
 Each account receives 1,000 free credits per UTC calendar month; there is no
 free per-minute member bypass. Unused credits carry over. The old
-`-member-free-rpm` option is deprecated and ignored. Guest retrieval remains a
-separate one-request/minute IP allowance, with the additional guest mode caps
-above. Contributions always require authentication.
+`-member-free-rpm` option is deprecated and ignored. Guests share one persistent
+IP cooldown across all retrieval modes. The command's `-guest-interval` defaults
+to `30m`; Search/Answer/Research multiply it by 1/2/3 after success. For example,
+a guest Answer also blocks Search for 60 minutes. Changing modes does not bypass
+the outstanding cooldown. Backend failures release guest reservations. Web and
+CLI guests share this server policy. Contributions always require authentication.
 
 Reserve credits and a mode slot atomically before dispatch. A failed backend
 request must release its slot and refund its credit reservation; an insufficient
@@ -137,7 +140,9 @@ verify actual balance changes of -1/-2/-3 for a member's first Search/Answer/Res
 request, and -1 for MCP search under that same account. A prior free-quota test is
 not evidence that the new metering policy works. Repeat a failure and verify no
 net debit; confirm the next UTC monthly grant happens only once per account.
-Use the installer's private saved CLI session for repeated commands.
+Use the installer's private saved CLI session for repeated commands. Verify
+guest cooldown duration for all three modes, cross-mode rejection, restart
+persistence, and no consumption after failed backend work.
 
 Public `/search`, `/answer` and `/research` now use the portal and accept GET
 with `q`, matching the app/CLI. Existing public POST, streaming, or advanced
