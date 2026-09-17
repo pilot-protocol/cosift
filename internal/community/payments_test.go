@@ -27,7 +27,7 @@ func stripeTestServer(t *testing.T) (*Server, *http.Cookie, User) {
 	if err := json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &u); err != nil {
 		t.Fatal(err)
 	}
-	s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+	s.paymentClient.Transport = paymentTestTransport(s, func(r *http.Request) (*http.Response, error) {
 		t.Error("unexpected Stripe network call")
 		return nil, fmt.Errorf("network disabled")
 	})
@@ -65,6 +65,7 @@ func deliver(s *Server, id, kind string, object any) *httptest.ResponseRecorder 
 
 func TestStripeCheckoutConfigurationAuthAndServerPrice(t *testing.T) {
 	s, cookie, u := stripeTestServer(t)
+	seedTopupSubscription(t, s, u)
 	s.cfg.StripeWebhookSecret = ""
 	expect(t, request(t, s, "POST", "/api/payments/checkout", map[string]string{"idempotency_key": "test-checkout-key-0001"}, cookie), 503)
 	if s.paymentsEnabled() {
@@ -75,7 +76,7 @@ func TestStripeCheckoutConfigurationAuthAndServerPrice(t *testing.T) {
 	expect(t, request(t, s, "POST", "/api/payments/checkout", map[string]any{"idempotency_key": "test-checkout-key-0001", "amount": 1, "credits": 999999}, cookie), 400)
 	expect(t, request(t, s, "POST", "/api/payments/checkout", map[string]string{"idempotency_key": "short"}, cookie), 400)
 	calls := 0
-	s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+	s.paymentClient.Transport = paymentTestTransport(s, func(r *http.Request) (*http.Response, error) {
 		calls++
 		if r.URL.String() != "https://api.stripe.com/v1/checkout/sessions" || r.Method != "POST" {
 			t.Error("wrong Stripe endpoint")
@@ -222,9 +223,10 @@ func TestStripeRefundsPartialFullDuplicateAndOutOfOrder(t *testing.T) {
 }
 
 func TestStripeCheckoutRejectsRedirectsAndLeaksNoKey(t *testing.T) {
-	s, cookie, _ := stripeTestServer(t)
+	s, cookie, u := stripeTestServer(t)
+	seedTopupSubscription(t, s, u)
 	for i, raw := range []string{"https://evil.example/pay", "http://checkout.stripe.com/pay", "https://checkout.stripe.com.evil.example/pay", "https://user@checkout.stripe.com/pay"} {
-		s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+		s.paymentClient.Transport = paymentTestTransport(s, func(r *http.Request) (*http.Response, error) {
 			b, _ := json.Marshal(map[string]any{"id": "cs_bad", "url": raw, "livemode": false})
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(b))}, nil
 		})
@@ -246,10 +248,11 @@ func TestStripeCheckoutRejectsRedirectsAndLeaksNoKey(t *testing.T) {
 }
 
 func TestStripeCheckoutRetryKeepsSameOrderAfterTimeout(t *testing.T) {
-	s, cookie, _ := stripeTestServer(t)
+	s, cookie, u := stripeTestServer(t)
+	seedTopupSubscription(t, s, u)
 	var first string
 	calls := 0
-	s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+	s.paymentClient.Transport = paymentTestTransport(s, func(r *http.Request) (*http.Response, error) {
 		calls++
 		key := r.Header.Get("Idempotency-Key")
 		if first == "" {
@@ -278,9 +281,10 @@ func TestStripeCheckoutRetryKeepsSameOrderAfterTimeout(t *testing.T) {
 }
 
 func TestStripeCheckoutSeparatesTestAndLiveSessions(t *testing.T) {
-	s, cookie, _ := stripeTestServer(t)
+	s, cookie, u := stripeTestServer(t)
+	seedTopupSubscription(t, s, u)
 	keys := map[string]bool{}
-	s.paymentClient.Transport = pageTransport(func(r *http.Request) (*http.Response, error) {
+	s.paymentClient.Transport = paymentTestTransport(s, func(r *http.Request) (*http.Response, error) {
 		keys[r.Header.Get("Idempotency-Key")] = true
 		mode := "test"
 		if s.stripeLive() {
@@ -292,6 +296,7 @@ func TestStripeCheckoutSeparatesTestAndLiveSessions(t *testing.T) {
 	body := map[string]string{"idempotency_key": "checkout-mode-isolation"}
 	expect(t, request(t, s, "POST", "/api/payments/checkout", body, cookie), 200)
 	s.cfg.StripeSecretKey = "sk_live_fake_for_unit_tests"
+	seedTopupSubscription(t, s, u)
 	expect(t, request(t, s, "POST", "/api/payments/checkout", body, cookie), 200)
 	if len(keys) != 2 {
 		t.Fatal("live mode reused a cached test checkout")
@@ -355,4 +360,40 @@ func TestStripeCreditPackDisclosesModePrices(t *testing.T) {
 			t.Fatalf("%s price=%s want %s", mode, prices[mode], want)
 		}
 	}
+}
+
+// Legacy one-time checkout tests now exercise top-ups after a paid subscription.
+func seedTopupSubscription(t *testing.T, s *Server, u User) {
+	t.Helper()
+	suffix := "test"
+	if s.stripeLive() {
+		suffix = "live"
+	}
+	id := "sub_fixture_" + suffix
+	order := "subscription_fixture_" + suffix
+	now := time.Now().Unix()
+	end := now + 30*86400
+	if _, err := s.db.Exec(`INSERT INTO subscription_orders(id,user_id,livemode,amount_cents,credits,currency,created_at,subscription_id,customer_id) VALUES(?,?,?,500,50000,'usd',?,?,'cus_fixture')`, order, u.ID, s.stripeLive(), now, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO billing_subscriptions(id,user_id,order_id,customer_id,livemode,status,cancel_at_period_end,current_period_end,paid_until,price_id,created_at) VALUES(?,?,?,'cus_fixture',?,'active',0,?,?,'price_fixture',?)`, id, u.ID, order, s.stripeLive(), end, end, now); err != nil {
+		t.Fatal(err)
+	}
+}
+func paymentTestTransport(s *Server, next pageTransport) pageTransport {
+	return pageTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/subscriptions/sub_fixture_") {
+			var id, order, customer, status, price string
+			var live, cancel bool
+			var end int64
+			id = strings.TrimPrefix(r.URL.Path, "/v1/subscriptions/")
+			if err := s.db.QueryRow(`SELECT order_id,customer_id,livemode,status,cancel_at_period_end,current_period_end,price_id FROM billing_subscriptions WHERE id=?`, id).Scan(&order, &customer, &live, &status, &cancel, &end, &price); err != nil {
+				return nil, err
+			}
+			obj := map[string]any{"id": id, "livemode": live, "customer": customer, "status": status, "cancel_at_period_end": cancel, "metadata": map[string]string{"cosift_order_id": order}, "items": map[string]any{"has_more": false, "data": []any{map[string]any{"id": "si_fixture", "quantity": 1, "current_period_end": end, "price": map[string]any{"id": price, "unit_amount": 500, "currency": "usd", "recurring": map[string]any{"interval": "month", "interval_count": 1}}}}}}
+			body, _ := json.Marshal(obj)
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body))}, nil
+		}
+		return next(r)
+	})
 }

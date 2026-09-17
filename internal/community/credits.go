@@ -44,7 +44,16 @@ FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end
 		problem(w, 500, "credits unavailable")
 		return
 	}
-	respond(w, 200, map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()})
+	billing, err := s.subscriptionFields(r.Context(), u.ID)
+	if err != nil {
+		problem(w, 503, "billing status unavailable")
+		return
+	}
+	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
+	for key, value := range billing {
+		out[key] = value
+	}
+	respond(w, 200, out)
 }
 
 // reserveCredit performs a conditional debit atomically. Refunds have an

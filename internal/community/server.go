@@ -37,21 +37,22 @@ const sessionAge = 30 * 24 * time.Hour
 const dailyContributionLimit = 1000
 
 type Config struct {
-	Shared              sharedaccount.Provider
-	DataDir             string
-	Backend             string
-	PublicURL           string
-	AdminToken          string // Only used for crawl-enqueue, never forwarded with searches.
-	TrustedProxies      []string
-	GuestInterval       time.Duration
-	MemberFreeRPM       int
-	SearchRPM           int
-	AnswerRPM           int
-	ResearchPer10Min    int
-	StripeSecretKey     string
-	StripeWebhookSecret string
-	AllowTestPayments   bool // Explicit opt-in for an isolated QA ledger only.
-	GAMeasurementID     string
+	Shared                      sharedaccount.Provider
+	DataDir                     string
+	Backend                     string
+	PublicURL                   string
+	AdminToken                  string // Only used for crawl-enqueue, never forwarded with searches.
+	TrustedProxies              []string
+	GuestInterval               time.Duration
+	MemberFreeRPM               int
+	SearchRPM                   int
+	AnswerRPM                   int
+	ResearchPer10Min            int
+	StripeSecretKey             string
+	StripeWebhookSecret         string
+	AllowTestPayments           bool // Explicit opt-in for an isolated QA ledger only.
+	StripePortalConfigurationID string
+	GAMeasurementID             string
 }
 
 type bucket struct {
@@ -65,6 +66,7 @@ type Server struct {
 	paymentClient    *http.Client
 	handler          http.Handler
 	mu               sync.Mutex
+	billingMu        sync.Mutex // Serializes provider-state refreshes in this single gateway.
 	limits           map[string]bucket
 	hashSlots        chan struct{}
 	trustedProxies   []netip.Prefix
@@ -163,6 +165,7 @@ func Open(cfg Config) (*Server, error) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})
 	mux.HandleFunc("POST /api/payments/checkout", s.auth(s.checkout))
+	mux.HandleFunc("POST /api/payments/portal", s.auth(s.portal))
 	mux.HandleFunc("POST /api/payments/webhook", s.stripeWebhook)
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))

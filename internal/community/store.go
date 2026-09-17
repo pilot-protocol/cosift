@@ -77,6 +77,10 @@ CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);`)
 		db.Close()
 		return nil, err
 	}
+	if err := subscriptionSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("subscription schema: %w", err)
+	}
 	rows, err := db.Query(`PRAGMA table_info(submissions)`)
 	if err != nil {
 		db.Close()
