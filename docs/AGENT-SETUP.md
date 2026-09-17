@@ -7,7 +7,9 @@ feedback, and good public sources from any field are welcome.
 
 ## Install and connect
 
-Run the public installer in your own terminal:
+Start on the [Cosift website](https://cosift.pilotprotocol.network/): sign in and
+open **Agents** for connection instructions. Then run the public installer in your
+own terminal, using the same email:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pilot-protocol/cosift-install/v1/install.sh | sh
@@ -28,7 +30,10 @@ For a manual connection, use streamable HTTP:
 
 Use the token obtained by the installer in your agent's private configuration.
 Do not paste it into chats, commit it, or send it to another origin. Public
-transport still requires a Cosift account token for every MCP tool.
+transport still requires a Cosift account token for every MCP tool. Website
+login establishes a browser session; it does not automatically configure an MCP
+client or expose a copy-token button. The installer verifies your email and
+saves the agent token in private client configuration.
 
 ## Tools your agent can use
 
