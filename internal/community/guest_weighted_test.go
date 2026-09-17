@@ -136,3 +136,78 @@ func TestGuestWeightedPolicyMigrationPreservesOriginalRequestTime(t *testing.T) 
 		}
 	}
 }
+
+func TestGuestLoweredIntervalMigratesModeCapsAndMatchesAvailability(t *testing.T) {
+	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) }))
+	expect(t, request(t, s, "GET", "/research?q=initial", nil, nil), 200)
+	// Move the successful research request four minutes into the past. Lowering
+	// the base from30minutes to1minute makes its new3-minute cooldown expire.
+	if _, err := s.db.Exec(`UPDATE guest_usage SET expires_at=expires_at-240`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE retrieval_usage SET expires_at=expires_at-240 WHERE identity LIKE 'guest:%'`); err != nil {
+		t.Fatal(err)
+	}
+	memberUntil := time.Now().Unix() + 600
+	if _, err := s.db.Exec(`INSERT INTO retrieval_usage(identity,mode,count,expires_at) VALUES('member:unchanged','research',1,?)`, memberUntil); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.GuestInterval = time.Minute
+	for range 2 {
+		if err := s.migrateGuestInterval(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sharedUntil, modeUntil, stillMember int64
+	if err := s.db.QueryRow(`SELECT expires_at FROM guest_usage`).Scan(&sharedUntil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT expires_at FROM retrieval_usage WHERE identity LIKE 'guest:%'`).Scan(&modeUntil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT expires_at FROM retrieval_usage WHERE identity='member:unchanged'`).Scan(&stillMember); err != nil {
+		t.Fatal(err)
+	}
+	if sharedUntil != modeUntil || modeUntil > time.Now().Unix() || stillMember != memberUntil {
+		t.Fatalf("migration mismatch shared=%d mode=%d member=%d", sharedUntil, modeUntil, stillMember)
+	}
+	var status struct{ Available bool }
+	if err := json.Unmarshal(request(t, s, "GET", "/api/guest", nil, nil).Body.Bytes(), &status); err != nil || !status.Available {
+		t.Fatal("expired cooldown not available", err)
+	}
+	expect(t, request(t, s, "GET", "/api/research?q=after-migration", nil, nil), 200)
+}
+
+func TestGuestLegacyModeExpiryMigrationMatchesSharedReservation(t *testing.T) {
+	s := testServer(t, nil)
+	used := time.Now().Unix() - 10
+	if _, err := s.db.Exec(`UPDATE settings SET value='60' WHERE key='guest_interval_seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO guest_usage(ip_hash,expires_at,reservation) VALUES('legacy',?,'oldopaque')`, used+60); err != nil {
+		t.Fatal(err)
+	}
+	for mode, window := range map[string]int64{"search": 60, "answer": 300, "research": 1800} {
+		if _, err := s.db.Exec(`INSERT INTO retrieval_usage(identity,mode,count,expires_at) VALUES('guest:legacy',?,1,?)`, mode, used+window); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`INSERT INTO retrieval_usage(identity,mode,count,expires_at) VALUES('guest:orphan','research',1,?)`, used+1800); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.migrateGuestInterval(); err != nil {
+			t.Fatal(err)
+		}
+		for mode := range requestCreditCosts() {
+			var until int64
+			if err := s.db.QueryRow(`SELECT expires_at FROM retrieval_usage WHERE identity='guest:legacy' AND mode=?`, mode).Scan(&until); err != nil || until != used+1800 {
+				t.Fatalf("legacy %s expiry=%d want%d: %v", mode, until, used+1800, err)
+			}
+		}
+		var orphanUntil int64
+		if err := s.db.QueryRow(`SELECT expires_at FROM retrieval_usage WHERE identity='guest:orphan'`).Scan(&orphanUntil); err != nil || orphanUntil != 0 {
+			t.Fatal("orphan quota remained active", orphanUntil, err)
+		}
+	}
+}

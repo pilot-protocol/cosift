@@ -129,6 +129,12 @@ func (s *Server) migrateGuestInterval() error {
 		if _, err = tx.Exec(`UPDATE guest_usage SET expires_at=expires_at+(?-?)*CASE WHEN reservation LIKE 'research:%' THEN 3 WHEN reservation LIKE 'answer:%' THEN 2 ELSE 1 END`, next, old); err != nil {
 			return err
 		}
+		// The shared reservation is authoritative across guest modes. Align mode
+		// caps with that expiry, including legacy uniform reservations. Orphaned
+		// legacy mode rows expire instead of contradicting /api/guest status.
+		if _, err = tx.Exec(`UPDATE retrieval_usage SET expires_at=COALESCE((SELECT expires_at FROM guest_usage WHERE ip_hash=substr(retrieval_usage.identity,7)),0) WHERE identity LIKE 'guest:%' AND mode IN ('search','answer','research')`); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec(`INSERT INTO settings(key,value) VALUES('guest_interval_seconds',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, next); err != nil {
 		return err
