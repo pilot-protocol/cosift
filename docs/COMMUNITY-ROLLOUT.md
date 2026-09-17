@@ -1,18 +1,27 @@
 # Community release: operator handoff
 
-**Shared-account integration update:** see [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and [its verification record](SHARED-ACCOUNTS-VALIDATION.md). Shared mode now connects to Andrei’s auth/MCP infrastructure. Its live staging and companion-change gates must pass before rollout; earlier standalone checks do not establish shared-mode production readiness.
+**2026-09-17 rollout update:** [PR #58](https://github.com/pilot-protocol/cosift/pull/58)
+merged at `c8ea845`, and the authorized v0.2.7 release completed successfully in
+[workflow 35255963898](https://github.com/pilot-protocol/cosift/actions/runs/35255963898).
+Andrei's auth/MCP companions are merged and serving healthy production Cloud Run
+origins; the installer is public at v0.4.0/v1. See
+[SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and its
+[verification record](SHARED-ACCOUNTS-VALIDATION.md) for confirmed revisions,
+direct URLs, verified real email/shared-account checks and remaining public
+cutover acceptance checks.
 
 Deploy only an explicitly approved commit after its review and release gates
 pass. Reviewing or testing this PR does not itself authorize a release tag,
 published assets, updater activation, or production changes. Use the controlled
 sequence below for an authorized rollout.
 
-## Current production baseline (2026-09-16)
+## Retained rollback baseline (2026-09-16)
 
-Production has been restored to the original v0.2.5 engine and original Caddy
-routing. The community service and its backup timer are stopped/disabled. The
-engine updater timer is also disabled so another release cannot roll out without
-an explicit decision. Account data and rollback backups have been retained.
+Before the September 17 rollout, production was restored to the original v0.2.5
+engine and original Caddy routing. The community service/backup timer and engine
+updater were stopped/disabled. This records the rollback baseline, not the state
+of an in-progress or completed v0.2.7 cutover. Account data and rollback backups
+were retained; record each subsequent service/routing change during rollout.
 
 The engine binary and config were compared byte-for-byte with their original
 backups. Engine PID was unchanged during the public-routing rollback. The public
@@ -21,14 +30,15 @@ not be selected as a release candidate.
 
 ## Review and validation
 
-The PR contains the exact revert of the draft ranking changes from #54, the
+The merged tree contains the exact revert of the draft ranking changes from #54, the
 public authentication entry and operational-route restrictions from #57, and
 mode-specific limits plus contribution quality screening. The community/CLI,
 local artifacts and credit ledger implementation already merged through #55 is
-part of the candidate's complete tree. Review the resulting tree against v0.2.5
-as well as the PR diff; reverting #54 must receive the normal owner review.
+part of the release's complete tree. The shared-account integration adds the
+auth/MCP connections and CLI session handoff. Compare the resulting tree and
+representative query behavior against v0.2.5 when accepting the release.
 
-Run with Go 1.26 and `GOWORK=off` when a parent workspace uses an older Go version:
+Run with Go 1.26.8 and `GOWORK=off` when a parent workspace uses an older Go version:
 
 ```sh
 GOWORK=off go vet ./...
@@ -76,7 +86,7 @@ reuse the withdrawn v0.2.6 artifacts.
    strategy, or deliberately update and version-check both binaries. Run
    `systemctl daemon-reload` before starting the portal. Never leave it using an
    old standalone binary while upgrading the engine.
-6. Check `/api/limits`, registration/login/logout, interest persistence, saved
+6. Check `/api/limits`, email-code login/logout, interest persistence, saved
    requests, sample CSV, and CLI guest/member requests over loopback first.
    Enable the reviewed Caddy routing only after these checks pass. Confirm the
    root routes to signup/login, public operational/admin/debug routes are
@@ -150,5 +160,7 @@ content judgments. Local embeddings are checked against server computation,
 so this first version does not promise server-compute savings. New content earns
 10 credits, globally deduplicated by content hash. Stripe one-time credit purchases are implemented but disabled until the secret
 API key and webhook signing secret are configured. See [Stripe activation and
-test-mode checks](STRIPE.md). Email verification and self-service password reset
-are not enabled in this version.
+test-mode checks](STRIPE.md). Shared mode verifies email codes through
+`cosift-auth`; standalone local mode still lacks email verification and
+self-service password reset. Article authoring and rewards for article views
+remain outside this release.
