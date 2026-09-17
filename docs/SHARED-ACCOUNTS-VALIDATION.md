@@ -5,8 +5,8 @@ auth/MCP/installer companions have also merged and released; this record
 separates the original local tests from the verified deployment checks below.
 The v0.2.7 engine/CLI release finished and the existing-host public cutover
 completed on 2026-09-17 at 18:23:08 UTC. Real email and authenticated service
-checks are recorded below; final public-client acceptance remained in progress
-at that checkpoint. No Stripe charge is claimed.
+checks are recorded below, followed by successful public Search/Answer/Research,
+MCP search/quota and topic-sync acceptance. No Stripe charge is claimed.
 
 ## Checks completed
 
@@ -81,6 +81,8 @@ cross-repository and browser checks.
 | Retrieval comparison | Both BM25 baseline queries preserved all six results and their order. Hybrid TLS preserved all six URLs, with ranks 3/4 swapped. Search returned 200 in 122–265 ms, Answer in 3.506 s, Research in 2.031 s. The existing weak Go evidence remained visible: Answer declined and Research noted missing specific evidence |
 | Live moderation | Useful text was allowed, garbage rejected as low quality, and harmful promotion with embedded prompt injection rejected as phishing. Anonymous moderation returned 401. These moderation fixtures were not indexed |
 | Public cutover | Caddy reloaded successfully at 18:23:08 UTC; public/origin `/api/auth/config` report shared mode, root opens login, and operational routes are blocked. The community unit uses the same v0.2.7 binary path as the engine with its old standalone override removed. Community backup upload succeeded and its timer is enabled |
+| Public request/account checks | Shared auth, identity, credits and topics passed through the public gateway. BM25 `k=20` returned 20 hits in 0.458 s. Authenticated Answer returned 200 with five sources and five valid cited IDs in 6.650 s; Research returned 200 with three plan steps, eight sources and five valid cited IDs in 3.926 s |
+| Public MCP and shared limits | Direct MCP search returned two filtered hits in 1.395 s through the gateway. The same user's SQLite search/free quota increased, and the credits response matched the ledger. A temporary topic added through the gateway appeared in direct MCP; removing it through MCP restored both lists to their initial state |
 | Local contribution | An authenticated Rust text/metadata/local-embedding artifact passed validation and reached Indexed. The account balance remained zero for this existing-page check; new-content credit fulfillment and durable receipt acceptance are separate checks. Repeating the URL through CSV reported one duplicate and zero accepted |
 | Public installer | [PR #1](https://github.com/pilot-protocol/cosift-install/pull/1) merged at `d18edef`. Full Git history and all issue/PR/release content had zero Gitleaks findings; custom-token inspection found only deterministic fixtures. The repository is public. `v0.4.0` and `v1` resolve to that merge; unauthenticated downloads returned 200 and the exact tested SHA-256 `fca1e4887b98e4b18957e48932203e3f0510e249b37baeaddd9292bcc4f8945b` |
 
@@ -90,9 +92,10 @@ themselves establish a completed authenticated web/CLI/MCP workflow.
 
 ## Acceptance still recorded separately
 
-Complete the shared-account checks through the public web app, CLI and MCP;
-exercise revocation, saved requests, quota/credit handling and new-content
-rewards. Observe credential
+Status at the 18:30 UTC documentation checkpoint:
+
+Complete the remaining revocation, saved-request and new-content reward checks.
+Observe credential
 refresh over its real lifetime. Retain the existing model and capacity gates;
 the pre-upgrade search/Answer/Research baseline records relevance limitations,
 so a healthy endpoint is not evidence of strong answer quality.

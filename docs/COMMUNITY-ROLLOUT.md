@@ -10,8 +10,8 @@ at 18:23:08 UTC, with login at the public entry and operational routes blocked.
 The community unit uses the shared binary and its backup timer is enabled. See
 [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and its
 [verification record](SHARED-ACCOUNTS-VALIDATION.md) for confirmed revisions,
-direct URLs, verified real email/shared-account checks and remaining final
-public-client acceptance checks.
+direct URLs, verified real email/shared-account and public request/MCP checks,
+and the remaining acceptance scope.
 
 Deploy only an explicitly approved commit after its review and release gates
 pass. Reviewing or testing this PR does not itself authorize a release tag,
