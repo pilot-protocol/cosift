@@ -38,6 +38,7 @@ const dailyContributionLimit = 1000
 
 type Config struct {
 	Shared                      sharedaccount.Provider
+	SharedPasswordEnabled       bool // Enable only after the upstream password service is deployed.
 	DataDir                     string
 	Backend                     string
 	PublicURL                   string
@@ -133,10 +134,11 @@ func Open(cfg Config) (*Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/auth/config", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil})
+		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil, "supports_password": s.sharedPasswordProvider() != nil})
 	})
 	mux.HandleFunc("POST /api/auth/start", s.sharedStart)
 	mux.HandleFunc("POST /api/auth/verify", s.sharedFinish)
+	mux.HandleFunc("POST /api/auth/password", s.sharedPassword)
 	mux.HandleFunc("POST /api/shared", s.auth(s.sharedTool))
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))

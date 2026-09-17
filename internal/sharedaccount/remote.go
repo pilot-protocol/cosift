@@ -91,7 +91,7 @@ func (r *remote) call(ctx context.Context, path, token string, body any, out any
 			if problem.Status != res.StatusCode || problem.Error != http.StatusText(res.StatusCode) {
 				return ErrUnavailable
 			}
-			if res.StatusCode == 401 && (problem.Detail == "invalid or revoked token" || problem.Detail == "invalid or expired code") {
+			if res.StatusCode == 401 && (problem.Detail == "invalid or revoked token" || problem.Detail == "invalid or expired code" || path == "/auth/password" && problem.Detail == "invalid email or password") {
 				return ErrUnauthorized
 			}
 			if res.StatusCode == 403 && problem.Detail == "account suspended" {
@@ -126,8 +126,23 @@ func (c *Client) Start(ctx context.Context, email string) (Challenge, error) {
 	return result, err
 }
 func (c *Client) Finish(ctx context.Context, requestID, code string) (Issued, error) {
+	return c.issue(ctx, "/auth/verify", map[string]string{"request_id": requestID, "code": code})
+}
+func (c *Client) FinishPassword(ctx context.Context, requestID, code, password string) (Issued, error) {
+	if len(password) < 12 || len(password) > 256 {
+		return Issued{}, ErrInvalid
+	}
+	return c.issue(ctx, "/auth/verify", map[string]string{"request_id": requestID, "code": code, "password": password})
+}
+func (c *Client) Password(ctx context.Context, email, password string) (Issued, error) {
+	if len(password) < 12 || len(password) > 256 {
+		return Issued{}, ErrUnauthorized
+	}
+	return c.issue(ctx, "/auth/password", map[string]string{"email": email, "password": password})
+}
+func (c *Client) issue(ctx context.Context, path string, body map[string]string) (Issued, error) {
 	var result Issued
-	err := c.auth.call(ctx, "/auth/verify", "", map[string]string{"request_id": requestID, "code": code}, &result)
+	err := c.auth.call(ctx, path, "", body, &result)
 	if err == nil {
 		if _, e := Parse(result.Token); e != nil || !UIDPattern.MatchString(result.UID) {
 			err = ErrUnavailable
