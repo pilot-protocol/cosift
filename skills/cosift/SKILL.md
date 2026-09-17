@@ -63,7 +63,8 @@ cosift contribute -server https://cosift.pilotprotocol.network -credits
 Contribute when the user wants to share sources. Login is required. Choose useful,
 publicly accessible pages on any topic; do not upload private agent history,
 credentials, account-only pages or private documents. CSV accepts one URL column
-or a recognized `url`/`urls`/`webpage`/`website` header, up to 100 URLs and 1 MB.
+or a recognized `url`/`urls`/`webpage`/`website` header, up to 100 URLs and 1 MB
+per request and 1,000 new URLs per account per rolling 24 hours.
 Flags precede positional URLs. Submission acceptance means queued for checking;
 only verified indexing can earn credits. Check status in the web app.
 
@@ -77,13 +78,28 @@ cosift -config local.json contribute -server https://cosift.pilotprotocol.networ
 This fetches public content and creates a local index, then uploads text, metadata
 and vectors. Match the destination model/dimensions; production currently uses
 `nomic-embed-text`, 768 dimensions. The server checks source content, safety,
-quality and all vectors. Do not modify content or vectors to evade a rejection.
+quality and all vectors. Uncertain or unsupported content remains unverified,
+and text/metadata checks do not guarantee image or video moderation. Do not
+modify content or vectors to evade a rejection.
 
 Verified new content earns 10 credits once; existing, duplicate, rejected and
-unverified pages earn none. Extra successful requests spend credits after the
-shared free allowance. Web, CLI and MCP searches use the same gateway account
-limits; mode caps and MCP's separate daily cap still apply. Inspect the current
-credits policy rather than assuming a balance buys unrestricted usage.
+unverified pages earn none. Every account gets 60 shared free requests/minute
+plus 1,000 free credits per UTC calendar month, without a subscription. The
+current month's grant is applied once on authenticated use; inactive past months
+are not backfilled. Unused credits carry over. Extra successful requests cost
+1 credit for Search, 2 for Answer, and 3 for Research after the shared free
+allowance. Web, CLI, and MCP searches use the same gateway balance; mode caps
+and MCP's separate daily cap still apply. Inspect current policy rather than
+assuming a balance buys unrestricted usage.
+
+The optional paid plan costs $5/month and adds 50,000 credits per paid month.
+Subscribers also keep their free monthly allowance and may buy $5/50,000-credit
+top-ups. Top-ups require a paid current subscription period. Cancellation retains
+remaining earned/purchased credits; legitimate refunds can reverse purchased
+credits. Start a subscription, top-up, or billing change only when the user
+explicitly requests it. Respect `payment_mode` and payment availability; never
+use test mode against the production credit ledger or promise that a checkout
+redirect has granted credits. Only verified payment events do that.
 
 Read the [setup guide](https://github.com/pilot-protocol/cosift/blob/main/docs/AGENT-SETUP.md)
 for installation, CSV examples, local embedding configuration and payment

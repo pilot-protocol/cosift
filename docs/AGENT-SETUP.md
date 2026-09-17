@@ -60,8 +60,7 @@ then reload the agent. This does not require uploading a token to the skill file
 ## Authenticated CLI
 
 Use [Cosift v0.2.7 or a newer stable release](https://github.com/pilot-protocol/cosift/releases/latest)
-for your OS and architecture. Put the binary on your PATH. After installer login,
-the CLI discovers the private `cosift/community-session.json` under
+for your OS and architecture; verify its signature using the [signed CLI guide](https://github.com/pilot-protocol/cosift-install/blob/main/docs/CLI-INSTALL.md). Put the binary on your PATH before running the installer so it can connect the CLI. If you installed the binary later, rerun the installer with `--cli` to save the shared session. After that handoff, the CLI discovers the private `cosift/community-session.json` under
 `$XDG_CONFIG_HOME`, or `~/.config` when unset. An explicit `-session-file` can select
 another saved session. Keep session files private (mode `0600`).
 
@@ -75,7 +74,8 @@ cosift contribute -server https://cosift.pilotprotocol.network -credits
 ```
 
 Contributions require login. A CSV can contain one URL per row or a `url`, `urls`,
-`webpage`, or `website` column. A request accepts at most 100 URLs and 1 MB.
+`webpage`, or `website` column. A request accepts at most 100 URLs and 1 MB;
+an account may submit 1,000 new URLs per rolling 24 hours.
 Put flags before positional URLs. For example:
 
 ```csv
@@ -90,6 +90,9 @@ filler; useful educational, medical and defensive-security material is allowed.
 Accepted submissions enter validation; acceptance alone does not mean indexing
 or a credit award. Check contribution status in the web app. Checks are automated
 and do not guarantee that every unsafe or poor-quality page is detected.
+Production combines URL/network/content checks with semantic review using
+`qwen3.5:9b-fp8`. Uncertain or unsupported material stays unverified. Text and
+metadata review does not guarantee moderation of images or video.
 
 ## Index and embed locally
 
@@ -115,15 +118,39 @@ uses server compute; local embeddings do not bypass validation.
 
 ## Allowance and credits
 
-Web, CLI and MCP searches share the account's gateway allowance and credit ledger.
-A verified new contribution earns 10 credits once per unique content; rejected,
-unverified, duplicate or already-indexed pages earn none. After the free allowance,
-an extra successful Search, Answer or Research request spends one credit. Credits
-do not bypass mode limits or MCP's separate daily call cap. Check
+Web, CLI, and MCP searches share the account's gateway allowance and credit ledger.
+Every account gets **60 shared free requests per minute plus 1,000 free credits
+per UTC calendar month**, with no subscription required. The monthly grant is
+applied once on authenticated use in the current month; inactive past months are
+not backfilled. Unused credits carry over.
+
+A verified new contribution earns **10 credits** once per unique content.
+Rejected, unverified, duplicate, or already-indexed pages earn none. After the
+shared free requests, an extra successful request spends:
+
+| Mode | Credits | Hard cap per account |
+| --- | --- | --- |
+| Search | 1 | 120/minute |
+| Answer | 2 | 20/minute |
+| Research | 3 | 3/10 minutes |
+
+Failed backend requests release reservations and refund credits. Credits do not
+bypass mode limits or MCP's separate daily call cap. Check
 [`/api/limits`](https://cosift.pilotprotocol.network/api/limits) and the authenticated
 credits view for current policy. Respect retry guidance after a rate limit.
 
-Credit purchasing is available only when payments are enabled in the app.
-There are no automatic charges or subscriptions. The integration supports a
-one-time $5 purchase of 50,000 credits; payment availability is not implied by
-having a balance.
+## Optional paid plan
+
+The Billing page offers a **$5/month subscription for 50,000 additional credits
+per paid month**. Subscribers keep their 1,000 free monthly credits and can also
+buy **$5/50,000-credit one-time top-ups**. Top-ups require a paid current
+subscription period. At this price, 1,000 credit-funded requests cost $0.10 for
+Search, $0.20 for Answer, or $0.30 for Research.
+
+Unused credits carry over. Cancel through the billing portal; cancellation does
+not remove your remaining earned or purchased balance. Refunds revoke the
+corresponding purchased credits. Live purchases stay unavailable until the
+operator configures live Stripe billing. An existing credit balance does not
+mean payment is enabled. The app displays the payment mode, and test payments
+belong only on an isolated test ledger. See [Stripe configuration](STRIPE.md) for
+webhook events, portal restrictions, and activation checks.
