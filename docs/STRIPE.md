@@ -1,118 +1,162 @@
-# Stripe credit purchases
+# Stripe subscriptions and credit top-ups
 
-A single one-time pack: **US$5 buys 50,000 credits**. One credit pays for one
-additional Search, Answer or Research request after the shared free allowance.
-That is **$0.10 per 1,000 paid requests**. Buying credits does not bypass the
-existing mode caps. At the default Search limit of 120/minute, an account can
-use 60 shared free requests and then 60 credit-funded searches in that minute.
-Earned credits and purchased credits use the same balance.
-There are no subscriptions, automatic top-ups, recurring charges, saved-card
-billing, or Stripe product/price IDs to provision.
+Every account has a **Free plan: 1,000 credits per UTC calendar month plus 60
+shared free requests/minute**, with no subscription required. The optional
+**$5/month paid plan adds 50,000 credits per paid month** and permits **one-time
+$5/50,000-credit top-ups**. Subscribers still receive their free monthly credits.
+Unused free, earned, and purchased credits carry over.
 
-## Pricing basis, checked 2026-09-16
+After the free request allowance, Search costs 1 credit, Answer 2, and Research 3.
+At this pack price, 1,000 paid requests cost $0.10 for Search, $0.20 for Answer, or
+$0.30 for Research. Credits do not bypass request caps. There are no automatic
+top-ups; the subscription itself renews monthly until canceled.
 
-[Parallel's pricing](https://docs.parallel.ai/getting-started/pricing) lists
-`turbo`/`fast` Search at $1 per 1,000 requests (10 results), and `basic`/`advanced`
-at $5. [Exa's pricing](https://exa.ai/pricing) lists Search at $7 per 1,000
-requests (up to 10 results), Answer at $5, and Deep Search at $12–15.
+## Live configuration
 
-Cosift's $0.10 rate is one tenth of Parallel's cheapest listed search rate and
-less than one tenth of Exa's search rate. This is a posted request-price
-comparison, not a claim of equivalent coverage, quality, latency or research
-capabilities. Cosift applies the same simple credit price to all three modes;
-free requests and credits earned by contributing lower a user's cash spend.
-Competitor prices are a dated comparison, not dynamically synchronized pricing.
+Live billing needs:
 
-## Configuration (after review and deployment approval)
+- `STRIPE_SECRET_KEY`: a live Stripe secret API key, or a suitable live restricted
+  key with access to the Checkout, subscription, invoice, charge, and billing
+  portal operations used by this service.
+- `STRIPE_WEBHOOK_SECRET`: the `whsec_...` signing secret for this service's live
+  snapshot webhook endpoint.
+- `COSIFT_STRIPE_PORTAL_CONFIGURATION_ID`: a dedicated `bpc_...` billing portal
+  configuration allowing cancellation, payment-method updates, and invoices.
+  Disable subscription price/product changes, quantity changes, coupons, and
+  other plan changes; Cosift supports one fixed monthly plan.
 
-Purchases are disabled until both environment variables are configured:
+Store values in the community service's root-owned environment file. Never put
+secrets in frontend code, git, logs, shell arguments, or a public issue. No
+publishable key or Stripe.js is needed: Stripe-hosted Checkout collects payment
+details. The server owns the USD price, credit amount, and monthly recurrence;
+no product or price ID needs to be provisioned manually.
 
-- `STRIPE_SECRET_KEY`: a Stripe secret API key (`sk_test_...` for testing,
-  `sk_live_...` for live charges; suitable restricted keys are also supported).
-- `STRIPE_WEBHOOK_SECRET`: the `whsec_...` signing secret for this app's webhook
-  endpoint in the same Stripe test/live environment.
+Without a usable API key and matching webhook setup, leave purchases unavailable.
+`GET /api/credits` reports `payments_enabled` and `payment_mode` (`live`, `test`, or
+`unavailable`). The billing portal also requires its dedicated configuration ID.
+A nonempty configuration is not proof that a real payment and webhook work.
 
-Put these in the community service's root-owned environment file, alongside
-`COSIFT_COMMUNITY_ADMIN_TOKEN`. Do not put secret values in command arguments,
-frontend code, logs or git. `deploy/community.env.example` contains empty fields.
-Blank or partial configuration leaves the rest of the app usable and hides the
-purchase button; `GET /api/credits` reports `payments_enabled: false`.
+Create a **snapshot event** webhook at the exact production URL:
 
-Create a **snapshot event** webhook endpoint at:
+```text
+https://cosift.pilotprotocol.network/api/payments/webhook
+```
 
-`https://YOUR-COMMUNITY-HOST/api/payments/webhook`
+Enable these eight events:
 
-Subscribe to `checkout.session.completed`,
-`checkout.session.async_payment_succeeded`, and `charge.refunded`. Use the
-endpoint's signing secret, which is separate from the API key. Stripe-hosted
-Checkout collects the card details; Cosift never handles card numbers. It uses
-USD and card payments with price localization disabled. No publishable key or
-Stripe.js is needed. The API request pins the version supplied by the installed
-Stripe Go SDK. Thin-event destinations are not supported by this handler.
+| Event | Purpose |
+| --- | --- |
+| `checkout.session.completed` | Bind a completed subscription checkout or fulfill a paid top-up |
+| `checkout.session.async_payment_succeeded` | Fulfill delayed paid Checkout sessions |
+| `invoice.paid` | Grant one monthly subscription credit allocation per paid invoice |
+| `invoice.payment_failed` | Reconcile payment/subscription status |
+| `customer.subscription.created` | Reconcile subscription identity and state |
+| `customer.subscription.updated` | Reconcile renewals and cancellation state |
+| `customer.subscription.deleted` | Reconcile cancellation without deleting the credit balance |
+| `charge.refunded` | Reverse the corresponding purchased credits |
+
+Use this endpoint's signing secret from the same Stripe environment as the API
+key. Thin-event destinations are unsupported. The handler verifies the signature
+against the raw request body. The exact webhook path is exempt from browser CSRF
+headers; other payment mutations still require the normal authenticated client
+and origin checks. API object retrieval uses the installed official Stripe Go
+SDK's API version.
 
 See Stripe's [hosted Checkout guide](https://docs.stripe.com/checkout/quickstart),
-[fulfillment guide](https://docs.stripe.com/checkout/fulfillment),
+[subscription lifecycle](https://docs.stripe.com/billing/subscriptions/webhooks),
+[billing portal configuration](https://docs.stripe.com/customer-management/configure-portal),
 [signature verification](https://docs.stripe.com/webhooks/signature), and
 [idempotent requests](https://docs.stripe.com/api/idempotent_requests).
 
-## Payment flow
+## Browser and API flow
 
-1. A signed-in member clicks “Buy 50,000 credits · $5.00”.
-2. `POST /api/payments/checkout` accepts only an `idempotency_key` (16–64 letters,
-   digits, underscores or hyphens). The amount, currency and credit quantity
-   come from the server, never the browser. A stored order and Stripe's
-   idempotency key keep retries from creating another checkout session.
-3. The browser follows the validated `https://checkout.stripe.com/` URL.
-4. A verified Stripe webhook must report a paid, completed, one-time Checkout
-   Session whose owner, order, session, amount, currency and test/live mode
-   match. The order, ledger credit and event receipt commit in one transaction.
-   Deduplication uses the session ID as well as the event receipt, so different
-   notifications of the same payment cannot add credits twice.
-5. The return page refreshes the balance. It cannot grant credits: adding
-   `?payment=success` to a URL has no financial effect. If webhook delivery is
-   delayed, credits appear after it succeeds. The balance is also available to
-   the CLI through `cosift contribute -credits`.
+1. A member chooses **Subscribe** or, with a paid current subscription period,
+   **Top up** on Billing.
+2. `POST /api/payments/checkout` accepts
+   `{ "kind": "subscription", "idempotency_key": "..." }` or
+   `{ "kind": "topup", "idempotency_key": "..." }`. The key is 16–64 letters,
+   digits, underscores, or hyphens. Prices and credit quantities come only from
+   the server. Persisted orders and Stripe idempotency prevent duplicate charges
+   from retrying the same checkout.
+3. The browser follows a validated `https://checkout.stripe.com/` URL. Subscription
+   Checkout establishes a recurring monthly agreement; top-up Checkout is a
+   one-time payment. Abandoning Checkout grants no credits.
+4. Signed webhooks reconcile the stored owner, order, Stripe identity, amount,
+   currency, and test/live environment. **Only a verified `invoice.paid` grants
+   subscription credits.** Subscription Checkout completion never grants them.
+   A verified paid top-up Checkout event grants its pack once. Duplicate events
+   must not duplicate credits.
+5. The return page refreshes the account. A URL such as `?payment=success` has no
+   financial authority. If delivery is delayed, the balance changes after a valid
+   webhook succeeds. The same balance is visible with `cosift contribute -credits`.
 
-Payments start only after the member completes Stripe Checkout. An abandoned
-checkout does not grant credits or initiate an automatic retry charge. Failed
-API requests can be retried with the same idempotency key. After 23 hours, reload
-the page to start a new checkout; the app will not reuse Stripe's expired
-idempotency window. Missing/mismatched local orders or storage errors return a
-retryable failure to Stripe rather than silently acknowledging an unfulfilled
-purchase. Ignore unrelated Stripe events with no Cosift order metadata.
+`GET /api/credits` includes:
 
-## Refunds and operations
+- `subscription`: `status`, `active`, `cancel_at_period_end`, and
+  `current_period_end` (Unix seconds).
+- `can_top_up` and `portal_available`.
+- `subscription_plan`: server-owned `amount_cents`, `currency`, `credits`, and
+  `interval` (`month`), alongside the existing one-time `credit_pack`.
+- `monthly_free_credits`, monthly activity, and `request_credit_costs`.
 
-Issue refunds manually in the Stripe Dashboard. Signed `charge.refunded`
-notifications revoke the corresponding fraction of purchased credits. They use
-cumulative refunded cents, so duplicates, partial refunds and notifications
-arriving out of order cannot revoke twice. A refund received before fulfillment
-returns a retryable error. A late duplicate payment event cannot restore refunded
-credits. A member who has already spent refunded credits may have a negative
-balance; further credit-funded requests require replenishing it.
+Top-up eligibility requires an active subscription and a paid current period;
+merely starting Checkout or holding a credit balance is insufficient. The
+backend rechecks eligibility when a top-up starts. A member can use
+`POST /api/payments/portal` with `{}` to obtain a validated
+`https://billing.stripe.com/` URL for their own customer record. No customer ID
+is accepted from the browser.
 
-Back up payment orders, the ledger and webhook receipts together with the account
-database. Monitor non-2xx webhook deliveries and retry them from Stripe after
-fixing configuration or storage issues. This basic integration does not automate
-chargeback/dispute handling, tax calculation, or subscription management; those
-remain operator responsibilities. Tax and receipt settings should be reviewed in
-the merchant's Stripe account before enabling live purchases.
+Retry failed checkout requests using the same idempotency key. The app will not
+reuse an expired Stripe idempotency window: after 23 hours, begin a new checkout.
+A missing local order, ownership mismatch, or storage failure returns a retryable
+failure to Stripe rather than silently claiming fulfillment. Unrelated Stripe
+objects without Cosift ownership are not credited.
+
+## Cancellation, refunds, and operations
+
+Cancellation changes the recurring agreement; it does not erase unused free,
+earned, subscription, or top-up credits. Existing credits remain subject to the
+same request caps. New top-ups require paid subscription access, even if the
+account still has a positive balance.
+
+Issue refunds in the Stripe Dashboard. Signed refund notifications reverse the
+corresponding purchased credit allocation. Duplicate or out-of-order events must
+not reverse it twice, and a late duplicate payment event must not restore refunded
+credits. Refunding credits already spent may leave a negative balance; further
+credit-funded requests need sufficient credit. Cancellation alone is not a refund.
+
+Back up payment orders, subscription/invoice records, the credit ledger, and
+webhook receipts together with the account database. Monitor non-2xx deliveries
+and replay them from Stripe after correcting configuration or storage problems.
+The basic integration does not automate disputes, tax calculation, prorations,
+plan changes, or metered billing. Keep the restricted portal configuration in
+place and review merchant tax/receipt settings before live activation.
 
 ## Validation before live activation
 
-Automated tests use a fake Stripe HTTP transport and signatures generated by the
-official SDK. They cover server-owned pricing, missing configuration, login/CSRF,
-idempotent checkout, invalid/old signatures, unpaid or mismatched events,
-concurrent/repeated fulfillment, restart persistence, transaction rollback and
-partial/full/out-of-order refunds. They do not move money or contact Stripe.
+Test keys are rejected by default. Only an isolated QA service with a separate
+account database may set `COSIFT_ALLOW_TEST_PAYMENTS=1` and use test API/webhook
+credentials. Never enable public test-card purchases on the production ledger.
+The API and UI must label the isolated test payment mode explicitly.
 
-Use an isolated staging account database for Stripe test mode; never put test
-credentials on the production credit ledger. Test purchases grant test credits
-in that database. Checkout idempotency is separated by test/live mode.
+Automated tests use controlled Stripe responses and signed events to check
+server-owned pricing, account isolation, login/CSRF, checkout idempotency,
+subscription gating, paid-invoice fulfillment, duplicate/out-of-order handling,
+and refund behavior. They do not prove that merchant configuration or external
+webhook delivery works.
 
-After keys are supplied, use Stripe **test mode** to complete a hosted Checkout,
-confirm one 50,000-credit grant, replay its event, cancel another checkout, and
-perform a partial then full refund. Confirm the dashboard's delivery status and
-Cosift's ledger balance. This credentialed end-to-end check is still required;
-local tests do not claim it has happened. Production remains unchanged until a
-new explicit deployment instruction.
+Before activating live billing, use the isolated test environment to:
+
+1. Complete a subscription Checkout and confirm exactly one 50,000-credit grant
+   from its paid invoice. Replaying Checkout or invoice events must not add more.
+2. Verify a free account cannot buy top-ups, a paid subscriber can, and a paid
+   top-up adds its credits once.
+3. Exercise a renewal, failed payment, cancellation, and the restricted portal.
+   Confirm the free monthly allowance and remaining balance survive cancellation.
+4. Exercise partial/full refunds and duplicate deliveries; inspect the balance
+   and Stripe delivery status.
+5. Confirm public production still reports unavailable until live credentials,
+   the correct live webhook, and the dedicated portal configuration are ready.
+
+Record actual hosted Checkout and webhook outcomes separately from local tests.
+Do not describe payment activation as verified merely because keys were supplied.

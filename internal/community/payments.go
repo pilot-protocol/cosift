@@ -65,6 +65,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	var in struct {
 		IdempotencyKey string `json:"idempotency_key"`
+		Kind           string `json:"kind"`
 	}
 	if decode(r, &in) != nil || !checkoutKeyPattern.MatchString(in.IdempotencyKey) {
 		problem(w, 400, "a checkout idempotency key of 16–64 letters, digits, underscores or hyphens is required")
@@ -75,8 +76,25 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 429, "too many checkout attempts; try again in a minute")
 		return
 	}
+	if in.Kind == "subscription" {
+		s.checkoutSubscription(w, r, u, in.IdempotencyKey)
+		return
+	}
+	if in.Kind != "" && in.Kind != "topup" {
+		problem(w, 400, "checkout kind must be subscription or topup")
+		return
+	}
+	subscriber, err := s.requireTopup(r.Context(), u.ID)
+	if err != nil {
+		if errors.Is(err, errSubscriptionRequired) {
+			problem(w, 403, errSubscriptionRequired.Error())
+		} else {
+			problem(w, 502, "could not verify subscription; retry")
+		}
+		return
+	}
 	id := "checkout:" + tokenHash(strconv.FormatBool(s.stripeLive())+":"+u.ID+":"+in.IdempotencyKey)
-	_, err := s.db.ExecContext(r.Context(), `INSERT INTO payment_checkouts(id,user_id,amount_cents,credits,currency,created_at) VALUES(?,?,?,?,'usd',?) ON CONFLICT(id) DO NOTHING`, id, u.ID, packAmountCents, packCredits, time.Now().Unix())
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO payment_checkouts(id,user_id,amount_cents,credits,currency,created_at) VALUES(?,?,?,?,'usd',?) ON CONFLICT(id) DO NOTHING`, id, u.ID, packAmountCents, packCredits, time.Now().Unix())
 	if err != nil {
 		problem(w, 500, "could not prepare checkout")
 		return
@@ -97,7 +115,8 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	costs := requestCreditCosts()
 	form := url.Values{
-		"mode": {"payment"}, "payment_method_types[0]": {"card"},
+		"customer": {subscriber.CustomerID},
+		"mode":     {"payment"}, "payment_method_types[0]": {"card"},
 		"adaptive_pricing[enabled]":                      {"false"},
 		"payment_intent_data[metadata][cosift_order_id]": {id},
 		"client_reference_id":                            {u.ID}, "metadata[cosift_order_id]": {id},
@@ -172,9 +191,24 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	switch event.Type {
 	case "checkout.session.completed", "checkout.session.async_payment_succeeded":
-		err = s.fulfillCheckout(r.Context(), event)
+		var session struct {
+			Mode string `json:"mode"`
+		}
+		if json.Unmarshal(event.Data.Object, &session) != nil {
+			err = errors.New("invalid checkout event")
+		} else if session.Mode == "subscription" {
+			err = s.completeSubscriptionCheckout(r.Context(), event)
+		} else {
+			err = s.fulfillCheckout(r.Context(), event)
+		}
 	case "charge.refunded":
 		err = s.refundCheckout(r.Context(), event)
+	case "invoice.paid":
+		err = s.invoiceEvent(r.Context(), event, true)
+	case "invoice.payment_failed":
+		err = s.invoiceEvent(r.Context(), event, false)
+	case "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted":
+		err = s.subscriptionEvent(r.Context(), event)
 	default:
 		respond(w, 200, map[string]bool{"received": true})
 		return
@@ -254,7 +288,7 @@ func (s *Server) refundCheckout(ctx context.Context, event stripeEvent) error {
 		return err
 	}
 	if charge.Metadata["cosift_order_id"] == "" {
-		return nil
+		return s.refundSubscriptionCharge(ctx, event)
 	}
 	if charge.LiveMode != s.stripeLive() || charge.PaymentIntent == "" || charge.Refunded < 0 || charge.Refunded > charge.Amount {
 		return errors.New("invalid refund")

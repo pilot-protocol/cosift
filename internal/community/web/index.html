@@ -118,7 +118,7 @@
         <button data-view="connect" class="nav-item"><span aria-hidden="true">⌘</span> Agents</button>
         <button data-view="billing" class="nav-item"><span aria-hidden="true">◇</span> Billing</button></nav>
         <div class="credits-section"><p id="credit-balance" class="credit-balance" hidden></p>
-        <div id="monthly-credits" class="monthly-credits" hidden><p id="credit-month" class="fine"></p><dl><div class="monthly-free"><dt>Free this month</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl><p class="fine">Extra requests: Search 1 · Answer 2 · Research 3 credits. Unused credits carry over.</p></div>
+        <p class="sidebar-allowance">1,000 free credits / month</p>
         <button data-view="billing" class="text-button manage-credits" type="button">Manage credits ↗</button></div>
         <div class="account">
           <div id="avatar" class="avatar">C</div>
@@ -139,8 +139,10 @@
         </div>
       </aside>
       <main>
-        <p id="request-limits" class="fine"></p>
-        <p class="corpus-note">Coverage is growing. Contribute useful pages to help fill the gaps.</p>
+        <div class="workspace-meta">
+          <p class="corpus-note">Coverage is growing. Contribute useful pages to help fill the gaps.</p>
+          <details class="usage-limits"><summary>Usage limits</summary><p id="request-limits" class="fine"></p></details>
+        </div>
         <div id="guest-banner" class="guest-banner" hidden>
           <div>
             <strong>Guest session</strong
@@ -296,34 +298,49 @@
         </section>
         <section id="view-billing" class="view" hidden>
           <h1>Credits &amp; billing</h1>
-          <p class="muted">1,000 free requests each month, on top of your 60 free requests per minute. Use credits for extra requests within your rate limits.</p>
+          <p class="muted">Every account gets 1,000 free credits each month, plus 60 free requests per minute. Unused credits carry over.</p>
           <div class="billing-overview">
-            <article class="panel"><p class="fine">Credit balance</p><strong id="billing-balance" class="billing-value">—</strong><p class="fine">Earned and purchased credits carry over.</p></article>
-            <article class="panel"><p class="fine">Monthly free allowance</p><strong id="billing-free" class="billing-value">1,000</strong><p class="fine">Renews each month.</p></article>
+            <article class="panel"><p class="fine">Credit balance</p><strong id="billing-balance" class="billing-value">—</strong><p class="fine">One balance across web, CLI, and agents.</p></article>
+            <article class="panel"><p class="fine">Your plan</p><strong id="billing-subscription-status" class="billing-plan-status">Free plan</strong><button id="manage-subscription" class="text-button" type="button" hidden>Manage subscription ↗</button></article>
           </div>
-          <div class="billing-grid">
-            <article class="panel purchase-card">
-              <div class="purchase-heading"><h2>Buy credits</h2><span class="billing-tag">One-time payment</span></div>
-              <p class="purchase-price"><strong id="billing-pack-price">$5</strong><span>for <strong id="billing-pack-credits">50,000</strong> credits</span></p>
-              <p class="muted">Extra requests cost 1 credit for Search, 2 for Answer, and 3 for Research.</p>
-              <p id="billing-mode-status" class="billing-mode" role="status">Purchases are currently unavailable.</p>
-              <button id="buy-credits" class="primary wide" type="button" hidden>Continue to checkout ↗</button>
-              <p id="payment-info" class="fine" hidden></p>
+          <div class="billing-plans">
+            <article class="panel plan-card">
+              <div class="purchase-heading"><h2>Free</h2><span class="billing-tag">Every account</span></div>
+              <p class="purchase-price"><strong>$0</strong><span>per month</span></p>
+              <p class="plan-allowance"><strong id="billing-free">1,000</strong> credits each month</p>
+              <p class="muted">No subscription required. Earn more by contributing useful public pages.</p>
+              <p class="fine">Includes 60 free requests per minute.</p>
             </article>
-            <article class="billing-explainer">
-              <h2>Earn credits by contributing</h2>
-              <p class="muted">Share useful public pages or index them with the CLI. New content that passes validation earns 10 credits. Duplicates do not earn more.</p>
-              <button data-view="contribute" class="secondary" type="button">Contribute pages ↗</button>
-              <p class="fine">Search, Answer, Research, and MCP use the same account balance. Credits never bypass safety checks or request caps.</p>
+            <article class="panel purchase-card plan-card">
+              <div class="purchase-heading"><h2>Paid</h2><span class="billing-tag">Monthly subscription</span></div>
+              <p class="purchase-price"><strong id="billing-plan-price">$5</strong><span>per month</span></p>
+              <p class="plan-allowance"><strong id="billing-plan-credits">50,000</strong> additional credits each month</p>
+              <p class="muted">Keep your free allowance, unlock credit top-ups, and cancel any time.</p>
+              <button id="subscribe-credits" class="primary wide" type="button" hidden>Subscribe · $5 / month ↗</button>
             </article>
           </div>
+          <p id="billing-mode-status" class="billing-mode" role="status">Purchases are currently unavailable.</p>
+          <p id="payment-info" class="fine" hidden></p>
+          <article class="panel topup-card">
+            <div><h2>Need more credits?</h2><p class="topup-price"><strong id="billing-pack-price">$5</strong> for <strong id="billing-pack-credits">50,000</strong> credits</p><p id="billing-topup-status" class="fine">One-time top-ups are available to paid subscribers.</p></div>
+            <button id="buy-credits" class="secondary" type="button" hidden>Top up 50,000 credits · $5 ↗</button>
+          </article>
+          <div class="billing-footnote">
+            <p>Extra requests: <strong>Search 1 · Answer 2 · Research 3 credits.</strong> Rate limits still apply.</p>
+            <p>New content that passes validation earns 10 credits. Duplicates earn no more. <button data-view="contribute" class="text-button" type="button">Contribute pages ↗</button></p>
+            <p>Canceling your subscription keeps your remaining credits.</p>
+          </div>
+          <section id="monthly-credits" class="panel monthly-credits billing-activity" hidden aria-label="Monthly credit activity">
+            <div class="activity-heading"><h2>Credit activity</h2><p id="credit-month" class="fine"></p></div>
+            <dl><div class="monthly-free"><dt>Free credits</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl>
+          </section>
         </section>
         <section id="view-connect" class="view" hidden>
           <h1>Agents &amp; CLI</h1>
-          <p class="muted">One account for your web app, CLI, and agents. Topics and search allowances stay in sync.</p>
+          <p class="muted">Sign in on the Cosift website, then connect your agent or CLI using the same email. Topics, credits, and search allowances stay in sync.</p>
           <div class="setup-grid">
-            <article class="panel"><h2>Set up your agent</h2><p>Connect Claude Code, Codex, or OpenCode with email verification and optional onboarding.</p><pre><code>curl -fsSL https://raw.githubusercontent.com/pilot-protocol/cosift-install/v1/install.sh | sh</code></pre><p class="fine">Review the script before running it. The interview uses local session history only when you choose it.</p><a class="text-button" href="https://github.com/pilot-protocol/cosift-install#readme" target="_blank" rel="noopener noreferrer">Read installation details ↗</a></article>
-            <article class="panel"><h2>MCP endpoint</h2><p>Search indexed pages, follow topics, look up article coverage, and request missing articles.</p><p class="fine">Streamable HTTP endpoint</p><pre><code>https://cosift-mcp-udik5erlkq-uw.a.run.app/v1/mcp</code></pre><p class="fine">The installer handles your private token. Article requests are queued; automatic authoring is still in development.</p></article>
+            <article class="panel"><h2>Set up your agent</h2><p>Run the installer to verify the same email and connect Claude Code, Codex, or OpenCode. It saves a private agent token and offers optional onboarding.</p><pre><code>curl -fsSL https://raw.githubusercontent.com/pilot-protocol/cosift-install/v1/install.sh | sh</code></pre><p class="fine">Review the script before running it. The interview uses local session history only when you choose it.</p><a class="text-button" href="https://github.com/pilot-protocol/cosift-install#readme" target="_blank" rel="noopener noreferrer">Read installation details ↗</a></article>
+            <article class="panel"><h2>MCP endpoint</h2><p>Search indexed pages, follow topics, look up article coverage, and request missing articles.</p><p class="fine">Streamable HTTP endpoint</p><pre><code>https://cosift-mcp-udik5erlkq-uw.a.run.app/v1/mcp</code></pre><p class="fine">For authentication, start at cosift.pilotprotocol.network and follow these Agents steps. The installer supplies your agent token; website login alone does not configure an MCP client. Article authoring is still in development.</p></article>
             <article class="panel"><h2>Install the CLI</h2><p>Search, answer, research, and submit URLs or local text and embeddings. Verified new content earns credits.</p><pre><code>cosift request -query 'Rust ownership'
 cosift contribute -credits</code></pre><div class="setup-links"><a class="text-button" href="https://github.com/pilot-protocol/cosift/releases/latest" target="_blank" rel="noopener noreferrer">Download signed CLI ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/skills/cosift/SKILL.md" target="_blank" rel="noopener noreferrer">Cosift agent skill ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/docs/AGENT-SETUP.md" target="_blank" rel="noopener noreferrer">Setup and usage guide ↗</a></div></article>
           </div>
