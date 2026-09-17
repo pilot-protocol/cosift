@@ -197,3 +197,38 @@ test('expired checkout can be retried with a new idempotency key', async () => {
  assert.equal(a.run('checkoutKey'),undefined);
  assert.equal(a.get('buy-credits').disabled,false);
 });
+test('free accounts retain monthly credits and see subscribe with top-ups locked', async () => {
+ const a=await app(); const refresh=a.run('refreshCredits()'); await tick();
+ a.respond('credits',{balance:1000,monthly_free_credits:1000,payments_enabled:true,payment_mode:'live',subscription:{status:'none',active:false},can_top_up:false,portal_available:false,subscription_plan:{amount_cents:500,currency:'usd',credits:50000},credit_pack:{amount_cents:500,currency:'usd',credits:50000}}); await refresh;
+ assert.equal(a.get('subscribe-credits').hidden,false);
+ assert.equal(a.get('buy-credits').hidden,true);
+ assert.equal(a.get('manage-subscription').hidden,true);
+ assert.match(a.get('billing-subscription-status').textContent,/1,000 free credits every month/);
+ assert.equal(a.get('billing-balance').textContent,'1,000');
+ const checkout=a.get('subscribe-credits').onclick(); await tick();
+ assert.equal(JSON.parse(a.pending.find(p=>p.url==='/api/payments/checkout').opts.body).kind,'subscription');
+ a.respond('payments/checkout',{url:'https://checkout.stripe.com/c/pay/subscription'}); await checkout;
+ assert.equal(a.context.destination,'https://checkout.stripe.com/c/pay/subscription');
+});
+test('paid subscriptions show top-ups and cancellation preserves the displayed balance', async () => {
+ const a=await app(); const refresh=a.run('refreshCredits()'); await tick();
+ a.respond('credits',{balance:51000,monthly_free_credits:1000,payments_enabled:true,payment_mode:'live',subscription:{status:'active',active:true,cancel_at_period_end:true,current_period_end:1900000000},can_top_up:true,portal_available:true,subscription_plan:{amount_cents:500,currency:'usd',credits:50000},credit_pack:{amount_cents:500,currency:'usd',credits:50000}}); await refresh;
+ assert.equal(a.get('subscribe-credits').hidden,true);
+ assert.equal(a.get('buy-credits').hidden,false);
+ assert.equal(a.get('manage-subscription').hidden,false);
+ assert.match(a.get('billing-subscription-status').textContent,/Unused credits stay/);
+ assert.equal(a.get('billing-balance').textContent,'51,000');
+});
+test('billing portal rejects non-Stripe destinations and recovers its button', async () => {
+ const a=await app(); const portal=a.get('manage-subscription').onclick(); await tick();
+ a.respond('payments/portal',{url:'https://evil.example/steal'}); await portal;
+ assert.equal(a.context.destination,undefined);
+ assert.equal(a.get('manage-subscription').disabled,false);
+ assert.match(a.get('notice').textContent,/Invalid billing portal/);
+});
+test('logout prevents a delayed billing portal response from navigating', async () => {
+ const a=await app(); const portal=a.get('manage-subscription').onclick(); await tick();
+ const logout=a.get('logout').onclick(); await tick(); a.respond('logout',{}); await logout;
+ a.respond('payments/portal',{url:'https://billing.stripe.com/p/session/test'}); await portal;
+ assert.equal(a.context.destination,undefined);
+});

@@ -25,6 +25,7 @@ function resetAccount(nextUser = null) {
   currentMode = "search";
   selected = new Set();
   checkoutKey = undefined;
+  subscriptionCheckoutKey = undefined;
   guestUntil = 0;
   for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions", "shared-list", "shared-result"])
     $(id).replaceChildren();
@@ -35,6 +36,10 @@ function resetAccount(nextUser = null) {
   $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
   $("buy-credits").disabled = false;
+  $("subscribe-credits").hidden = true;
+  $("subscribe-credits").disabled = false;
+  $("manage-subscription").hidden = true;
+  $("manage-subscription").disabled = false;
   $("payment-info").hidden = true;
   $("search-heading").hidden = true;
   $("search-empty").hidden = false;
@@ -278,6 +283,8 @@ async function refreshCredits() {
   $("credit-balance").hidden = !user;
   $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
+  $("subscribe-credits").hidden = true;
+  $("manage-subscription").hidden = true;
   $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
@@ -286,8 +293,25 @@ async function refreshCredits() {
     $("billing-balance").textContent = Number(c.balance).toLocaleString();
     $("billing-free").textContent = Number(c.monthly_free_credits || 1000).toLocaleString();
     $("billing-mode-status").textContent = c.payments_enabled
-      ? c.payment_mode === "test" ? "Test checkout · no real charges. Test credits are for this test environment only." : "Secure checkout with Stripe. One-time payment, no subscription."
-      : "Credit purchases are coming soon. Your free monthly credits are available now.";
+      ? c.payment_mode === "test" ? "Test checkout · no real charges. Test credits are for this test environment only." : "Secure billing with Stripe. Manage your subscription and payment method here."
+      : "Paid plans are coming soon. Your free monthly credits are available now.";
+    const subscription = c.subscription || {status: "none", active: false};
+    const renewal = subscription.current_period_end ? date(subscription.current_period_end) : "";
+    $("billing-subscription-status").textContent = subscription.active
+      ? subscription.cancel_at_period_end ? `Subscription ends ${renewal}. Unused credits stay in your account.` : `Subscription active${renewal ? ` · renews ${renewal}` : ""}.`
+      : subscription.status === "past_due" || subscription.status === "unpaid" ? "Payment needs attention. Update your payment method to restore your subscription and top-ups."
+      : subscription.status === "incomplete" ? "Subscription payment is pending. Complete payment before buying top-ups."
+      : "You’re on Free. Keep 1,000 free credits every month; no subscription required.";
+    $("billing-topup-status").textContent = c.can_top_up
+      ? "Add credits whenever you need them. This is a one-time payment."
+      : "Top-ups unlock with an active paid subscription.";
+    $("manage-subscription").hidden = !c.portal_available;
+    if (c.subscription_plan) {
+      const plan = c.subscription_plan;
+      $("billing-plan-price").textContent = new Intl.NumberFormat("en-US", {style: "currency", currency: plan.currency}).format(plan.amount_cents / 100);
+      $("billing-plan-credits").textContent = Number(plan.credits).toLocaleString();
+      $("subscribe-credits").hidden = !c.payments_enabled || !["none", "canceled", "incomplete_expired"].includes(subscription.status);
+    }
     if (c.monthly) {
       $("monthly-credits").hidden = false;
       $("credit-month").textContent = `This month · ${c.monthly.month} (UTC)`;
@@ -298,29 +322,47 @@ async function refreshCredits() {
       const price = new Intl.NumberFormat("en-US", {style: "currency", currency: pack.currency}).format(pack.amount_cents / 100);
       $("billing-pack-price").textContent = price;
       $("billing-pack-credits").textContent = Number(pack.credits).toLocaleString();
-      $("buy-credits").textContent = `Buy ${pack.credits.toLocaleString()} credits · ${price}`;
-      $("buy-credits").hidden = !c.payments_enabled;
+      $("buy-credits").textContent = `Top up ${pack.credits.toLocaleString()} credits · ${price}`;
+      $("buy-credits").hidden = !c.payments_enabled || !c.can_top_up;
       $("payment-info").hidden = false;
       $("payment-info").textContent = "Extra requests: Search 1 credit · Answer 2 credits · Research 3 credits. Existing rate caps apply.";
     }
   }
 }
-let checkoutKey;
-$("buy-credits").onclick = async () => {
-  const button = $("buy-credits");
+let checkoutKey, subscriptionCheckoutKey;
+async function startCheckout(kind) {
+  const button = $(kind === "subscription" ? "subscribe-credits" : "buy-credits");
+  if (button.disabled) return;
   button.disabled = true;
-  checkoutKey ||= crypto.randomUUID();
+  const key = kind === "subscription" ? subscriptionCheckoutKey ||= crypto.randomUUID() : checkoutKey ||= crypto.randomUUID();
   try {
-    const checkout = await api("payments/checkout", "POST", {idempotency_key: checkoutKey});
+    const checkout = await api("payments/checkout", "POST", {kind, idempotency_key: key});
     const destination = new URL(checkout.url);
     if (destination.protocol !== "https:" || destination.host !== "checkout.stripe.com" || destination.username || destination.password)
       throw new Error("Invalid checkout destination.");
     location.assign(destination.href);
   } catch (e) {
-    if (e.status === 409) checkoutKey = undefined;
+    if (e.status === 409) {
+      if (kind === "subscription") subscriptionCheckoutKey = undefined;
+      else checkoutKey = undefined;
+    }
     notify(e.message, true);
     button.disabled = false;
   }
+}
+$("buy-credits").onclick = () => startCheckout("topup");
+$("subscribe-credits").onclick = () => startCheckout("subscription");
+$("manage-subscription").onclick = async () => {
+  const button = $("manage-subscription");
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const portal = await api("payments/portal", "POST", {});
+    const destination = new URL(portal.url);
+    if (destination.protocol !== "https:" || destination.host !== "billing.stripe.com" || destination.username || destination.password)
+      throw new Error("Invalid billing portal destination.");
+    location.assign(destination.href);
+  } catch (e) { notify(e.message, true); button.disabled = false; }
 };
 async function showPaymentReturn() {
   const result = new URLSearchParams(location.search).get("payment");
