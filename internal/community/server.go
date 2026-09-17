@@ -34,6 +34,7 @@ var assets embed.FS
 
 const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
+const dailyContributionLimit = 1000
 
 type Config struct {
 	Shared              sharedaccount.Provider
@@ -730,8 +731,15 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 			}
 		}
 	}
-	if count+accepted > 500 {
-		problem(w, 429, "daily limit is 500 new webpages; try again tomorrow")
+	if count+accepted > dailyContributionLimit {
+		var nextSlot int64
+		if err := tx.QueryRowContext(r.Context(), `SELECT created_at+86400 FROM submissions WHERE user_id=? AND created_at>? ORDER BY created_at,id LIMIT 1 OFFSET ?`, u.ID, now-86400, count+accepted-dailyContributionLimit-1).Scan(&nextSlot); err != nil {
+			problem(w, 500, "could not check contribution limit")
+			return
+		}
+		retry := max(int64(1), nextSlot-now)
+		w.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
+		problem(w, 429, fmt.Sprintf("daily limit is %d new webpages; %d remaining in the current 24-hour window. Retry this batch in %d seconds.", dailyContributionLimit, max(0, dailyContributionLimit-count), retry))
 		return
 	}
 	if tx.Commit() != nil {
