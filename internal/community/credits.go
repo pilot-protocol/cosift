@@ -2,32 +2,53 @@ package community
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 )
 
 const contributionReward = 10
+const monthlyFreeCredits = 1000
+
+// The ledger key makes the monthly grant atomic across processes and channels.
+func (s *Server) grantMonthlyCredits(ctx context.Context, userID string, now time.Time) error {
+	if userID == "" {
+		return errors.New("monthly credits require an account")
+	}
+	month := now.UTC().Format("2006-01")
+	_, err := s.db.ExecContext(ctx, `INSERT INTO credit_ledger(id,user_id,delta,reason,created_at) SELECT ?,id,?,'monthly_free',? FROM users WHERE id=? ON CONFLICT(id) DO NOTHING`, "monthly-free:"+userID+":"+month, monthlyFreeCredits, now.Unix(), userID)
+	return err
+}
 
 func (s *Server) credits(w http.ResponseWriter, r *http.Request, u User) {
 	var balance int
-	var earned, purchased, spent int
+	var free, earned, purchased, spent int
 	now := time.Now().UTC()
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end := start.AddDate(0, 1, 0)
-	if err := s.db.QueryRowContext(r.Context(), `SELECT COALESCE(sum(delta),0),
-COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='verified_contribution' THEN delta ELSE 0 END),0),
-COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='stripe_purchase' THEN delta ELSE 0 END),0),
-COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='extra_request' THEN -delta ELSE 0 END),0)
-FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end.Unix(), start.Unix(), end.Unix(), u.ID).Scan(&balance, &earned, &purchased, &spent); err != nil {
+	if err := s.grantMonthlyCredits(r.Context(), u.ID, now); err != nil {
 		problem(w, 500, "credits unavailable")
 		return
 	}
-	respond(w, 200, map[string]any{"balance": balance, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "credit_pack": creditPack()})
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COALESCE(sum(delta),0),
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='monthly_free' THEN delta ELSE 0 END),0),
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='verified_contribution' THEN delta ELSE 0 END),0),
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='stripe_purchase' THEN delta ELSE 0 END),0),
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='extra_request' THEN -delta ELSE 0 END),0)
+FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end.Unix(), start.Unix(), end.Unix(), start.Unix(), end.Unix(), u.ID).Scan(&balance, &free, &earned, &purchased, &spent); err != nil {
+		problem(w, 500, "credits unavailable")
+		return
+	}
+	respond(w, 200, map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": s.cfg.MemberFreeRPM, "limits": s.limitPolicy(), "extra_request_cost": 1, "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "credit_pack": creditPack()})
 }
 
 // reserveCredit performs a conditional debit atomically. Refunds have an
 // idempotency key derived from the debit, so a retry cannot mint credits.
 func (s *Server) reserveCredit(w http.ResponseWriter, r *http.Request, u User) (func(bool), bool) {
+	if err := s.grantMonthlyCredits(r.Context(), u.ID, time.Now()); err != nil {
+		problem(w, 500, "credits unavailable")
+		return nil, false
+	}
 	id := "request:" + randomID()
 	res, err := s.db.ExecContext(r.Context(), `INSERT INTO credit_ledger(id,user_id,delta,reason,created_at)
 SELECT ?,?,-1,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit_ledger WHERE user_id=?)>=1`, id, u.ID, time.Now().Unix(), u.ID)

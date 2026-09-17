@@ -36,13 +36,13 @@ func TestCreditsMonthlyLedgerBoundaries(t *testing.T) {
 	cookie := account(t, s, "monthly@example.com")
 	var fresh struct {
 		Balance int
-		Monthly struct{ Earned, Purchased, Spent int }
+		Monthly struct{ Free, Earned, Purchased, Spent int }
 	}
 	if err := json.Unmarshal(request(t, s, "GET", "/api/credits", nil, cookie).Body.Bytes(), &fresh); err != nil {
 		t.Fatal(err)
 	}
-	if fresh.Balance != 0 || fresh.Monthly.Earned != 0 || fresh.Monthly.Purchased != 0 || fresh.Monthly.Spent != 0 {
-		t.Fatalf("new account received an invented grant: %+v", fresh)
+	if fresh.Balance != monthlyFreeCredits || fresh.Monthly.Free != monthlyFreeCredits || fresh.Monthly.Earned != 0 || fresh.Monthly.Purchased != 0 || fresh.Monthly.Spent != 0 {
+		t.Fatalf("new account received an incorrect monthly grant: %+v", fresh)
 	}
 	var user User
 	json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &user)
@@ -83,7 +83,7 @@ func TestCreditsMonthlyLedgerBoundaries(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Balance != 49628 || got.Monthly.Earned != 10 || got.Monthly.Purchased != 50000 || got.Monthly.Spent != 2 || got.Monthly.Month != start.Format("2006-01") || got.Monthly.StartsAt != start.Format(time.RFC3339) || got.Monthly.Timezone != "UTC" {
+	if got.Balance != 49628+monthlyFreeCredits || got.Monthly.Earned != 10 || got.Monthly.Purchased != 50000 || got.Monthly.Spent != 2 || got.Monthly.Month != start.Format("2006-01") || got.Monthly.StartsAt != start.Format(time.RFC3339) || got.Monthly.Timezone != "UTC" {
 		t.Fatalf("incorrect monthly ledger: %+v", got)
 	}
 }

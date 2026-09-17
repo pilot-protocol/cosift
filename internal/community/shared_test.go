@@ -88,10 +88,14 @@ func TestSharedTokensAccountIsolationQuotasAndMCPParameters(t *testing.T) {
 	s.cfg.MemberFreeRPM = 1
 	path := "/search?q=rust&k=20&retriever=bm25"
 	expect(t, bearerRequest(s, path, sharedTestToken), 200)
-	expect(t, bearerRequest(s, path, sharedTestToken), 429)
+	expect(t, bearerRequest(s, path, sharedTestToken), 200)
 	expect(t, bearerRequest(s, path, sharedOtherToken), 200)
-	if hits != 2 {
+	if hits != 3 {
 		t.Fatal("quota did not isolate users", hits)
+	}
+	var creditBalance int
+	if err := s.db.QueryRow(`SELECT sum(delta) FROM credit_ledger`).Scan(&creditBalance); err != nil || creditBalance != monthlyFreeCredits-1 {
+		t.Fatalf("shared bearer request did not use monthly credits: %d %v", creditBalance, err)
 	}
 	f.err = sharedaccount.ErrUnavailable
 	expect(t, bearerRequest(s, path, sharedOtherToken), 503)
@@ -100,7 +104,7 @@ func TestSharedTokensAccountIsolationQuotasAndMCPParameters(t *testing.T) {
 	f.err = nil
 	expect(t, bearerRequest(s, path, "invalid"), 401)
 	expect(t, bearerRequest(s, "/search?q=x&k=999", sharedTestToken), 400)
-	if hits != 2 {
+	if hits != 3 {
 		t.Fatal("failed authentication reached engine")
 	}
 }
@@ -114,6 +118,7 @@ func TestSharedLinkPreservesLocalDataAndInvalidatesLegacySessions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	expect(t, request(t, s, "GET", "/api/credits", nil, old), 200)
 	s.cfg.Shared = &fakeShared{}
 	expect(t, bearerRequest(s, "/api/me", sharedTestToken), 200)
 	w := bearerRequest(s, "/api/saved", sharedTestToken)
@@ -123,8 +128,12 @@ func TestSharedLinkPreservesLocalDataAndInvalidatesLegacySessions(t *testing.T) 
 	}
 	w = bearerRequest(s, "/api/credits", sharedTestToken)
 	expect(t, w, 200)
-	if !strings.Contains(w.Body.String(), `"balance":42`) {
+	if !strings.Contains(w.Body.String(), `"balance":1042`) {
 		t.Fatal("lost credits", w.Body)
+	}
+	var grants int
+	if err := s.db.QueryRow(`SELECT count(*) FROM credit_ledger WHERE user_id=? AND reason='monthly_free'`, localID).Scan(&grants); err != nil || grants != 1 {
+		t.Fatalf("account linking duplicated monthly grant: %d %v", grants, err)
 	}
 	expect(t, request(t, s, "GET", "/api/me", nil, old), 401)
 	var sessions int
