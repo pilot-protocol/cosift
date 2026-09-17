@@ -9,7 +9,12 @@
   </head>
   <body>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <section id="auth" class="entry">
+    <section id="boot" class="boot" aria-live="polite">
+      <a class="brand" href="/">cosift<span>●</span></a>
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <p>Loading your workspace…</p>
+    </section>
+    <section id="auth" class="entry" hidden>
       <div class="entry-story">
         <a class="brand" href="/">cosift<span>●</span></a>
         <div>
@@ -111,7 +116,7 @@
         <button id="shared-nav" data-view="shared" class="nav-item" hidden><span aria-hidden="true">◉</span> Topics</button>
         <button data-view="connect" class="nav-item"><span aria-hidden="true">⌘</span> Agents</button></nav>
         <div class="credits-section"><p id="credit-balance" class="credit-balance" hidden></p>
-        <div id="monthly-credits" class="monthly-credits" hidden><p id="credit-month" class="fine"></p><dl><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl><p class="fine">1 credit per extra request. Unused credits carry over.</p></div>
+        <div id="monthly-credits" class="monthly-credits" hidden><p id="credit-month" class="fine"></p><dl><div class="monthly-free"><dt>Free this month</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl><p class="fine">1 credit per extra request. Unused credits carry over.</p></div>
         <button id="buy-credits" class="secondary" hidden>Buy credits</button>
         <p id="payment-info" class="fine" hidden></p></div>
         <div class="account">

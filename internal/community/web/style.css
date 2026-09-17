@@ -1069,10 +1069,10 @@ nav { gap: 4px; }
 .account .avatar { flex-shrink: 0; }
 .account .text-button { font-size: 11px; margin-top: 2px; }
 main { padding-top: 24px; }
-#request-limits, .corpus-note { width: 100%; max-width: 1100px; margin: 0 auto; padding: 0 48px; font-size: 11px; line-height: 1.7; color: var(--muted); border: 0; }
+#request-limits, .corpus-note { width: 100%; max-width: 980px; margin: 0 auto; padding: 0 48px; font-size: 11px; line-height: 1.7; color: var(--muted); border: 0; }
 #request-limits:empty { display: none; }
 .corpus-note { margin-top: 4px; color: #909b84; }
-.view { max-width: 1100px; padding: 36px 48px 56px; }
+.view { max-width: 980px; padding: 36px 48px 56px; }
 .view > .muted { max-width: 720px; margin-bottom: 26px; line-height: 1.65; }
 .mode-picker { padding: 4px; margin-bottom: 16px; background: #171b14; border-color: var(--line); }
 .mode-picker button { min-height: 36px; padding: 8px 18px; }
@@ -1082,7 +1082,7 @@ main { padding-top: 24px; }
 .search-box input:focus-visible { outline: 0; }
 .search-box > span { font-size: 25px; }
 .suggestions { margin-top: 16px; }
-.discovery-card { margin-top: 38px; padding: 42px 24px; background: transparent; border-style: dashed; }
+.discovery-card { margin-top: 28px; padding: 28px 24px; background: transparent; border-style: dashed; }
 .discovery-card h2 { font-size: 19px; margin-bottom: 8px; }
 .discovery-card p:last-child { font-size: 13px; }
 .list-heading { margin-top: 32px; }
@@ -1157,3 +1157,13 @@ footer span { font: inherit; font-weight: 600; }
   .onboarding h1 { font-size: 34px; }
   footer { padding: 18px 22px; }
 }
+
+.boot { min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px; background: var(--bg); }
+.boot .brand { margin-bottom: 8px; }
+.boot p { margin: 0; color: var(--muted); font-size: 13px; }
+.loading-spinner { width: 20px; height: 20px; border: 2px solid var(--line); border-top-color: var(--lime); border-radius: 50%; animation: loading-turn .9s linear infinite; }
+@keyframes loading-turn { to { transform: rotate(360deg); } }
+.monthly-credits .monthly-free { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 0 0 10px; margin-bottom: 2px; border-bottom: 1px solid var(--line); }
+.monthly-free dt { font-size: 12px; color: var(--ink); }
+.monthly-free dd { margin: 0; color: var(--lime); }
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
