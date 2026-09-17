@@ -1,5 +1,7 @@
 # Production readiness follow-up — 2026-09-17
 
+**Shared-account integration update:** see [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and [its verification record](SHARED-ACCOUNTS-VALIDATION.md). Shared mode now connects to Andrei’s auth/MCP infrastructure. Its live staging and companion-change gates must pass before rollout; earlier standalone checks do not establish shared-mode production readiness.
+
 This follows [the browser and CLI integration sweep](COMMUNITY-VALIDATION.md).
 All candidate servers, account databases, corpus writes and load requests ran
 locally. The existing production chat and embedding services were accessed

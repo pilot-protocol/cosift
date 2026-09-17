@@ -112,6 +112,10 @@ func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish fu
 
 func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil || r.Header.Get("Authorization") != "" {
+			s.sharedAuth(w, r, next, true)
+			return
+		}
 		cookie, err := r.Cookie(cookieName)
 		if err != nil {
 			next(w, r, User{})

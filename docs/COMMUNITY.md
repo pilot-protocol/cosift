@@ -1,5 +1,7 @@
 # Community app and contributions
 
+**Shared-account integration update:** see [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and [its verification record](SHARED-ACCOUNTS-VALIDATION.md). Shared mode now connects to Andrei’s auth/MCP infrastructure. Its live staging and companion-change gates must pass before rollout; earlier standalone checks do not establish shared-mode production readiness.
+
 `cosift community` runs a small web app alongside the search backend. It ships
 inside the existing binary, with no JavaScript build step. Stripe webhook verification uses the official Go SDK.
 

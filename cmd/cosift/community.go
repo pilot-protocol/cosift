@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community"
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 func runCommunity(ctx context.Context, args []string) error {
@@ -42,7 +43,20 @@ func runCommunity(ctx context.Context, args []string) error {
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
 	}
-	s, err := community.Open(community.Config{DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
+	var provider sharedaccount.Provider
+	authMode := os.Getenv("COSIFT_AUTH_MODE")
+	if authMode != "" && authMode != "local" && authMode != "shared" {
+		return fmt.Errorf("COSIFT_AUTH_MODE must be local or shared")
+	}
+	if authMode == "shared" {
+		client, err := sharedaccount.New(ctx, sharedaccount.Config{Project: os.Getenv("COSIFT_SHARED_PROJECT"), Database: os.Getenv("COSIFT_SHARED_DATABASE"), AuthURL: os.Getenv("COSIFT_AUTH_URL"), MCPURL: os.Getenv("COSIFT_MCP_URL"), AuthAudience: os.Getenv("COSIFT_AUTH_AUDIENCE"), MCPAudience: os.Getenv("COSIFT_MCP_AUDIENCE")})
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		provider = client
+	}
+	s, err := community.Open(community.Config{Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
 	if err != nil {
 		return err
 	}
@@ -100,7 +114,19 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		return fmt.Errorf("use HTTPS to protect account credentials")
 	}
 	password := os.Getenv("COSIFT_PASSWORD")
-	if !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
+	token := os.Getenv("COSIFT_TOKEN")
+	if *guest {
+		token = ""
+	}
+	if token != "" {
+		if _, err := sharedaccount.Parse(token); err != nil {
+			return fmt.Errorf("COSIFT_TOKEN is not a canonical Cosift token")
+		}
+	}
+	if token != "" && *sessionFile != "" && !*login {
+		return fmt.Errorf("choose COSIFT_TOKEN or a saved session, not both")
+	}
+	if token == "" && !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
 		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest")
 	}
 	origin := strings.TrimRight(*server, "/")
@@ -112,8 +138,8 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	if authOnly && *sessionFile == "" {
 		return fmt.Errorf("provide -session-file or COSIFT_SESSION_FILE for login/logout")
 	}
-	if *login && (*email == "" || password == "") {
-		return fmt.Errorf("login requires COSIFT_EMAIL and COSIFT_PASSWORD")
+	if *login && token == "" && (*email == "" || password == "") {
+		return fmt.Errorf("login requires COSIFT_TOKEN from cosift-install, or COSIFT_EMAIL and COSIFT_PASSWORD for standalone servers")
 	}
 	// Validate intent before login, reading stdin, or touching the local index.
 	if *requestMode {
@@ -130,7 +156,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	if *credits && (*local || len(values) > 0 || *file != "") {
 		return fmt.Errorf("credits cannot be combined with contributions")
 	}
-	if (*local || *credits) && (*guest || (*email == "" && *sessionFile == "")) {
+	if (*local || *credits) && (*guest || (*email == "" && *sessionFile == "" && token == "")) {
 		return fmt.Errorf("local indexing and credits require login or a saved session")
 	}
 	if *file != "" {
@@ -194,6 +220,9 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Cosift-Client", "community")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		res, err := client.Do(req)
 		if err != nil {
 			return nil, err
@@ -248,7 +277,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 			}
 		}()
 	}
-	if !*guest && *email != "" && (*login || *sessionFile == "") {
+	if token == "" && !*guest && *email != "" && (*login || *sessionFile == "") {
 		// Revoke temporary sessions, including a login with an unusable response
 		// or a session whose persistence failed.
 		defer func() {
@@ -262,6 +291,13 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		if _, err := call(ctx, "login", map[string]string{"email": *email, "password": password}); err != nil {
 			return err
 		}
+	}
+	if *login && token != "" {
+		if _, err := call(ctx, "me", nil); err != nil {
+			return err
+		}
+		loginCookie = &http.Cookie{Name: "cosift_session", Value: token, Path: "/", Expires: time.Now().Add(30 * 24 * time.Hour)}
+		jar.SetCookies(u, []*http.Cookie{loginCookie})
 	}
 	if *login {
 		if loginCookie == nil || loginCookie.Value == "" || !loginCookie.Expires.After(time.Now()) || len(jar.Cookies(u)) == 0 {

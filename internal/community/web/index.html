@@ -48,7 +48,7 @@
                 maxlength="254"
                 required
                 placeholder="you@example.com" /></label
-            ><label
+            ><label id="password-field"
               >Password<input
                 name="password"
                 type="password"
@@ -57,11 +57,12 @@
                 maxlength="256"
                 required
                 placeholder="At least 12 characters" /></label
-            ><button class="primary wide" id="auth-submit">
+            ><label id="code-field" hidden>Verification code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="Six-digit email code" /></label><button class="primary wide" id="auth-submit" disabled>
               Create account <span>↗</span>
             </button>
           </form>
-          <p class="muted switch">
+          <button id="auth-restart" class="text-button" type="button" hidden>Use another email or request a new code</button>
+          <p class="muted switch" id="auth-switch">
             <span id="auth-switch-copy">Already have an account?</span>
             <button id="auth-toggle" class="text-button">Sign in</button>
           </p>
@@ -78,8 +79,8 @@
         <p class="eyebrow">Make it yours</p>
         <h1>What catches<br />your attention?</h1>
         <p class="muted">
-          Pick a few interests. We’ll turn them into starting points for your
-          next search. You can change these anytime.
+          <span id="interests-explanation">Pick a few interests. We’ll turn them into starting points for your
+          next search. You can change these anytime.</span>
         </p>
         <form id="interests-form">
           <div id="topics" class="topics"></div>
@@ -115,7 +116,7 @@
           ><button data-view="contribute" class="nav-item">
             <span>＋</span> Contribute
           </button>
-        </nav>
+        <button id="shared-nav" data-view="shared" class="nav-item" hidden>◉ Followed topics</button></nav>
         <div class="sidebar-note">
           <span class="dot"></span>
           <p>A better index starts<br />with a good link.</p>
@@ -207,6 +208,18 @@
               a search to pick it up again later.
             </p>
           </div>
+        </section>
+        <section id="view-shared" class="view" hidden>
+          <p class="eyebrow">Your Cosift account</p><h1>Your topics and requests.</h1>
+          <p class="muted">Up to 100 topics and article requests are shown from your shared agent account. Checking coverage sends the topic to Cosift and records demand. Requesting an article records your interest; it does not promise an article or a delivery date.</p>
+          <form id="shared-form" class="panel">
+            <label>Topic<input id="shared-topic" required maxlength="200" placeholder="Rust async runtimes" /></label>
+            <label>Action<select id="shared-action"><option value="cosift_lookup">Check article coverage</option><option value="cosift_request">Request an article</option><option value="add">Follow topic</option></select></label>
+            <button class="primary" type="submit">Continue →</button>
+          </form>
+          <div id="shared-result" role="status"></div>
+          <button id="shared-refresh" class="secondary">Refresh topics</button>
+          <div id="shared-list" class="cards"></div>
         </section>
         <section id="view-saved" class="view" hidden>
           <p class="eyebrow">Keep the thread</p>

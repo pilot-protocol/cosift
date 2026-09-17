@@ -13,6 +13,7 @@ let accountGeneration = 0;
 const pendingRequests = new Set();
 let searchRequest;
 let authBusy = false;
+let sharedAuth = false, authChallenge = null, authConfigured = false;
 function resetAccount(nextUser = null) {
   accountGeneration++;
   for (const controller of pendingRequests) controller.abort();
@@ -25,9 +26,9 @@ function resetAccount(nextUser = null) {
   selected = new Set();
   checkoutKey = undefined;
   guestUntil = 0;
-  for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions"])
+  for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions", "shared-list", "shared-result"])
     $(id).replaceChildren();
-  for (const id of ["query", "urls", "csv", "custom-interests"]) $(id).value = "";
+  for (const id of ["query", "urls", "csv", "custom-interests", "shared-topic"]) $(id).value = "";
   $("saved-count").textContent = "0";
   $("credit-balance").textContent = "";
   $("credit-balance").hidden = true;
@@ -158,6 +159,7 @@ async function busy(form, action) {
   }
 }
 $("auth-toggle").onclick = () => {
+  if (sharedAuth) return;
   signingUp = !signingUp;
   $("name-field").hidden = !signingUp;
   $("auth-form").elements.name.required = signingUp;
@@ -178,10 +180,33 @@ $("auth-toggle").onclick = () => {
 };
 $("auth-form").onsubmit = (event) => {
   event.preventDefault();
-  if (authBusy) return;
-  busy(event.target, async () => {
+  if (authBusy || !authConfigured) return;
+  authBusy = true;
+  return busy(event.target, async () => {
     resetAccount();
     const form = new FormData(event.target);
+    if (sharedAuth) {
+      if (!authChallenge) {
+        authChallenge = await api("auth/start", "POST", {email: form.get("email")});
+        $("code-field").hidden = false;
+        $("auth-restart").hidden = false;
+        event.target.elements.code.required = true;
+        event.target.elements.email.readOnly = true;
+        $("auth-submit").textContent = "Verify and sign in →";
+        notify("If the address is eligible, a verification code is on its way. Check your email.");
+        return;
+      }
+      user = await api("auth/verify", "POST", {request_id: authChallenge.request_id, code: form.get("code")});
+      authChallenge = null;
+      $("code-field").hidden = true;
+      $("auth-restart").hidden = true;
+      event.target.elements.code.required = false;
+      event.target.elements.email.readOnly = false;
+      $("auth-submit").textContent = "Email me a code →";
+      event.target.reset();
+      await enter();
+      return;
+    }
     user = await api(signingUp ? "register" : "login", "POST", {
       name: form.get("name"),
       email: form.get("email"),
@@ -189,7 +214,7 @@ $("auth-form").onsubmit = (event) => {
     });
     event.target.reset();
     await enter();
-  });
+  }).finally(() => { authBusy = false; });
 };
 function onboarding() {
   selected = new Set(user.interests.filter((v) => topics.includes(v)));
@@ -284,6 +309,7 @@ async function showPaymentReturn() {
   }
 }
 async function enter() {
+  $("shared-nav").hidden = !sharedAuth || !user;
   await refreshLimits();
   await refreshCredits();
   if (!currentQuery) {
@@ -335,7 +361,8 @@ function suggestions() {
   }
 }
 async function view(name) {
-  for (const value of ["search", "saved", "contribute"])
+  if (name === "shared" && (!sharedAuth || !user)) return;
+  for (const value of ["search", "saved", "contribute", "shared"])
     $("view-" + value).hidden = value !== name;
   document.querySelectorAll("nav [data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
@@ -366,8 +393,10 @@ document
   .forEach((button) => (button.onclick = () => view(button.dataset.view)));
 $("edit-interests").onclick = () => (user ? onboarding() : showScreen("auth"));
 $("guest-signup").onclick = () => showScreen("auth");
-$("continue-guest").onclick = () =>
-  enter().catch((e) => notify(e.message, true));
+$("continue-guest").onclick = () => {
+  if (authBusy) return;
+  return enter().catch((e) => notify(e.message, true));
+};
 async function refreshGuest() {
   if (user) return;
   const status = await api("guest");
@@ -695,8 +724,24 @@ async function refreshLimits() {
 (async () => {
   const generation = accountGeneration;
   try {
+    const authConfig = await api("auth/config");
+    sharedAuth = authConfig.shared === true;
+    authConfigured = true;
+    $("auth-submit").disabled = false;
+    if (sharedAuth) {
+      $("name-field").hidden = true;
+      $("password-field").hidden = true;
+      $("auth-switch").hidden = true;
+      $("auth-form").elements.name.required = false;
+      $("auth-form").elements.password.required = false;
+      $("auth-title").textContent = "Sign in to Cosift.";
+      $("auth-description").textContent = "Use the same email as your connected agents. We’ll send you a verification code.";
+      $("auth-submit").textContent = "Email me a code →";
+      $("interests-explanation").textContent = "Save interests to follow these topics across Cosift and your connected agents. Existing agent topics stay followed; remove them in Followed topics.";
+    }
     user = await api("me");
-  } catch {
+  } catch (e) {
+    if (!authConfigured) { showScreen("auth"); notify("Unable to load login settings. Reload to try again.",true); return; }
     if (generation !== accountGeneration) return;
     user = null;
   }
@@ -820,3 +865,61 @@ function renderSynthesis(data, mode) {
       el("p", [data.model, data.took].filter(Boolean).join(" · "), "fine"),
     );
 }
+
+async function refreshSharedTopics() {
+  const data = await api("shared", "POST", {tool:"cosift_topics", action:"list"});
+  $("shared-list").replaceChildren();
+  const items = data.topics || [];
+  if (!items.length) $("shared-list").append(el("p", "No followed topics yet.", "muted"));
+  for (const item of items) {
+    const topic = item.topic_text || item.topic || "";
+    const card = el("article", undefined, "panel");
+    card.append(el("h3", topic));
+    if (item.requested) card.append(el("p", "Article requested. Request history is retained when unfollowing.", "fine"));
+    const remove = el("button", "Unfollow", "text-button");
+    remove.onclick = async () => {
+      remove.disabled = true;
+      try { await api("shared", "POST", {tool:"cosift_topics", action:"remove", topics:[topic]}); await refreshSharedTopics(); }
+      catch (e) { notify(e.message,true); remove.disabled=false; }
+    };
+    card.append(remove); $("shared-list").append(card);
+  }
+}
+$("shared-refresh").onclick = () => refreshSharedTopics().catch(e => notify(e.message,true));
+$("shared-nav").onclick = () => { view("shared"); refreshSharedTopics().catch(e => notify(e.message,true)); };
+$("shared-form").onsubmit = event => {
+  event.preventDefault();
+  busy(event.target,async () => {
+    const action = $("shared-action").value, topic = $("shared-topic").value.trim();
+    const payload = action === "add" ? {tool:"cosift_topics",action:"add",topics:[topic]} : {tool:action,topic};
+    const data = await api("shared","POST",payload);
+    $("shared-result").replaceChildren();
+    if (action === "add") $("shared-result").append(el("p","Topic followed."));
+    else if (action === "cosift_request") $("shared-result").append(el("p",data.detail || "Article request recorded."));
+    else {
+      $("shared-result").append(el("p",data.coverage === "covered" ? "Cosift has an article on this topic." : "No complete article is available yet. You can still search the webpage index."));
+      const article = data.kind === "article" ? data : data.related_article;
+      if (article) {
+        $("shared-result").append(el("p",article.text || ""));
+        for (const citation of article.citations || []) {
+          const url = typeof citation === "string" ? citation : citation.url;
+          $("shared-result").append(link(url, typeof citation === "string" ? citation : citation.title || url));
+        }
+      }
+    }
+    await refreshSharedTopics();
+  });
+};
+
+$("auth-restart").onclick = () => {
+  if (authBusy) return;
+  resetAccount();
+  authChallenge = null;
+  const form = $("auth-form");
+  form.elements.code.value = "";
+  form.elements.code.required = false;
+  form.elements.email.readOnly = false;
+  $("code-field").hidden = true;
+  $("auth-restart").hidden = true;
+  $("auth-submit").textContent = "Email me a code →";
+};

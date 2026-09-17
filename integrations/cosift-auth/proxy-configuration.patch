@@ -1,0 +1,22 @@
+diff --git a/infra/deploy.sh b/infra/deploy.sh
+index ebcfc9b..28e0cf6 100755
+--- a/infra/deploy.sh
++++ b/infra/deploy.sh
+@@ -58,10 +58,16 @@ ENV_VARS="${ENV_VARS}##AUTH_CAP_IP_PER_HOUR=10"
+ ENV_VARS="${ENV_VARS}##AUTH_CAP_DOMAIN_PER_DAY=50"
+ ENV_VARS="${ENV_VARS}##AUTH_CAP_GLOBAL_PER_DAY=2000"
+ ENV_VARS="${ENV_VARS}##AUTH_DOMAIN_CAP_OVERRIDES=gmail.com=1000,outlook.com=500,hotmail.com=500,yahoo.com=500,icloud.com=500"
+-ENV_VARS="${ENV_VARS}##AUTH_XFF_MODE=hops"
++ENV_VARS="${ENV_VARS}##AUTH_XFF_MODE=${AUTH_XFF_MODE:-hops}"
+ # 0 = the entry the platform appended. Raising this lets a caller choose its
+ # own value with a forged header, and with it its own rate-limit bucket.
+ ENV_VARS="${ENV_VARS}##AUTH_XFF_TRUSTED_HOPS=${AUTH_XFF_TRUSTED_HOPS:-0}"
++# Optional CIDR mode for a known community gateway plus verified platform peers.
++# Keep direct run.app callers untrusted; never solve gateway attribution by
++# increasing the global hop count. Validate the actual staging chain first.
++if [ -n "${AUTH_TRUSTED_PROXIES:-}" ]; then
++  ENV_VARS="${ENV_VARS}##AUTH_TRUSTED_PROXIES=${AUTH_TRUSTED_PROXIES}"
++fi
+ ENV_VARS="${ENV_VARS}##AUTH_DEBUG_ROUTES=${AUTH_DEBUG_ROUTES:-false}"
+ # Optional boot assertions. A token mismatch logs ERROR (the token pepper
+ # legitimately changes on rotation); an otp mismatch refuses to start, because

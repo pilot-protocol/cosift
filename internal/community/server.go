@@ -19,11 +19,13 @@ import (
 	"net/mail"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/crawler"
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 //go:embed web/*
@@ -33,6 +35,7 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 
 type Config struct {
+	Shared              sharedaccount.Provider
 	DataDir             string
 	Backend             string
 	PublicURL           string
@@ -115,7 +118,17 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.bindSharedNamespace(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/config", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil})
+	})
+	mux.HandleFunc("POST /api/auth/start", s.sharedStart)
+	mux.HandleFunc("POST /api/auth/verify", s.sharedFinish)
+	mux.HandleFunc("POST /api/shared", s.auth(s.sharedTool))
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /signup", s.asset("index.html", "text/html; charset=utf-8"))
@@ -242,6 +255,10 @@ func passwordHash(password, salt string) string {
 
 func (s *Server) credentials(register bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil {
+			problem(w, 409, "use shared email-code login")
+			return
+		}
 		ip := s.clientIP(r)
 		if !s.allow("auth:"+ip, 30, time.Minute) {
 			problem(w, 429, "too many attempts; try again in a minute")
@@ -328,6 +345,10 @@ type userHandler func(http.ResponseWriter, *http.Request, User)
 
 func (s *Server) auth(next userHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil || r.Header.Get("Authorization") != "" {
+			s.sharedAuth(w, r, next, false)
+			return
+		}
 		cookie, err := r.Cookie(cookieName)
 		if err != nil {
 			problem(w, 401, "sign in to continue")
@@ -347,6 +368,15 @@ func (s *Server) auth(next userHandler) http.HandlerFunc {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, u User) {
+	if s.cfg.Shared != nil {
+		if err := s.cfg.Shared.Revoke(sharedaccount.WithClientIP(r.Context(), s.clientIP(r)), sharedToken(r)); err != nil {
+			sharedProblem(w, err)
+			return
+		}
+		http.SetCookie(w, s.sharedCookie("", -1))
+		respond(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	c, _ := r.Cookie(cookieName)
 	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
 		problem(w, 500, "could not sign out")
@@ -381,6 +411,12 @@ func (s *Server) interests(w http.ResponseWriter, r *http.Request, u User) {
 			seen[key] = true
 		}
 	}
+	if s.cfg.Shared != nil && len(values) > 0 {
+		if _, err := s.cfg.Shared.Call(r.Context(), sharedToken(r), "cosift_topics", map[string]any{"action": "add", "topics": values}); err != nil {
+			sharedProblem(w, err)
+			return
+		}
+	}
 	b, _ := json.Marshal(values)
 	if _, err := s.db.ExecContext(r.Context(), `UPDATE users SET interests=?,onboarded=1 WHERE id=?`, string(b), u.ID); err != nil {
 		problem(w, 500, "could not save interests")
@@ -398,6 +434,25 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	if !validQuery(q) {
 		problem(w, 400, "enter a search of 1–500 characters")
 		return
+	}
+	// MCP asks for bounded BM25 results. Validate before reserving any allowance.
+	params := url.Values{"q": {q}, "stream": {"false"}}
+	if mode == "search" && u.ID != "" {
+		if raw := r.URL.Query().Get("k"); raw != "" {
+			k, err := strconv.Atoi(raw)
+			if err != nil || k < 1 || k > 20 {
+				problem(w, 400, "k must be 1–20")
+				return
+			}
+			params.Set("k", strconv.Itoa(k))
+		}
+		if v := r.URL.Query().Get("retriever"); v != "" {
+			if v != "bm25" && v != "dense" && v != "hybrid" {
+				problem(w, 400, "invalid retriever")
+				return
+			}
+			params.Set("retriever", v)
+		}
 	}
 	completed := false
 	if u.ID == "" {
@@ -430,7 +485,6 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	}
 
 	// Preserve the backend's normal retrieval, reranking and research defaults.
-	params := url.Values{"q": {q}, "stream": {"false"}}
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", s.cfg.Backend+"/"+mode+"?"+params.Encode(), nil)
 	client := *s.client
 	if mode != "search" {

@@ -135,3 +135,70 @@ func TestCommunityLoginDoesNotOverwriteAndCleansFailure(t *testing.T) {
 		t.Fatal("failed login retained file")
 	}
 }
+
+func TestSharedTokenCLIUsesExistingCredentialWithoutLoginOrRevoke(t *testing.T) {
+	const token = "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	t.Setenv("COSIFT_TOKEN", token)
+	t.Setenv("COSIFT_EMAIL", "")
+	t.Setenv("COSIFT_PASSWORD", "")
+	t.Setenv("COSIFT_SESSION_FILE", "")
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/search" || r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("unexpected credential lifecycle: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"hits":[]}`))
+	}))
+	defer srv.Close()
+	for i := 0; i < 2; i++ {
+		if err := runContribute(context.Background(), []string{"-server", srv.URL, "-request", "-query", "rust"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatal("temporary login/revoke with agent's persistent token", calls)
+	}
+}
+
+func TestSharedTokenCLISavedSessionAndGuestIsolation(t *testing.T) {
+	const token = "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	t.Setenv("COSIFT_TOKEN", token)
+	t.Setenv("COSIFT_EMAIL", "")
+	t.Setenv("COSIFT_PASSWORD", "")
+	t.Setenv("COSIFT_SESSION_FILE", "")
+	guest := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := r.Cookie("cosift_session")
+		if guest {
+			if r.Header.Get("Authorization") != "" || c != nil {
+				t.Error("guest leaked token")
+			}
+		} else if r.URL.Path == "/api/me" {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Error("login did not verify token")
+			}
+		} else if c == nil || c.Value != token {
+			t.Error("saved session not sent")
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	file := filepath.Join(t.TempDir(), "session")
+	if err := runContribute(context.Background(), []string{"-server", srv.URL, "-login", "-session-file", file}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := readCommunitySession(file, srv.URL, false)
+	if err != nil || saved.Token != token {
+		t.Fatal("token persistence", err)
+	}
+	guest = true
+	if err := runContribute(context.Background(), []string{"-server", srv.URL, "-guest", "-request", "-query", "rust"}); err != nil {
+		t.Fatal(err)
+	}
+	guest = false
+	t.Setenv("COSIFT_TOKEN", "")
+	if err := runContribute(context.Background(), []string{"-server", srv.URL, "-session-file", file, "-credits"}); err != nil {
+		t.Fatal(err)
+	}
+}

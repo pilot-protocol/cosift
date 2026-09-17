@@ -1,0 +1,171 @@
+diff --git a/src/cosift_mcp/app.py b/src/cosift_mcp/app.py
+index f0a49b5..26a9150 100644
+--- a/src/cosift_mcp/app.py
++++ b/src/cosift_mcp/app.py
+@@ -177,7 +177,12 @@ def build_app(
+         annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+     )
+     async def cosift_search(query: str, ctx: Context, k: int | None = None) -> CallToolResult:
+-        return await _guarded(ctx, "cosift_search", lambda _uid: run_search(cfg, query, k))
++        request = getattr(ctx.request_context, "request", None)
++        scope = getattr(request, "scope", None) or {}
++        token = (scope.get("state") or {}).get("cosift_token")
++        if not token:
++            return compact_result({"unavailable": True, "detail": "Account token unavailable.", "hits": []})
++        return await _guarded(ctx, "cosift_search", lambda _uid: run_search(cfg, query, k, token=token))
+ 
+     # Registered before streamable_http_app(), which is what collects the routes.
+     # Never authenticated — a startup probe carries no token.
+diff --git a/src/cosift_mcp/auth/middleware.py b/src/cosift_mcp/auth/middleware.py
+index 9823c8b..a99661f 100644
+--- a/src/cosift_mcp/auth/middleware.py
++++ b/src/cosift_mcp/auth/middleware.py
+@@ -78,6 +78,8 @@ class AuthMiddleware:
+ 
+         state = scope.setdefault("state", {})
+         state["cosift_principal"] = principal
++        # Request-scoped only; never log or put this on a shared HTTP client.
++        state["cosift_token"] = token
+         state["request_id"] = rid
+         await self._app(scope, receive, _with_request_id(send, rid))
+ 
+diff --git a/src/cosift_mcp/engine/client.py b/src/cosift_mcp/engine/client.py
+index 6c089d5..31d581e 100644
+--- a/src/cosift_mcp/engine/client.py
++++ b/src/cosift_mcp/engine/client.py
+@@ -167,10 +167,10 @@ class EngineClient:
+     async def aclose(self) -> None:
+         await self._http.aclose()
+ 
+-    async def search(self, query: str, return_n: int | None = None) -> SearchResult:
++    async def search(self, query: str, return_n: int | None = None, *, token: str | None = None) -> SearchResult:
+         cfg = self._cfg
+         n = cfg.search_return_n if return_n is None else max(1, min(return_n, cfg.search_return_n))
+-        payload = await self._fetch(query)
++        payload = await self._fetch(query, token=token)
+         hits = [h for h in (_parse_hit(r) for r in _raw_hits(payload)) if h is not None]
+         hits = _cap_per_host(_dedupe(hits), cfg.search_per_host_cap)[:n]
+         hits = [
+@@ -192,14 +192,19 @@ class EngineClient:
+             took=payload.get("took"),
+         )
+ 
+-    async def _fetch(self, query: str) -> dict[str, Any]:
++    async def _fetch(self, query: str, *, token: str | None = None) -> dict[str, Any]:
+         cfg = self._cfg
+         # k is pinned to fetch_k: this engine's BM25 ranking is k-dependent, so a
+         # caller-varied k would make the same query irreproducible.
+         params = {"q": query, "k": cfg.search_fetch_k, "retriever": cfg.search_retriever}
+         for attempt in (1, 2):
+             try:
+-                resp = await self._http.get("/search", params=params)
++                # Per-request headers prevent cross-account credential leakage.
++                # httpx does not follow redirects by default.
++                if token and urlsplit(cfg.engine_base_url).scheme != "https" and urlsplit(cfg.engine_base_url).hostname not in ("127.0.0.1", "localhost", "::1"):
++                    raise EngineUnavailable("account tokens require HTTPS")
++                headers = {"authorization": f"Bearer {token}"} if token else {}
++                resp = await self._http.get("/search", params=params, headers=headers)
+             except httpx.TransportError as exc:
+                 if attempt == 2:
+                     log.warning(
+diff --git a/src/cosift_mcp/tools/search.py b/src/cosift_mcp/tools/search.py
+index a238756..fc8a253 100644
+--- a/src/cosift_mcp/tools/search.py
++++ b/src/cosift_mcp/tools/search.py
+@@ -30,7 +30,7 @@ def _return_n(k: Any) -> int | None:
+         return None
+ 
+ 
+-async def run_search(cfg: Config, query: str, k: int | None = None) -> dict[str, Any]:
++async def run_search(cfg: Config, query: str, k: int | None = None, *, token: str | None = None) -> dict[str, Any]:
+     # Every exit from here returns a dict. A raised exception becomes isError,
+     # which harnesses retry, so even a bad argument type degrades instead.
+     result: dict[str, Any] = {"hits": [], "retriever": None, "query": None}
+@@ -39,7 +39,7 @@ async def run_search(cfg: Config, query: str, k: int | None = None) -> dict[str,
+         result = {"hits": [], "retriever": cfg.search_retriever, "query": q}
+         if not q:
+             return result
+-        found = await get_client(cfg).search(q, return_n=_return_n(k))
++        found = await get_client(cfg).search(q, return_n=_return_n(k), token=token)
+     except EngineUnavailable as exc:
+         log.warning("search_unavailable", detail=str(exc))
+         return result | {"unavailable": True, "detail": _UNAVAILABLE_DETAIL}
+diff --git a/tests/test_engine_client.py b/tests/test_engine_client.py
+index 8e6f42f..05dc85b 100644
+--- a/tests/test_engine_client.py
++++ b/tests/test_engine_client.py
+@@ -371,3 +371,47 @@ async def test_cap_is_applied_before_truncation(cfg):
+     hosts = [registrable_host(h.url) for h in result.hits]
+     assert hosts.count("redis.io") == 2, hosts
+     assert "other.example" in hosts and "third.example" in hosts, hosts
++
++
++async def test_account_tokens_are_scoped_per_concurrent_request(cfg):
++    import asyncio
++    seen = {}
++
++    async def handler(request):
++        await asyncio.sleep(0)
++        seen[request.url.params["q"]] = request.headers.get("authorization")
++        return httpx.Response(200, json=body())
++
++    client = client_for(cfg, handler)
++    try:
++        await asyncio.gather(
++            client.search("alice", token="alice-token"),
++            client.search("bob", token="bob-token"),
++            client.search("guest"),
++        )
++        assert seen == {"alice": "Bearer alice-token", "bob": "Bearer bob-token", "guest": None}
++        assert "authorization" not in client._http.headers
++    finally:
++        await client.aclose()
++
++
++async def test_account_token_is_not_forwarded_to_redirect(cfg):
++    seen, handler = recording({}, status=302)
++    client = client_for(cfg, handler)
++    try:
++        with pytest.raises(EngineUnavailable):
++            await client.search("q", token="account-token")
++        assert len(seen) == 1
++    finally:
++        await client.aclose()
++
++
++async def test_account_token_requires_secure_engine_origin(cfg):
++    seen, handler = recording(body())
++    client = client_for(replace(cfg, engine_base_url="http://remote.example"), handler)
++    try:
++        with pytest.raises(EngineUnavailable):
++            await client.search("q", token="account-token")
++        assert not seen
++    finally:
++        await client.aclose()
+diff --git a/tests/test_mcp_protocol.py b/tests/test_mcp_protocol.py
+index 875bc32..82ccd61 100644
+--- a/tests/test_mcp_protocol.py
++++ b/tests/test_mcp_protocol.py
+@@ -115,7 +115,8 @@ async def lifespan(app):
+ 
+ @pytest.fixture
+ async def client(monkeypatch):
+-    async def fake_search(cfg, query, k=None):
++    async def fake_search(cfg, query, k=None, *, token=None):
++        assert token == HEADERS["Authorization"].split(" ", 1)[1]
+         if query == "boom":
+             raise RuntimeError("engine exploded")
+         if query == "down":
+diff --git a/tests/test_relevance.py b/tests/test_relevance.py
+index cca4158..338ea6a 100644
+--- a/tests/test_relevance.py
++++ b/tests/test_relevance.py
+@@ -106,7 +106,7 @@ class FakeClient:
+     def __init__(self, hits):
+         self._hits = hits
+ 
+-    async def search(self, q, return_n=None):
++    async def search(self, q, return_n=None, *, token=None):
+         return FakeFound(q, self._hits)
+ 
+ 

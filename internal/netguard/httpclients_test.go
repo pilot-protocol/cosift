@@ -19,20 +19,21 @@ var (
 // Files allowed to build an HTTP client outside netguard: each dials an
 // operator-controlled endpoint, or uses an independently tested stricter dialer.
 var unguardedByDesign = map[string]string{
-	"cmd/cosift/community.go":         "CLI talks only to its explicitly configured server; redirects disabled",
-	"internal/community/server.go":    "operator-configured backend origin only; redirects disabled; contributed URLs use crawler.PublicHTTPClient",
-	"internal/crawler/public_dial.go": "stricter public-only DNS-pinned dialer, denies all private answers, non-web ports and proxies, cannot be disabled by environment; covered by public_dial_test.go",
-	"internal/embed/client.go":        "embeddings endpoint — box-local vLLM in prod",
-	"internal/embed/chat.go":          "chat endpoint — box-local vLLM in prod",
-	"internal/rerank/http.go":         "rerank endpoint — box-local in prod",
-	"internal/chatgate/loadprobe.go":  "polls the local vLLM /metrics",
-	"cmd/cosift/serve_search.go":      "peer shard forward + gateway, both operator-configured hosts",
-	"cmd/cosift/serve_helpers.go":     "operator-configured gateway",
-	"cmd/cosift/find.go":              "CLI talking to its own server",
-	"cmd/cosift/cmd_admin.go":         "CLI talking to its own server",
-	"cmd/cosift/cmd_query.go":         "CLI talking to its own server",
-	"cmd/cosift/cmd_maintenance.go":   "CLI talking to its own server",
-	"cmd/cosift/cmd_eval.go":          "CLI talking to its own server and the judge model",
+	"internal/sharedaccount/remote.go": "operator-configured auth/MCP origins only; HTTPS except loopback; redirects disabled; never accepts URLs from user input",
+	"cmd/cosift/community.go":          "CLI talks only to its explicitly configured server; redirects disabled",
+	"internal/community/server.go":     "operator-configured backend origin only; redirects disabled; contributed URLs use crawler.PublicHTTPClient",
+	"internal/crawler/public_dial.go":  "stricter public-only DNS-pinned dialer, denies all private answers, non-web ports and proxies, cannot be disabled by environment; covered by public_dial_test.go",
+	"internal/embed/client.go":         "embeddings endpoint — box-local vLLM in prod",
+	"internal/embed/chat.go":           "chat endpoint — box-local vLLM in prod",
+	"internal/rerank/http.go":          "rerank endpoint — box-local in prod",
+	"internal/chatgate/loadprobe.go":   "polls the local vLLM /metrics",
+	"cmd/cosift/serve_search.go":       "peer shard forward + gateway, both operator-configured hosts",
+	"cmd/cosift/serve_helpers.go":      "operator-configured gateway",
+	"cmd/cosift/find.go":               "CLI talking to its own server",
+	"cmd/cosift/cmd_admin.go":          "CLI talking to its own server",
+	"cmd/cosift/cmd_query.go":          "CLI talking to its own server",
+	"cmd/cosift/cmd_maintenance.go":    "CLI talking to its own server",
+	"cmd/cosift/cmd_eval.go":           "CLI talking to its own server and the judge model",
 }
 
 func TestOutboundClientsRouteThroughNetguard(t *testing.T) {

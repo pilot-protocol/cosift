@@ -11,7 +11,7 @@ const tick = () => new Promise(setImmediate);
 function node() {
  return {hidden:false, disabled:false, value:'', textContent:'', children:[], dataset:{}, files:[],
   classList:{toggle(){}}, setAttribute(){}, removeAttribute(){},
-  elements:{name:{}, password:{}}, reset(){this.value=''},
+  elements:{name:{}, password:{}, email:{}, code:{}}, reset(){this.value=''},
   append(...items){this.children.push(...items)}, replaceChildren(...items){this.children=items},
   querySelector(){return this.button ||= node()}, click(){return this.onclick?.()},
  };
@@ -31,7 +31,7 @@ async function app(boot = true) {
   assert.notEqual(i,-1,'pending '+route);
   pending.splice(i,1)[0].resolve({ok:status<400,status,json:async()=>data});
  };
- run(source); if (boot) { respond('me',{},401); await tick(); respond('limits',policy); await tick(); }
+ run(source); respond('auth/config',{shared:false}); await tick(); if (boot) { respond('me',{},401); await tick(); respond('limits',policy); await tick(); }
  run('user = {id:"A",name:"Alice",interests:[],onboarded:true}');
  return {run,respond,get,pending,context};
 }
@@ -87,4 +87,47 @@ test('late startup session check does not overwrite a new login',async()=>{
  a.run('resetAccount({id:"B",name:"Bob",interests:[],onboarded:true})');
  a.respond('me',{error:'Not signed in'},401);await tick();
  assert.equal(a.run('user?.id'),'B');
+});
+
+test('shared topic data cannot repopulate another account',async()=>{
+ const a=await app();a.run('sharedAuth=true');
+ const topics=a.run('refreshSharedTopics()').catch(()=>{});await tick();
+ a.run('resetAccount({id:"B",name:"Bob",interests:[],onboarded:true})');
+ a.respond('shared',{topics:[{topic:'Private topic',requested:true}]});await topics;
+ assert.equal(a.get('shared-list').children.length,0);
+});
+test('shared topic text is rendered as text and carries an explicit action',async()=>{
+ const a=await app();a.run('sharedAuth=true');
+ const topics=a.run('refreshSharedTopics()');await tick();
+ const pending=a.pending.find(p=>p.url==='/api/shared');
+ assert.deepEqual(JSON.parse(pending.opts.body),{tool:'cosift_topics',action:'list'});
+ a.respond('shared',{topics:[{topic:'<img src=x onerror=alert(1)>',requested:true}]});await topics;
+ assert.equal(a.get('shared-list').children[0].children[0].textContent,'<img src=x onerror=alert(1)>');
+});
+test('shared view is unavailable to a guest',async()=>{
+ const a=await app();a.run('resetAccount(); sharedAuth=true');
+ a.get('view-shared').hidden=true;await a.run('view("shared")');
+ assert.equal(a.get('view-shared').hidden,true);
+});
+test('email-code login waits for verification and prevents switching during an active request',async()=>{
+ const a=await app();a.run('resetAccount();sharedAuth=true');
+ const form=a.get('auth-form');form.elements.email.value='shared@example.com';form.elements.code.value='123456';
+ a.context.FormData=class {constructor(form){this.form=form}get(key){return this.form.elements[key]?.value || ''}};
+ const start=form.onsubmit({preventDefault(){},target:form});await tick();
+ assert.equal(a.run('authBusy'),true);
+ a.respond('auth/start',{request_id:'test-challenge',expires_at:'2030-01-01T00:00:00Z'});await start;
+ assert.equal(a.run('user'),null);
+ assert.equal(a.get('code-field').hidden,false);
+ assert.equal(form.elements.email.readOnly,true);
+ assert.equal(a.run('authBusy'),false);
+ const verify=form.onsubmit({preventDefault(){},target:form});await tick();
+ a.get('auth-restart').onclick();
+ assert.equal(a.run('authChallenge.request_id'),'test-challenge');
+ assert.deepEqual(JSON.parse(a.pending.find(p=>p.url==='/api/auth/verify').opts.body),{request_id:'test-challenge',code:'123456'});
+ a.respond('auth/verify',{error:'Wrong or expired code'},401);await verify;
+ assert.equal(a.run('user'),null);
+ a.get('auth-restart').onclick();
+ assert.equal(a.run('authChallenge'),null);
+ assert.equal(form.elements.email.readOnly,false);
+ assert.equal(a.get('code-field').hidden,true);
 });
