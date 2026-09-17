@@ -116,20 +116,28 @@ reuse the withdrawn v0.2.6 artifacts.
 
 ## Default quotas and public API compatibility
 
-| Operation | Member hard cap | Guest hard cap |
-| --- | --- | --- |
-| Search | 120/minute | 1/minute |
-| Answer | 20/minute | 1/5 minutes |
-| Research | 3/10 minutes | 1/30 minutes |
+| Operation | Credits per successful authenticated request | Member hard cap | Guest hard cap |
+| --- | --- | --- | --- |
+| Search | 1 | 120/minute | 1/minute |
+| Answer | 2 | 20/minute | 1/5 minutes |
+| Research | 3 | 3/10 minutes | 1/30 minutes |
 
-Guests also share one request/minute across retrieval and contributions. Members
-have 60 shared free requests/minute; one credit pays for each extra request
-within the hard caps. Credit balance never bypasses a cap. Backend failures
-release mode slots and refund guest allowances, free member reservations and
-credits. Mode and shared free quotas persist across restarts. Search-only usage
-can use 60 free requests and then 60 credit-funded requests/minute. Repeated CLI
-commands should use `cosift login -session-file FILE` to avoid repeated password
-logins and the separate authentication throttle.
+Every successful authenticated retrieval spends credits from its first request.
+Each account receives 1,000 free credits per UTC calendar month; there is no
+free per-minute member bypass. Unused credits carry over. The old
+`-member-free-rpm` option is deprecated and ignored. Guest retrieval remains a
+separate one-request/minute IP allowance, with the additional guest mode caps
+above. Contributions always require authentication.
+
+Reserve credits and a mode slot atomically before dispatch. A failed backend
+request must release its slot and refund its credit reservation; an insufficient
+balance must prevent backend work. Credit balance never bypasses a hard cap, and
+mode counters and the ledger persist across restarts. For rollout acceptance,
+verify actual balance changes of -1/-2/-3 for a member's first Search/Answer/Research
+request, and -1 for MCP search under that same account. A prior free-quota test is
+not evidence that the new metering policy works. Repeat a failure and verify no
+net debit; confirm the next UTC monthly grant happens only once per account.
+Use the installer's private saved CLI session for repeated commands.
 
 Public `/search`, `/answer` and `/research` now use the portal and accept GET
 with `q`, matching the app/CLI. Existing public POST, streaming, or advanced
@@ -161,9 +169,10 @@ are not classified. Unreadable, oversized or uncertain pages remain unverified.
 Obvious junk is screened before the model; the model handles broader spam and
 content judgments. Local embeddings are checked against server computation,
 so this first version does not promise server-compute savings. New content earns
-10 credits, globally deduplicated by content hash. Stripe one-time credit purchases are implemented but disabled until the secret
-API key and webhook signing secret are configured. See [Stripe activation and
+10 credits, globally deduplicated by content hash. Stripe subscriptions and
+subscriber-only top-ups require live billing configuration, verified webhooks,
+and the dedicated restricted portal configuration. See [Stripe activation and
 test-mode checks](STRIPE.md). Shared mode verifies email codes through
-`cosift-auth`; standalone local mode still lacks email verification and
-self-service password reset. Article authoring and rewards for article views
-remain outside this release.
+`cosift-auth`; optional password setup/reset requires a fresh email code.
+Standalone local mode still lacks email verification and self-service password
+reset. Article authoring and rewards for article views remain outside this release.

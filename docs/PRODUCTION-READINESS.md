@@ -115,3 +115,16 @@ a second full-corpus instance on the current production host.
 Read-only inspection found the original engine active and the community service
 and self-updater inactive. The configuration and on-disk rollback artifacts
 remain separate from the reviewed candidate; this report authorizes no activation.
+
+
+## Metering policy changed after this validation
+
+The recorded free-per-minute member allowance is historical. Current policy
+charges every successful authenticated Search/Answer/Research request 1/2/3
+credits, including the first request, and grants each account 1,000 free credits
+per UTC month. Guest retrieval keeps its separate limits. Prior tests that count
+free member requests establish behavior before this change; they do not verify
+current deductions. New rollout acceptance must check actual ledger debits from
+the first request across web, CLI, and MCP search, no debit after backend failure,
+and refusal before backend work when the balance is insufficient. See
+[the current operator policy](COMMUNITY-ROLLOUT.md#default-quotas-and-public-api-compatibility).
