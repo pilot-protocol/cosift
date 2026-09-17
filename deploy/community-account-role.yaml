@@ -1,0 +1,9 @@
+title: Cosift community account access
+description: Verify shared accounts and tokens, and record token activity. No account or token creation or deletion.
+stage: GA
+includedPermissions:
+  - datastore.databases.get
+  - datastore.databases.getMetadata
+  - datastore.entities.get
+  - datastore.entities.list
+  - datastore.entities.update

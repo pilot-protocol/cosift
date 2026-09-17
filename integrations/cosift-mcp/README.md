@@ -1,7 +1,13 @@
 # MCP companion for community PR #58
 
+The companion merged in [cosift-mcp PR #1](https://github.com/pilot-protocol/cosift-mcp/pull/1)
+at `fa60d320acc5adaa3a7112a38afaa7ac8d168932` and is deployed with the community
+gateway as its search origin. The patch remains for reproducing the original
+review; current main already includes it. See
+[SHARED-ACCOUNTS.md](../../docs/SHARED-ACCOUNTS.md) for live endpoints and checks.
+
 `forward-account-token.patch` applies to cosift-mcp
-`e7477f21cf5439e1c55a53ddd7d1b0af080342c5`. It is a review artifact, not a deployment.
+`e7477f21cf5439e1c55a53ddd7d1b0af080342c5`.
 
 In a separate clean checkout of that revision:
 
