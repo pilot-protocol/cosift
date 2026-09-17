@@ -70,19 +70,49 @@ func (r *remote) call(ctx context.Context, path, token string, body any, out any
 		return ErrUnavailable
 	}
 	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		return ErrUnavailable
+	}
 	switch res.StatusCode {
-	case 401:
-		return ErrUnauthorized
-	case 403:
-		return ErrBanned
+	case 401, 403:
+		// Cloud Run can reject the gateway's Google identity before Cosift runs.
+		// Only Cosift's own JSON contract can invalidate a user's credential or
+		// report a ban; infrastructure failures must leave that credential intact.
+		var problem struct {
+			Error  string `json:"error"`
+			Status int    `json:"status"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(data, &problem) != nil {
+			return ErrUnavailable
+		}
+		if strings.HasPrefix(path, "/auth/") {
+			if problem.Status != res.StatusCode || problem.Error != http.StatusText(res.StatusCode) {
+				return ErrUnavailable
+			}
+			if res.StatusCode == 401 && (problem.Detail == "invalid or revoked token" || problem.Detail == "invalid or expired code") {
+				return ErrUnauthorized
+			}
+			if res.StatusCode == 403 && problem.Detail == "account suspended" {
+				return ErrBanned
+			}
+		} else {
+			if res.StatusCode == 401 && problem.Error == "invalid_token" {
+				return ErrUnauthorized
+			}
+			if res.StatusCode == 403 && problem.Error == "account_banned" {
+				return ErrBanned
+			}
+		}
+		return ErrUnavailable
 	case 429:
 		return ErrLimited
 	}
 	if res.StatusCode != 200 {
 		return ErrUnavailable
 	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 || json.Unmarshal(data, out) != nil {
+	if json.Unmarshal(data, out) != nil {
 		return ErrUnavailable
 	}
 	return nil

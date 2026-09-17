@@ -52,6 +52,8 @@ preserved. No new ranking change is included.
   state. Only versioned pepper bytes are cached. Unknown/revoked credentials
   fail with 401, suspended accounts with 403, and infrastructure failures with
   503. An invalid credential never becomes a guest request.
+  Cloud Run IAM rejections are distinguished from Cosift's JSON auth errors;
+  a gateway permission failure does not label the user banned or revoked.
 - Onboarding adds explicitly selected interests to the same followed topics
   used by agents. It does not erase existing agent topics. Editing local interest
   suggestions does not implicitly unfollow topics; use the topic controls.

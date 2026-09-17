@@ -100,7 +100,8 @@ func TestRemoteRefusesRedirectsOversizeAndUnsafeOrigins(t *testing.T) {
 	if err := r.call(context.Background(), "", "", nil, &out); !errors.Is(err, ErrUnavailable) {
 		t.Fatal(err)
 	}
-	for code, want := range map[int]error{401: ErrUnauthorized, 403: ErrBanned, 429: ErrLimited, 500: ErrUnavailable} {
+	body = `{}`
+	for code, want := range map[int]error{401: ErrUnavailable, 403: ErrUnavailable, 429: ErrLimited, 500: ErrUnavailable} {
 		status = code
 		if err := r.call(context.Background(), "", "", nil, &out); !errors.Is(err, want) {
 			t.Fatal(code, err)

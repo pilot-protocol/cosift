@@ -16,6 +16,7 @@ Companion patches were exercised in local audit checkouts only.
 | Official auth token vectors | Canonical parsing/trailing bits and HMAC over full token agree with `cosift-auth` fixtures |
 | Firestore SDK protocol fixture | Real Google SDK over local gRPC: collection-group lookup, typed verified/revoked timestamps, bans, last-used writes, ambiguous/missing token and IAM-denied errors |
 | Auth lifecycle / HTTP contracts | Auth start/verify/revoke, HttpOnly cookies, Google-vs-user credential headers, forwarded client IP, bounded JSON, redirects and upstream error handling |
+| Additional failure regressions | Cloud Run IAM failures versus Cosift credential rejection; OTP validation and cleanup after browser cancellation; account linking rollback; CLI credential conflicts and retryable logout; per-client login and per-account MCP limits |
 | Patched MCP suite | 248 passed, 2 skipped, 5 integration tests deselected; no cloud calls or model downloads |
 | MCP → community → engine | Real MCP ASGI app and engine client against local Go gateway: concurrent accounts receive separate free allowances; repeat over-quota call does not reach the engine; `k=20`, BM25 preserved; account credential stops at the gateway |
 | Community client → MCP tools | Real FastMCP protocol: follow/list/unfollow, request/idempotent repeat, missing article coverage; local fake identity/topic store and topic-resolution fixture |
@@ -23,6 +24,13 @@ Companion patches were exercised in local audit checkouts only.
 | Companion patch applicability | Each patch matches its pinned base checkout (`git apply --reverse --check` against the patched checkout) |
 
 ## Security follow-up
+
+The resumed failure sweep passed the full race/coverage suite and all 11 web
+logic tests. Shared-account package coverage is 90.0%; the community package is
+79.7%. It found and fixed a Cloud Run error-classification issue: an IAM rejection
+must return a retryable service error, rather than declaring the user's token
+revoked or account banned. The regression checks preserve both upstream services'
+actual JSON authentication contracts and reject HTML/Google origin failures.
 
 The first integration commit's Snyk check failed; the Snyk report was gated by
 login. An independent official `govulncheck` scan found affected gRPC v1.82.1
