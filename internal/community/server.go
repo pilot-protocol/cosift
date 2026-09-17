@@ -789,7 +789,10 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		status, reason := s.prevalidate(ctx, j.url)
+		status, reason, approvedContentHash := s.prevalidate(ctx, j.url)
+		if status == "allowed" && approvedContentHash == "" {
+			status, reason = "pending", "Waiting for a content-bound safety decision."
+		}
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
 			delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
@@ -809,7 +812,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				return e
 			}
 		}
-		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact})
+		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact, "approved_content_hash": approvedContentHash})
 		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
@@ -820,7 +823,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		indexed := false
 		permanent := false
 		if sendErr == nil {
-			permanent = res.StatusCode == http.StatusUnprocessableEntity
+			permanent = res.StatusCode == http.StatusUnprocessableEntity || res.StatusCode == http.StatusConflict
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
 			if !ok {
 				log.Printf("community: contribution delivery returned HTTP %d", res.StatusCode)
