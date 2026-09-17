@@ -15,6 +15,8 @@ func TestGuestSharedCooldownAndRestart(t *testing.T) {
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"hits":[]}`) }))
 	expect(t, request(t, s, "GET", "/api/search?q=science", nil, nil), 200)
 	w := request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, nil)
+	expect(t, w, 401)
+	w = request(t, s, "GET", "/api/answer?q=science", nil, nil)
 	expect(t, w, 429)
 	if w.Header().Get("Retry-After") == "" || !strings.Contains(w.Body.String(), "retry_at") {
 		t.Fatal("guest has no retry guidance")
@@ -36,12 +38,13 @@ func TestGuestSharedCooldownAndRestart(t *testing.T) {
 	if _, err := reopened.db.Exec(`UPDATE guest_usage SET expires_at=?`, time.Now().Unix()-1); err != nil {
 		t.Fatal(err)
 	}
-	expect(t, request(t, reopened, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, nil), 202)
+	expect(t, request(t, reopened, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, nil), 401)
+	expect(t, request(t, reopened, "GET", "/api/research?q=science", nil, nil), 200)
 	expect(t, request(t, reopened, "GET", "/api/search?q=science", nil, nil), 429)
 	var count int
 	reopened.db.QueryRow(`SELECT count(*) FROM submissions WHERE user_id IS NULL`).Scan(&count)
-	if count != 1 {
-		t.Fatal("guest contribution missing")
+	if count != 0 {
+		t.Fatal("guest contribution persisted")
 	}
 	expect(t, request(t, reopened, "GET", "/api/saved", nil, nil), 401)
 	cookie := account(t, reopened, "member@example.com")
@@ -77,9 +80,9 @@ func TestGuestFailuresDoNotConsumeAllowance(t *testing.T) {
 	expect(t, request(t, s, "GET", "/api/search?q=", nil, nil), 400)
 	expect(t, request(t, s, "GET", "/api/search?q=science", nil, nil), 502)
 	expect(t, request(t, s, "GET", "/api/search?q=science", nil, nil), 502)
-	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"http://localhost/private"}}, nil), 400)
-	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, nil), 202)
-	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/second"}}, nil), 429)
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"http://localhost/private"}}, nil), 401)
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, nil), 401)
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/second"}}, nil), 401)
 }
 
 func TestTrustedProxyClientIP(t *testing.T) {

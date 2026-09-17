@@ -43,7 +43,8 @@ func TestContributionModerationMustAllowBeforeEnqueue(t *testing.T) {
 				}
 			}))
 			setTestPage(s, tc.html)
-			expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/page"}}, nil), 202)
+			cookie := account(t, s, "moderation@example.com")
+			expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/page"}}, cookie), 202)
 			if err := s.dispatch(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -56,10 +57,11 @@ func TestContributionModerationMustAllowBeforeEnqueue(t *testing.T) {
 	}
 }
 
-func TestKnownAdultOrInstallerURLsRejectedBeforeGuestQuota(t *testing.T) {
+func TestKnownAdultOrInstallerURLsRejectedBeforeQueueing(t *testing.T) {
 	s := testServer(t, nil)
+	cookie := account(t, s, "invalid@example.com")
 	for _, raw := range []string{"https://www.pornhub.com/view", "https://example.xxx/page", "https://example.com/download.exe"} {
-		expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/good", raw}}, nil), 400)
+		expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/good", raw}}, cookie), 400)
 	}
 	var count int
 	s.db.QueryRow(`SELECT count(*) FROM guest_usage`).Scan(&count)

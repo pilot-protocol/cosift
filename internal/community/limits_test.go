@@ -39,7 +39,7 @@ func TestModeCapsShareAliasesAndCannotSpendPastCap(t *testing.T) {
 	}
 	var balance int
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != 97 {
+	if balance != monthlyFreeCredits+94 {
 		t.Fatalf("charged rejected request: %d", balance)
 	}
 	// A new process must not grant a new expensive Research allowance.
@@ -121,7 +121,6 @@ func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
 	for range 60 {
 		expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
 	}
-	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 429)
 	if _, err := s.db.Exec(`INSERT INTO credit_ledger VALUES('seed-default',?,100,'test',0)`, u.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -135,15 +134,15 @@ func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
 	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 200)
 	var balance int
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != 98 {
-		t.Fatalf("restart reset free allowance: balance=%d want98", balance)
+	if balance != monthlyFreeCredits+98 {
+		t.Fatalf("restart reset free allowance: balance=%d want1098", balance)
 	}
 	for range 58 {
 		expect(t, request(t, reopened, "GET", "/api/search?q=test", nil, cookie), 200)
 	}
 	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 429)
 	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
-	if balance != 40 {
+	if balance != monthlyFreeCredits+40 {
 		t.Fatalf("wrong charge total: %d", balance)
 	}
 }
@@ -162,5 +161,9 @@ func TestFailedRetrievalRefundsFreeAllowance(t *testing.T) {
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 502)
 	fail = false
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
-	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 429)
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
+	var debits int
+	if err := s.db.QueryRow(`SELECT count(*) FROM credit_ledger WHERE reason='extra_request'`).Scan(&debits); err != nil || debits != 1 {
+		t.Fatalf("failed request was charged: %d %v", debits, err)
+	}
 }

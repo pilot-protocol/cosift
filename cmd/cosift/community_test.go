@@ -18,7 +18,7 @@ import (
 
 func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 	called := 0
-	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact) (crawler.ContributionReceipt, error) {
+	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact, approvedHash string) (crawler.ContributionReceipt, error) {
 		called++
 		if raw != "https://example.com/guide" {
 			t.Errorf("bad contribution %s", raw)
@@ -26,7 +26,7 @@ func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 		return crawler.ContributionReceipt{Indexed: true, Novel: true}, nil
 	}}
 	call := func(token, url string) int {
-		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`"}`))
+		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`","approved_content_hash":"`+strings.Repeat("a", 64)+`"}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		s.handleCommunityEnqueue(w, r)
@@ -109,7 +109,7 @@ func TestCommunityContributeCLI(t *testing.T) {
 	}
 }
 
-func TestCommunityGuestCLI(t *testing.T) {
+func TestCommunityGuestContributionCLIRejected(t *testing.T) {
 	t.Setenv("COSIFT_EMAIL", "")
 	t.Setenv("COSIFT_PASSWORD", "")
 	called := 0
@@ -122,10 +122,10 @@ func TestCommunityGuestCLI(t *testing.T) {
 		w.Write([]byte(`{"accepted":1}`))
 	}))
 	defer backend.Close()
-	if err := runContribute(context.Background(), []string{"-server", backend.URL, "-guest", "https://example.com/guide"}); err != nil {
-		t.Fatal(err)
+	if err := runContribute(context.Background(), []string{"-server", backend.URL, "-guest", "https://example.com/guide"}); err == nil {
+		t.Fatal("guest contribution was accepted")
 	}
-	if called != 1 {
+	if called != 0 {
 		t.Fatalf("requests %d", called)
 	}
 }

@@ -66,7 +66,7 @@ func TestContributionDoesNotUseBulkRemoteFetcher(t *testing.T) {
 	}
 	defer db.Close()
 	c := NewWithBackend(config.Crawler{RemoteFetcherURL: remote.URL, AutoSitemap: true, FilterAdult: false}, db, index.NewBM25(db))
-	_, err = c.FetchContribution(context.Background(), "http://127.0.0.1/private", nil)
+	_, err = c.FetchContribution(context.Background(), "http://127.0.0.1/private", nil, ApprovedContentHash("Guide", "Body"))
 	if err == nil {
 		t.Fatal("private URL accepted")
 	}

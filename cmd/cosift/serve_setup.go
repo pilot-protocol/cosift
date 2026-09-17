@@ -1268,7 +1268,7 @@ type pebbleHTTP struct {
 	crawlSeed           func(url string) error
 	crawlPublicOnly     atomic.Bool
 	crawlCommunityReady atomic.Bool
-	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact) (crawler.ContributionReceipt, error)
+	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error)
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)

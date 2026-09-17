@@ -19,6 +19,7 @@ import (
 	"net/mail"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ var assets embed.FS
 
 const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
+const dailyContributionLimit = 1000
 
 type Config struct {
 	Shared              sharedaccount.Provider
@@ -48,6 +50,8 @@ type Config struct {
 	ResearchPer10Min    int
 	StripeSecretKey     string
 	StripeWebhookSecret string
+	AllowTestPayments   bool // Explicit opt-in for an isolated QA ledger only.
+	GAMeasurementID     string
 }
 
 type bucket struct {
@@ -70,6 +74,9 @@ type Server struct {
 }
 
 func Open(cfg Config) (*Server, error) {
+	if cfg.GAMeasurementID != "" && !regexp.MustCompile(`^G-[A-Z0-9]+$`).MatchString(cfg.GAMeasurementID) {
+		return nil, fmt.Errorf("COSIFT_GA_MEASUREMENT_ID must match G-[A-Z0-9]+")
+	}
 	if err := cfg.defaultLimits(); err != nil {
 		return nil, err
 	}
@@ -152,13 +159,16 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
+	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
+	})
 	mux.HandleFunc("POST /api/payments/checkout", s.auth(s.checkout))
 	mux.HandleFunc("POST /api/payments/webhook", s.stripeWebhook)
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))
 	mux.HandleFunc("DELETE /api/saved/{id}", s.auth(s.unsave))
 	mux.HandleFunc("GET /api/submissions", s.auth(s.submissions))
-	mux.HandleFunc("POST /api/submissions", s.optionalAuth(s.submit))
+	mux.HandleFunc("POST /api/submissions", s.auth(s.submit))
 	s.handler = s.protect(mux)
 	return s, nil
 }
@@ -183,7 +193,12 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		csp := "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		if s.cfg.GAMeasurementID != "" {
+			csp = strings.Replace(csp, "script-src 'self'", "script-src 'self' https://www.googletagmanager.com/gtag/js", 1)
+			csp += "; connect-src 'self' https://www.google-analytics.com/g/collect https://region1.google-analytics.com/g/collect"
+		}
+		w.Header().Set("Content-Security-Policy", csp)
 		// Stripe authenticates the exact webhook body with its signature.
 		if r.Method != "GET" && r.Method != "HEAD" && !(r.Method == "POST" && r.URL.Path == "/api/payments/webhook") {
 			// The custom header prevents cross-site form posts, including login
@@ -356,6 +371,7 @@ func (s *Server) auth(next userHandler) http.HandlerFunc {
 		}
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT u.id,u.email,u.name,u.interests,u.onboarded FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.hash=? AND s.expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
+			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
 			problem(w, 401, "session expired; sign in again")
 			return
 		}
@@ -476,7 +492,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		}
 		if !free {
 			var ok bool
-			finish, ok = s.reserveCredit(w, r, u)
+			finish, ok = s.reserveCredit(w, r, u, mode)
 			if !ok {
 				return
 			}
@@ -619,6 +635,10 @@ func (s *Server) submissions(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, out)
 }
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
+	if u.ID == "" {
+		problem(w, http.StatusUnauthorized, "contributions require login")
+		return
+	}
 	if !s.allow("submit:"+u.ID+":"+s.clientIP(r), 20, time.Minute) {
 		problem(w, 429, "too many submissions; try again in a minute")
 		return
@@ -648,10 +668,6 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		err = decode(r, &in)
 		values = in.URLs
 		if len(in.Artifacts) > 0 {
-			if u.ID == "" {
-				problem(w, 401, "local indexing contributions require login")
-				return
-			}
 			if len(values) > 0 {
 				problem(w, 400, "use URLs or local artifacts")
 				return
@@ -681,14 +697,6 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 400, err.Error())
 		return
 	}
-	completed := false
-	if u.ID == "" {
-		finish, ok := s.reserveGuest(w, r)
-		if !ok {
-			return
-		}
-		defer func() { finish(completed) }()
-	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		problem(w, 500, "could not save contribution")
@@ -703,13 +711,9 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	accepted := 0
 	duplicates := 0
-	var owner any
-	if u.ID != "" {
-		owner = u.ID
-	}
 	for _, v := range values {
 		id := randomID()
-		res, e := tx.ExecContext(r.Context(), `INSERT INTO submissions(id,user_id,url,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,url) DO NOTHING`, id, owner, v, now)
+		res, e := tx.ExecContext(r.Context(), `INSERT INTO submissions(id,user_id,url,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,url) DO NOTHING`, id, u.ID, v, now)
 		if e != nil {
 			problem(w, 500, "could not save contribution")
 			return
@@ -728,15 +732,21 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 			}
 		}
 	}
-	if count+accepted > 500 {
-		problem(w, 429, "daily limit is 500 new webpages; try again tomorrow")
+	if count+accepted > dailyContributionLimit {
+		var nextSlot int64
+		if err := tx.QueryRowContext(r.Context(), `SELECT created_at+86400 FROM submissions WHERE user_id=? AND created_at>? ORDER BY created_at,id LIMIT 1 OFFSET ?`, u.ID, now-86400, count+accepted-dailyContributionLimit-1).Scan(&nextSlot); err != nil {
+			problem(w, 500, "could not check contribution limit")
+			return
+		}
+		retry := max(int64(1), nextSlot-now)
+		w.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
+		problem(w, 429, fmt.Sprintf("daily limit is %d new webpages; %d remaining in the current 24-hour window. Retry this batch in %d seconds.", dailyContributionLimit, max(0, dailyContributionLimit-count), retry))
 		return
 	}
 	if tx.Commit() != nil {
 		problem(w, 500, "could not save contribution")
 		return
 	}
-	completed = true
 	respond(w, 202, map[string]any{"accepted": accepted, "duplicates": duplicates, "status": "pending"})
 }
 
@@ -788,7 +798,10 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		status, reason := s.prevalidate(ctx, j.url)
+		status, reason, approvedContentHash := s.prevalidate(ctx, j.url)
+		if status == "allowed" && approvedContentHash == "" {
+			status, reason = "pending", "Waiting for a content-bound safety decision."
+		}
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
 			delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
@@ -808,7 +821,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				return e
 			}
 		}
-		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact})
+		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact, "approved_content_hash": approvedContentHash})
 		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
@@ -819,7 +832,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		indexed := false
 		permanent := false
 		if sendErr == nil {
-			permanent = res.StatusCode == http.StatusUnprocessableEntity
+			permanent = res.StatusCode == http.StatusUnprocessableEntity || res.StatusCode == http.StatusConflict
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
 			if !ok {
 				log.Printf("community: contribution delivery returned HTTP %d", res.StatusCode)

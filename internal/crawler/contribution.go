@@ -18,10 +18,27 @@ type ContributionReceipt struct {
 	ContentHash string `json:"content_hash"`
 }
 
+// ApprovedContentHash binds a moderation decision to the exact parsed document.
+func ApprovedContentHash(title, text string) string {
+	sum := sha256.Sum256([]byte(title + "\x00" + text))
+	return hex.EncodeToString(sum[:])
+}
+
+func ValidApprovedContentHash(value string) bool {
+	raw, err := hex.DecodeString(value)
+	return err == nil && len(raw) == sha256.Size && hex.EncodeToString(raw) == value
+}
+
+type approvedContentKey struct{}
+
 // ContributionURL returns the document key used when indexing a contribution.
 func ContributionURL(raw string) (string, error) { return canonicalize(raw) }
 
-func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *LocalArtifact) (ContributionReceipt, error) {
+func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *LocalArtifact, approvedHash string) (ContributionReceipt, error) {
+	if !ValidApprovedContentHash(approvedHash) {
+		return ContributionReceipt{}, fmt.Errorf("%w: approved content hash is required", ErrContributionRejected)
+	}
+	ctx = context.WithValue(ctx, approvedContentKey{}, approvedHash)
 	canon, err := canonicalize(raw)
 	if err != nil {
 		return ContributionReceipt{}, err
@@ -68,6 +85,9 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 		if err != nil {
 			return ContributionReceipt{}, err
 		}
+		if ApprovedContentHash(page.Title, page.Text) != approvedHash {
+			return ContributionReceipt{}, fmt.Errorf("%w: webpage changed after moderation", ErrContributionRejected)
+		}
 		verified, err := VerifyArtifact(ctx, artifact, page.Title, page.Text, c.embedder)
 		if err != nil {
 			return ContributionReceipt{}, err
@@ -81,6 +101,9 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	doc, err := c.store.GetDocByURL(ctx, canon)
 	if err != nil || doc == nil {
 		return ContributionReceipt{}, fmt.Errorf("contribution did not produce an indexable document")
+	}
+	if ApprovedContentHash(doc.Title, doc.Text) != approvedHash {
+		return ContributionReceipt{}, fmt.Errorf("%w: stored webpage differs from moderated content", ErrContributionRejected)
 	}
 	sum := sha256.Sum256([]byte(doc.Text))
 	return ContributionReceipt{Indexed: true, Novel: prior == nil, ContentHash: hex.EncodeToString(sum[:])}, nil

@@ -311,17 +311,31 @@ func TestContributionQuotaIsAtomic(t *testing.T) {
 	cookie := account(t, s, "quota@example.com")
 	var id string
 	s.db.QueryRow(`SELECT id FROM users`).Scan(&id)
-	_, err := s.db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<500) INSERT INTO submissions(id,user_id,url,created_at) SELECT 'id'||i,?,'https://example.com/'||i,? FROM n`, id, time.Now().Unix())
+	_, err := s.db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<999) INSERT INTO submissions(id,user_id,url,created_at) SELECT 'id'||i,?,'https://example.com/'||i,? FROM n`, id, time.Now().Unix())
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/new"}}, cookie), 429)
+	denied := request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/new1", "https://example.com/new2"}}, cookie)
+	expect(t, denied, 429)
+	if denied.Header().Get("Retry-After") == "" || !strings.Contains(denied.Body.String(), "1000 new webpages; 1 remaining") {
+		t.Fatal("missing accurate limit/retry guidance", denied.Body)
+	}
 	var count int
 	s.db.QueryRow(`SELECT count(*) FROM submissions`).Scan(&count)
-	if count != 500 {
-		t.Fatalf("over-quota write persisted: %d", count)
+	if count != 999 {
+		t.Fatalf("partial over-quota batch persisted: %d", count)
 	}
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/new1"}}, cookie), 202)
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/new2"}}, cookie), 429)
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/1"}}, cookie), 202)
+	s.db.QueryRow(`SELECT count(*) FROM submissions`).Scan(&count)
+	if count != 1000 {
+		t.Fatalf("duplicate/denied request consumed quota: %d", count)
+	}
+	if _, err := s.db.Exec(`UPDATE submissions SET created_at=?`, time.Now().Add(-24*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/new2"}}, cookie), 202)
 }
 
 func TestNormalizeURL(t *testing.T) {
@@ -387,6 +401,48 @@ func TestMalformedDeliveryReceiptStaysRetryable(t *testing.T) {
 			s.db.QueryRow(`SELECT id,status FROM submissions`).Scan(&id, &status)
 			if status != "pending" || id != submissionID {
 				t.Fatalf("lost durable job: id=%s delivered=%s status=%s", id, submissionID, status)
+			}
+		})
+	}
+}
+
+func TestContributionDailyCapIncludesCSVAndArtifacts(t *testing.T) {
+	for _, kind := range []string{"csv", "artifact"} {
+		t.Run(kind, func(t *testing.T) {
+			s := testServer(t, nil)
+			cookie := account(t, s, "format-quota@example.com")
+			var id string
+			s.db.QueryRow(`SELECT id FROM users`).Scan(&id)
+			if _, err := s.db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000) INSERT INTO submissions(id,user_id,url,created_at) SELECT 'id'||i,?,'https://example.com/'||i,? FROM n`, id, time.Now().Unix()); err != nil {
+				t.Fatal(err)
+			}
+			var response *httptest.ResponseRecorder
+			if kind == "csv" {
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				file, err := writer.CreateFormFile("file", "urls.csv")
+				if err != nil {
+					t.Fatal(err)
+				}
+				io.WriteString(file, "url\nhttps://example.com/over-limit\n")
+				writer.Close()
+				r := httptest.NewRequest("POST", "/api/submissions", &body)
+				r.Header.Set("Content-Type", writer.FormDataContentType())
+				r.Header.Set("X-Cosift-Client", "community")
+				r.AddCookie(cookie)
+				response = httptest.NewRecorder()
+				s.ServeHTTP(response, r)
+			} else {
+				text := strings.Repeat("Useful scientific documentation. ", 4)
+				body := map[string]any{"artifacts": []any{map[string]any{"url": "https://example.com/over-limit", "title": "Guide", "text": text, "model": "test", "chunks": []any{map[string]any{"text": text, "embedding": []float32{1, 2}}}}}}
+				response = request(t, s, "POST", "/api/submissions", body, cookie)
+			}
+			expect(t, response, 429)
+			var submissions, artifacts int
+			s.db.QueryRow(`SELECT count(*) FROM submissions`).Scan(&submissions)
+			s.db.QueryRow(`SELECT count(*) FROM submission_artifacts`).Scan(&artifacts)
+			if submissions != dailyContributionLimit || artifacts != 0 {
+				t.Fatalf("over-quota payload persisted: %d submissions, %d artifacts", submissions, artifacts)
 			}
 		})
 	}

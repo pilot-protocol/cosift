@@ -32,6 +32,7 @@ function resetAccount(nextUser = null) {
   $("saved-count").textContent = "0";
   $("credit-balance").textContent = "";
   $("credit-balance").hidden = true;
+  $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
   $("buy-credits").disabled = false;
   $("payment-info").hidden = true;
@@ -68,6 +69,9 @@ function notify(message, error = false) {
 }
 async function api(path, method = "GET", body, controller = new AbortController()) {
   const generation = accountGeneration;
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); },
+    path.startsWith("research") ? 180000 : path.startsWith("answer") ? 90000 : 30000);
   pendingRequests.add(controller);
   try {
     const headers = { "X-Cosift-Client": "community" };
@@ -86,12 +90,14 @@ async function api(path, method = "GET", body, controller = new AbortController(
     try {
       data = await response.json();
     } catch {
-      throw new Error("The server is unavailable. Please try again.");
+      const error = new Error("The server is unavailable. Please try again.");
+      error.status = response.status;
+      throw error;
     }
     if (generation !== accountGeneration || controller.signal.aborted)
       throw new DOMException("", "AbortError");
     if (!response.ok) {
-      if (data.retry_at && !data.mode && !user) {
+      if (data?.retry_at && !data.mode && !user) {
         guestUntil = data.retry_at;
         renderGuestAllowance();
       }
@@ -99,21 +105,29 @@ async function api(path, method = "GET", body, controller = new AbortController(
         resetAccount();
         showScreen("auth");
       }
-      throw new Error(data.error || "Something went wrong. Please try again.");
+      const error = new Error(data?.error || "Something went wrong. Please try again.");
+      error.status = response.status;
+      error.retryAfterSeconds = Number(response.headers?.get("Retry-After")) || 0;
+      throw error;
     }
+    if (data === null || typeof data !== "object") throw new Error("Cosift returned an unexpected response. Please try again.");
     return data;
   } catch (error) {
     // A superseded account/request must not render data or errors in the next view.
-    if (generation !== accountGeneration || controller.signal.aborted)
+    if (generation !== accountGeneration)
       throw new DOMException("", "AbortError");
+    if (timedOut) throw new Error("The request timed out. Please try again; your input is still here.");
+    if (controller.signal.aborted) throw new DOMException("", "AbortError");
+    if (error instanceof TypeError) throw new Error("Could not connect to Cosift. Check your connection and try again.");
     throw error;
   } finally {
+    clearTimeout(timeout);
     pendingRequests.delete(controller);
   }
 }
 function showScreen(id) {
   $("notice").hidden = true;
-  for (const name of ["auth", "onboarding", "app"])
+  for (const name of ["boot", "auth", "onboarding", "app"])
     $(name).hidden = name !== id;
 }
 function el(tag, text, className) {
@@ -167,11 +181,11 @@ $("auth-toggle").onclick = () => {
     ? "new-password"
     : "current-password";
   $("auth-title").textContent = signingUp
-    ? "Make yourself at home."
+    ? "Create your account"
     : "Welcome back.";
   $("auth-description").textContent = signingUp
     ? "One account for your searches and contributions."
-    : "Pick up where your curiosity left off.";
+    : "Sign in to access your saved requests and contributions.";
   $("auth-submit").textContent = signingUp ? "Create account ↗" : "Sign in ↗";
   $("auth-switch-copy").textContent = signingUp
     ? "Already have an account?"
@@ -262,19 +276,32 @@ $("skip-interests").onclick = async () => {
 };
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
+  $("monthly-credits").hidden = true;
   $("buy-credits").hidden = true;
   $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
     $("credit-balance").textContent =
-      `${c.balance} credits · 1 per extra request`;
-    if (c.payments_enabled) {
-      const pack = c.credit_pack;
+      `${Number(c.balance).toLocaleString()} credits available`;
+    $("billing-balance").textContent = Number(c.balance).toLocaleString();
+    $("billing-free").textContent = Number(c.monthly_free_credits || 1000).toLocaleString();
+    $("billing-mode-status").textContent = c.payments_enabled
+      ? c.payment_mode === "test" ? "Test checkout · no real charges. Test credits are for this test environment only." : "Secure checkout with Stripe. One-time payment, no subscription."
+      : "Credit purchases are coming soon. Your free monthly credits are available now.";
+    if (c.monthly) {
+      $("monthly-credits").hidden = false;
+      $("credit-month").textContent = `This month · ${c.monthly.month} (UTC)`;
+      for (const name of ["free", "earned", "purchased", "spent"]) $("month-" + name).textContent = Number(c.monthly[name] || 0).toLocaleString();
+    }
+    const pack = c.credit_pack;
+    if (pack) {
       const price = new Intl.NumberFormat("en-US", {style: "currency", currency: pack.currency}).format(pack.amount_cents / 100);
+      $("billing-pack-price").textContent = price;
+      $("billing-pack-credits").textContent = Number(pack.credits).toLocaleString();
       $("buy-credits").textContent = `Buy ${pack.credits.toLocaleString()} credits · ${price}`;
-      $("buy-credits").hidden = false;
+      $("buy-credits").hidden = !c.payments_enabled;
       $("payment-info").hidden = false;
-      $("payment-info").textContent = `$${pack.usd_per_1000_requests} per 1,000 extra requests. One-time payment. Existing rate caps apply.`;
+      $("payment-info").textContent = "Extra requests: Search 1 credit · Answer 2 credits · Research 3 credits. Existing rate caps apply.";
     }
   }
 }
@@ -290,6 +317,7 @@ $("buy-credits").onclick = async () => {
       throw new Error("Invalid checkout destination.");
     location.assign(destination.href);
   } catch (e) {
+    if (e.status === 409) checkoutKey = undefined;
     notify(e.message, true);
     button.disabled = false;
   }
@@ -298,6 +326,7 @@ async function showPaymentReturn() {
   const result = new URLSearchParams(location.search).get("payment");
   if (!result) return;
   history.replaceState(null, "", location.pathname);
+  if (user) await view("billing");
   if (result === "cancelled") { notify("Checkout cancelled. No credits were added."); return; }
   if (result !== "success") return;
   notify("Checkout returned. Credits appear after Stripe confirms payment; this can take a moment.");
@@ -361,8 +390,10 @@ function suggestions() {
   }
 }
 async function view(name) {
+  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
+  if (name === "billing" && !user) { showScreen("auth"); notify("Sign in to manage your credits."); return; }
   if (name === "shared" && (!sharedAuth || !user)) return;
-  for (const value of ["search", "saved", "contribute", "shared"])
+  for (const value of ["search", "saved", "contribute", "shared", "connect", "billing"])
     $("view-" + value).hidden = value !== name;
   document.querySelectorAll("nav [data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
@@ -384,6 +415,7 @@ async function view(name) {
       }
     }
     if (name === "contribute") await refreshContributions();
+    if (name === "billing") await refreshCredits();
   } catch (e) {
     notify(e.message, true);
   }
@@ -393,6 +425,7 @@ document
   .forEach((button) => (button.onclick = () => view(button.dataset.view)));
 $("edit-interests").onclick = () => (user ? onboarding() : showScreen("auth"));
 $("guest-signup").onclick = () => showScreen("auth");
+$("entry-connect").onclick = async () => { try { await enter(); await view("connect"); } catch (e) { notify(e.message, true); } };
 $("continue-guest").onclick = () => {
   if (authBusy) return;
   return enter().catch((e) => notify(e.message, true));
@@ -412,7 +445,7 @@ function renderGuestAllowance() {
       "m " +
       String(seconds % 60).padStart(2, "0") +
       "s."
-    : "One request available across Search, Research, Answer, and contributions.";
+    : "One request available across Search, Research, and Answer. Sign in to contribute.";
 }
 setInterval(renderGuestAllowance, 1000);
 $("logout").onclick = async () => {
@@ -617,6 +650,7 @@ async function refreshSaved() {
 }
 $("contribution-form").onsubmit = (event) => {
   event.preventDefault();
+  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
   busy(event.target, async () => {
     const text = $("urls").value.trim(),
       file = $("csv").files[0];
@@ -661,7 +695,7 @@ async function refreshContributions() {
     $("contribution-list").replaceChildren(
       el(
         "div",
-        "Sign in to keep a personal contribution history. Guest submissions are saved for crawling without an account.",
+        "Sign in to contribute public webpages and track your contributions.",
         "empty-state",
       ),
     );
@@ -718,10 +752,17 @@ async function refreshLimits() {
     `${modeLabels[mode]} ${limit.requests}/${duration(limit.window_seconds)}`).join(" · ");
   $("guest-policy").textContent = `Guests: one shared request every ${duration(interval)}. ${describe(requestPolicy.guest)}.`;
   $("request-limits").textContent = user
-    ? `${describe(requestPolicy.member)}. ${requestPolicy.member_free_requests_per_minute} shared free requests/min; extra requests cost 1 credit within these caps.`
+    ? `${requestPolicy.member_free_requests_per_minute} free requests/min. Extra: Search 1 credit · Answer 2 · Research 3. ${describe(requestPolicy.member)}.`
     : describe(requestPolicy.guest);
 }
-(async () => {
+let startupPending = false;
+async function initialize() {
+  if (startupPending) return;
+  startupPending = true;
+  showScreen("boot");
+  $("boot-message").textContent = "Loading your workspace…";
+  $("boot-spinner").hidden = false;
+  $("boot-retry").hidden = true;
   const generation = accountGeneration;
   try {
     const authConfig = await api("auth/config");
@@ -739,23 +780,25 @@ async function refreshLimits() {
       $("auth-submit").textContent = "Email me a code →";
       $("interests-explanation").textContent = "Save interests to follow these topics across Cosift and your connected agents. Existing agent topics stay followed; remove them in Followed topics.";
     }
-    user = await api("me");
-  } catch (e) {
-    if (!authConfigured) { showScreen("auth"); notify("Unable to load login settings. Reload to try again.",true); return; }
-    if (generation !== accountGeneration) return;
-    user = null;
-  }
-  try {
+    try { user = await api("me"); }
+    catch (e) { if (e.status !== 401) throw e; user = null; }
     await refreshLimits();
     if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
     if (user) await enter();
     else showScreen("auth");
-    await showPaymentReturn();
+    showPaymentReturn().catch(e => notify(e.message, true));
   } catch (e) {
-    showScreen("auth");
-    notify(e.message, true);
+    if (generation !== accountGeneration || e.name === "AbortError") return;
+    if ($("boot").hidden) { notify(e.message, true); return; }
+    $("boot-message").textContent = "We couldn’t load your workspace. Your session has not been cleared. Please try again.";
+    $("boot-spinner").hidden = true;
+    $("boot-retry").hidden = false;
+  } finally {
+    startupPending = false;
   }
-})();
+}
+$("boot-retry").onclick = initialize;
+initialize();
 
 function renderSynthesis(data, mode) {
   if (Array.isArray(data.plan) && data.plan.length) {
@@ -923,3 +966,26 @@ $("auth-restart").onclick = () => {
   $("auth-restart").hidden = true;
   $("auth-submit").textContent = "Email me a code →";
 };
+
+// The application sends only sanitized pageviews, with no search/account payload.
+// Disable Enhanced Measurement in the GA stream for a pageview-only setup.
+async function loadAnalytics() {
+  if (typeof window === "undefined") return;
+  try {
+    const response = await fetch("/api/analytics", {credentials: "same-origin"});
+    if (!response.ok) return;
+    const config = await response.json();
+    if (!/^G-[A-Z0-9]+$/.test(config.measurement_id || "")) return;
+    window.dataLayer = window.dataLayer || [];
+    const gtag = function () { window.dataLayer.push(arguments); };
+    window.gtag = gtag;
+    gtag("js", new Date());
+    gtag("config", config.measurement_id, {send_page_view: false, allow_google_signals: false, allow_ad_personalization_signals: false, page_location: location.origin + location.pathname, page_referrer: ""});
+    gtag("event", "page_view", {page_location: location.origin + location.pathname, page_title: "Cosift", page_referrer: ""});
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "https://www.googletagmanager.com/gtag/js?id=" + config.measurement_id;
+    document.head.append(script);
+  } catch (_) { /* Analytics failure must not block the app. */ }
+}
+loadAnalytics();

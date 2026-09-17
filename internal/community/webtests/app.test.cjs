@@ -131,3 +131,69 @@ test('email-code login waits for verification and prevents switching during an a
  assert.equal(form.elements.email.readOnly,false);
  assert.equal(a.get('code-field').hidden,true);
 });
+test('guests are sent to login before viewing or submitting contributions', async () => {
+ const a = await app(); a.run('user=null');
+ await a.run('view("contribute")');
+ assert.equal(a.get('auth').hidden,false);
+ a.get('contribution-form').onsubmit({preventDefault(){},target:a.get('contribution-form')});
+ assert.equal(a.pending.some(p=>p.url==='/api/submissions'),false);
+ assert.match(a.get('notice').textContent,/Sign in/);
+});
+test('monthly credits render actual totals and clear on account reset', async () => {
+ const a=await app(); const refresh=a.run('refreshCredits()'); await tick();
+ a.respond('credits',{balance:42,monthly:{month:'2026-09',earned:10,purchased:50,spent:18}}); await refresh;
+ assert.equal(a.get('monthly-credits').hidden,false);
+ assert.equal(a.get('month-earned').textContent,'10');
+ assert.equal(a.get('month-spent').textContent,'18');
+ assert.match(a.get('credit-month').textContent,/2026-09/);
+ a.run('resetAccount()'); assert.equal(a.get('monthly-credits').hidden,true);
+});
+test('analytics emits a pageview without query strings or account fields', async () => {
+ const a=await app(); a.context.window={}; a.context.document.head=node();
+ Object.assign(a.context.location,{origin:'https://cosift.example',pathname:'/login',search:'?email=private@example.com&token=secret'});
+ const loading=a.run('loadAnalytics()'); await tick();
+ a.respond('analytics',{measurement_id:'G-XVRJ3595D1'}); await loading;
+ const events=JSON.stringify(a.context.window.dataLayer);
+ assert.match(events,/page_view/); assert.match(events,/https:\/\/cosift.example\/login/);
+ assert.doesNotMatch(events,/private@example|secret|Alice|user_id/);
+ assert.equal(a.context.document.head.children[0].src,'https://www.googletagmanager.com/gtag/js?id=G-XVRJ3595D1');
+});
+test('temporary session failure keeps login hidden and offers a working startup retry', async () => {
+ const a=await app(false); a.run('user=null');
+ assert.equal(a.get('boot').hidden,false);
+ assert.equal(a.get('auth').hidden,true);
+ a.respond('me',{error:'Account provider unavailable'},503); await tick();
+ assert.equal(a.get('boot').hidden,false);
+ assert.equal(a.get('auth').hidden,true);
+ assert.equal(a.get('boot-retry').hidden,false);
+ assert.match(a.get('boot-message').textContent,/try again/i);
+ const retry=a.get('boot-retry').onclick(); await tick();
+ a.respond('auth/config',{shared:true}); await tick();
+ a.respond('me',{},401); await tick();
+ a.respond('limits',policy); await retry;
+ assert.equal(a.get('boot').hidden,true);
+ assert.equal(a.get('auth').hidden,false);
+});
+test('a failed contribution keeps its draft and reenables submission', async () => {
+ const a=await app(); const form=a.get('contribution-form');
+ a.get('urls').value='https://example.org/useful-article';
+ form.onsubmit({preventDefault(){},target:form}); await tick();
+ a.respond('submissions',{error:'Daily contribution limit reached. Retry in an hour.'},429); await tick();
+ assert.equal(a.get('urls').value,'https://example.org/useful-article');
+ assert.equal(form.querySelector().disabled,false);
+ assert.match(a.get('notice').textContent,/Daily contribution limit/);
+});
+test('billing shows weighted costs and live availability without enabling unconfigured checkout', async () => {
+ const a=await app(); const refresh=a.run('refreshCredits()'); await tick();
+ a.respond('credits',{balance:1000,monthly_free_credits:1000,payments_enabled:false,payment_mode:'unavailable',credit_pack:{amount_cents:500,currency:'usd',credits:50000}}); await refresh;
+ assert.equal(a.get('billing-balance').textContent,'1,000');
+ assert.equal(a.get('billing-pack-price').textContent,'$5.00');
+ assert.equal(a.get('buy-credits').hidden,true);
+ assert.match(a.get('payment-info').textContent,/Search 1 credit.*Answer 2 credits.*Research 3 credits/);
+});
+test('expired checkout can be retried with a new idempotency key', async () => {
+ const a=await app(); const checkout=a.get('buy-credits').onclick(); await tick();
+ a.respond('payments/checkout',{error:'Checkout expired'},409); await checkout;
+ assert.equal(a.run('checkoutKey'),undefined);
+ assert.equal(a.get('buy-credits').disabled,false);
+});

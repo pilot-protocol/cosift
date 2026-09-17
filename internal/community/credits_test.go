@@ -35,17 +35,17 @@ func TestCreditsRewardOnceSpendAndRefund(t *testing.T) {
 		json.Unmarshal(request(t, s, "GET", "/api/credits", nil, cookie).Body.Bytes(), &v)
 		return v.Balance
 	}
-	if balance() != 10 {
+	if balance() != monthlyFreeCredits+10 {
 		t.Fatal("duplicate reward")
 	}
 	s.db.Exec(`INSERT INTO retrieval_usage VALUES(?,'free',?,?)`, "member:"+u.ID, s.cfg.MemberFreeRPM, time.Now().Add(time.Minute).Unix())
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
-	if balance() != 9 {
+	if balance() != monthlyFreeCredits+9 {
 		t.Fatal("extra request not charged")
 	}
 	fail = true
 	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 502)
-	if balance() != 9 {
+	if balance() != monthlyFreeCredits+9 {
 		t.Fatal("failed request not refunded")
 	}
 	expect(t, request(t, s, "GET", "/api/credits", nil, nil), 401)
@@ -56,14 +56,17 @@ func TestCreditConcurrentSpendingCannotOverdraw(t *testing.T) {
 	cookie := account(t, s, "atomic@example.com")
 	var u User
 	json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &u)
-	s.db.Exec(`INSERT INTO credit_ledger VALUES('seed',?,1,'test',0)`, u.ID)
+	if err := s.grantMonthlyCredits(context.Background(), u.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	s.db.Exec(`INSERT INTO credit_ledger VALUES('spent-before-race',?,?,'test',0)`, u.ID, 1-monthlyFreeCredits)
 	var wins atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 12; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			finish, ok := s.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), u)
+			finish, ok := s.reserveCredit(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), u, "search")
 			if ok {
 				wins.Add(1)
 				finish(true)

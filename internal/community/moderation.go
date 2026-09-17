@@ -61,56 +61,56 @@ func newModerationClient() *http.Client {
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
-func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason string) {
+func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, approvedContentHash string) {
 	if _, err := NormalizeURL(raw); err != nil {
-		return "rejected", "URL is not an eligible public webpage."
+		return "rejected", "URL is not an eligible public webpage.", ""
 	}
 	allowed, delay, err := s.moderationRobots.Allowed(ctx, raw)
 	if err != nil {
-		return "pending", "Waiting to check the webpage."
+		return "pending", "Waiting to check the webpage.", ""
 	}
 	if !allowed {
-		return "unverified", "The website does not permit automated page checks."
+		return "unverified", "The website does not permit automated page checks.", ""
 	}
 	if delay > 0 {
 		if delay > 15*time.Second {
-			return "unverified", "The website requires a longer crawl delay than validation supports."
+			return "unverified", "The website requires a longer crawl delay than validation supports.", ""
 		}
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return "pending", "Validation interrupted."
+			return "pending", "Validation interrupted.", ""
 		case <-timer.C:
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
-		return "unverified", "The webpage could not be checked."
+		return "unverified", "The webpage could not be checked.", ""
 	}
 	req.Header.Set("User-Agent", "Cosift-Community/1.0")
-	req.Header.Set("Accept", "text/html, application/xhtml+xml, text/plain")
+	req.Header.Set("Accept", "text/html, application/xhtml+xml")
 	res, err := s.pageClient.Do(req)
 	if err != nil {
-		return "pending", "The webpage could not be reached for validation."
+		return "pending", "The webpage could not be reached for validation.", ""
 	}
 	defer res.Body.Close()
 	if res.StatusCode == 429 || res.StatusCode >= 500 {
-		return "pending", "The website is temporarily unavailable for validation."
+		return "pending", "The website is temporarily unavailable for validation.", ""
 	}
 	if res.StatusCode != 200 {
-		return "unverified", "The webpage is unavailable or requires a login."
+		return "unverified", "The webpage is unavailable or requires a login.", ""
 	}
 	finalURL := res.Request.URL.String()
 	if _, err := NormalizeURL(finalURL); err != nil {
-		return "rejected", "The destination URL is not eligible."
+		return "rejected", "The destination URL is not eligible.", ""
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
 	if err != nil {
-		return "pending", "The webpage could not be read."
+		return "pending", "The webpage could not be read.", ""
 	}
 	if len(body) > 2<<20 {
-		return "unverified", "The webpage exceeds the validation size limit."
+		return "unverified", "The webpage exceeds the validation size limit.", ""
 	}
 	kind, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
 	if kind == "" {
@@ -121,27 +121,25 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason st
 	case "text/html", "application/xhtml+xml":
 		parsed, err := crawler.Parse(body, finalURL)
 		if err != nil {
-			return "unverified", "The webpage could not be interpreted."
+			return "unverified", "The webpage could not be interpreted.", ""
 		}
 		doc.Title = parsed.Title
 		doc.Text = parsed.Text
 		doc.Signals = pageSignals(body)
-	case "text/plain":
-		doc.Text = string(body)
 	default:
-		return "unverified", "Only readable webpages can be checked; media and downloads are not accepted."
+		return "unverified", "Only readable HTML webpages can be checked; plain text, media, and downloads are not accepted.", ""
 	}
 	if adultfilter.IsAdult(doc.Title, doc.Text+" "+doc.Signals, finalURL) || strings.Contains(doc.Signals, "COSIFT_EXPLICIT_RATING") {
-		return "rejected", "Explicit adult content is not accepted."
+		return "rejected", "Explicit adult content is not accepted.", ""
 	}
 	if len(strings.TrimSpace(doc.Text)) < 80 {
-		return "unverified", "Not enough readable text to validate this webpage."
+		return "unverified", "Not enough readable text to validate this webpage.", ""
 	}
 	if len(doc.Text) > 32000 || len(doc.Title) > 1000 || len(doc.Signals) > 4000 {
-		return "unverified", "The webpage contains more content than can be fully checked in one validation."
+		return "unverified", "The webpage contains more content than can be fully checked in one validation.", ""
 	}
 	if status, reason := ObviousQualityProblem(doc); status != "" {
-		return status, reason
+		return status, reason, ""
 	}
 	b, _ := json.Marshal(doc)
 	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-moderate", bytes.NewReader(b))
@@ -151,23 +149,23 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason st
 	client.Timeout = 60 * time.Second
 	checkRes, err := client.Do(checkReq)
 	if err != nil {
-		return "pending", "Waiting for content safety checks."
+		return "pending", "Waiting for content safety checks.", ""
 	}
 	defer checkRes.Body.Close()
 	var verdict ModerationVerdict
 	decision := json.NewDecoder(io.LimitReader(checkRes.Body, 4096))
 	decision.DisallowUnknownFields()
 	if checkRes.StatusCode != 200 || decision.Decode(&verdict) != nil || decision.Decode(new(any)) != io.EOF || !ValidVerdict(verdict) {
-		return "pending", "Waiting for a valid content safety decision."
+		return "pending", "Waiting for a valid content safety decision.", ""
 	}
 	switch verdict.Decision {
 	case "allow":
-		return "allowed", "Content checks passed."
+		return "allowed", "Content checks passed.", crawler.ApprovedContentHash(doc.Title, doc.Text)
 	case "uncertain":
-		return "unverified", "This webpage could not be confidently validated."
+		return "unverified", "This webpage could not be confidently validated.", ""
 	default:
 		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm", "spam": "Spam or search manipulation", "low_quality": "Garbage or content without useful information"}
-		return "rejected", labels[verdict.Category] + " is not accepted."
+		return "rejected", labels[verdict.Category] + " is not accepted.", ""
 	}
 }
 

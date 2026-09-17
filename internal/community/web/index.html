@@ -3,34 +3,34 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Cosift — your corner of the web</title>
+    <title>Cosift</title>
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
   </head>
   <body>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <section id="auth" class="entry">
+    <section id="boot" class="boot" aria-live="polite">
+      <a class="brand" href="/">cosift<span>●</span></a>
+      <span id="boot-spinner" class="loading-spinner" aria-hidden="true"></span>
+      <p id="boot-message">Loading your workspace…</p>
+      <button id="boot-retry" class="secondary" type="button" hidden>Try again</button>
+    </section>
+    <section id="auth" class="entry" hidden>
       <div class="entry-story">
         <a class="brand" href="/">cosift<span>●</span></a>
         <div>
-          <p class="eyebrow">A web worth finding</p>
-          <h1>A little curiosity.<br />A better internet.</h1>
+          <h1>Search the web.<br />Keep what matters.</h1>
           <p class="intro">
-            Find something useful. Keep what matters.<br />Share the corners of
-            the web you know best.
+            Search, research, and contribute with one account.
           </p>
-          <div class="story-tags">
-            <span>Independent sources</span><span>Shared discovery</span>
-          </div>
         </div>
-        <p class="fine">Built for curious people. Made better together.</p>
+        <p class="fine">Web · CLI · Agents</p>
       </div>
       <div class="entry-form">
         <div class="form-wrap">
-          <p class="eyebrow">Welcome to Cosift</p>
-          <h2 id="auth-title">Make yourself at home.</h2>
+          <h2 id="auth-title">Sign in to Cosift</h2>
           <p id="auth-description" class="muted">
-            One account for your searches and contributions.
+            Use the same email as your CLI and agents.
           </p>
           <form id="auth-form">
             <label id="name-field"
@@ -67,8 +67,9 @@
             <button id="auth-toggle" class="text-button">Sign in</button>
           </p>
           <button id="continue-guest" class="secondary wide" type="button">
-            Explore as a guest ↗
+            Continue as guest
           </button>
+          <button id="entry-connect" class="text-button entry-connect" type="button">Set up an agent ↗</button>
           <p id="guest-policy" class="fine">Loading guest limits…</p>
         </div>
       </div>
@@ -76,11 +77,9 @@
     <section id="onboarding" class="onboarding" hidden>
       <a class="brand" href="/">cosift<span>●</span></a>
       <div class="onboarding-inner">
-        <p class="eyebrow">Make it yours</p>
-        <h1>What catches<br />your attention?</h1>
+        <h1>Choose your interests</h1>
         <p class="muted">
-          <span id="interests-explanation">Pick a few interests. We’ll turn them into starting points for your
-          next search. You can change these anytime.</span>
+          <span id="interests-explanation">Choose topics to follow. You can change them anytime.</span>
         </p>
         <form id="interests-form">
           <div id="topics" class="topics"></div>
@@ -106,27 +105,21 @@
     <div id="app" class="app" hidden>
       <aside>
         <a class="brand" href="/">cosift<span>●</span></a>
-        <p class="eyebrow workspace-label">Your workspace</p>
         <nav aria-label="Workspace">
           <button data-view="search" class="nav-item active">
-            <span>⌕</span> Discover</button
+            <span aria-hidden="true">⌕</span> Search</button
           ><button data-view="saved" class="nav-item">
-            <span>▤</span> Saved requests
+            <span aria-hidden="true">▤</span> Saved
             <small id="saved-count">0</small></button
           ><button data-view="contribute" class="nav-item">
-            <span>＋</span> Contribute
+            <span aria-hidden="true">＋</span> Contribute
           </button>
-        <button id="shared-nav" data-view="shared" class="nav-item" hidden>◉ Followed topics</button></nav>
-        <div class="sidebar-note">
-          <span class="dot"></span>
-          <p>A better index starts<br />with a good link.</p>
-          <button data-view="contribute" class="text-button">
-            Share something ↗
-          </button>
-        </div>
-        <p id="credit-balance" class="muted" hidden></p>
-        <button id="buy-credits" class="secondary" hidden>Buy credits</button>
-        <p id="payment-info" class="fine" hidden></p>
+        <button id="shared-nav" data-view="shared" class="nav-item" hidden><span aria-hidden="true">◉</span> Topics</button>
+        <button data-view="connect" class="nav-item"><span aria-hidden="true">⌘</span> Agents</button>
+        <button data-view="billing" class="nav-item"><span aria-hidden="true">◇</span> Billing</button></nav>
+        <div class="credits-section"><p id="credit-balance" class="credit-balance" hidden></p>
+        <div id="monthly-credits" class="monthly-credits" hidden><p id="credit-month" class="fine"></p><dl><div class="monthly-free"><dt>Free this month</dt><dd id="month-free">1000</dd></div><div><dt>Earned</dt><dd id="month-earned">0</dd></div><div><dt>Purchased</dt><dd id="month-purchased">0</dd></div><div><dt>Spent</dt><dd id="month-spent">0</dd></div></dl><p class="fine">Extra requests: Search 1 · Answer 2 · Research 3 credits. Unused credits carry over.</p></div>
+        <button data-view="billing" class="text-button manage-credits" type="button">Manage credits ↗</button></div>
         <div class="account">
           <div id="avatar" class="avatar">C</div>
           <div>
@@ -146,25 +139,21 @@
         </div>
       </aside>
       <main>
-        <header class="topbar">
-          <span>THE COMMUNITY INDEX</span
-          ><span class="muted">Collect curiosity.</span>
-        </header>
         <p id="request-limits" class="fine"></p>
+        <p class="corpus-note">Coverage is growing. Contribute useful pages to help fill the gaps.</p>
         <div id="guest-banner" class="guest-banner" hidden>
           <div>
-            <strong>You’re exploring as a guest.</strong
+            <strong>Guest session</strong
             ><span id="guest-allowance"
               >Checking your allowance…</span
             >
           </div>
           <button id="guest-signup" class="secondary">
-            Create an account ↗
+            Sign in
           </button>
         </div>
         <section id="view-search" class="view">
-          <p class="eyebrow">Follow your curiosity</p>
-          <h1>What will you find today?</h1>
+          <h1>Search Cosift</h1>
           <p id="mode-description" class="muted">
             Find webpages in the Cosift index.
           </p>
@@ -184,7 +173,7 @@
               type="search"
               maxlength="500"
               required
-              placeholder="A question, an idea, a rabbit hole…"
+              placeholder="Search a topic or ask a question…"
               aria-label="Search query"
             /><button class="primary" type="submit">
               Search <span>↗</span>
@@ -193,25 +182,21 @@
           <div id="suggestions" class="suggestions"></div>
           <div id="search-heading" class="list-heading" hidden>
             <div>
-              <p class="eyebrow">From Cosift</p>
               <h2 id="results-title">Search results</h2>
             </div>
             <button id="save-search" class="secondary">＋ Save search</button>
           </div>
           <div id="results"></div>
           <div id="search-empty" class="discovery-card">
-            <div class="orb" aria-hidden="true">✳</div>
-            <p class="eyebrow">Good things are out there</p>
-            <h2>Start with what interests you.</h2>
+
+            <h2>Start with a question</h2>
             <p class="muted">
-              Explore a topic above, or follow an entirely new thread.<br />Save
-              a search to pick it up again later.
+              Search for sources, get an answer, or research a topic.
             </p>
           </div>
         </section>
-        <section id="view-shared" class="view" hidden>
-          <p class="eyebrow">Your Cosift account</p><h1>Your topics and requests.</h1>
-          <p class="muted">Up to 100 topics and article requests are shown from your shared agent account. Checking coverage sends the topic to Cosift and records demand. Requesting an article records your interest; it does not promise an article or a delivery date.</p>
+        <section id="view-shared" class="view" hidden><h1>Topics</h1>
+          <p class="muted">Follow topics across your web and agent accounts. Coverage checks record demand; article requests have no guaranteed delivery date. Up to 100 entries are shown.</p>
           <form id="shared-form" class="panel">
             <label>Topic<input id="shared-topic" required maxlength="200" placeholder="Rust async runtimes" /></label>
             <label>Action<select id="shared-action"><option value="cosift_lookup">Check article coverage</option><option value="cosift_request">Request an article</option><option value="add">Follow topic</option></select></label>
@@ -222,25 +207,20 @@
           <div id="shared-list" class="cards"></div>
         </section>
         <section id="view-saved" class="view" hidden>
-          <p class="eyebrow">Keep the thread</p>
-          <h1>Your saved requests.</h1>
+          <h1>Saved requests</h1>
           <p class="muted">
-            A place for ideas you want to come back to. Rerun a request to see
-            what’s in the index now.
+            Rerun a saved request to see the latest results.
           </p>
           <div id="saved-list" class="cards"></div>
         </section>
         <section id="view-contribute" class="view" hidden>
-          <p class="eyebrow">Add your corner of the web</p>
-          <h1>Know a good source?</h1>
+          <h1>Contribute pages</h1>
           <p class="muted">
-            Share useful articles, documentation, and pages that deserve to be
-            found.
+            Submit public articles or documentation. Sign in to contribute and earn credits for new content.
           </p>
           <div class="contribute-grid">
             <form id="contribution-form" class="panel">
-              <div class="number-label">01 / SHARE A LINK</div>
-              <h2>A good find goes further.</h2>
+              <h2>Add URLs</h2>
               <label
                 >Webpage URLs<textarea
                   id="urls"
@@ -252,7 +232,7 @@
                   submission.</span
                 ></label
               >
-              <div class="divider"><span>or upload a collection</span></div>
+              <div class="divider"><span>or upload CSV</span></div>
               <label class="file-label"
                 >Choose a CSV file<input
                   id="csv"
@@ -272,36 +252,30 @@
                 Use either the text field or a CSV for each submission.
               </p>
               <button class="primary wide" type="submit">
-                Contribute webpages <span>↗</span>
+                Submit pages <span>↗</span>
               </button>
             </form>
             <div class="contribution-explainer">
-              <div class="number-label">02 / LET DISCOVERY HAPPEN</div>
-              <h2>You share.<br />Cosift explores.</h2>
+              <h2>Before indexing</h2>
               <p>
-                We validate each link and check readable page content for
-                explicit adult material, malware, phishing, and harmful
-                promotion, spam, repetitive filler, and placeholder pages before indexing.
+                Pages are checked for adult content, malware, phishing, harmful promotion, spam, and low-quality content.
               </p>
               <div class="status-example">
                 <span class="status pending">Checking</span>
                 <p>
-                  Saved for safety and quality checks. Pages are indexed only after
-                  passing.
+                  Safety and quality checks must pass before indexing.
                 </p>
               </div>
               <div class="status-example">
                 <span class="status queued">Indexed</span>
                 <p>
-                  The page has joined the index. Signed-in contributors earn 10
-                  credits for new content; duplicates earn no extra credits.
+                  New content earns 10 credits. Duplicates earn no additional credits.
                 </p>
               </div>
               <div class="status-example">
                 <span class="status rejected">Rejected / Unverified</span>
                 <p>
-                  Blocked content and pages we cannot confidently check are kept
-                  out of the index.
+                  Unsafe or unverified pages stay out of the index.
                 </p>
               </div>
               <p class="fine">
@@ -312,7 +286,6 @@
           </div>
           <div class="list-heading">
             <div>
-              <p class="eyebrow">Your footprint</p>
               <h2>Recent contributions</h2>
             </div>
             <button id="refresh-contributions" class="text-button">
@@ -321,8 +294,42 @@
           </div>
           <div id="contribution-list"></div>
         </section>
+        <section id="view-billing" class="view" hidden>
+          <h1>Credits &amp; billing</h1>
+          <p class="muted">1,000 free requests each month, on top of your 60 free requests per minute. Use credits for extra requests within your rate limits.</p>
+          <div class="billing-overview">
+            <article class="panel"><p class="fine">Credit balance</p><strong id="billing-balance" class="billing-value">—</strong><p class="fine">Earned and purchased credits carry over.</p></article>
+            <article class="panel"><p class="fine">Monthly free allowance</p><strong id="billing-free" class="billing-value">1,000</strong><p class="fine">Renews each month.</p></article>
+          </div>
+          <div class="billing-grid">
+            <article class="panel purchase-card">
+              <div class="purchase-heading"><h2>Buy credits</h2><span class="billing-tag">One-time payment</span></div>
+              <p class="purchase-price"><strong id="billing-pack-price">$5</strong><span>for <strong id="billing-pack-credits">50,000</strong> credits</span></p>
+              <p class="muted">Extra requests cost 1 credit for Search, 2 for Answer, and 3 for Research.</p>
+              <p id="billing-mode-status" class="billing-mode" role="status">Purchases are currently unavailable.</p>
+              <button id="buy-credits" class="primary wide" type="button" hidden>Continue to checkout ↗</button>
+              <p id="payment-info" class="fine" hidden></p>
+            </article>
+            <article class="billing-explainer">
+              <h2>Earn credits by contributing</h2>
+              <p class="muted">Share useful public pages or index them with the CLI. New content that passes validation earns 10 credits. Duplicates do not earn more.</p>
+              <button data-view="contribute" class="secondary" type="button">Contribute pages ↗</button>
+              <p class="fine">Search, Answer, Research, and MCP use the same account balance. Credits never bypass safety checks or request caps.</p>
+            </article>
+          </div>
+        </section>
+        <section id="view-connect" class="view" hidden>
+          <h1>Agents &amp; CLI</h1>
+          <p class="muted">One account for your web app, CLI, and agents. Topics and search allowances stay in sync.</p>
+          <div class="setup-grid">
+            <article class="panel"><h2>Set up your agent</h2><p>Connect Claude Code, Codex, or OpenCode with email verification and optional onboarding.</p><pre><code>curl -fsSL https://raw.githubusercontent.com/pilot-protocol/cosift-install/v1/install.sh | sh</code></pre><p class="fine">Review the script before running it. The interview uses local session history only when you choose it.</p><a class="text-button" href="https://github.com/pilot-protocol/cosift-install#readme" target="_blank" rel="noopener noreferrer">Read installation details ↗</a></article>
+            <article class="panel"><h2>MCP endpoint</h2><p>Search indexed pages, follow topics, look up article coverage, and request missing articles.</p><p class="fine">Streamable HTTP endpoint</p><pre><code>https://cosift-mcp-udik5erlkq-uw.a.run.app/v1/mcp</code></pre><p class="fine">The installer handles your private token. Article requests are queued; automatic authoring is still in development.</p></article>
+            <article class="panel"><h2>Install the CLI</h2><p>Search, answer, research, and submit URLs or local text and embeddings. Verified new content earns credits.</p><pre><code>cosift request -query 'Rust ownership'
+cosift contribute -credits</code></pre><div class="setup-links"><a class="text-button" href="https://github.com/pilot-protocol/cosift/releases/latest" target="_blank" rel="noopener noreferrer">Download signed CLI ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/skills/cosift/SKILL.md" target="_blank" rel="noopener noreferrer">Cosift agent skill ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/docs/AGENT-SETUP.md" target="_blank" rel="noopener noreferrer">Setup and usage guide ↗</a></div></article>
+          </div>
+        </section>
         <footer>
-          A little more discoverable, together. <span>cosift / community</span>
+          <span>Cosift</span><a href="https://github.com/pilot-protocol/cosift" target="_blank" rel="noopener noreferrer">Documentation ↗</a>
         </footer>
       </main>
     </div>
