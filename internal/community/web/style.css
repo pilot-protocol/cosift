@@ -1205,3 +1205,33 @@ select { -webkit-appearance: none; appearance: none; min-height: 46px; line-heig
   .purchase-price > strong { font-size: 40px; }
   .billing-explainer { padding: 28px 2px 0; }
 }
+
+/* Plans keep the free allowance visible beside optional paid access. */
+.billing-plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.plan-card { display: flex; flex-direction: column; align-items: stretch; }
+.plan-card .purchase-heading { margin-bottom: 22px; flex-wrap: wrap; }
+.plan-card .muted, .plan-card > .fine { font-size: 13px; line-height: 1.7; }
+.plan-card > .fine { margin: auto 0 0; padding-top: 8px; }
+.plan-allowance { font-size: 14px; line-height: 1.65; margin: 6px 0 14px; }
+.plan-allowance strong { color: var(--lime); font-weight: 600; }
+.plan-card .primary { width: 100%; margin-top: auto; }
+.billing-plan-status { display: block; font-size: 19px; font-weight: 600; line-height: 1.5; }
+#manage-subscription { display: inline-flex; align-items: center; min-height: 44px; margin-top: 8px; }
+#payment-info { padding: 0 2px; }
+.topup-card { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-top: 24px; padding: 24px; }
+.topup-card h2 { font-size: 18px; margin-bottom: 8px; }
+.topup-price { margin-bottom: 8px; font-size: 14px; }
+.topup-card .fine { margin: 0; line-height: 1.65; }
+.topup-card #buy-credits { width: auto; flex-shrink: 0; min-height: 46px; margin: 0; }
+.billing-footnote { margin-top: 24px; color: var(--muted); }
+.billing-footnote p { font-size: 12px; line-height: 1.75; margin-bottom: 10px; }
+.billing-footnote strong { color: var(--ink); font-weight: 500; }
+.billing-footnote .text-button { margin-left: 6px; }
+@media (max-width: 760px) {
+  .billing-plans { grid-template-columns: 1fr; gap: 16px; }
+  .billing-overview { grid-template-columns: 1fr 1fr; }
+  .billing-plan-status { font-size: 16px; }
+  .topup-card { flex-direction: column; align-items: stretch; gap: 18px; padding: 22px; }
+  .topup-card #buy-credits { width: 100%; justify-content: center; }
+}
+@media (max-width: 420px) { .billing-overview { grid-template-columns: 1fr; } }
