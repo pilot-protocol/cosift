@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pilot-protocol/cosift/internal/config"
@@ -149,5 +151,100 @@ func TestCommunityRequestCLI(t *testing.T) {
 				t.Fatal("no API request")
 			}
 		})
+	}
+}
+
+func TestCommunityCLIRejectsInvalidIntentBeforeNetwork(t *testing.T) {
+	t.Setenv("COSIFT_EMAIL", "cli@example.com")
+	t.Setenv("COSIFT_PASSWORD", "test-password")
+	var calls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`{}`))
+	}))
+	defer backend.Close()
+	for _, args := range [][]string{
+		{"-request", "-query", "hello", "-index-locally", "https://example.com/"},
+		{"-credits", "https://example.com/"},
+		{"-credits", "-csv", "/does-not-exist"},
+		{"-request", "-mode", "invalid", "-query", "hello"},
+		{"-request", "-query", strings.Repeat("x", 501)},
+		{"-query", "ignored", "https://example.com/"},
+	} {
+		before := calls.Load()
+		err := runContribute(context.Background(), append([]string{"-server", backend.URL}, args...))
+		if err == nil {
+			t.Errorf("accepted incompatible flags %v", args)
+		}
+		if calls.Load() != before {
+			t.Errorf("network side effects before validation: %v", args)
+		}
+	}
+}
+
+func TestCommunityCLIResponseBounds(t *testing.T) {
+	t.Setenv("COSIFT_EMAIL", "")
+	t.Setenv("COSIFT_PASSWORD", "")
+	output, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	previous := os.Stdout
+	os.Stdout = output
+	defer func() { os.Stdout = previous }()
+	for _, tc := range []struct {
+		name, body string
+		wantError  bool
+	}{
+		{"large valid answer", `{"answer":"` + strings.Repeat("x", (1<<20)+100) + `"}`, false},
+		{"too large", `{"answer":"` + strings.Repeat("x", 4<<20) + `"}`, true},
+		{"invalid JSON", `{"answer":`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output.Truncate(0)
+			output.Seek(0, 0)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, tc.body) }))
+			defer backend.Close()
+			err := runContribute(context.Background(), []string{"-server", backend.URL, "-request", "-guest", "-mode", "answer", "-query", "hello"})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tc.wantError)
+			}
+			output.Seek(0, 0)
+			got, _ := io.ReadAll(output)
+			if !tc.wantError && string(got) != tc.body {
+				t.Fatalf("response truncated: got %d, want %d bytes", len(got), len(tc.body))
+			}
+			if tc.wantError && len(got) != 0 {
+				t.Fatal("printed unsuccessful response")
+			}
+		})
+	}
+}
+
+func TestCommunityCLILogoutAfterCancellation(t *testing.T) {
+	t.Setenv("COSIFT_EMAIL", "cli@example.com")
+	t.Setenv("COSIFT_PASSWORD", "test-password")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var loggedOut atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/login":
+			http.SetCookie(w, &http.Cookie{Name: "cosift_session", Value: "session", Path: "/"})
+		case "/api/search":
+			cancel()
+		case "/api/logout":
+			if _, err := r.Cookie("cosift_session"); err != nil {
+				t.Error("logout lost session")
+			}
+			loggedOut.Store(true)
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer backend.Close()
+	_ = runContribute(ctx, []string{"-server", backend.URL, "-request", "-query", "hello"})
+	if !loggedOut.Load() {
+		t.Fatal("cancelled CLI left session active")
 	}
 }

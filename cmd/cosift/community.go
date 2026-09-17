@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/pilot-protocol/cosift/internal/config"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community"
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 func runCommunity(ctx context.Context, args []string) error {
@@ -26,6 +28,11 @@ func runCommunity(ctx context.Context, args []string) error {
 	backend := fs.String("backend", "http://127.0.0.1:7777", "Cosift Pebble server origin")
 	dir := fs.String("data-dir", "./community-data", "private account database directory")
 	proxies := fs.String("trusted-proxies", "", "comma-separated proxy CIDRs allowed to supply X-Forwarded-For")
+	guestInterval := fs.Duration("guest-interval", time.Minute, "shared guest allowance interval")
+	freeRPM := fs.Int("member-free-rpm", 60, "shared free member requests per minute")
+	searchRPM := fs.Int("search-rpm", 120, "member Search hard cap per minute, including credit requests")
+	answerRPM := fs.Int("answer-rpm", 20, "member Answer hard cap per minute, including credit requests")
+	researchLimit := fs.Int("research-per-10m", 3, "member Research hard cap per ten minutes, including credit requests")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -36,7 +43,20 @@ func runCommunity(ctx context.Context, args []string) error {
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
 	}
-	s, err := community.Open(community.Config{DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted})
+	var provider sharedaccount.Provider
+	authMode := os.Getenv("COSIFT_AUTH_MODE")
+	if authMode != "" && authMode != "local" && authMode != "shared" {
+		return fmt.Errorf("COSIFT_AUTH_MODE must be local or shared")
+	}
+	if authMode == "shared" {
+		client, err := sharedaccount.New(ctx, sharedaccount.Config{Project: os.Getenv("COSIFT_SHARED_PROJECT"), Database: os.Getenv("COSIFT_SHARED_DATABASE"), AuthURL: os.Getenv("COSIFT_AUTH_URL"), MCPURL: os.Getenv("COSIFT_MCP_URL"), AuthAudience: os.Getenv("COSIFT_AUTH_AUDIENCE"), MCPAudience: os.Getenv("COSIFT_MCP_AUDIENCE")})
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		provider = client
+	}
+	s, err := community.Open(community.Config{Shared: provider, DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET")})
 	if err != nil {
 		return err
 	}
@@ -79,9 +99,31 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	mode := fs.String("mode", "search", "search, answer or research")
 	local := fs.Bool("index-locally", false, "fetch, index and embed locally, then contribute verified artifacts (requires login and embedding config)")
 	credits := fs.Bool("credits", false, "show the authenticated account credit balance")
-	guest := fs.Bool("guest", false, "submit without login (one request per 30 minutes per IP)")
+	sessionFile := fs.String("session-file", os.Getenv("COSIFT_SESSION_FILE"), "private saved CLI session (or COSIFT_SESSION_FILE)")
+	login := fs.Bool("login", false, "save an authenticated CLI session")
+	logout := fs.Bool("logout", false, "revoke and delete the saved CLI session")
+	guest := fs.Bool("guest", false, "submit without login (server guest limits apply)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	var explicitServer, explicitSession bool
+	fs.Visit(func(f *flag.Flag) {
+		explicitServer = explicitServer || f.Name == "server"
+		explicitSession = explicitSession || f.Name == "session-file"
+	})
+	// The installer can provision this one well-known session. Explicit
+	// credentials and guest mode always win; no harness config is inspected.
+	if !*guest && !*login && !explicitSession && *sessionFile == "" && os.Getenv("COSIFT_TOKEN") == "" && *email == "" && os.Getenv("COSIFT_PASSWORD") == "" {
+		path, saved, err := installedCommunitySession(*logout)
+		if err != nil {
+			return err
+		}
+		if path != "" {
+			*sessionFile = path
+			if !explicitServer {
+				*server = saved.Origin
+			}
+		}
 	}
 	u, err := url.Parse(*server)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
@@ -91,10 +133,51 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		return fmt.Errorf("use HTTPS to protect account credentials")
 	}
 	password := os.Getenv("COSIFT_PASSWORD")
-	if !*guest && ((*email == "") != (password == "")) {
+	token := os.Getenv("COSIFT_TOKEN")
+	if *guest {
+		token = ""
+	}
+	if token != "" {
+		if _, err := sharedaccount.Parse(token); err != nil {
+			return fmt.Errorf("COSIFT_TOKEN is not a canonical Cosift token")
+		}
+	}
+	if token != "" && *sessionFile != "" && !*login {
+		return fmt.Errorf("choose COSIFT_TOKEN or a saved session, not both")
+	}
+	if token == "" && !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
 		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest")
 	}
+	origin := strings.TrimRight(*server, "/")
 	values := fs.Args()
+	authOnly := *login || *logout
+	if authOnly && (*login && *logout || *guest || *requestMode || *local || *credits || len(values) > 0 || *file != "" || *query != "" || *mode != "search") {
+		return fmt.Errorf("login/logout cannot be combined with other operations")
+	}
+	if authOnly && *sessionFile == "" {
+		return fmt.Errorf("provide -session-file or COSIFT_SESSION_FILE for login/logout")
+	}
+	if *login && token == "" && (*email == "" || password == "") {
+		return fmt.Errorf("login requires COSIFT_TOKEN from cosift-install, or COSIFT_EMAIL and COSIFT_PASSWORD for standalone servers")
+	}
+	// Validate intent before login, reading stdin, or touching the local index.
+	if *requestMode {
+		if *local || *credits || len(values) > 0 || *file != "" {
+			return fmt.Errorf("request cannot be combined with contributions or credits")
+		}
+		*query = strings.TrimSpace(*query)
+		if len(*query) == 0 || len(*query) > 500 || (*mode != "search" && *mode != "answer" && *mode != "research") {
+			return fmt.Errorf("provide a 1–500 byte -query and a valid -mode")
+		}
+	} else if *query != "" || *mode != "search" {
+		return fmt.Errorf("-query and -mode require request")
+	}
+	if *credits && (*local || len(values) > 0 || *file != "") {
+		return fmt.Errorf("credits cannot be combined with contributions")
+	}
+	if (*local || *credits) && (*guest || (*email == "" && *sessionFile == "" && token == "")) {
+		return fmt.Errorf("local indexing and credits require login or a saved session")
+	}
 	if *file != "" {
 		if len(values) > 0 {
 			return fmt.Errorf("use either -csv or positional URLs")
@@ -120,7 +203,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 			return err
 		}
 	}
-	if !*credits && !*requestMode && (len(values) == 0 || len(values) > community.MaxURLs) {
+	if !authOnly && !*credits && !*requestMode && (len(values) == 0 || len(values) > community.MaxURLs) {
 		return fmt.Errorf("provide 1–100 webpage URLs or -csv FILE")
 	}
 	for i, v := range values {
@@ -130,50 +213,131 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		}
 	}
 	jar, _ := cookiejar.New(nil)
+	if !*guest && !*login && *sessionFile != "" {
+		saved, err := readCommunitySession(*sessionFile, origin, *logout)
+		if err != nil {
+			return err
+		}
+		// Logout must reach the server even when the local expiry has elapsed.
+		cookie := saved.cookie()
+		if *logout {
+			cookie.Expires = time.Time{}
+		}
+		jar.SetCookies(u, []*http.Cookie{cookie})
+	}
+	var loginCookie *http.Cookie
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	call := func(path string, body any) ([]byte, error) {
+	call := func(callCtx context.Context, path string, body any) ([]byte, error) {
 		b, _ := json.Marshal(body)
 		method := "POST"
 		if body == nil {
 			method = "GET"
 		}
-		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
+		req, err := http.NewRequestWithContext(callCtx, method, strings.TrimRight(*server, "/")+"/api/"+path, bytes.NewReader(b))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Cosift-Client", "community")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		res, err := client.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		defer res.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		if path == "login" {
+			for _, c := range res.Cookies() {
+				if c.Name == "cosift_session" {
+					loginCookie = c
+				}
+			}
+		}
+		data, err := io.ReadAll(io.LimitReader(res.Body, (4<<20)+1))
 		if err != nil {
 			return nil, err
 		}
+		if len(data) > 4<<20 {
+			return nil, fmt.Errorf("community response exceeds 4 MB")
+		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			return nil, fmt.Errorf("community %s: HTTP %d: %s", path, res.StatusCode, strings.TrimSpace(string(data)))
+			return nil, &communityHTTPError{path: path, status: res.StatusCode, message: strings.TrimSpace(string(data))}
+		}
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("community returned invalid JSON")
 		}
 		return data, nil
 	}
-	if !*guest && *email != "" {
-		if _, err := call("login", map[string]string{"email": *email, "password": password}); err != nil {
+	if *logout {
+		_, err := call(ctx, "logout", map[string]string{})
+		var apiErr *communityHTTPError
+		if err != nil && !(errors.As(err, &apiErr) && apiErr.status == http.StatusUnauthorized) {
 			return err
 		}
-		// Revoke this CLI session after use; browser sessions are separate.
-		defer func() { _, _ = call("logout", map[string]string{}) }()
+		if err := os.Remove(*sessionFile); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, `{"logged_out":true}`)
+		return err
+	}
+	var sessionOut *os.File
+	keepSession := false
+	if *login {
+		// Refuse to overwrite existing sessions or follow symlinks. Logout first.
+		sessionOut, err = os.OpenFile(*sessionFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return fmt.Errorf("create private session file (log out before replacing): %w", err)
+		}
+		defer func() {
+			sessionOut.Close()
+			if !keepSession {
+				_ = os.Remove(*sessionFile)
+			}
+		}()
+	}
+	if token == "" && !*guest && *email != "" && (*login || *sessionFile == "") {
+		// Revoke temporary sessions, including a login with an unusable response
+		// or a session whose persistence failed.
+		defer func() {
+			if keepSession || len(jar.Cookies(u)) == 0 {
+				return
+			}
+			logoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = call(logoutCtx, "logout", map[string]string{})
+		}()
+		if _, err := call(ctx, "login", map[string]string{"email": *email, "password": password}); err != nil {
+			return err
+		}
+	}
+	if *login && token != "" {
+		if _, err := call(ctx, "me", nil); err != nil {
+			return err
+		}
+		loginCookie = &http.Cookie{Name: "cosift_session", Value: token, Path: "/", Expires: time.Now().Add(30 * 24 * time.Hour)}
+		jar.SetCookies(u, []*http.Cookie{loginCookie})
+	}
+	if *login {
+		if loginCookie == nil || loginCookie.Value == "" || !loginCookie.Expires.After(time.Now()) || len(jar.Cookies(u)) == 0 {
+			return fmt.Errorf("server did not issue a usable session")
+		}
+		saved := communitySession{Origin: origin, Token: loginCookie.Value, Expires: loginCookie.Expires}
+		if err := json.NewEncoder(sessionOut).Encode(saved); err != nil {
+			return err
+		}
+		if err := sessionOut.Sync(); err != nil {
+			return err
+		}
+		if err := sessionOut.Close(); err != nil {
+			return err
+		}
+		keepSession = true
+		_, err := fmt.Fprintln(os.Stdout, `{"logged_in":true}`)
+		return err
 	}
 	var body any = map[string]any{"urls": values}
 	path := "submissions"
-	if *local || *credits {
-		if *guest || *email == "" {
-			return fmt.Errorf("local indexing and credits require email/password login")
-		}
-		if *local && *credits {
-			return fmt.Errorf("use -index-locally or -credits")
-		}
-	}
 	if *local {
 		artifacts, e := indexLocalContributions(ctx, cfg, values)
 		if e != nil {
@@ -186,12 +350,6 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		}
 	}
 	if *requestMode {
-		if *local || *credits || len(values) > 0 || *file != "" {
-			return fmt.Errorf("request cannot be combined with contributions or credits")
-		}
-		if strings.TrimSpace(*query) == "" || (*mode != "search" && *mode != "answer" && *mode != "research") {
-			return fmt.Errorf("provide -query and a valid -mode")
-		}
 		path = *mode + "?q=" + url.QueryEscape(*query)
 		body = nil
 		client.Timeout = 4 * time.Minute
@@ -200,7 +358,7 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		path = "credits"
 		body = nil
 	}
-	result, err := call(path, body)
+	result, err := call(ctx, path, body)
 	if err != nil {
 		return err
 	}

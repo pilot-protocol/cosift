@@ -418,6 +418,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 	type cand struct {
 		src        answerSource
 		excerpt    string
+		body       string // bounded synthesis evidence, separate from the display excerpt
 		rerankText string
 		score      float64 // retrieval score, used by time-decay
 	}
@@ -462,7 +463,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		if includeText {
 			src.Text = doc.Text
 		}
-		c := cand{src: src, excerpt: excerpt, score: h.Score}
+		c := cand{src: src, excerpt: excerpt, body: synthesisContext(doc.Text, 1), score: h.Score}
 		if wantRerank {
 			c.rerankText = doc.Title + "\n" + doc.Text
 		}
@@ -580,7 +581,7 @@ func (s *pebbleHTTP) handleAnswerInner(w http.ResponseWriter, r *http.Request, s
 		// citation tokens we emit in the synth prompt below.
 		c.src.ID = i + 1
 		sources = append(sources, c.src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, synthesisContext(c.body, len(cands)))
 	}
 	// same retriever label vocabulary as /search.
 	denseReady := s.hnsw() != nil && s.embedder != nil
@@ -1147,6 +1148,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 	type cand struct {
 		src        answerSource
 		excerpt    string
+		body       string // bounded synthesis evidence, separate from the display excerpt
 		rerankText string
 		score      float64 // pooled score, used by time-decay
 	}
@@ -1169,7 +1171,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		if includeText {
 			src.Text = doc.Text
 		}
-		c := cand{src: src, excerpt: excerpt, score: p.score}
+		c := cand{src: src, excerpt: excerpt, body: synthesisContext(doc.Text, 1), score: p.score}
 		if wantRerank {
 			c.rerankText = doc.Title + "\n" + doc.Text
 		}
@@ -1236,7 +1238,7 @@ func (s *pebbleHTTP) handleResearch(w http.ResponseWriter, r *http.Request) {
 		// citation tokens we emit in the synth prompt below.
 		c.src.ID = i + 1
 		sources = append(sources, c.src)
-		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, c.excerpt)
+		fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, synthesisContext(c.body, len(cands)))
 	}
 	// Sub-queries don't yield a
 	// single effectiveQuery, so "expansion fired" is approximated by intent:
@@ -1371,6 +1373,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 	type cand struct {
 		src        answerSource
 		excerpt    string
+		body       string // bounded synthesis evidence, separate from the display excerpt
 		rerankText string
 		score      float64
 	}
@@ -1500,7 +1503,7 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 			if includeText {
 				src.Text = doc.Text
 			}
-			c := cand{src: src, excerpt: excerpt, score: p.score}
+			c := cand{src: src, excerpt: excerpt, body: synthesisContext(doc.Text, 1), score: p.score}
 			if wantRerank {
 				c.rerankText = doc.Title + "\n" + doc.Text
 			}
@@ -1580,21 +1583,13 @@ func (s *pebbleHTTP) streamResearch(w http.ResponseWriter, r *http.Request, sc e
 
 		// Build the cumulative sources slice + prompt block, stamping IDs
 		// 1..N in the order URLs were promoted.
-		// For site= queries trim excerpts to 600 chars — reduces synthesis
-		// context from ~9.6k to ~4.8k chars, cutting synthesis latency ~40%.
-		synthExcerptLen := 1200
-		if len(filt.sites) > 0 {
-			synthExcerptLen = 600
-		}
+
 		cumulativeSources := make([]answerSource, 0, len(allCands))
 		var promptSources strings.Builder
 		for i, c := range allCands {
 			c.src.ID = i + 1
 			cumulativeSources = append(cumulativeSources, c.src)
-			ex := c.excerpt
-			if len(ex) > synthExcerptLen {
-				ex = ex[:synthExcerptLen]
-			}
+			ex := synthesisContext(c.body, len(allCands))
 			fmt.Fprintf(&promptSources, "[%d] %s\n%s\n%s\n\n", i+1, c.src.Title, c.src.URL, ex)
 		}
 		srcEvt := map[string]any{

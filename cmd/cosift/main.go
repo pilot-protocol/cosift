@@ -53,6 +53,7 @@ usage:
   cosift answer-eval-compare A.json B.json   diff two saved answer-eval reports
   cosift bench [flags]      synthetic micro-benchmarks (vector + BM25 + crawl)
   cosift bench-compare A.json B.json   diff two saved bench JSON outputs (NDJSON, one record per mode)
+  cosift login/logout       save or revoke a private CLI session (-session-file FILE)
   cosift request            Search/Answer/Research through the community API
   cosift contribute         submit URLs, CSV or locally indexed artifacts
   cosift version            print version
@@ -133,6 +134,8 @@ func run(cfgPath string) error {
 	switch cmd := flag.Arg(0); cmd {
 	case "community":
 		return runCommunity(ctx, flag.Args()[1:])
+	case "login", "logout":
+		return runContributeConfigured(ctx, cfg, append([]string{"-" + cmd}, flag.Args()[1:]...))
 	case "request":
 		return runContributeConfigured(ctx, cfg, append([]string{"-request"}, flag.Args()[1:]...))
 	case "contribute":

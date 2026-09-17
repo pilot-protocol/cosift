@@ -361,3 +361,33 @@ func TestPermanentArtifactRejectionIsNotRetried(t *testing.T) {
 		t.Fatalf("state=%s deliveries=%d", state, calls)
 	}
 }
+
+func TestMalformedDeliveryReceiptStaysRetryable(t *testing.T) {
+	for _, receipt := range []string{`{"indexed":`, `null`, `{}`, `{"queued":"https://example.com/wrong"}`, `{"indexed":true,"novel":true,"content_hash":"invalid"}`} {
+		t.Run(receipt, func(t *testing.T) {
+			var submissionID string
+			s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/admin/community-moderate" {
+					io.WriteString(w, `{"decision":"allow","category":"safe"}`)
+					return
+				}
+				var v struct {
+					SubmissionID string `json:"submission_id"`
+				}
+				json.NewDecoder(r.Body).Decode(&v)
+				submissionID = v.SubmissionID
+				io.WriteString(w, receipt)
+			}))
+			cookie := account(t, s, "retry-receipt@example.com")
+			expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
+			if err := s.dispatch(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var id, status string
+			s.db.QueryRow(`SELECT id,status FROM submissions`).Scan(&id, &status)
+			if status != "pending" || id != submissionID {
+				t.Fatalf("lost durable job: id=%s delivered=%s status=%s", id, submissionID, status)
+			}
+		})
+	}
+}

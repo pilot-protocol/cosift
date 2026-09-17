@@ -19,11 +19,13 @@ import (
 	"net/mail"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/crawler"
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 //go:embed web/*
@@ -33,11 +35,19 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 
 type Config struct {
-	DataDir        string
-	Backend        string
-	PublicURL      string
-	AdminToken     string // Only used for crawl-enqueue, never forwarded with searches.
-	TrustedProxies []string
+	Shared              sharedaccount.Provider
+	DataDir             string
+	Backend             string
+	PublicURL           string
+	AdminToken          string // Only used for crawl-enqueue, never forwarded with searches.
+	TrustedProxies      []string
+	GuestInterval       time.Duration
+	MemberFreeRPM       int
+	SearchRPM           int
+	AnswerRPM           int
+	ResearchPer10Min    int
+	StripeSecretKey     string
+	StripeWebhookSecret string
 }
 
 type bucket struct {
@@ -48,6 +58,7 @@ type Server struct {
 	db               *sql.DB
 	cfg              Config
 	client           *http.Client
+	paymentClient    *http.Client
 	handler          http.Handler
 	mu               sync.Mutex
 	limits           map[string]bucket
@@ -59,6 +70,9 @@ type Server struct {
 }
 
 func Open(cfg Config) (*Server, error) {
+	if err := cfg.defaultLimits(); err != nil {
+		return nil, err
+	}
 	for name, raw := range map[string]string{"backend": cfg.Backend, "public URL": cfg.PublicURL} {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -81,6 +95,7 @@ func Open(cfg Config) (*Server, error) {
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
+	s.paymentClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.pageClient = newModerationClient()
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
 	for _, raw := range cfg.TrustedProxies {
@@ -99,8 +114,24 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.migrateGuestInterval(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.bindSharedNamespace(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/config", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil})
+	})
+	mux.HandleFunc("POST /api/auth/start", s.sharedStart)
+	mux.HandleFunc("POST /api/auth/verify", s.sharedFinish)
+	mux.HandleFunc("POST /api/shared", s.auth(s.sharedTool))
 	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
+	mux.HandleFunc("GET /signup", s.asset("index.html", "text/html; charset=utf-8"))
 	mux.HandleFunc("GET /app.js", s.asset("app.js", "text/javascript; charset=utf-8"))
 	mux.HandleFunc("GET /style.css", s.asset("style.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /sample.csv", func(w http.ResponseWriter, r *http.Request) {
@@ -114,10 +145,15 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/me", s.auth(func(w http.ResponseWriter, r *http.Request, u User) { respond(w, 200, u) }))
 	mux.HandleFunc("PUT /api/interests", s.auth(s.interests))
 	for _, mode := range []string{"search", "answer", "research"} {
-		mux.HandleFunc("GET /api/"+mode, s.optionalAuth(func(w http.ResponseWriter, r *http.Request, u User) { s.retrieve(w, r, u, mode) }))
+		handler := s.optionalAuth(func(w http.ResponseWriter, r *http.Request, u User) { s.retrieve(w, r, u, mode) })
+		mux.HandleFunc("GET /api/"+mode, handler)
+		mux.HandleFunc("GET /"+mode, handler)
 	}
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
+	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
+	mux.HandleFunc("POST /api/payments/checkout", s.auth(s.checkout))
+	mux.HandleFunc("POST /api/payments/webhook", s.stripeWebhook)
 	mux.HandleFunc("GET /api/saved", s.auth(s.saved))
 	mux.HandleFunc("POST /api/saved", s.auth(s.save))
 	mux.HandleFunc("DELETE /api/saved/{id}", s.auth(s.unsave))
@@ -148,7 +184,8 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		if r.Method != "GET" && r.Method != "HEAD" {
+		// Stripe authenticates the exact webhook body with its signature.
+		if r.Method != "GET" && r.Method != "HEAD" && !(r.Method == "POST" && r.URL.Path == "/api/payments/webhook") {
 			// The custom header prevents cross-site form posts, including login
 			// CSRF. No CORS permissions are granted. CLI requests omit Origin.
 			if r.Header.Get("X-Cosift-Client") != "community" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.cfg.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
@@ -218,6 +255,10 @@ func passwordHash(password, salt string) string {
 
 func (s *Server) credentials(register bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil {
+			problem(w, 409, "use shared email-code login")
+			return
+		}
 		ip := s.clientIP(r)
 		if !s.allow("auth:"+ip, 30, time.Minute) {
 			problem(w, 429, "too many attempts; try again in a minute")
@@ -304,6 +345,10 @@ type userHandler func(http.ResponseWriter, *http.Request, User)
 
 func (s *Server) auth(next userHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil || r.Header.Get("Authorization") != "" {
+			s.sharedAuth(w, r, next, false)
+			return
+		}
 		cookie, err := r.Cookie(cookieName)
 		if err != nil {
 			problem(w, 401, "sign in to continue")
@@ -323,6 +368,15 @@ func (s *Server) auth(next userHandler) http.HandlerFunc {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, u User) {
+	if s.cfg.Shared != nil {
+		if err := s.cfg.Shared.Revoke(sharedaccount.WithClientIP(r.Context(), s.clientIP(r)), sharedToken(r)); err != nil {
+			sharedProblem(w, err)
+			return
+		}
+		http.SetCookie(w, s.sharedCookie("", -1))
+		respond(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	c, _ := r.Cookie(cookieName)
 	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
 		problem(w, 500, "could not sign out")
@@ -357,6 +411,12 @@ func (s *Server) interests(w http.ResponseWriter, r *http.Request, u User) {
 			seen[key] = true
 		}
 	}
+	if s.cfg.Shared != nil && len(values) > 0 {
+		if _, err := s.cfg.Shared.Call(r.Context(), sharedToken(r), "cosift_topics", map[string]any{"action": "add", "topics": values}); err != nil {
+			sharedProblem(w, err)
+			return
+		}
+	}
 	b, _ := json.Marshal(values)
 	if _, err := s.db.ExecContext(r.Context(), `UPDATE users SET interests=?,onboarded=1 WHERE id=?`, string(b), u.ID); err != nil {
 		problem(w, 500, "could not save interests")
@@ -375,19 +435,26 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		problem(w, 400, "enter a search of 1–500 characters")
 		return
 	}
-	completed := false
-	if u.ID != "" && !s.allow("retrieval:"+u.ID, 30, time.Minute) {
-		if !s.allow("extra:"+u.ID, 90, time.Minute) {
-			w.Header().Set("Retry-After", "60")
-			problem(w, 429, "account limit is 120 requests per minute")
-			return
+	// MCP asks for bounded BM25 results. Validate before reserving any allowance.
+	params := url.Values{"q": {q}, "stream": {"false"}}
+	if mode == "search" && u.ID != "" {
+		if raw := r.URL.Query().Get("k"); raw != "" {
+			k, err := strconv.Atoi(raw)
+			if err != nil || k < 1 || k > 20 {
+				problem(w, 400, "k must be 1–20")
+				return
+			}
+			params.Set("k", strconv.Itoa(k))
 		}
-		finish, ok := s.reserveCredit(w, r, u)
-		if !ok {
-			return
+		if v := r.URL.Query().Get("retriever"); v != "" {
+			if v != "bm25" && v != "dense" && v != "hybrid" {
+				problem(w, 400, "invalid retriever")
+				return
+			}
+			params.Set("retriever", v)
 		}
-		defer func() { finish(completed) }()
 	}
+	completed := false
 	if u.ID == "" {
 		finish, ok := s.reserveGuest(w, r)
 		if !ok {
@@ -395,8 +462,29 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		}
 		defer func() { finish(completed) }()
 	}
+	// Hard mode caps apply before free allowance or credit charging.
+	finishMode, ok := s.allowRetrieval(w, r, u, mode)
+	if !ok {
+		return
+	}
+	defer func() { finishMode(completed) }()
+	if u.ID != "" {
+		finish, free, err := s.reserveFree(r, u)
+		if err != nil {
+			problem(w, 503, "request allowance unavailable")
+			return
+		}
+		if !free {
+			var ok bool
+			finish, ok = s.reserveCredit(w, r, u)
+			if !ok {
+				return
+			}
+		}
+		defer func() { finish(completed) }()
+	}
+
 	// Preserve the backend's normal retrieval, reranking and research defaults.
-	params := url.Values{"q": {q}, "stream": {"false"}}
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", s.cfg.Backend+"/"+mode+"?"+params.Encode(), nil)
 	client := *s.client
 	if mode != "search" {
@@ -720,7 +808,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				return e
 			}
 		}
-		body, _ := json.Marshal(map[string]any{"url": j.url, "artifact": artifact})
+		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact})
 		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
@@ -740,8 +828,21 @@ func (s *Server) dispatch(ctx context.Context) error {
 				Indexed     bool   `json:"indexed"`
 				Novel       bool   `json:"novel"`
 				ContentHash string `json:"content_hash"`
+				Queued      string `json:"queued"` // explicit acknowledgement from older guarded backends
 			}
-			if ok && json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&receipt) == nil {
+			if ok {
+				data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
+				ok = readErr == nil && len(data) <= 4096 && json.Unmarshal(data, &receipt) == nil
+				if ok {
+					hash, hashErr := hex.DecodeString(receipt.ContentHash)
+					if receipt.Indexed {
+						ok = hashErr == nil && len(hash) == sha256.Size
+					} else {
+						ok = receipt.Queued == j.url && !receipt.Novel
+					}
+				}
+			}
+			if ok {
 				indexed = receipt.Indexed
 				if receipt.Indexed && receipt.Novel && len(receipt.ContentHash) == 64 {
 					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash); err != nil {

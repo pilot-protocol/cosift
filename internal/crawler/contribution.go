@@ -18,6 +18,9 @@ type ContributionReceipt struct {
 	ContentHash string `json:"content_hash"`
 }
 
+// ContributionURL returns the document key used when indexing a contribution.
+func ContributionURL(raw string) (string, error) { return canonicalize(raw) }
+
 func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *LocalArtifact) (ContributionReceipt, error) {
 	canon, err := canonicalize(raw)
 	if err != nil {

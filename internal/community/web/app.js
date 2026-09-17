@@ -9,6 +9,38 @@ let user = null,
   selected = new Set(),
   noticeTimer,
   guestUntil = 0;
+let accountGeneration = 0;
+const pendingRequests = new Set();
+let searchRequest;
+let authBusy = false;
+let sharedAuth = false, authChallenge = null, authConfigured = false;
+function resetAccount(nextUser = null) {
+  accountGeneration++;
+  for (const controller of pendingRequests) controller.abort();
+  pendingRequests.clear();
+  searchSequence++;
+  user = nextUser;
+  saved = [];
+  currentQuery = "";
+  currentMode = "search";
+  selected = new Set();
+  checkoutKey = undefined;
+  guestUntil = 0;
+  for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions", "shared-list", "shared-result"])
+    $(id).replaceChildren();
+  for (const id of ["query", "urls", "csv", "custom-interests", "shared-topic"]) $(id).value = "";
+  $("saved-count").textContent = "0";
+  $("credit-balance").textContent = "";
+  $("credit-balance").hidden = true;
+  $("buy-credits").hidden = true;
+  $("buy-credits").disabled = false;
+  $("payment-info").hidden = true;
+  $("search-heading").hidden = true;
+  $("search-empty").hidden = false;
+  $("search-form").querySelector("button").disabled = false;
+  selectMode("search");
+  updateSaveButton();
+}
 const topics = [
   "Technology",
   "Science",
@@ -24,6 +56,7 @@ const topics = [
   "Food & travel",
 ];
 function notify(message, error = false) {
+  if (!message) return;
   clearTimeout(noticeTimer);
   $("notice").textContent = message;
   $("notice").className = error ? "error" : "";
@@ -33,36 +66,50 @@ function notify(message, error = false) {
     error ? 10000 : 5500,
   );
 }
-async function api(path, method = "GET", body) {
-  const headers = { "X-Cosift-Client": "community" };
-  if (body && !(body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(body);
-  }
-  const response = await fetch("/api/" + path, {
-    method,
-    headers,
-    body,
-    credentials: "same-origin",
-  });
-  let data;
+async function api(path, method = "GET", body, controller = new AbortController()) {
+  const generation = accountGeneration;
+  pendingRequests.add(controller);
   try {
-    data = await response.json();
-  } catch {
-    throw new Error("The server is unavailable. Please try again.");
-  }
-  if (!response.ok) {
-    if (data.retry_at) {
-      guestUntil = data.retry_at;
-      renderGuestAllowance();
+    const headers = { "X-Cosift-Client": "community" };
+    if (body && !(body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(body);
     }
-    if (response.status === 401 && user) {
-      user = null;
-      showScreen("auth");
+    const response = await fetch("/api/" + path, {
+      method,
+      headers,
+      body,
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("The server is unavailable. Please try again.");
     }
-    throw new Error(data.error || "Something went wrong. Please try again.");
+    if (generation !== accountGeneration || controller.signal.aborted)
+      throw new DOMException("", "AbortError");
+    if (!response.ok) {
+      if (data.retry_at && !data.mode && !user) {
+        guestUntil = data.retry_at;
+        renderGuestAllowance();
+      }
+      if (response.status === 401 && user) {
+        resetAccount();
+        showScreen("auth");
+      }
+      throw new Error(data.error || "Something went wrong. Please try again.");
+    }
+    return data;
+  } catch (error) {
+    // A superseded account/request must not render data or errors in the next view.
+    if (generation !== accountGeneration || controller.signal.aborted)
+      throw new DOMException("", "AbortError");
+    throw error;
+  } finally {
+    pendingRequests.delete(controller);
   }
-  return data;
 }
 function showScreen(id) {
   $("notice").hidden = true;
@@ -112,6 +159,7 @@ async function busy(form, action) {
   }
 }
 $("auth-toggle").onclick = () => {
+  if (sharedAuth) return;
   signingUp = !signingUp;
   $("name-field").hidden = !signingUp;
   $("auth-form").elements.name.required = signingUp;
@@ -132,8 +180,33 @@ $("auth-toggle").onclick = () => {
 };
 $("auth-form").onsubmit = (event) => {
   event.preventDefault();
-  busy(event.target, async () => {
+  if (authBusy || !authConfigured) return;
+  authBusy = true;
+  return busy(event.target, async () => {
+    resetAccount();
     const form = new FormData(event.target);
+    if (sharedAuth) {
+      if (!authChallenge) {
+        authChallenge = await api("auth/start", "POST", {email: form.get("email")});
+        $("code-field").hidden = false;
+        $("auth-restart").hidden = false;
+        event.target.elements.code.required = true;
+        event.target.elements.email.readOnly = true;
+        $("auth-submit").textContent = "Verify and sign in →";
+        notify("If the address is eligible, a verification code is on its way. Check your email.");
+        return;
+      }
+      user = await api("auth/verify", "POST", {request_id: authChallenge.request_id, code: form.get("code")});
+      authChallenge = null;
+      $("code-field").hidden = true;
+      $("auth-restart").hidden = true;
+      event.target.elements.code.required = false;
+      event.target.elements.email.readOnly = false;
+      $("auth-submit").textContent = "Email me a code →";
+      event.target.reset();
+      await enter();
+      return;
+    }
     user = await api(signingUp ? "register" : "login", "POST", {
       name: form.get("name"),
       email: form.get("email"),
@@ -141,7 +214,7 @@ $("auth-form").onsubmit = (event) => {
     });
     event.target.reset();
     await enter();
-  });
+  }).finally(() => { authBusy = false; });
 };
 function onboarding() {
   selected = new Set(user.interests.filter((v) => topics.includes(v)));
@@ -189,13 +262,55 @@ $("skip-interests").onclick = async () => {
 };
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
+  $("buy-credits").hidden = true;
+  $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
     $("credit-balance").textContent =
       `${c.balance} credits · 1 per extra request`;
+    if (c.payments_enabled) {
+      const pack = c.credit_pack;
+      const price = new Intl.NumberFormat("en-US", {style: "currency", currency: pack.currency}).format(pack.amount_cents / 100);
+      $("buy-credits").textContent = `Buy ${pack.credits.toLocaleString()} credits · ${price}`;
+      $("buy-credits").hidden = false;
+      $("payment-info").hidden = false;
+      $("payment-info").textContent = `$${pack.usd_per_1000_requests} per 1,000 extra requests. One-time payment. Existing rate caps apply.`;
+    }
+  }
+}
+let checkoutKey;
+$("buy-credits").onclick = async () => {
+  const button = $("buy-credits");
+  button.disabled = true;
+  checkoutKey ||= crypto.randomUUID();
+  try {
+    const checkout = await api("payments/checkout", "POST", {idempotency_key: checkoutKey});
+    const destination = new URL(checkout.url);
+    if (destination.protocol !== "https:" || destination.host !== "checkout.stripe.com" || destination.username || destination.password)
+      throw new Error("Invalid checkout destination.");
+    location.assign(destination.href);
+  } catch (e) {
+    notify(e.message, true);
+    button.disabled = false;
+  }
+};
+async function showPaymentReturn() {
+  const result = new URLSearchParams(location.search).get("payment");
+  if (!result) return;
+  history.replaceState(null, "", location.pathname);
+  if (result === "cancelled") { notify("Checkout cancelled. No credits were added."); return; }
+  if (result !== "success") return;
+  notify("Checkout returned. Credits appear after Stripe confirms payment; this can take a moment.");
+  // Display only: the browser cannot grant credits or confirm a charge.
+  for (let i = 0; i < 4; i++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!user) return;
+    await refreshCredits();
   }
 }
 async function enter() {
+  $("shared-nav").hidden = !sharedAuth || !user;
+  await refreshLimits();
   await refreshCredits();
   if (!currentQuery) {
     $("results").replaceChildren();
@@ -246,7 +361,8 @@ function suggestions() {
   }
 }
 async function view(name) {
-  for (const value of ["search", "saved", "contribute"])
+  if (name === "shared" && (!sharedAuth || !user)) return;
+  for (const value of ["search", "saved", "contribute", "shared"])
     $("view-" + value).hidden = value !== name;
   document.querySelectorAll("nav [data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
@@ -277,8 +393,10 @@ document
   .forEach((button) => (button.onclick = () => view(button.dataset.view)));
 $("edit-interests").onclick = () => (user ? onboarding() : showScreen("auth"));
 $("guest-signup").onclick = () => showScreen("auth");
-$("continue-guest").onclick = () =>
-  enter().catch((e) => notify(e.message, true));
+$("continue-guest").onclick = () => {
+  if (authBusy) return;
+  return enter().catch((e) => notify(e.message, true));
+};
 async function refreshGuest() {
   if (user) return;
   const status = await api("guest");
@@ -302,19 +420,18 @@ $("logout").onclick = async () => {
     showScreen("auth");
     return;
   }
+  if (authBusy) return;
+  authBusy = true;
   try {
-    searchSequence++;
+    // Invalidate outstanding responses before waiting for server-side revocation.
+    resetAccount(user);
     await api("logout", "POST", {});
-    user = null;
-    saved = [];
-    currentQuery = "";
-    $("results").replaceChildren();
-    $("search-heading").hidden = true;
-    $("search-empty").hidden = false;
-    $("query").value = "";
-    await enter();
+    resetAccount();
+    showScreen("auth");
   } catch (e) {
     notify(e.message, true);
+  } finally {
+    authBusy = false;
   }
 };
 let searchSequence = 0;
@@ -346,6 +463,8 @@ async function runSearch(q, mode = selectedMode) {
   selectMode(mode);
   q = q.trim();
   if (!q) return;
+  searchRequest?.abort();
+  searchRequest = new AbortController();
   const sequence = ++searchSequence;
   view("search");
   $("query").value = q;
@@ -371,7 +490,7 @@ async function runSearch(q, mode = selectedMode) {
   );
   currentQuery = "";
   try {
-    const data = await api(mode + "?q=" + encodeURIComponent(q));
+    const data = await api(mode + "?q=" + encodeURIComponent(q), "GET", undefined, searchRequest);
     if (sequence !== searchSequence) return;
     currentQuery = q;
     currentMode = mode;
@@ -590,14 +709,48 @@ async function refreshContributions() {
 }
 $("refresh-contributions").onclick = () =>
   refreshContributions().catch((e) => notify(e.message, true));
+let requestPolicy;
+async function refreshLimits() {
+  requestPolicy = await api("limits");
+  const interval = requestPolicy.guest_interval_seconds;
+  const duration = (seconds) => seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
+  const describe = (limits) => Object.entries(limits).map(([mode, limit]) =>
+    `${modeLabels[mode]} ${limit.requests}/${duration(limit.window_seconds)}`).join(" · ");
+  $("guest-policy").textContent = `Guests: one shared request every ${duration(interval)}. ${describe(requestPolicy.guest)}.`;
+  $("request-limits").textContent = user
+    ? `${describe(requestPolicy.member)}. ${requestPolicy.member_free_requests_per_minute} shared free requests/min; extra requests cost 1 credit within these caps.`
+    : describe(requestPolicy.guest);
+}
 (async () => {
+  const generation = accountGeneration;
   try {
+    const authConfig = await api("auth/config");
+    sharedAuth = authConfig.shared === true;
+    authConfigured = true;
+    $("auth-submit").disabled = false;
+    if (sharedAuth) {
+      $("name-field").hidden = true;
+      $("password-field").hidden = true;
+      $("auth-switch").hidden = true;
+      $("auth-form").elements.name.required = false;
+      $("auth-form").elements.password.required = false;
+      $("auth-title").textContent = "Sign in to Cosift.";
+      $("auth-description").textContent = "Use the same email as your connected agents. We’ll send you a verification code.";
+      $("auth-submit").textContent = "Email me a code →";
+      $("interests-explanation").textContent = "Save interests to follow these topics across Cosift and your connected agents. Existing agent topics stay followed; remove them in Followed topics.";
+    }
     user = await api("me");
-  } catch {
+  } catch (e) {
+    if (!authConfigured) { showScreen("auth"); notify("Unable to load login settings. Reload to try again.",true); return; }
+    if (generation !== accountGeneration) return;
     user = null;
   }
   try {
-    await enter();
+    await refreshLimits();
+    if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
+    if (user) await enter();
+    else showScreen("auth");
+    await showPaymentReturn();
   } catch (e) {
     showScreen("auth");
     notify(e.message, true);
@@ -712,3 +865,61 @@ function renderSynthesis(data, mode) {
       el("p", [data.model, data.took].filter(Boolean).join(" · "), "fine"),
     );
 }
+
+async function refreshSharedTopics() {
+  const data = await api("shared", "POST", {tool:"cosift_topics", action:"list"});
+  $("shared-list").replaceChildren();
+  const items = data.topics || [];
+  if (!items.length) $("shared-list").append(el("p", "No followed topics yet.", "muted"));
+  for (const item of items) {
+    const topic = item.topic_text || item.topic || "";
+    const card = el("article", undefined, "panel");
+    card.append(el("h3", topic));
+    if (item.requested) card.append(el("p", "Article requested. Request history is retained when unfollowing.", "fine"));
+    const remove = el("button", "Unfollow", "text-button");
+    remove.onclick = async () => {
+      remove.disabled = true;
+      try { await api("shared", "POST", {tool:"cosift_topics", action:"remove", topics:[topic]}); await refreshSharedTopics(); }
+      catch (e) { notify(e.message,true); remove.disabled=false; }
+    };
+    card.append(remove); $("shared-list").append(card);
+  }
+}
+$("shared-refresh").onclick = () => refreshSharedTopics().catch(e => notify(e.message,true));
+$("shared-nav").onclick = () => { view("shared"); refreshSharedTopics().catch(e => notify(e.message,true)); };
+$("shared-form").onsubmit = event => {
+  event.preventDefault();
+  busy(event.target,async () => {
+    const action = $("shared-action").value, topic = $("shared-topic").value.trim();
+    const payload = action === "add" ? {tool:"cosift_topics",action:"add",topics:[topic]} : {tool:action,topic};
+    const data = await api("shared","POST",payload);
+    $("shared-result").replaceChildren();
+    if (action === "add") $("shared-result").append(el("p","Topic followed."));
+    else if (action === "cosift_request") $("shared-result").append(el("p",data.detail || "Article request recorded."));
+    else {
+      $("shared-result").append(el("p",data.coverage === "covered" ? "Cosift has an article on this topic." : "No complete article is available yet. You can still search the webpage index."));
+      const article = data.kind === "article" ? data : data.related_article;
+      if (article) {
+        $("shared-result").append(el("p",article.text || ""));
+        for (const citation of article.citations || []) {
+          const url = typeof citation === "string" ? citation : citation.url;
+          $("shared-result").append(link(url, typeof citation === "string" ? citation : citation.title || url));
+        }
+      }
+    }
+    await refreshSharedTopics();
+  });
+};
+
+$("auth-restart").onclick = () => {
+  if (authBusy) return;
+  resetAccount();
+  authChallenge = null;
+  const form = $("auth-form");
+  form.elements.code.value = "";
+  form.elements.code.required = false;
+  form.elements.email.readOnly = false;
+  $("code-field").hidden = true;
+  $("auth-restart").hidden = true;
+  $("auth-submit").textContent = "Email me a code →";
+};

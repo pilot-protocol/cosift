@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const guestCooldown = 30 * time.Minute
-
 // clientIP trusts forwarded addresses only when the direct peer is a configured
 // proxy. Walk from right to left so client-supplied XFF cannot bypass quotas.
 func (s *Server) clientIP(r *http.Request) string {
@@ -67,7 +65,7 @@ func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not check guest allowance")
 		return
 	}
-	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(guestCooldown.Seconds())})
+	respond(w, 200, map[string]any{"available": until <= time.Now().Unix(), "retry_at": until, "interval_seconds": int(s.cfg.GuestInterval.Seconds())})
 }
 
 // reserveGuest is atomic across concurrent requests and survives restarts.
@@ -75,7 +73,7 @@ func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish func(bool), ok bool) {
 	key, token := s.guestKey(r), randomID()
 	now := time.Now().Unix()
-	until := now + int64(guestCooldown.Seconds())
+	until := now + int64(s.cfg.GuestInterval.Seconds())
 	_, err := s.db.ExecContext(r.Context(), `DELETE FROM guest_usage WHERE expires_at<=?`, now)
 	if err != nil {
 		problem(w, 500, "guest allowance unavailable")
@@ -98,7 +96,7 @@ func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish fu
 		}
 		seconds := max(int64(1), until-now)
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-		respond(w, 429, map[string]any{"error": fmt.Sprintf("Guest access allows one Search, Research, Answer, or submission every 30 minutes. Try again in %d minutes, or sign in.", (seconds+59)/60), "retry_at": until, "retry_after_seconds": seconds})
+		respond(w, 429, map[string]any{"error": fmt.Sprintf("Guest allowance reached. Try again in %d minutes, or sign in.", (seconds+59)/60), "retry_at": until, "retry_after_seconds": seconds})
 		return nil, false
 	}
 	return func(success bool) {
@@ -114,6 +112,10 @@ func (s *Server) reserveGuest(w http.ResponseWriter, r *http.Request) (finish fu
 
 func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Shared != nil || r.Header.Get("Authorization") != "" {
+			s.sharedAuth(w, r, next, true)
+			return
+		}
 		cookie, err := r.Cookie(cookieName)
 		if err != nil {
 			next(w, r, User{})
@@ -121,7 +123,10 @@ func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 		}
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT u.id,u.email,u.name,u.interests,u.onboarded FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.hash=? AND s.expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
-			next(w, r, User{})
+			// A caller presenting a revoked/expired session intended authenticated
+			// work. Never silently enqueue it as an uncredited guest submission.
+			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+			problem(w, 401, "session expired; sign in again")
 			return
 		}
 		if err != nil {

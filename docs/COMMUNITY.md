@@ -1,7 +1,9 @@
 # Community app and contributions
 
+**Shared-account integration update:** see [SHARED-ACCOUNTS.md](SHARED-ACCOUNTS.md) and [its verification record](SHARED-ACCOUNTS-VALIDATION.md). Shared mode now connects to Andrei’s auth/MCP infrastructure. Its live staging and companion-change gates must pass before rollout; earlier standalone checks do not establish shared-mode production readiness.
+
 `cosift community` runs a small web app alongside the search backend. It ships
-inside the existing binary, with no JavaScript build step or new Go dependency.
+inside the existing binary, with no JavaScript build step. Stripe webhook verification uses the official Go SDK.
 
 People can:
 
@@ -12,13 +14,13 @@ People can:
 - See their most recent 200 contributions, indexing status and credit balance.
 - Submit the same URLs or CSV files using `cosift contribute`.
 
-Guests share **one successful Search, Research, Answer, or submission per 30 minutes per IP**.
+Guests share **one successful Search, Research, Answer, or submission per minute per IP**.
 The allowance is persistent and atomic across concurrent requests. Invalid input
 and failed backend searches do not consume it. Reading pages or checking the
 allowance is free. A submission may contain up to 100 URLs, just like a member
 submission. HTTP 429 includes `Retry-After`, `retry_at` and
-`retry_after_seconds`. Logging in uses the member limits instead: 30 Search/Research/Answer requests per
-minute, 500 new contributed URLs per rolling 24 hours, and 200 saved searches.
+`retry_after_seconds`. Guest Answer is capped at one per 5 minutes and Research at one per 30 minutes.
+Members receive 60 shared free requests/minute, 500 new contributed URLs per rolling 24 hours, and 200 saved searches.
 People on a shared public IP share the guest allowance.
 
 ## Start the services
@@ -71,7 +73,7 @@ not proxy arbitrary backend paths or expose backend administration.
 
 ## Contribution delivery
 
-The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
+The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
 
 The receiving backend performs guarded direct indexing through a separate crawler. Bulk crawling retains its remote fetcher. Contributions never trigger link or sitemap discovery; existing domain inclusion/exclusion policy still applies. At most two contributions index concurrently, sharing the bulk crawler's embedding throttle. The delivery call is bounded to two minutes, with durable retries on transient failures.
 
@@ -103,19 +105,31 @@ If chunk boundaries differ, the backend computes the missing vectors normally.
 A newly indexed member contribution earns **10 credits**. Rewards are globally
 idempotent by content hash, so retrying or mirroring the same content cannot earn
 multiple rewards. Existing corpus URLs and rejected/unverified submissions do
-not earn credits. Guests do not earn credits. After the free 30 requests/minute,
+not earn credits. Guests do not earn credits. After the shared free 60 requests/minute,
 each additional Search, Answer or Research costs **1 credit**, with a ceiling of
-120 requests/minute per account. Backend failures refund the debit. Credits are
+120 Search/minute, 20 Answer/minute and 3 Research/10 minutes per account. Credits cannot bypass these hard caps. Mode caps are persisted across restarts and shared by all sessions and native endpoint aliases. Backend failures refund the debit. Credits are
 spent rather than granting permanent tiers. `GET /api/credits` returns the
 balance and policy; the web app displays the balance.
 
-The ledger and an idempotent payment-event table leave room for paid credit
-purchases. Payment checkout, payment-provider credentials and webhook handling
-are **not enabled**. No money is charged in this release. A future integration
-must verify signed provider events and credit the ledger transactionally.
+A one-time **$5 Stripe Checkout purchases 50,000 credits** ($0.10 per 1,000
+extra requests). Payments remain disabled until `STRIPE_SECRET_KEY` and
+`STRIPE_WEBHOOK_SECRET` are configured. Signed webhooks grant credits exactly
+once after payment; refunds revoke the corresponding purchased credits. There
+are no subscriptions or automatic charges. See [Stripe setup and validation](STRIPE.md).
 
-The guest/account limits apply to the community API. Existing public engine
-endpoints retain their own rate limits for compatibility with current clients.
+The candidate Caddy configuration routes public `/search`, `/answer` and `/research`
+through the same portal policy as `/api/*`. These public aliases support GET with
+`q`; POST and advanced native engine parameters are not supported on the public
+portal. Unlisted native routes return 404 to prevent quota bypasses. The internal
+loopback engine remains available to trusted operators.
+`GET /api/limits` publishes current limits. Operators can configure
+`-guest-interval`, `-member-free-rpm`, `-search-rpm`, `-answer-rpm`, and
+`-research-per-10m` on the community command. A guest interval change preserves
+the original request time instead of resetting all allowances. In-flight requests
+reserve a mode slot; backend failures release it and refund charged credits.
+The shared free member allowance also persists across restarts. Failed backend
+requests release both free and mode reservations. At the defaults, Search-only
+usage can consume 60 free requests and then 60 credit-funded requests per minute.
 
 ## CLI and CSV
 
@@ -136,10 +150,35 @@ arguments and shell history. Omit `-guest`:
 ./cosift contribute -server https://community.example.com -csv sources.csv
 ```
 
-Without either credential, the CLI defaults to guest access. `-guest` explicitly
-ignores configured credentials. `-email` overrides `COSIFT_EMAIL`; `-csv -` reads
-stdin. Flags precede positional URLs. The CLI logs out its temporary session
-after an authenticated submission.
+For repeated commands, explicitly save a reusable session. The file contains
+an opaque session token bound to this exact server origin, with mode 0600;
+it never stores your password. Use a private directory outside the repository:
+
+```sh
+mkdir -p "$HOME/.config/cosift"
+chmod 700 "$HOME/.config/cosift"
+export COSIFT_SESSION_FILE="$HOME/.config/cosift/community-session.json"
+./cosift login -server https://community.example.com
+unset COSIFT_PASSWORD
+./cosift request -server https://community.example.com -query "Go modules"
+./cosift contribute -server https://community.example.com -csv sources.csv
+./cosift logout -server https://community.example.com
+```
+
+`-session-file FILE` overrides `COSIFT_SESSION_FILE`. Login refuses to overwrite
+an existing file; logout revokes this CLI session and deletes the file. An
+expired/revoked session requires another login. A failed logout keeps the file
+for retry unless the server confirms the session is already invalid. Browser
+sessions are independent. Never commit, share, or upload the session file.
+
+Without credentials or a session file, the CLI defaults to guest access.
+`-guest` explicitly ignores both. `-email` overrides `COSIFT_EMAIL`; `-csv -`
+reads stdin. Flags precede positional URLs. Without a saved session, email/password
+commands use a temporary login and revoke it afterward; the password-authentication
+throttle remains 10 attempts per account/minute and 30 per IP/minute. Use a saved
+session to access the full retrieval allowance without repeated password logins.
+Invalid session files fail before requests; revoked cookies return 401 rather
+than silently submitting a member's work as an uncredited guest.
 
 CSV accepts a single headerless URL column, or a column called `url`, `urls`,
 `webpage`, or `website`. Other columns are ignored when a recognized header is
@@ -158,10 +197,10 @@ batch without saving partial input or using a guest allowance.
 
 ## API
 
-All mutation requests carry `X-Cosift-Client: community`. JSON mutations use
+Browser and CLI mutation requests carry `X-Cosift-Client: community`. JSON mutations use
 `Content-Type: application/json`; CSV uses multipart field `file`. Browser
 requests must originate from `-public-url`. No cross-origin CORS access is
-enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie.
+enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. The exact Stripe webhook path is exempt from browser CSRF headers and instead requires a valid signature over the raw body.
 
 | Method and path | Access | Body / behavior |
 | --- | --- | --- |
@@ -177,7 +216,9 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie.
 | `GET /api/saved` | Member | Own saved searches |
 | `POST /api/saved` | Member | `{query,mode}`; mode defaults to `search`; idempotent per account/query/mode |
 | `DELETE /api/saved/{id}` | Member | Removes an owned saved search |
-| `GET /api/credits` | Member | Credit balance, free allowance and extra-request cost |
+| `GET /api/credits` | Member | Credit balance, allowance, pack price and payment availability |
+| `POST /api/payments/checkout` | Member | `{idempotency_key}`; returns a hosted Stripe checkout URL |
+| `POST /api/payments/webhook` | Stripe signature | Paid-session fulfillment and refund reconciliation |
 | `GET /api/submissions` | Member | Own recent contributions |
 | `POST /api/submissions` | Guest or member | `{urls:[...]}`, authenticated `{artifacts:[...]}`, or multipart CSV; returns HTTP 202 |
 
@@ -209,11 +250,13 @@ by building or running the app locally.
 
 ## Production service and release
 
+See [the operator rollout and rollback plan](COMMUNITY-ROLLOUT.md) before deployment. The current user instruction is to keep these changes in review; do not deploy automatically.
+
 `deploy/systemd/cosift-community.service` runs the portal on loopback port 7780.
 Create its private data directory before starting it and supply
 `COSIFT_COMMUNITY_ADMIN_TOKEN` through root-owned `/etc/cosift/community.env`.
 `deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
-portal while retaining existing engine endpoints. It trusts only loopback and
+portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. It trusts only loopback and
 Cloudflare networks, then overwrites the forwarded client IP.
 
 The community backup timer snapshots SQLite consistently into the existing GCS
@@ -224,4 +267,17 @@ rollout also requires preserving the old binary, backend config and Caddy config
 
 Signed release assets include Linux ARM64/AMD64, macOS ARM64/AMD64 and Windows
 AMD64. Install the matching binary and use the same public server URL for both
-`contribute` and `request`. Payment purchase flows remain disabled.
+`contribute` and `request`. Credit purchases are available only when Stripe is configured.
+
+
+## Public entry and operations visibility
+
+Anonymous visitors land on the signup/sign-in screen. `/login` opens sign-in,
+`/signup` opens account creation, and an existing session opens the workspace.
+Guest browsing remains an explicit choice with the configured guest allowance.
+Signing out returns to authentication.
+
+The production proxy denies public access to `/stats`, `/metrics`, `/queue`,
+`/domains`, `/verify`, and `/sla` (including subpaths). Operators can still use
+these endpoints over SSH on the loopback engine listener. The old `/chat` UI
+redirects to `/login`. `/healthz` retains its minimal health response.

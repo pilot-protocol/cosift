@@ -1,0 +1,271 @@
+{
+  "WARNING": "FABRICATED TEST PEPPERS. These are not production keys and must never be used to mint or verify a real token.",
+  "version": 1,
+  "generated_by": "cmd/gen-vectors",
+  "notes": [
+    "Peppers are hex-encoded HERE only, for transport in JSON. In production the Secret Manager payload is the raw key bytes: no hex, no base64. Both sides use the payload verbatim as the HMAC key.",
+    "tid is HMAC-SHA256 over the FULL token string including the 'ck_\u003ckeyid\u003e_' prefix, not over the secret alone. This is the most likely place for two implementations to disagree.",
+    "A contact id and an account uid are the same derivation over the normalized email. The spec's two names refer to one value.",
+    "Email normalization is ASCII-only by contract. Go's strings.ToLower and Python's str.lower() disagree on some Unicode, which would split one mailbox into two identities.",
+    "keyid is the Secret Manager version number and matches ^[1-9][0-9]*$. 'ck_03_...' is invalid."
+  ],
+  "peppers_hex": {
+    "1": "1111111111111111111111111111111111111111111111111111111111111111",
+    "12": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "2": "2222222222222222222222222222222222222222222222222222222222222222",
+    "otp": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+  },
+  "email_normalization": [
+    {
+      "input": "user@example.com",
+      "valid": true,
+      "normalized": "user@example.com"
+    },
+    {
+      "input": "  User@Example.COM  ",
+      "valid": true,
+      "normalized": "user@example.com"
+    },
+    {
+      "input": "UPPER.CASE+tag@Sub.Example.Org",
+      "valid": true,
+      "normalized": "upper.case+tag@sub.example.org"
+    },
+    {
+      "input": "a@b.co",
+      "valid": true,
+      "normalized": "a@b.co"
+    },
+    {
+      "input": "",
+      "valid": false,
+      "reject_reason": "idhash: empty email"
+    },
+    {
+      "input": "no-at-sign",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "two@@example.com",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "trailing@",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "@leading.com",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "nodot@localhost",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "üser@example.com",
+      "valid": false,
+      "reject_reason": "idhash: email contains non-ASCII bytes"
+    },
+    {
+      "input": "user@exämple.com",
+      "valid": false,
+      "reject_reason": "idhash: email contains non-ASCII bytes"
+    },
+    {
+      "input": "user\r\nbcc@example.com",
+      "valid": false,
+      "reject_reason": "idhash: email contains non-ASCII bytes"
+    },
+    {
+      "input": "user@evil/../../x.com",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "user@under_score.com",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "user@192.168.0.1",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    },
+    {
+      "input": "user@-example.com",
+      "valid": false,
+      "reject_reason": "idhash: email must have exactly one @ with text on both sides"
+    }
+  ],
+  "uid": [
+    {
+      "normalized_email": "user@example.com",
+      "uid": "f7929329918d4378",
+      "domain": "example.com"
+    },
+    {
+      "normalized_email": "user@example.com",
+      "uid": "f7929329918d4378",
+      "domain": "example.com"
+    },
+    {
+      "normalized_email": "upper.case+tag@sub.example.org",
+      "uid": "48d567422ae6ee5c",
+      "domain": "sub.example.org"
+    },
+    {
+      "normalized_email": "a@b.co",
+      "uid": "6393a920ae5d13a5",
+      "domain": "b.co"
+    }
+  ],
+  "code_hmac": [
+    {
+      "uid": "f7929329918d4378",
+      "code": "000000",
+      "code_hmac": "e4cdb4e308c7c81e8598bff4554c21d718b9fd8b937f3aeb978ab21f2e8997b1"
+    },
+    {
+      "uid": "f7929329918d4378",
+      "code": "000001",
+      "code_hmac": "139558a6d5de499ce3e52e8e574c38e05060e211066005f20a13365e66210e82"
+    },
+    {
+      "uid": "f7929329918d4378",
+      "code": "123456",
+      "code_hmac": "6689489034242540219a19a6d8cd7fe570f5c5bc5eb4d19be25826ecfb533ded"
+    },
+    {
+      "uid": "f7929329918d4378",
+      "code": "999999",
+      "code_hmac": "d155ca53ca4556c99191beb1d8b39a226514d0baa30b249d319e29272e2c53fb"
+    }
+  ],
+  "token_parse": [
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": true,
+      "keyid": "1",
+      "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "token": "ck_2_MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY",
+      "valid": true,
+      "keyid": "2",
+      "secret": "MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY"
+    },
+    {
+      "token": "ck_12_MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY",
+      "valid": true,
+      "keyid": "12",
+      "secret": "MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY"
+    },
+    {
+      "token": "ck_1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false,
+      "reject_reason": "lowercase secret: base32 alphabet is uppercase"
+    },
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "secret too short (38)"
+    },
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "secret too long (40)"
+    },
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "valid": false,
+      "reject_reason": "padding is not allowed"
+    },
+    {
+      "token": "ck_03_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "keyid has a leading zero"
+    },
+    {
+      "token": "ck_0_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "keyid zero is not a Secret Manager version"
+    },
+    {
+      "token": "ck__AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "empty keyid"
+    },
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_extra",
+      "valid": false,
+      "reject_reason": "too many underscore-separated parts"
+    },
+    {
+      "token": "xx_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "wrong prefix"
+    },
+    {
+      "token": "ck_1",
+      "valid": false,
+      "reject_reason": "missing secret"
+    },
+    {
+      "token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "valid": false,
+      "reject_reason": "no prefix at all"
+    },
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+      "valid": false,
+      "reject_reason": "non-canonical trailing bits"
+    }
+  ],
+  "tid": [
+    {
+      "token": "ck_1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "keyid": "1",
+      "tid": "a601f3d8e1812947874ecae841ba000280de424bc6bdcf3e216409f2e511e909"
+    },
+    {
+      "token": "ck_2_MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY",
+      "keyid": "2",
+      "tid": "c3482e315649309916a087f634190d5eb7a7a416d36d0c4cf7c8c699625093ec"
+    },
+    {
+      "token": "ck_12_MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY",
+      "keyid": "12",
+      "tid": "88d8198996a3bd843c3d54d695cc995035166e7c8acd9e5508e04b22e4977eb7"
+    },
+    {
+      "token": "ck_1_MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOJUW4ZY",
+      "keyid": "1",
+      "tid": "6780a16c47c6b592ea16f785804210d762456ac08bab2a9d873d404930db217e"
+    }
+  ],
+  "pepper_fingerprints": {
+    "1": "adee1405",
+    "12": "ba977b90",
+    "2": "7ad81383",
+    "otp": "ac5a3069"
+  },
+  "quota_key": [
+    {
+      "bucket_key": "203.0.113.9",
+      "quota_key": "be21ccdd9ee50c34"
+    },
+    {
+      "bucket_key": "2001:db8::/64",
+      "quota_key": "1a1a2a0543c7b0c1"
+    },
+    {
+      "bucket_key": "198.51.100.1",
+      "quota_key": "ffe2967d2370149c"
+    }
+  ]
+}

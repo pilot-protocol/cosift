@@ -47,3 +47,34 @@ A new dep needs to pass three tests:
 1. **Pure Go** (no cgo) unless there is no alternative.
 2. **Replaces ≥ 200 LOC** we'd otherwise write, OR provides correctness guarantees we can't easily replicate.
 3. **Has been maintained in the last 12 months** OR has so few changes that "abandoned" is fine.
+
+## Shared Cosift accounts (optional community mode)
+
+`cloud.google.com/go/firestore`, `cloud.google.com/go/secretmanager`,
+`google.golang.org/api`, `golang.org/x/oauth2`, and `google.golang.org/grpc`
+connect to the same infrastructure and token contract as `cosift-auth`.
+Firestore provides typed timestamps, collection-group token lookup and account
+reads; Secret Manager returns the **raw**, versioned token pepper. Google's
+ADC/ID-token clients handle credential refresh, service-account and supported
+impersonation flows for private Cloud Run. Firestore, Secret Manager and Google API versions match Andrei's auth
+service's dependency set. gRPC is upgraded to v1.83.2 for the security fixes in
+GO-2026-6348, GO-2026-6441 and GO-2026-6443. The transitive Google auth, gRPC, protobuf and telemetry
+dependencies increase binary size and compile time; the Linux ARM64 build still
+uses `CGO_ENABLED=0` and requires no external runtime.
+
+Hand-writing Firestore's typed REST protocol, OAuth credential discovery,
+refresh, impersonation and Cloud Run identity-token minting would create a large
+security-sensitive implementation. Calling `/auth/whoami` on every search would
+collapse users into the gateway's auth rate limit and does not return the verified
+email needed to link existing accounts. Official SDKs are justified here. They
+initialize only when `COSIFT_AUTH_MODE=shared`; standalone mode needs no Google
+credentials. MCP itself uses a small, bounded JSON-RPC HTTP client, without a new
+MCP framework dependency.
+
+`google.golang.org/protobuf` is also imported directly by the Firestore SDK
+wire-format tests. It was already required transitively; no extra runtime is
+introduced to construct the local gRPC fixture responses.
+
+CI installs the pinned official `govulncheck` v1.8.0 development tool to gate
+vulnerabilities in imported Go packages. It is not a dependency of the shipped binary.
+The minimum Go toolchain is 1.26.8 so builds include current 1.26 security fixes.

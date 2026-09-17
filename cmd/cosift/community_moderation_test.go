@@ -44,6 +44,8 @@ func TestCommunityModerationStrictVerdictsAndAuth(t *testing.T) {
 	}{
 		{`{"decision":"allow","category":"safe"}`, 200},
 		{`{"decision":"reject","category":"phishing"}`, 200},
+		{`{"decision":"reject","category":"spam"}`, 200},
+		{`{"decision":"reject","category":"low_quality"}`, 200},
 		{`{"decision":"uncertain","category":"unverified"}`, 200},
 		{`{"decision":"allow","category":"malware"}`, 503},
 		{`{"decision":"allow","category":"safe"} {"decision":"reject","category":"phishing"}`, 503},

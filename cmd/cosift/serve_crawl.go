@@ -42,13 +42,22 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req struct {
-		URL      string                 `json:"url"`
-		Artifact *crawler.LocalArtifact `json:"artifact,omitempty"`
+		SubmissionID string                 `json:"submission_id,omitempty"`
+		URL          string                 `json:"url"`
+		Artifact     *crawler.LocalArtifact `json:"artifact,omitempty"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if json.NewDecoder(r.Body).Decode(&req) != nil {
 		writeProblem(w, http.StatusBadRequest, "expected a webpage URL")
 		return
+	}
+	if req.SubmissionID != "" {
+		if len(req.SubmissionID) < 16 || len(req.SubmissionID) > 64 || strings.IndexFunc(req.SubmissionID, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-')
+		}) >= 0 {
+			writeProblem(w, http.StatusBadRequest, "invalid submission id")
+			return
+		}
 	}
 	u, err := community.NormalizeURL(req.URL)
 	if err != nil {
@@ -58,8 +67,12 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 	liftWriteDeadline(w)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	receipt, err := s.crawlCommunityFetch(ctx, u, req.Artifact)
+	receipt, err := s.fetchCommunityReceipt(ctx, req.SubmissionID, u, req.Artifact)
 	if err != nil {
+		if errors.Is(err, errCommunityReceiptConflict) {
+			writeProblem(w, http.StatusConflict, "submission id belongs to another payload")
+			return
+		}
 		if errors.Is(err, crawler.ErrContributionRejected) {
 			writeProblem(w, http.StatusUnprocessableEntity, "webpage or local artifact does not meet index validation policy")
 			return

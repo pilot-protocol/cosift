@@ -1172,11 +1172,12 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 // SQLite-side Server struct accumulated a lot of config knobs over many iters;
 // the Pebble surface starts minimal and grows feature-by-feature.
 type pebbleHTTP struct {
-	store       *store.PebbleStore
-	idx         *index.PebbleBM25
-	chat        embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
-	reranker    rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
-	rerankCandK int              // candidates pulled for rerank; default 20
+	communityReceiptMu sync.Mutex // serializes durable community receipt creation/replay
+	store              *store.PebbleStore
+	idx                *index.PebbleBM25
+	chat               embed.ChatClient // nil when cfg.Chat.Model is unset; /answer returns 501
+	reranker           rerank.Reranker  // nil when no rerank is configured; ?rerank=true is a no-op then
+	rerankCandK        int              // candidates pulled for rerank; default 20
 
 	// Bounded LLM concurrency + circuit breaker. chatGate is shared
 	// between the answer and rerank pools so a burst on one side can't
