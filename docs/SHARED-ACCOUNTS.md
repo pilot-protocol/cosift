@@ -200,3 +200,9 @@ not verified in this sweep: the available gcloud login required reauthentication
 Production readiness additionally requires provisioning the gateway identity,
 verifying IAM/index access and email/IP attribution in staging, applying the MCP
 companion, and completing the existing model, capacity and payment rollout gates.
+
+Security note: the audited auth revision also pins gRPC v1.82.1. Its owner should
+review/update that dependency before its production release; our gateway uses
+v1.83.1 to address [GO-2026-6348](https://pkg.go.dev/vuln/GO-2026-6348) and the
+related gRPC advisories. The auth companion in this PR changes proxy deployment
+configuration only, not its dependencies or live services.

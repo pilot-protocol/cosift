@@ -22,6 +22,18 @@ Companion patches were exercised in local audit checkouts only.
 | Auth proxy configuration companion | `bash -n infra/deploy.sh`; existing client-IP resolver and configuration tests pass |
 | Companion patch applicability | Each patch matches its pinned base checkout (`git apply --reverse --check` against the patched checkout) |
 
+## Security follow-up
+
+The first integration commit's Snyk check failed; the Snyk report was gated by
+login. An independent official `govulncheck` scan found affected gRPC v1.82.1
+call paths ([GO-2026-6348](https://pkg.go.dev/vuln/GO-2026-6348)) and Go 1.26.0
+standard-library paths with later security fixes. The PR now requires Go 1.26.8
+and gRPC v1.83.1; CI also runs pinned `govulncheck` v1.8.0. The independent scan
+is not a substitute for a successful Snyk check on the final commit. The updated
+scan reports **0 vulnerabilities called by the application**; it also reports
+non-called package/module advisories, which must not be described as a completely
+empty advisory inventory.
+
 ## Manual browser check
 
 The shipped HTML/JavaScript and community handlers were opened in the browser
