@@ -413,10 +413,18 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		return
 	}
 	defer func() { finishMode(completed) }()
-	if u.ID != "" && !s.allow("retrieval:"+u.ID, s.cfg.MemberFreeRPM, time.Minute) {
-		finish, ok := s.reserveCredit(w, r, u)
-		if !ok {
+	if u.ID != "" {
+		finish, free, err := s.reserveFree(r, u)
+		if err != nil {
+			problem(w, 503, "request allowance unavailable")
 			return
+		}
+		if !free {
+			var ok bool
+			finish, ok = s.reserveCredit(w, r, u)
+			if !ok {
+				return
+			}
 		}
 		defer func() { finish(completed) }()
 	}

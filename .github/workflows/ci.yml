@@ -66,3 +66,16 @@ jobs:
           name: coverage-cosift
           path: coverage.out
           retention-days: 30
+
+  community-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build pinned production Caddy version for routing tests
+        run: GOBIN="$RUNNER_TEMP/caddy-bin" go install github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.3
+      - name: Exercise public routing and quota bypass boundaries
+        run: python3 scripts/community-edge-smoke.py --caddy "$RUNNER_TEMP/caddy-bin/caddy"

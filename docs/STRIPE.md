@@ -3,7 +3,9 @@
 A single one-time pack: **US$5 buys 50,000 credits**. One credit pays for one
 additional Search, Answer or Research request after the shared free allowance.
 That is **$0.10 per 1,000 paid requests**. Buying credits does not bypass the
-existing mode caps. Earned credits and purchased credits use the same balance.
+existing mode caps. At the default Search limit of 120/minute, an account can
+use 60 shared free requests and then 60 credit-funded searches in that minute.
+Earned credits and purchased credits use the same balance.
 There are no subscriptions, automatic top-ups, recurring charges, saved-card
 billing, or Stripe product/price IDs to provision.
 

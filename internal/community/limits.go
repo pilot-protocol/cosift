@@ -18,7 +18,7 @@ func (c *Config) defaultLimits() error {
 		c.MemberFreeRPM = 60
 	}
 	if c.SearchRPM == 0 {
-		c.SearchRPM = 60
+		c.SearchRPM = 120
 	}
 	if c.AnswerRPM == 0 {
 		c.AnswerRPM = 20
@@ -129,4 +129,31 @@ func (s *Server) migrateGuestInterval() error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// reserveFree keeps the shared free allowance in the same durable database as
+// mode caps and credits. Restarts cannot turn paid requests into free requests.
+func (s *Server) reserveFree(r *http.Request, u User) (func(bool), bool, error) {
+	now := time.Now().Unix()
+	identity := "member:" + u.ID
+	var until int64
+	err := s.db.QueryRowContext(r.Context(), `INSERT INTO retrieval_usage(identity,mode,count,expires_at) VALUES(?,'free',1,?)
+ ON CONFLICT(identity,mode) DO UPDATE SET
+ count=CASE WHEN retrieval_usage.expires_at<=? THEN 1 ELSE retrieval_usage.count+1 END,
+ expires_at=CASE WHEN retrieval_usage.expires_at<=? THEN excluded.expires_at ELSE retrieval_usage.expires_at END
+ WHERE retrieval_usage.expires_at<=? OR retrieval_usage.count<? RETURNING expires_at`, identity, now+60, now, now, now, s.cfg.MemberFreeRPM).Scan(&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return func(success bool) {
+		if success {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = s.db.ExecContext(ctx, `UPDATE retrieval_usage SET count=count-1 WHERE identity=? AND mode='free' AND expires_at=? AND count>0`, identity, until)
+	}, true, nil
 }

@@ -1,5 +1,8 @@
 # Community web and CLI validation — 2026-09-17
 
+This is the first sweep. The follow-up [production readiness report](PRODUCTION-READINESS.md)
+records real-model checks and resolves the original Search credit-cap limitation.
+
 All execution described here used temporary local databases and processes.
 No production deployment, merge, release, real Stripe key, or charge was made.
 The candidate remains in PR #58. This evidence establishes working client and
@@ -83,10 +86,9 @@ require internet access. JavaScript regressions are now included in PR CI.
 - Compare real-model Search/Answer/Research quality and latency against the
   retained production baseline. Verify moderation with the intended model.
   Text/metadata checks are not an image/video safety classifier.
-- Confirm the quota policy before selling extra capacity. Credits buy requests
-  after the shared free allowance, and never bypass mode caps. With the default
-  60 free shared requests and Search capped at 60/minute, credits help mixed-mode
-  workloads; they do not increase a search-only user's 60/minute ceiling.
+- The follow-up sweep raised the default Search cap to 120/minute with 60 free
+  requests and persisted the free allowance. Credit-only extra capacity is now
+  verified for Search-only workloads; credits still cannot bypass mode caps.
 - Follow the existing operator handoff, including corpus readiness, backups,
   matching portal/engine versions and public routing compatibility. Durable
   receipt keys are included with the engine's Pebble data and must be retained

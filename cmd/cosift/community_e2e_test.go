@@ -57,6 +57,7 @@ func TestCommunityBinaryEndToEnd(t *testing.T) {
 	portal := httptest.NewServer(app)
 	defer portal.Close()
 	origin := portal.URL
+	passwordLogin := true
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir}
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
@@ -86,7 +87,10 @@ func TestCommunityBinaryEndToEnd(t *testing.T) {
 		defer cancel()
 		command := exec.CommandContext(ctx, bin, args...)
 		command.Dir = dir
-		command.Env = append(append([]string{}, env...), "COSIFT_EMAIL=binary@example.invalid", "COSIFT_PASSWORD=local-e2e-password-123")
+		command.Env = append([]string{}, env...)
+		if passwordLogin {
+			command.Env = append(command.Env, "COSIFT_EMAIL=binary@example.invalid", "COSIFT_PASSWORD=local-e2e-password-123")
+		}
 		out, err := command.Output()
 		if err != nil {
 			t.Fatalf("CLI %v: %v", args, err)
@@ -110,6 +114,45 @@ func TestCommunityBinaryEndToEnd(t *testing.T) {
 	}
 	if out := cli("contribute", "-server", origin, "-credits"); !bytes.Contains(out, []byte(`"payments_enabled":false`)) {
 		t.Fatal("payments enabled without keys")
+	}
+	// Explicit login reuses a session across processes, without repeatedly hitting
+	// the 10-password-logins/minute account throttle.
+	sessionFile := filepath.Join(dir, "cli-session.json")
+	cli("login", "-server", origin, "-session-file", sessionFile)
+	info, err := os.Stat(sessionFile)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("session file is not private: %v", err)
+	}
+	var stored struct {
+		Token string `json:"token"`
+	}
+	storedJSON, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(storedJSON, &stored); err != nil {
+		t.Fatal(err)
+	}
+	// Subsequent commands must not need either email or password.
+	env = append(env, "COSIFT_SESSION_FILE="+sessionFile)
+	passwordLogin = false
+	for i := 0; i < 12; i++ {
+		cli("request", "-server", origin, "-query", "Go documentation")
+	}
+	cli("contribute", "-server", origin, "-credits")
+	cli("logout", "-server", origin)
+	if _, err := os.Stat(sessionFile); !os.IsNotExist(err) {
+		t.Fatal("logout retained session file")
+	}
+	req, _ := http.NewRequest("GET", origin+"/api/me", nil)
+	req.AddCookie(&http.Cookie{Name: "cosift_session", Value: stored.Token})
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 401 {
+		t.Fatal("CLI logout failed to revoke session")
 	}
 	// CLI logout must not revoke the web session; both see the same saved data.
 	call("GET", "/api/me", nil, 200)

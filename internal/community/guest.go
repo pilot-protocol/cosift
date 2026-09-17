@@ -119,7 +119,10 @@ func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 		}
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT u.id,u.email,u.name,u.interests,u.onboarded FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.hash=? AND s.expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
-			next(w, r, User{})
+			// A caller presenting a revoked/expired session intended authenticated
+			// work. Never silently enqueue it as an uncredited guest submission.
+			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+			problem(w, 401, "session expired; sign in again")
 			return
 		}
 		if err != nil {

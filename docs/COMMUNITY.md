@@ -105,7 +105,7 @@ idempotent by content hash, so retrying or mirroring the same content cannot ear
 multiple rewards. Existing corpus URLs and rejected/unverified submissions do
 not earn credits. Guests do not earn credits. After the shared free 60 requests/minute,
 each additional Search, Answer or Research costs **1 credit**, with a ceiling of
-60 Search/minute, 20 Answer/minute and 3 Research/10 minutes per account. Credits cannot bypass these hard caps. Mode caps are persisted across restarts and shared by all sessions and native endpoint aliases. Backend failures refund the debit. Credits are
+120 Search/minute, 20 Answer/minute and 3 Research/10 minutes per account. Credits cannot bypass these hard caps. Mode caps are persisted across restarts and shared by all sessions and native endpoint aliases. Backend failures refund the debit. Credits are
 spent rather than granting permanent tiers. `GET /api/credits` returns the
 balance and policy; the web app displays the balance.
 
@@ -118,14 +118,16 @@ are no subscriptions or automatic charges. See [Stripe setup and validation](STR
 The candidate Caddy configuration routes public `/search`, `/answer` and `/research`
 through the same portal policy as `/api/*`. These public aliases support GET with
 `q`; POST and advanced native engine parameters are not supported on the public
-portal. The internal loopback engine remains available to trusted operators.
+portal. Unlisted native routes return 404 to prevent quota bypasses. The internal
+loopback engine remains available to trusted operators.
 `GET /api/limits` publishes current limits. Operators can configure
 `-guest-interval`, `-member-free-rpm`, `-search-rpm`, `-answer-rpm`, and
 `-research-per-10m` on the community command. A guest interval change preserves
 the original request time instead of resetting all allowances. In-flight requests
 reserve a mode slot; backend failures release it and refund charged credits.
-The shared free member allowance counts attempts and is process-local; persisted
-mode caps still bound actual work after a restart.
+The shared free member allowance also persists across restarts. Failed backend
+requests release both free and mode reservations. At the defaults, Search-only
+usage can consume 60 free requests and then 60 credit-funded requests per minute.
 
 ## CLI and CSV
 
@@ -146,10 +148,35 @@ arguments and shell history. Omit `-guest`:
 ./cosift contribute -server https://community.example.com -csv sources.csv
 ```
 
-Without either credential, the CLI defaults to guest access. `-guest` explicitly
-ignores configured credentials. `-email` overrides `COSIFT_EMAIL`; `-csv -` reads
-stdin. Flags precede positional URLs. The CLI logs out its temporary session
-after an authenticated submission.
+For repeated commands, explicitly save a reusable session. The file contains
+an opaque session token bound to this exact server origin, with mode 0600;
+it never stores your password. Use a private directory outside the repository:
+
+```sh
+mkdir -p "$HOME/.config/cosift"
+chmod 700 "$HOME/.config/cosift"
+export COSIFT_SESSION_FILE="$HOME/.config/cosift/community-session.json"
+./cosift login -server https://community.example.com
+unset COSIFT_PASSWORD
+./cosift request -server https://community.example.com -query "Go modules"
+./cosift contribute -server https://community.example.com -csv sources.csv
+./cosift logout -server https://community.example.com
+```
+
+`-session-file FILE` overrides `COSIFT_SESSION_FILE`. Login refuses to overwrite
+an existing file; logout revokes this CLI session and deletes the file. An
+expired/revoked session requires another login. A failed logout keeps the file
+for retry unless the server confirms the session is already invalid. Browser
+sessions are independent. Never commit, share, or upload the session file.
+
+Without credentials or a session file, the CLI defaults to guest access.
+`-guest` explicitly ignores both. `-email` overrides `COSIFT_EMAIL`; `-csv -`
+reads stdin. Flags precede positional URLs. Without a saved session, email/password
+commands use a temporary login and revoke it afterward; the password-authentication
+throttle remains 10 attempts per account/minute and 30 per IP/minute. Use a saved
+session to access the full retrieval allowance without repeated password logins.
+Invalid session files fail before requests; revoked cookies return 401 rather
+than silently submitting a member's work as an uncredited guest.
 
 CSV accepts a single headerless URL column, or a column called `url`, `urls`,
 `webpage`, or `website`. Other columns are ignored when a recognized header is
@@ -227,7 +254,7 @@ See [the operator rollout and rollback plan](COMMUNITY-ROLLOUT.md) before deploy
 Create its private data directory before starting it and supply
 `COSIFT_COMMUNITY_ADMIN_TOKEN` through root-owned `/etc/cosift/community.env`.
 `deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
-portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. Other engine endpoints retain their original routing. It trusts only loopback and
+portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. It trusts only loopback and
 Cloudflare networks, then overwrites the forwarded client IP.
 
 The community backup timer snapshots SQLite consistently into the existing GCS

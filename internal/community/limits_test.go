@@ -112,3 +112,55 @@ func TestGuestPolicyMigrationPreservesRequestTime(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultSearchCreditsAndFreeAllowanceSurviveRestart(t *testing.T) {
+	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"hits":[]}`)) }))
+	cookie := account(t, s, "default-credits@example.com")
+	var u User
+	json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &u)
+	for range 60 {
+		expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
+	}
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 429)
+	if _, err := s.db.Exec(`INSERT INTO credit_ledger VALUES('seed-default',?,100,'test',0)`, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The 61st request must work once credits are available under the defaults.
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
+	reopened, err := Open(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 200)
+	var balance int
+	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
+	if balance != 98 {
+		t.Fatalf("restart reset free allowance: balance=%d want98", balance)
+	}
+	for range 58 {
+		expect(t, request(t, reopened, "GET", "/api/search?q=test", nil, cookie), 200)
+	}
+	expect(t, request(t, reopened, "GET", "/search?q=test", nil, cookie), 429)
+	s.db.QueryRow(`SELECT SUM(delta) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance)
+	if balance != 40 {
+		t.Fatalf("wrong charge total: %d", balance)
+	}
+}
+
+func TestFailedRetrievalRefundsFreeAllowance(t *testing.T) {
+	fail := true
+	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail {
+			w.WriteHeader(503)
+			return
+		}
+		w.Write([]byte(`{"hits":[]}`))
+	}))
+	s.cfg.MemberFreeRPM = 1
+	cookie := account(t, s, "free-refund@example.com")
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 502)
+	fail = false
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 200)
+	expect(t, request(t, s, "GET", "/api/search?q=test", nil, cookie), 429)
+}

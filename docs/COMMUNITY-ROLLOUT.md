@@ -88,6 +88,9 @@ reuse the withdrawn v0.2.6 artifacts.
    Remove only explicitly created QA accounts/data according to retention
    requirements. Reject garbage and unsafe fixtures without sending harmful
    material to the corpus. Classifier uncertainty must remain held.
+   Verify repeated requests using a saved CLI session, then revoke it and check
+   that it cannot be reused. Keep session files out of source control and backups
+   shared with other users.
 8. If payments are part of the approved rollout, complete the Stripe test-mode
    checks in `docs/STRIPE.md` before supplying live credentials. Verify webhook
    fulfillment, replay protection and refund reconciliation.
@@ -100,20 +103,25 @@ reuse the withdrawn v0.2.6 artifacts.
 
 | Operation | Member hard cap | Guest hard cap |
 | --- | --- | --- |
-| Search | 60/minute | 1/minute |
+| Search | 120/minute | 1/minute |
 | Answer | 20/minute | 1/5 minutes |
 | Research | 3/10 minutes | 1/30 minutes |
 
 Guests also share one request/minute across retrieval and contributions. Members
 have 60 shared free requests/minute; one credit pays for each extra request
 within the hard caps. Credit balance never bypasses a cap. Backend failures
-release mode slots and refund guest allowances/credits. Mode quotas persist
-across restarts; the shared member free-attempt counter is process-local.
+release mode slots and refund guest allowances, free member reservations and
+credits. Mode and shared free quotas persist across restarts. Search-only usage
+can use 60 free requests and then 60 credit-funded requests/minute. Repeated CLI
+commands should use `cosift login -session-file FILE` to avoid repeated password
+logins and the separate authentication throttle.
 
 Public `/search`, `/answer` and `/research` now use the portal and accept GET
 with `q`, matching the app/CLI. Existing public POST, streaming, or advanced
 native parameters require a client migration; loopback engine access retains
-its original interface. Check consumers before approving this routing change.
+its original interface. All unlisted public routes (including `/query`,
+`/find_similar` and `/contents`) return 404; there is no engine fallback. `/chat`
+redirects to `/login`. Check consumers before approving this routing change.
 
 ## Rollback
 

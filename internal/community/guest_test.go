@@ -99,3 +99,28 @@ func TestTrustedProxyClientIP(t *testing.T) {
 		}
 	}
 }
+
+func TestInvalidSessionDoesNotSilentlyBecomeGuest(t *testing.T) {
+	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"hits":[]}`) }))
+	stale := &http.Cookie{Name: cookieName, Value: "revoked-session"}
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/api/search?q=science", nil},
+		{"POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}},
+	} {
+		w := request(t, s, tc.method, tc.path, tc.body, stale)
+		expect(t, w, 401)
+		cookies := w.Result().Cookies()
+		if len(cookies) != 1 || cookies[0].Name != cookieName || cookies[0].MaxAge != -1 {
+			t.Fatal("stale browser cookie was not cleared")
+		}
+	}
+	// Failed authentication must not use guest allowance or enqueue unowned work.
+	expect(t, request(t, s, "GET", "/api/search?q=science", nil, nil), 200)
+	var count int
+	if err := s.db.QueryRow(`SELECT count(*) FROM submissions`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("unexpected submission: %d %v", count, err)
+	}
+}
