@@ -1454,6 +1454,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?);`
 	return err
 }
 
+// MarkURLInvalid deletes every passage belonging to the document at url.
+// The crawler calls it (via crawler.URLInvalidator) right before writing a
+// re-crawled document's fresh chunk set, so passages whose offsets no longer
+// exist in the new text don't linger in the table and the vector index.
+// Returns the number of rows deleted.
+func (s *Store) MarkURLInvalid(ctx context.Context, url string) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM passages WHERE doc_id IN (SELECT id FROM documents WHERE url = ?);`, url)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // LoadPassagesByModel scans all passages for a given model and joins doc info.
 // Returned vectors are independent slices, safe to retain.
 func (s *Store) LoadPassagesByModel(ctx context.Context, model string) ([]PassageDoc, error) {
