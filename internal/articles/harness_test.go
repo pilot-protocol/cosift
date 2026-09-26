@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,12 +44,14 @@ var (
 // fakeEmbedder returns fixed vectors for known texts and a hash-seeded
 // random vector otherwise.
 type fakeEmbedder struct {
-	mu    sync.Mutex
-	vecs  map[string][]float32
-	calls [][]string
-	block chan struct{}
-	fail  error
-	model string
+	mu        sync.Mutex
+	vecs      map[string][]float32
+	calls     [][]string
+	block     chan struct{}
+	ignoreCtx bool
+	fail      error
+	failIf    func(texts []string) bool
+	model     string
 }
 
 func newFakeEmbedder() *fakeEmbedder {
@@ -61,9 +64,14 @@ func (f *fakeEmbedder) Dim() int      { return testDim }
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, append([]string(nil), texts...))
-	block, failErr := f.block, f.fail
+	block, failErr, ignoreCtx := f.block, f.fail, f.ignoreCtx
+	if f.failIf != nil && f.failIf(texts) {
+		failErr = errors.New("embed http 400: echoed input " + strings.Join(texts, " | "))
+	}
 	f.mu.Unlock()
-	if block != nil {
+	if block != nil && ignoreCtx {
+		<-block
+	} else if block != nil {
 		select {
 		case <-block:
 		case <-ctx.Done():
@@ -92,10 +100,29 @@ func (f *fakeEmbedder) set(text string, v []float32) {
 	f.vecs[text] = v
 }
 
+func (f *fakeEmbedder) setFailIf(fn func(texts []string) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failIf = fn
+}
+
 func (f *fakeEmbedder) setBlock(ch chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.block = ch
+}
+
+// count is how many embed calls carried text.
+func (f *fakeEmbedder) count(text string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if slices.Contains(c, text) {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeEmbedder) embedded(text string) bool {
@@ -141,14 +168,32 @@ type fakeCorpus struct{ urls map[string]bool }
 func (c fakeCorpus) HasDocument(_ context.Context, u string) (bool, error) { return c.urls[u], nil }
 
 type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
+	mu      sync.Mutex
+	t       time.Time
+	hold    chan struct{}
+	blocked chan struct{}
 }
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
+	if hold := c.hold; hold != nil {
+		blocked := c.blocked
+		c.hold = nil
+		c.mu.Unlock()
+		close(blocked)
+		<-hold
+		c.mu.Lock()
+	}
 	defer c.mu.Unlock()
 	return c.t
+}
+
+// holdNext makes the next Now call block until release is closed; blocked closes when it does.
+func (c *fakeClock) holdNext() (release, blocked chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hold, c.blocked = make(chan struct{}), make(chan struct{})
+	return c.hold, c.blocked
 }
 
 func (c *fakeClock) advance(d time.Duration) {

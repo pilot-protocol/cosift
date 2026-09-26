@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"net/http"
-	"os"
 	"slices"
 	"testing"
 
@@ -185,34 +184,28 @@ func TestOpenRefusesCachedEmbedder(t *testing.T) {
 	}
 }
 
-// The serve wiring wraps the shared embedder in a disk cache; the store gets the inner one.
-func TestNoEmbedCacheFiles(t *testing.T) {
+// The store embeds every text through the embedder it was given, uncached. The
+// cache_dir proof through the serve wiring is the joint test in cmd/cosift.
+func TestEmbedsEveryTextUncached(t *testing.T) {
 	h := newHarness(t)
-	cacheDir := t.TempDir()
-	shared := embed.NewCachedEmbedder(h.emb, cacheDir)
-	if _, err := shared.Embed(context.Background(), []string{"crawler text"}); err != nil {
-		t.Fatal(err)
-	}
-	baseline, _ := os.ReadDir(cacheDir)
-
 	id := ulid(1)
 	h.emb.set("Rust async runtimes", axis(1))
 	h.put(synthProd, id, articleBody("Rust async runtimes"), http.StatusCreated)
-	h.match(mcpProd, map[string]any{"q": "rust async runtimes"}, http.StatusOK)
-	h.match(synthProd, map[string]any{"q": "Rust async runtimes", "purpose": "build"}, http.StatusOK)
-	h.moderate(dashProd, id, "tombstone", "privacy", http.StatusOK)
+	h.put(synthProd, id, with(articleBody("Rust async runtimes"), "lead", "A second lead. It changes."), http.StatusOK)
+	for range 2 {
+		h.match(mcpProd, map[string]any{"q": "rust async runtimes"}, http.StatusOK)
+		h.match(synthProd, map[string]any{"q": "rust async runtimes", "purpose": "build"}, http.StatusOK)
+	}
+	if n := h.emb.count("rust async runtimes"); n != 4 {
+		t.Errorf("a repeated match text reached the embedder %d times, want 4", n)
+	}
+	if n := h.emb.count("Rust async runtimes"); n != 2 {
+		t.Errorf("the title reached the embedder %d times over two content writes, want 2", n)
+	}
 	stub := ulid(2)
 	h.call(resolverProd, http.MethodPut, "/v1/articles/"+stub, stubBodyFor("Go memory model", topic(2)), http.StatusCreated)
 	h.moderate(dashProd, stub, "tombstone", "legal", http.StatusOK)
-	if _, ok := h.raw(fingerprintKey(stub)); !ok {
-		t.Fatal("stub tombstone wrote no fingerprint")
-	}
-
-	entries, _ := os.ReadDir(cacheDir)
-	if len(entries) != len(baseline) {
-		t.Errorf("cache dir has %d files, want %d", len(entries), len(baseline))
-	}
-	if !h.emb.embedded("rust async runtimes") {
-		t.Error("match did not reach the embedder")
+	if _, ok := h.raw(fingerprintKey(stub)); !ok || h.emb.count("Go memory model") != 1 {
+		t.Error("the stub tombstone did not embed its title for the fingerprint")
 	}
 }

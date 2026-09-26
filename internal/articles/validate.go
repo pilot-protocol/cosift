@@ -122,10 +122,10 @@ func validateArticle(b *putBody) *v1.Error {
 	if e := checkText("lead", b.Lead, 1, 600); e != nil {
 		return e
 	}
-	if e := validateBody(b); e != nil {
+	if e := validateCitations(b.Citations); e != nil {
 		return e
 	}
-	if e := validateCitations(b.Citations); e != nil {
+	if e := validateBody(b); e != nil {
 		return e
 	}
 	if !qualityTiers[b.QualityTier] {

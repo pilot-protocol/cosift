@@ -228,10 +228,14 @@ func (s *Store) commitArticle(p v1.Principal, id string, b *putBody, vecs map[st
 	}
 	var rows []row
 	if pl.content {
+		stored := storedVectors(pl.prev, s.idx.rows[id])
 		texts := vectorTexts(pl.rec)
 		all := make([][]float32, len(texts))
 		for i, t := range texts {
 			v, ok := vecs[t]
+			if !ok {
+				v, ok = stored[t]
+			}
 			if !ok {
 				return nil, nil, true
 			}
@@ -286,6 +290,25 @@ func (s *Store) commitArticle(p v1.Principal, id string, b *putBody, vecs map[st
 		}
 	})
 	return pl, nil, false
+}
+
+// storedVectors maps the texts of r's current rows to their vectors.
+func storedVectors(r *Record, rows []row) map[string][]float32 {
+	out := map[string][]float32{}
+	if r == nil {
+		return out
+	}
+	for _, rw := range rows {
+		switch {
+		case rw.kind == kindTitle:
+			out[r.Title] = rw.vec
+		case rw.kind == kindLead:
+			out[r.Lead] = rw.vec
+		case rw.kind == kindAlias && rw.alias < len(r.Aliases):
+			out[r.Aliases[rw.alias]] = rw.vec
+		}
+	}
+	return out
 }
 
 // pruneVersions deletes prior versions of id beyond the newest keepVersions,
