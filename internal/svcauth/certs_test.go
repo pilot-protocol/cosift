@@ -42,7 +42,7 @@ func metricValue(t *testing.T, h *harness, series string) string {
 	return ""
 }
 
-// §3.2 wrapper test 1: a request cancelled while a refresh runs neither
+// A request cancelled while a refresh runs neither
 // cancels it nor causes a 503 for a concurrent valid token.
 func TestCertRefreshSurvivesCancelledRequest(t *testing.T) {
 	h := newHarness(t, baseConfig())
@@ -78,7 +78,7 @@ func TestCertRefreshSurvivesCancelledRequest(t *testing.T) {
 	}
 }
 
-// §3.2 wrapper test 2: a failed refresh keeps the last good copy in service,
+// A failed refresh keeps the last good copy in service,
 // for up to 24 h past its expiry.
 func TestCertFailedRefreshKeepsCopy(t *testing.T) {
 	h := newHarness(t, baseConfig())
@@ -114,7 +114,7 @@ func TestCertFailedRefreshKeepsCopy(t *testing.T) {
 	}
 }
 
-// §3.2 wrapper test 3: an unknown kid triggers one early refresh, is accepted
+// An unknown kid triggers one early refresh, is accepted
 // once it lands, and a second unknown kid within 5 min triggers none.
 func TestCertUnknownKidEarlyRefresh(t *testing.T) {
 	h := newHarness(t, baseConfig())
@@ -146,7 +146,7 @@ func TestCertUnknownKidEarlyRefresh(t *testing.T) {
 	waitFor(t, "a refresh after 5 min", func() bool { return h.src.Fetches() == 4 })
 }
 
-// §3.2 wrapper test 4: with no copy ever held, a token that passed checks 1-8
+// With no copy ever held, a token that passed the claim checks
 // is 503 at once, while the only fetch hangs.
 func TestCertNeverFilled(t *testing.T) {
 	h := newHarness(t, baseConfig(), withoutCerts())
@@ -285,7 +285,7 @@ func TestCertFetchIsDetachedAndBounded(t *testing.T) {
 	if cl.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
 		t.Fatal("the certificate client follows redirects")
 	}
-	if tr := cl.Transport.(*http.Transport); tr.MaxResponseHeaderBytes != 64<<10 {
-		t.Fatalf("header limit %d", tr.MaxResponseHeaderBytes)
+	if tr := cl.Transport.(*http.Transport); tr.MaxResponseHeaderBytes != 64<<10 || tr.DialContext == nil || tr.Proxy != nil {
+		t.Fatalf("transport: header limit %d, guarded dialer %v, proxy %v", tr.MaxResponseHeaderBytes, tr.DialContext != nil, tr.Proxy != nil)
 	}
 }

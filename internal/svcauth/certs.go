@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/netguard"
 )
 
 const (
@@ -46,14 +48,14 @@ func HTTPCertSource(client *http.Client) CertSource {
 
 // NewCertHTTPClient is the client HTTPCertSource uses in production.
 func NewCertHTTPClient() *http.Client {
+	tr := netguard.Protect(&http.Transport{
+		MaxResponseHeaderBytes: certMaxHeader,
+		TLSHandshakeTimeout:    certFetchTimeout,
+		ResponseHeaderTimeout:  certFetchTimeout,
+		ForceAttemptHTTP2:      true,
+	}, true)
 	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:                  http.ProxyFromEnvironment,
-			MaxResponseHeaderBytes: certMaxHeader,
-			TLSHandshakeTimeout:    certFetchTimeout,
-			ResponseHeaderTimeout:  certFetchTimeout,
-			ForceAttemptHTTP2:      true,
-		},
+		Transport:     tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Timeout:       certFetchTimeout,
 	}
@@ -79,6 +81,8 @@ type CertCache struct {
 	mu        sync.Mutex
 	cur       *certCopy
 	lastEarly time.Time
+	lastGood  time.Time
+	started   time.Time
 }
 
 func NewCertCache(source CertSource, m *Metrics, now func() time.Time, logf func(string, ...any)) *CertCache {
@@ -150,6 +154,9 @@ func (c *CertCache) RoundTrip(req *http.Request) (*http.Response, error) {
 // Run fetches at once, then before each copy expires, and early on request;
 // failures back off from 10 s to 5 min. It returns when ctx is done.
 func (c *CertCache) Run(ctx context.Context) {
+	c.mu.Lock()
+	c.started = c.now()
+	c.mu.Unlock()
 	var backoff time.Duration
 	for {
 		var wait time.Duration
@@ -200,7 +207,7 @@ func (c *CertCache) refresh(ctx context.Context) bool {
 		return false
 	}
 	c.mu.Lock()
-	c.cur = cp
+	c.cur, c.lastGood = cp, cp.fetched
 	c.mu.Unlock()
 	c.metrics.certResult(true)
 	return true
@@ -273,10 +280,17 @@ func freshFor(h http.Header) time.Duration {
 	return time.Duration(max(maxAge-age, 0)) * time.Second
 }
 
+// age runs from the last good fetch, or from the loop's start before the
+// first one, so it keeps growing through an outage; absent before Run.
 func (c *CertCache) age() (float64, bool) {
-	cp := c.current()
-	if cp == nil {
-		return 0, false
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case !c.lastGood.IsZero():
+		return now.Sub(c.lastGood).Seconds(), true
+	case !c.started.IsZero():
+		return now.Sub(c.started).Seconds(), true
 	}
-	return c.now().Sub(cp.fetched).Seconds(), true
+	return 0, false
 }
