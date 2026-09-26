@@ -271,8 +271,8 @@ func TestV1ShutdownOrder(t *testing.T) {
 	oldPath, oldUID, oldSrc, oldOpen := svcAuthPath, svcAuthOwnerUID, v1CertSource, openArticles
 	svcAuthPath, svcAuthOwnerUID = cfgPath, uint32(os.Getuid())
 	v1CertSource = svcauthtest.NewSource(svcauthtest.JWKS(svcauthtest.NewSigner("k")), 21600).Fetch
-	openArticles = func(_ context.Context, d articleDeps) (articleLayer, error) {
-		if d.db == nil || d.corpus == nil || d.policy == nil || d.thresholdsPath == "" {
+	openArticles = func(d articleDeps) (articleLayer, error) {
+		if d.db == nil || d.policy == nil || d.thresholdsPath == "" {
 			return nil, errors.New("missing dependency")
 		}
 		a.deps = d
@@ -446,11 +446,18 @@ func TestSvcAuthCheck(t *testing.T) {
 		}
 	}
 	good := svcauth.FormatDigest(svcauth.Digest([]byte(v1TestPepper), key))
-	cfg := &config.Config{Server: config.Server{AdminToken: "admin-secret"}, Cluster: config.Cluster{PeerAuthToken: "peer-secret"}}
+	cfgPath := filepath.Join(dir, "cosift.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"server":{"addr":"127.0.0.1:7777","admin_token":"admin-secret"},"cluster":{"peer_auth_token":"peer-secret"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	args := []string{"check", "--file", file, "--pepper-file", pepperFile}
 	var out, errOut bytes.Buffer
 	write(good, 0o640)
-	if err := runSvcAuth(cfg, args, &out, &errOut); err != nil {
+	if err := runSvcAuth(cfg, cfgPath, args, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "synth-prod oidc prod articles:read,articles:write\ndash-prod key prod articles:read_all,articles:moderate\n" {
@@ -465,10 +472,18 @@ func TestSvcAuthCheck(t *testing.T) {
 		"bad mode":                      func() { write(good, 0o644) },
 		"bad digest":                    func() { write("hmac-sha256:xyz", 0o640) },
 		"absent":                        func() { _ = os.Remove(file) },
+		"listen on the main address": func() {
+			b, _ := json.Marshal(map[string]any{"schema_version": 1, "listen": "127.0.0.1:7777", "principals": []any{
+				map[string]any{"id": "synth-prod", "kind": "oidc", "sub": v1SynthSub, "email": v1SynthEmail, "env": "prod", "scopes": []string{"articles:read"}, "rpm": 300},
+			}})
+			if err := os.WriteFile(file, b, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		},
 	} {
 		setup()
 		out.Reset()
-		err := runSvcAuth(cfg, args, &out, &errOut)
+		err := runSvcAuth(cfg, cfgPath, args, &out, &errOut)
 		var ue *usageError
 		if err == nil || errors.As(err, &ue) || out.Len() != 0 {
 			t.Errorf("%s: %v, stdout %q", name, err, out.String())
@@ -476,15 +491,28 @@ func TestSvcAuthCheck(t *testing.T) {
 	}
 	write(good, 0o640)
 	errOut.Reset()
-	if err := runSvcAuth(cfg, []string{"check", "--file", file, "--pepper-file", filepath.Join(dir, "none")}, &out, &errOut); err != nil {
+	if err := runSvcAuth(cfg, cfgPath, []string{"check", "--file", file, "--pepper-file", filepath.Join(dir, "none")}, &out, &errOut); err != nil {
 		t.Fatalf("no pepper is not a refusal: %v", err)
 	}
 	if !strings.Contains(errOut.String(), "svc-auth: WARN COSIFT_SVC_PEPPER absent") {
 		t.Fatalf("stderr %q", errOut.String())
 	}
 	var ue *usageError
-	if err := runSvcAuth(cfg, []string{"verify"}, &out, &errOut); !errors.As(err, &ue) {
+	if err := runSvcAuth(cfg, cfgPath, []string{"verify"}, &out, &errOut); !errors.As(err, &ue) {
 		t.Fatalf("usage: %v", err)
+	}
+
+	noCfg := filepath.Join(dir, "missing.json")
+	err = runSvcAuth(&config.Config{}, noCfg, args, &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "-config") || !strings.Contains(err.Error(), "--no-engine-config") {
+		t.Fatalf("no cosift.json: %v", err)
+	}
+	errOut.Reset()
+	if err := runSvcAuth(&config.Config{}, noCfg, append(args, "--no-engine-config"), &out, &errOut); err != nil {
+		t.Fatalf("--no-engine-config: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "collision") {
+		t.Fatalf("--no-engine-config gives no warning: %q", errOut.String())
 	}
 }
 
@@ -524,6 +552,17 @@ func TestSvcCLIExitCodes(t *testing.T) {
 	}
 	if code, _, _ := run(nil, "svc-auth", "check", "--file", filepath.Join(dir, "missing.json"), "--pepper-file", none); code != 1 {
 		t.Errorf("check refused: exit %d", code)
+	}
+	file := filepath.Join(dir, "service-auth.json")
+	if err := os.WriteFile(file, []byte(`{"schema_version":1,"principals":[{"id":"mcp-prod","kind":"oidc","sub":"123456789","email":"mcp-prod@cosift-test.iam.gserviceaccount.com","env":"prod","scopes":["articles:read"],"rpm":60}]}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := run(nil, "svc-auth", "check", "--file", file, "--pepper-file", none); code != 1 || !strings.Contains(stderr, "cosift.json not found") {
+		t.Errorf("check without cosift.json: exit %d %q", code, stderr)
+	}
+	code, out, stderr := run(nil, "svc-auth", "check", "--file", file, "--pepper-file", none, "--no-engine-config")
+	if os.Getuid() == 0 && (code != 0 || out != "mcp-prod oidc prod articles:read\n" || !strings.Contains(stderr, "--no-engine-config")) {
+		t.Errorf("--no-engine-config: exit %d %q %q", code, out, stderr)
 	}
 }
 
@@ -650,7 +689,7 @@ func TestV1ArticleWiring(t *testing.T) {
 	oldPath, oldUID, oldSrc, oldOpen := svcAuthPath, svcAuthOwnerUID, v1CertSource, openArticles
 	svcAuthPath, svcAuthOwnerUID = cfgPath, uint32(os.Getuid())
 	v1CertSource = svcauthtest.NewSource(svcauthtest.JWKS(svcauthtest.NewSigner("k")), 21600).Fetch
-	openArticles = func(_ context.Context, d articleDeps) (articleLayer, error) {
+	openArticles = func(d articleDeps) (articleLayer, error) {
 		a.deps = d
 		return &blockingRebuild{fakeArticleLayer: a, until: rebuilt}, nil
 	}
@@ -661,7 +700,7 @@ func TestV1ArticleWiring(t *testing.T) {
 	var rs v1.Reloaders
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	l := f.srv.startV1(ctx, &config.Config{}, &rs)
+	l := f.srv.startV1(ctx, &config.Config{}, &rs, "")
 	defer l.stop()
 	get := func() (int, string) {
 		req, _ := http.NewRequest("GET", "http://"+v1Addr+"/v1/articles", nil)

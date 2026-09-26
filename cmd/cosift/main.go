@@ -108,7 +108,7 @@ func main() {
 	flag.Parse()
 	// Before anything slow: Go's default action for SIGHUP exits the process.
 	if flag.Arg(0) == "pebble-serve" {
-		handleSIGHUP(&sighupReloaders)
+		handleSIGHUP(sighupReloaders)
 	}
 
 	if flag.NArg() < 1 {
@@ -183,7 +183,7 @@ func run(cfgPath string) error {
 	case "svc-key":
 		return runSvcKey(flag.Args()[1:], os.Stdout, os.Stderr, time.Now())
 	case "svc-auth":
-		return runSvcAuth(cfg, flag.Args()[1:], os.Stdout, os.Stderr)
+		return runSvcAuth(cfg, cfgPath, flag.Args()[1:], os.Stdout, os.Stderr)
 	case "init":
 		if err := runInit(cfgPath, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("init: %w", err)

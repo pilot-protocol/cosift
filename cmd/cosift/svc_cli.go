@@ -82,8 +82,8 @@ func runSvcKey(args []string, stdout, stderr io.Writer, now time.Time) error {
 	return nil
 }
 
-func runSvcAuth(cfg *config.Config, args []string, stdout, stderr io.Writer) error {
-	usage := &usageError{msg: "usage: cosift [-config cosift.json] svc-auth check [--file " + svcauth.DefaultPath + "] [--pepper-file " + defaultPepperFile + "]"}
+func runSvcAuth(cfg *config.Config, cfgPath string, args []string, stdout, stderr io.Writer) error {
+	usage := &usageError{msg: "usage: cosift [-config cosift.json] svc-auth check [--file " + svcauth.DefaultPath + "] [--pepper-file " + defaultPepperFile + "] [--no-engine-config]"}
 	if len(args) == 0 || args[0] != "check" {
 		return usage
 	}
@@ -91,10 +91,19 @@ func runSvcAuth(cfg *config.Config, args []string, stdout, stderr io.Writer) err
 	fs.SetOutput(io.Discard)
 	file := fs.String("file", svcauth.DefaultPath, "service-auth.json")
 	pepperFile := fs.String("pepper-file", defaultPepperFile, "EnvironmentFile holding COSIFT_SVC_PEPPER")
+	noEngine := fs.Bool("no-engine-config", false, "skip the checks against cosift.json")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 {
 		return usage
 	}
+	checks := svcauth.Checks{PeerAuthToken: cfg.Cluster.PeerAuthToken, AdminToken: cfg.Server.AdminToken, MainAddr: cfg.Server.Addr}
+	if *noEngine {
+		checks = svcauth.Checks{}
+		fmt.Fprintln(stderr, "svc-auth: WARN --no-engine-config: the token collision and listen checks against cosift.json are skipped")
+	} else if _, err := os.Stat(cfgPath); err != nil {
+		return fmt.Errorf("svc-auth: engine config %s not found; pass -config <cosift.json> so the token collision check can run, or --no-engine-config to skip it", cfgPath)
+	}
 	pepper := svcPepper(*pepperFile)
+	checks.Pepper = pepper
 	b, err := svcauth.ReadFile(*file, svcAuthOwnerUID)
 	if errors.Is(err, svcauth.ErrAbsent) {
 		return fmt.Errorf("svc-auth: %s absent", *file)
@@ -102,7 +111,7 @@ func runSvcAuth(cfg *config.Config, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return fmt.Errorf("svc-auth: %s refused: %v", *file, err)
 	}
-	c, err := svcauth.Parse(b, svcauth.Checks{Pepper: pepper, PeerAuthToken: cfg.Cluster.PeerAuthToken, AdminToken: cfg.Server.AdminToken})
+	c, err := svcauth.Parse(b, checks)
 	if err != nil {
 		return fmt.Errorf("svc-auth: %s refused: %v", *file, err)
 	}

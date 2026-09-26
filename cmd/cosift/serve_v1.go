@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/articles"
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -15,7 +17,7 @@ import (
 )
 
 // sighupReloaders is what a SIGHUP runs; see handleSIGHUP.
-var sighupReloaders v1.Reloaders
+var sighupReloaders = &v1.Reloaders{}
 
 var (
 	svcAuthPath        = svcauth.DefaultPath
@@ -36,16 +38,30 @@ type articleLayer interface {
 	Close() error
 }
 
+var _ articleLayer = (*articles.Store)(nil)
+
 type articleDeps struct {
 	db             *store.PebbleStore
 	embedder       embed.Embedder
 	policy         v1.Policy
-	corpus         *store.PebbleStore
 	thresholdsPath string
 }
 
-// openArticles opens the article store; nil until the store is linked in.
-var openArticles func(context.Context, articleDeps) (articleLayer, error)
+// openArticles opens the article store; tests substitute it.
+var openArticles = func(d articleDeps) (articleLayer, error) {
+	st, err := articles.Open(articles.Options{
+		DB:             d.db.DB(),
+		Embedder:       d.embedder,
+		Policy:         d.policy,
+		Corpus:         articles.StoreCorpus{Store: d.db},
+		ThresholdsPath: d.thresholdsPath,
+		Logf:           log.Printf,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return st, nil
+}
 
 type v1Listener struct {
 	svc      *svcauth.Service
@@ -56,15 +72,15 @@ type v1Listener struct {
 
 // startV1 starts the /v1 listener on its own server and mux. A missing or
 // invalid service-auth.json leaves it down; :7777 is never affected.
-func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders) *v1Listener {
+func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders, mainAddr string) *v1Listener {
 	l := &v1Listener{}
 	pol := svcauth.NewPolicy(nil, nil)
 	routes := s.v1RetrievalRoutes()
 	rd := &v1.Readiness{}
 	if openArticles != nil {
-		a, err := openArticles(ctx, articleDeps{db: s.store, embedder: s.v1Embedder, policy: pol, corpus: s.store, thresholdsPath: articlesConfigPath})
+		a, err := openArticles(articleDeps{db: s.store, embedder: s.v1Embedder, policy: pol, thresholdsPath: articlesConfigPath})
 		if err != nil {
-			log.Printf("pebble-serve: ERROR article store not opened — article routes disabled")
+			log.Printf("pebble-serve: ERROR article store not opened (%v) — article routes disabled", err)
 		} else {
 			l.articles, rd = a, a.Readiness()
 			routes = append(routes, a.Routes()...)
@@ -76,6 +92,7 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 		Pepper:         []byte(os.Getenv("COSIFT_SVC_PEPPER")),
 		PeerAuthToken:  cfg.Cluster.PeerAuthToken,
 		AdminToken:     cfg.Server.AdminToken,
+		MainAddr:       mainAddr,
 		ClientIPHeader: cfg.Server.ClientIPHeader,
 		Readiness:      rd,
 		Policy:         pol,
@@ -92,6 +109,20 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 	s.v1svc = svc
 	if l.articles != nil {
 		pol.SetSwapLocker(l.articles.WriteLocker())
+	}
+	svc.Start(ctx)
+	var also []v1.Reloader
+	if l.articles != nil {
+		also = append(also, func() error {
+			if err := l.articles.ReloadThresholds(); err != nil {
+				log.Printf("articles: ERROR reload of %s refused (%v) — previous thresholds stay active", articlesConfigPath, err)
+				return fmt.Errorf("articles: %w", err)
+			}
+			return nil
+		})
+	}
+	rs.Add("v1", func() error { return svc.Reload(ctx, also...) })
+	if l.articles != nil {
 		l.rebuild.Add(1)
 		go func() {
 			defer l.rebuild.Done()
@@ -99,11 +130,6 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 				log.Printf("pebble-serve: ERROR article index rebuild failed — article routes stay unavailable")
 			}
 		}()
-	}
-	svc.Start(ctx)
-	rs.Add("service-auth", func() error { return svc.Reload(ctx) })
-	if l.articles != nil {
-		rs.Add("articles", l.articles.ReloadThresholds)
 	}
 	return l
 }

@@ -686,7 +686,7 @@ func TestSIGHUPReload(t *testing.T) {
 	defer stop()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	l := f.srv.startV1(ctx, &config.Config{}, &rs)
+	l := f.srv.startV1(ctx, &config.Config{}, &rs, "")
 	defer l.stop()
 	if l.svc.Addr() != "" {
 		t.Fatal("listening without a config")

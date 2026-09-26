@@ -553,7 +553,12 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
-	v1l := srv.startV1(ctx, cfg, &sighupReloaders)
+	// Bound before /v1, so a /v1 listen collision can only ever fail /v1.
+	mainLn, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", *addr, err)
+	}
+	v1l := srv.startV1(ctx, cfg, sighupReloaders, *addr)
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
 	// Production state observed on GH200: after a restart series that
@@ -701,7 +706,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}()
 
 	log.Printf("pebble-serve: listening on %s — BM25 serving now; HNSW warms in background", *addr)
-	servErr := httpSrv.ListenAndServe()
+	servErr := httpSrv.Serve(mainLn)
 	v1l.stop()
 	bgWG.Wait()    // loader goroutine (and its crawler-start decision) done
 	crawlWG.Wait() // crawler final persist before the deferred ps.Close()
