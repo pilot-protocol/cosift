@@ -9,7 +9,6 @@ import (
 	"path"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	v1 "github.com/pilot-protocol/cosift/internal/v1"
@@ -137,8 +136,6 @@ func cleanPath(r *http.Request) bool {
 
 // ServeHTTP is the outer wrapper every /v1 request passes through.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.inflight.enter()
-	defer s.inflight.leave()
 	start := s.now()
 	ri := &reqInfo{route: unmatched}
 	rw := &respWriter{ResponseWriter: w}
@@ -221,48 +218,6 @@ func (w *respWriter) code() int {
 		return http.StatusOK
 	}
 	return w.status
-}
-
-type tracker struct {
-	mu   sync.Mutex
-	n    int
-	idle chan struct{}
-}
-
-func (t *tracker) enter() {
-	t.mu.Lock()
-	t.n++
-	t.mu.Unlock()
-}
-
-func (t *tracker) leave() {
-	t.mu.Lock()
-	t.n--
-	if t.n == 0 && t.idle != nil {
-		close(t.idle)
-		t.idle = nil
-	}
-	t.mu.Unlock()
-}
-
-// wait returns once no request is in a handler, or when ctx is done.
-func (t *tracker) wait(ctx context.Context) error {
-	t.mu.Lock()
-	if t.n == 0 {
-		t.mu.Unlock()
-		return nil
-	}
-	if t.idle == nil {
-		t.idle = make(chan struct{})
-	}
-	ch := t.idle
-	t.mu.Unlock()
-	select {
-	case <-ch:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

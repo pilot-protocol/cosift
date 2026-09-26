@@ -84,17 +84,17 @@ func (w *lineWatcher) String() string {
 	return w.buf.String()
 }
 
-func (w *lineWatcher) waitFor(t *testing.T, substr string) {
-	t.Helper()
-	deadline := time.After(30 * time.Second)
+// seen waits up to d for a line containing substr.
+func (w *lineWatcher) seen(substr string, d time.Duration) bool {
+	deadline := time.After(d)
 	for {
 		select {
 		case l := <-w.lines:
 			if strings.Contains(l, substr) {
-				return
+				return true
 			}
 		case <-deadline:
-			t.Fatalf("no %q in:\n%s", substr, w.String())
+			return false
 		}
 	}
 }
@@ -126,7 +126,7 @@ func TestSIGHUPDuringSlowStart(t *testing.T) {
 		_ = cmd.Process.Kill()
 		<-exited
 	})
-	logs.waitFor(t, "svcauth: SIGHUP reload enabled")
+	logs.seen("svcauth: SIGHUP reload enabled", 5*time.Second)
 	alive := func(stage string) {
 		t.Helper()
 		select {
@@ -167,6 +167,9 @@ func TestSIGHUPDuringSlowStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	alive("SIGHUP while serving")
+	if !strings.Contains(logs.String(), "svcauth: SIGHUP reload enabled") {
+		t.Fatalf("no startup line:\n%s", logs.String())
+	}
 	if _, err := os.Stat(svcauth.DefaultPath); errors.Is(err, os.ErrNotExist) && !strings.Contains(logs.String(), "svcauth: "+svcauth.DefaultPath+" absent — /v1 listener disabled") {
 		t.Fatalf("no absent WARN:\n%s", logs.String())
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -28,7 +29,7 @@ func getOverTCP(t *testing.T, addr, path, cred string) int {
 	return resp.StatusCode
 }
 
-// §1: no file or an invalid file at startup leaves the listener down with one
+// No file or an invalid file at startup leaves the listener down with one
 // log line; a later reload with a valid file starts it.
 func TestListenerLifecycle(t *testing.T) {
 	for _, tc := range []struct {
@@ -87,7 +88,7 @@ func TestListenerLifecycle(t *testing.T) {
 	}
 }
 
-// §1.2: an invalid or deleted file on reload keeps the active config; a
+// An invalid or deleted file on reload keeps the active config; a
 // changed listen address is not re-bound.
 func TestReloadKeepsConfig(t *testing.T) {
 	cfg := baseConfig()
@@ -221,11 +222,87 @@ func TestShutdownDrains(t *testing.T) {
 	if err := h.svc.Reload(t.Context()); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("reload after shutdown: %v", err)
 	}
+	if h.svc.Addr() == "" {
+		t.Fatal("the bound address was forgotten")
+	}
+	if c, err := net.Dial("tcp", h.svc.Addr()); err == nil {
+		c.Close()
+		t.Fatal("the listener still accepts connections")
+	}
+}
+
+func TestShutdownGivesUp(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	entered := make(chan struct{})
+	h := newHarness(t, baseConfig(), withRoutes(func(func(string, v1.Principal, *http.Request)) []v1.Route {
+		return []v1.Route{{Method: "GET", Path: "/v1/articles", Scopes: []v1.Scope{v1.ScopeArticlesRead}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
+		})}}
+	}))
+	h.svc.Start(t.Context())
+	go func() {
+		req, _ := http.NewRequest("GET", "http://"+h.svc.Addr()+"/v1/articles", nil)
+		req.Header.Set("Authorization", "Bearer "+testKeys["community-wiki"])
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-entered
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	stuck := &tracker{}
-	stuck.enter()
-	if err := stuck.wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	if err := h.svc.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("stuck handler: %v", err)
+	}
+}
+
+// An unbindable listen address leaves /v1 down with an ERROR; a reload retries
+// the bind, and a running listener stays put when the new address is taken.
+func TestListenBindFailure(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := baseConfig()
+	cfg["listen"] = held.Addr().String()
+	h := newHarness(t, cfg)
+	h.svc.Start(t.Context())
+	if h.svc.Addr() != "" {
+		t.Fatal("listening on a taken address")
+	}
+	line := "svcauth: ERROR cannot listen on " + held.Addr().String() + " — /v1 listener disabled"
+	if !strings.Contains(h.logs.String(), line) {
+		t.Fatalf("log %s", h.logs.String())
+	}
+	if err := h.svc.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if h.svc.Addr() != "" || strings.Count(h.logs.String(), line) != 2 {
+		t.Fatalf("reload with the address still taken: %q\n%s", h.svc.Addr(), h.logs.String())
+	}
+	addr := held.Addr().String()
+	held.Close()
+	if err := h.svc.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if h.svc.Addr() != addr {
+		t.Fatalf("not started after the address freed: %q", h.svc.Addr())
+	}
+	other, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	cfg["listen"] = other.Addr().String()
+	writeConfig(t, h.path, cfg)
+	if err := h.svc.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if h.svc.Addr() != addr {
+		t.Fatalf("moved to %s", h.svc.Addr())
+	}
+	if code := getOverTCP(t, addr, "/v1/articles", testKeys["community-wiki"]); code != http.StatusOK {
+		t.Fatalf("old listener: %d", code)
 	}
 }

@@ -45,8 +45,6 @@ type Service struct {
 	failed  *failedAuthLimiter
 	mux     *http.ServeMux
 
-	inflight tracker
-
 	mu       sync.Mutex
 	srv      *http.Server
 	addr     string
@@ -218,17 +216,19 @@ func (s *Service) Addr() string {
 	return s.addr
 }
 
-// Shutdown stops the listener for good and waits for in-flight handlers, so
+// Shutdown stops the listener for good and waits for in-flight requests, so
 // the article store can be flushed and closed after it returns.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.closed = true
 	srv := s.srv
 	s.mu.Unlock()
-	if srv != nil {
-		if err := srv.Shutdown(ctx); err != nil {
-			_ = srv.Close()
-		}
+	if srv == nil {
+		return nil
 	}
-	return s.inflight.wait(ctx)
+	err := srv.Shutdown(ctx)
+	if err != nil {
+		_ = srv.Close()
+	}
+	return err
 }
