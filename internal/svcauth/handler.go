@@ -129,9 +129,7 @@ func bodyCap(limit int64, next http.Handler) http.Handler {
 // unclean path, and ids and slugs never need escaping.
 func cleanPath(r *http.Request) bool {
 	p := r.URL.Path
-	raw, _, _ := strings.Cut(r.RequestURI, "?")
-	return strings.HasPrefix(p, "/") && path.Clean(p) == p && r.URL.EscapedPath() == p &&
-		!strings.ContainsRune(raw, '%') && !strings.ContainsRune(p, '%')
+	return strings.HasPrefix(p, "/") && path.Clean(p) == p && r.URL.EscapedPath() == p
 }
 
 // ServeHTTP is the outer wrapper every /v1 request passes through.
