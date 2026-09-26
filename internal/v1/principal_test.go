@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -159,5 +160,97 @@ func TestRequestWithPrincipalThroughMux(t *testing.T) {
 	}
 	if _, ok := PrincipalFrom(base.Context()); ok {
 		t.Error("original request modified")
+	}
+}
+
+func TestRequireAny(t *testing.T) {
+	unauthenticated := `{"error": "Unauthorized", "status": 401, "code": "unauthenticated", "detail": "missing or invalid credential"}`
+	missing := func(s Scope) string {
+		return `{"error": "Forbidden", "status": 403, "code": "missing_scope", "detail": "requires scope ` + string(s) + `"}`
+	}
+	retrieveOnly := Principal{ID: "retrieve-only", Kind: KindOIDC, Env: EnvProd, Scopes: []Scope{ScopeRetrieveRead}}
+	cases := []struct {
+		name    string
+		p       *Principal
+		scopes  []Scope
+		doc     string
+		headers map[string]string
+	}{
+		{"holds the scope", &synthProd, []Scope{ScopeArticlesWrite}, "", nil},
+		{"holds the second", &dashStaging, []Scope{ScopeArticlesRead, ScopeArticlesReadAll}, "", nil},
+		{"holds one of three", &resolverProd, []Scope{ScopeArticlesWrite, ScopeArticlesStub, ScopeArticlesAdmin}, "", nil},
+		{"stub token sending an article", &resolverProd, []Scope{ScopeArticlesWrite},
+			`{"error": "Forbidden", "status": 403, "code": "missing_scope", "detail": "requires scope articles:write"}`, nil},
+		{"names the first scope", &retrieveOnly, []Scope{ScopeArticlesReadAll, ScopeArticlesRead}, missing(ScopeArticlesReadAll), nil},
+		{"read_all is not read", &dashStaging, []Scope{ScopeArticlesRead}, missing(ScopeArticlesRead), nil},
+		{"no scopes held", &Principal{ID: "empty"}, []Scope{ScopeArticlesRead}, missing(ScopeArticlesRead), nil},
+		{"no principal", nil, []Scope{ScopeArticlesRead}, unauthenticated,
+			map[string]string{"WWW-Authenticate": `Bearer realm="cosift-v1"`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var (
+				got    Principal
+				passed bool
+			)
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /v1/articles/{id}/status", func(w http.ResponseWriter, r *http.Request) {
+				p, ok := RequireAny(w, r, c.scopes...)
+				if !ok {
+					return
+				}
+				got, passed = p, true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/articles/01J8ZC2Q7W4X9M3K5N6P8R0T2V/status", nil)
+			if c.p != nil {
+				req = RequestWithPrincipal(req, *c.p)
+			}
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if c.doc == "" {
+				if !passed || !reflect.DeepEqual(got, *c.p) {
+					t.Fatalf("refused or wrong principal: %+v, %v, %s", got, passed, rec.Body.String())
+				}
+				if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 || len(rec.Header()) != 0 {
+					t.Errorf("RequireAny wrote a response on success: %d %v %q", rec.Code, rec.Header(), rec.Body.String())
+				}
+				return
+			}
+			if passed {
+				t.Fatal("handler ran past a refusal")
+			}
+			var e Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || rec.Code != e.Status {
+				t.Errorf("status %d, body %q", rec.Code, rec.Body.String())
+			}
+			if got, want := rec.Body.String(), wireJSON(t, c.doc); got != want {
+				t.Errorf("body\n got %s\nwant %s", got, want)
+			}
+			checkHeaders(t, rec, c.headers)
+		})
+	}
+}
+
+func TestRequireAnyWithoutScopesPanics(t *testing.T) {
+	for _, withPrincipal := range []bool{true, false} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/articles/stats", nil)
+		if withPrincipal {
+			req = RequestWithPrincipal(req, synthProd)
+		}
+		rec := httptest.NewRecorder()
+		func() {
+			defer func() {
+				if p := recover(); p != "v1.RequireAny: no scopes" {
+					t.Errorf("principal %v: recovered %v", withPrincipal, p)
+				}
+			}()
+			RequireAny(rec, req)
+			t.Errorf("principal %v: returned instead of panicking", withPrincipal)
+		}()
+		if rec.Body.Len() != 0 || len(rec.Header()) != 0 {
+			t.Errorf("principal %v: wrote a response before panicking", withPrincipal)
+		}
 	}
 }

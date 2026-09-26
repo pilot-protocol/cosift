@@ -96,3 +96,20 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 func RequestWithPrincipal(r *http.Request, p Principal) *http.Request {
 	return r.WithContext(WithPrincipal(r.Context(), p))
 }
+
+// RequireAny returns r's principal if it holds one of scopes, else writes 401 or 403 and returns false.
+func RequireAny(w http.ResponseWriter, r *http.Request, scopes ...Scope) (Principal, bool) {
+	if len(scopes) == 0 {
+		panic("v1.RequireAny: no scopes")
+	}
+	p, ok := PrincipalFrom(r.Context())
+	if !ok {
+		WriteError(w, Unauthenticated())
+		return Principal{}, false
+	}
+	if !p.HasAny(scopes...) {
+		WriteError(w, MissingScope(scopes[0]))
+		return Principal{}, false
+	}
+	return p, true
+}

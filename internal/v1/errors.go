@@ -113,6 +113,10 @@ func UnknownField(name string) Error {
 	return Error{Status: http.StatusBadRequest, Code: "unknown_field", Detail: "unknown field", Field: name}
 }
 
+func InvalidField(field, rule string) Error {
+	return Error{Status: http.StatusUnprocessableEntity, Code: "invalid_field", Detail: "invalid field", Field: field, Rule: rule}
+}
+
 func InvalidBody() Error {
 	return Error{Status: http.StatusBadRequest, Code: "invalid_body", Detail: "invalid JSON body"}
 }
