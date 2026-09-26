@@ -32,6 +32,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/server"
 	"github.com/pilot-protocol/cosift/internal/sla"
 	"github.com/pilot-protocol/cosift/internal/store"
+	"github.com/pilot-protocol/cosift/internal/svcauth"
 )
 
 func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) error {
@@ -376,6 +377,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 			clients = append(clients, embed.NewOpenAIClient(apiKey, u, cfg.Embeddings.Model, cfg.Embeddings.Dim))
 		}
 		var base embed.Embedder = embed.NewRoundRobinEmbedder(clients)
+		srv.v1Embedder = base
 		// Both search and
 		// crawler embed paths share the cache layer — same text returns
 		// instantly on re-fetch / re-query, no ollama call.
@@ -551,6 +553,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
+	v1l := srv.startV1(ctx, cfg)
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
 	// Production state observed on GH200: after a restart series that
@@ -666,6 +669,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		close(srv.shutdown)
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		go v1l.stop()
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
@@ -698,9 +702,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 
 	log.Printf("pebble-serve: listening on %s — BM25 serving now; HNSW warms in background", *addr)
 	servErr := httpSrv.ListenAndServe()
+	v1l.stop()
 	bgWG.Wait()    // loader goroutine (and its crawler-start decision) done
 	crawlWG.Wait() // crawler final persist before the deferred ps.Close()
 	srv.bgJobs.Wait()
+	v1l.closeArticles()
 	if servErr != nil && servErr != http.ErrServerClosed {
 		return servErr
 	}
@@ -1372,6 +1378,9 @@ type pebbleHTTP struct {
 	// /search?retriever=dense alongside the HNSW graph. Built at startup when
 	// cfg.Embeddings.Model is set. Nil → ?retriever=dense warns + falls back.
 	embedder embed.Embedder
+	// v1Embedder is embedder without the on-disk cache; /v1 embeds only with it.
+	v1Embedder embed.Embedder
+	v1svc      *svcauth.Service
 
 	// Rerank failures fall back
 	// to BM25 order silently — that's the right reliability move, but without

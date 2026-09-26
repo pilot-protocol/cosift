@@ -5,15 +5,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/index"
+	v1 "github.com/pilot-protocol/cosift/internal/v1"
 )
 
 const usage = `cosift — self-hostable search + research
@@ -57,6 +60,8 @@ usage:
   cosift request            Search/Answer/Research through the community API
   cosift contribute         submit URLs, CSV or locally indexed artifacts
   cosift version            print version
+  cosift svc-key new --id ID --scopes S[,S] --env prod|staging   mint a /v1 scoped key (printed once)
+  cosift svc-auth check [--file F]   validate the /v1 service-auth file as the engine would
 
 eval flags:
   -corpus <path>          path to corpus.json   (default: testdata/eval/corpus.json)
@@ -101,6 +106,10 @@ func main() {
 	cfgPath := flag.String("config", "cosift.json", "path to config file")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
+	// Before anything slow: Go's default action for SIGHUP exits the process.
+	if flag.Arg(0) == "pebble-serve" {
+		handleSIGHUP(&sighupReloaders)
+	}
 
 	if flag.NArg() < 1 {
 		flag.Usage()
@@ -118,8 +127,27 @@ func main() {
 		}
 		os.Exit(2)
 	}
+	var ee *exitError
+	if errors.As(err, &ee) {
+		fmt.Fprintln(os.Stderr, ee.msg)
+		os.Exit(ee.code)
+	}
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+// handleSIGHUP runs rs on every SIGHUP for the life of the process.
+func handleSIGHUP(rs *v1.Reloaders) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	log.Printf("svcauth: SIGHUP reload enabled")
+	go func() {
+		for range ch {
+			if err := rs.Reload(); err != nil {
+				log.Printf("pebble-serve: SIGHUP reload: %v", err)
+			}
+		}
+	}()
 }
 
 func run(cfgPath string) error {
@@ -142,6 +170,10 @@ func run(cfgPath string) error {
 		return runContributeConfigured(ctx, cfg, flag.Args()[1:])
 	case "version":
 		fmt.Println(version)
+	case "svc-key":
+		return runSvcKey(flag.Args()[1:], os.Stdout, os.Stderr, time.Now())
+	case "svc-auth":
+		return runSvcAuth(cfg, flag.Args()[1:], os.Stdout, os.Stderr)
 	case "init":
 		if err := runInit(cfgPath, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("init: %w", err)
