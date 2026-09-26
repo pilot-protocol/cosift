@@ -1,7 +1,9 @@
 package svcauth
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -186,8 +188,10 @@ type fakeArticles struct {
 	embeds  int
 }
 
+// put follows the approved order: scope, writes_frozen, the charge,
+// env_golive, the lookup, env_mismatch, the 409s, validation, the embed, and
+// the re-checks inside the store lock.
 func (f *fakeArticles) put(w http.ResponseWriter, r *http.Request) {
-	p, _ := v1.PrincipalFrom(r.Context())
 	var body struct {
 		Status string `json:"status"`
 		Title  string `json:"title"`
@@ -199,8 +203,8 @@ func (f *fakeArticles) put(w http.ResponseWriter, r *http.Request) {
 	if body.Status == "pending" {
 		need = v1.ScopeArticlesStub
 	}
-	if !p.Has(need) {
-		v1.WriteError(w, v1.MissingScope(need))
+	p, ok := v1.RequireAny(w, r, need)
+	if !ok {
 		return
 	}
 	if f.pol.WritesFrozen() {
@@ -211,8 +215,19 @@ func (f *fakeArticles) put(w http.ResponseWriter, r *http.Request) {
 		v1.WriteError(w, v1.WriteBudget(retry))
 		return
 	}
-	if body.Title == "" {
-		v1.WriteJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "invalid_field"})
+	id := r.PathValue("id")
+	switch {
+	case f.golive && p.Env == v1.EnvStaging:
+		v1.WriteError(w, v1.EnvGolive())
+		return
+	case f.status[id] != "" && !p.SameEnv(f.prelive[id]):
+		v1.WriteError(w, v1.EnvMismatch())
+		return
+	case f.status[id] == "tombstoned":
+		v1.WriteJSON(w, http.StatusConflict, map[string]string{"code": "moderation_locked"})
+		return
+	case body.Title == "":
+		v1.WriteError(w, v1.InvalidField("title", "required"))
 		return
 	}
 	if f.entered != nil {
@@ -225,15 +240,13 @@ func (f *fakeArticles) put(w http.ResponseWriter, r *http.Request) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	active, ok := f.pol.Principal(p.ID)
-	switch id := r.PathValue("id"); {
+	switch {
 	case !ok || !active.Has(need):
 		v1.WriteError(w, v1.MissingScope(need))
 	case f.golive && active.Env == v1.EnvStaging:
 		v1.WriteError(w, v1.EnvGolive())
 	case f.status[id] != "" && !active.SameEnv(f.prelive[id]):
 		v1.WriteError(w, v1.EnvMismatch())
-	case f.status[id] == "tombstoned":
-		v1.WriteJSON(w, http.StatusConflict, map[string]string{"code": "moderation_locked"})
 	default:
 		f.writes++
 		v1.WriteJSON(w, http.StatusOK, map[string]string{"result": "updated"})
@@ -241,11 +254,14 @@ func (f *fakeArticles) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeArticles) moderate(w http.ResponseWriter, r *http.Request) {
-	p, _ := v1.PrincipalFrom(r.Context())
 	var body struct {
 		Action string `json:"action"`
 	}
 	if !v1.Decode(w, r, &body, 4<<10) {
+		return
+	}
+	p, ok := v1.RequireAny(w, r, v1.ScopeArticlesModerate)
+	if !ok {
 		return
 	}
 	f.lock.Lock()
@@ -254,6 +270,8 @@ func (f *fakeArticles) moderate(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case f.golive && p.Env == v1.EnvStaging:
 		v1.WriteError(w, v1.EnvGolive())
+	case f.status[id] == "":
+		v1.WriteError(w, v1.NotFound())
 	case !p.SameEnv(f.prelive[id]):
 		v1.WriteError(w, v1.EnvMismatch())
 	case f.status[id] == "tombstoned":
@@ -264,7 +282,6 @@ func (f *fakeArticles) moderate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeArticles) match(w http.ResponseWriter, r *http.Request) {
-	p, _ := v1.PrincipalFrom(r.Context())
 	var body struct {
 		Q       string `json:"q"`
 		Purpose string `json:"purpose"`
@@ -272,9 +289,14 @@ func (f *fakeArticles) match(w http.ResponseWriter, r *http.Request) {
 	if !v1.Decode(w, r, &body, 8<<10) {
 		return
 	}
-	if body.Purpose == "build" && !p.HasAny(v1.ScopeArticlesWrite, v1.ScopeArticlesStub) {
-		v1.WriteError(w, v1.MissingScope(v1.ScopeArticlesWrite))
+	p, ok := v1.RequireAny(w, r, v1.ScopeArticlesRead)
+	if !ok {
 		return
+	}
+	if body.Purpose == "build" {
+		if _, ok := v1.RequireAny(w, r, v1.ScopeArticlesWrite, v1.ScopeArticlesStub); !ok {
+			return
+		}
 	}
 	writes := "open"
 	if f.pol.WritesFrozen() {
@@ -461,8 +483,8 @@ func TestWriteBudgetThroughHandlers(t *testing.T) {
 	if e := decodeErr(t, w); w.Code != http.StatusTooManyRequests || e.Code != "write_budget" || w.Header().Get("Retry-After") == "" {
 		t.Fatalf("fourth write: %d %+v", w.Code, e)
 	}
-	if f.embeds != 2 {
-		t.Fatalf("%d writes reached the embedder, want 2", f.embeds)
+	if f.embeds != 1 {
+		t.Fatalf("%d writes reached the embedder, want only the accepted one", f.embeds)
 	}
 	for _, rr := range []struct{ m, p, b string }{{"GET", "/v1/articles", ""}, {"POST", "/v1/articles/match", `{"q":"x"}`}} {
 		if w := h.do(rr.m, rr.p, rr.b, bearerAuth(synth), jsonBody); w.Code != http.StatusOK {
@@ -576,5 +598,76 @@ func TestMetricsSeries(t *testing.T) {
 	h.clock.Advance(90 * time.Second)
 	if !strings.Contains(h.metrics(), "cosift_v1_cert_age_seconds 90") {
 		t.Fatalf("certificate age:\n%s", h.metrics())
+	}
+}
+
+// The approved order on writes: scope, writes_frozen (not charged), the
+// charge, then env_golive before the record is looked up.
+func TestWriteErrorOrder(t *testing.T) {
+	cfg := baseConfig()
+	cfg["writes_frozen"] = true
+	p := principalByID(cfg, "synth-staging")
+	p["writes_per_hour"], p["writes_burst"], p["writes_per_day"] = 10, 5, 1
+	h, f := newFakeArticlesHarness(t, cfg)
+	f.golive = true
+	staging := h.token(synthStgSub, synthStgEmail)
+	code := func(w *httptest.ResponseRecorder) string { return decodeErr(t, w).Code }
+
+	w := h.do("PUT", "/v1/articles/"+preliveID, article, bearerAuth(h.token(resolverStSub, resolverStEm)), jsonBody)
+	if code(w) != "missing_scope" {
+		t.Fatalf("scope before writes_frozen: %s", w.Body.String())
+	}
+	w = h.do("PUT", "/v1/articles/"+preliveID, article, bearerAuth(staging), jsonBody)
+	if code(w) != "writes_frozen" || strings.Contains(h.metrics(), `cosift_v1_writes_total{principal="synth-staging"}`) {
+		t.Fatalf("writes_frozen, uncharged: %s\n%s", w.Body.String(), h.metrics())
+	}
+
+	cfg["writes_frozen"] = false
+	writeConfig(t, h.path, cfg)
+	if err := h.svc.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if w := h.do("PUT", "/v1/articles/"+prodID, article, bearerAuth(staging), jsonBody); code(w) != "env_golive" {
+		t.Fatalf("env_golive before env_mismatch: %s", w.Body.String())
+	}
+	if w := h.do("PUT", "/v1/articles/"+prodID, article, bearerAuth(staging), jsonBody); code(w) != "write_budget" {
+		t.Fatalf("the charge before env_golive: %s", w.Body.String())
+	}
+	for _, id := range []string{prodID, "01J8ZZZZZZZZZZZZZZZZZZZZZZ"} {
+		w := h.do("POST", "/v1/articles/"+id+"/status", `{"action":"hold"}`, bearerAuth(testKeys["dash-staging"]), jsonBody)
+		if code(w) != "env_golive" {
+			t.Fatalf("moderation of %s after go-live: %s", id, w.Body.String())
+		}
+	}
+}
+
+// A throttled client's last suppressed failures are summarised on a timer and
+// at shutdown, not only when that client fails again.
+func TestThrottleSummaryTail(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	h.svc.summaryEvery = 5 * time.Millisecond
+	h.svc.Start(t.Context())
+	edge := []reqOpt{remote("127.0.0.1:5000"), header("X-Forwarded-For", "198.51.100.7"), bearerAuth("bogus")}
+	for range 40 {
+		h.do("POST", "/v1/search", `{}`, edge...)
+	}
+	if n := strings.Count(h.logs.String(), "v1 auth_throttled client=198.51.100.7"); n != 1 {
+		t.Fatalf("%d summaries during the flood", n)
+	}
+	h.clock.Advance(time.Minute)
+	waitFor(t, "the timer's summary", func() bool {
+		return strings.Contains(h.logs.String(), "v1 auth_throttled client=198.51.100.7 count=29")
+	})
+	for range 15 {
+		h.do("POST", "/v1/search", `{}`, edge...)
+	}
+	if strings.Contains(h.logs.String(), "count=5") {
+		t.Fatal("summarised within the minute")
+	}
+	if err := h.svc.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.logs.String(), "v1 auth_throttled client=198.51.100.7 count=5") {
+		t.Fatalf("no summary at shutdown:\n%s", h.logs.String())
 	}
 }
