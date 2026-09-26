@@ -15,6 +15,7 @@
 //	'u' + url                       → uint64(docID)        // URL → ID index
 //	'h' + host + 0x00 + uint64(id)  → empty                // host scan index
 //	'm' + "next_doc_id"             → uint64(next ID)      // counter
+//	'R' + sub + suffix              → article store        // internal/articles
 //
 // Big-endian IDs give natural ascending order for prefix scans. Family-tag
 // prefix bytes keep families disjoint so a scan over 'd' won't touch 'u' rows.
