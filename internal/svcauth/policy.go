@@ -106,9 +106,11 @@ func (p *Policy) Install(cfg *Config) {
 	p.lockMu.Unlock()
 	if l != nil {
 		l.Lock()
-		defer l.Unlock()
 	}
 	p.active.Store(st)
+	if l != nil {
+		l.Unlock()
+	}
 	p.prune(st)
 }
 

@@ -471,6 +471,24 @@ func TestWriteBudgetThroughHandlers(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"writes":"budget_exhausted"`) {
 		t.Fatalf("build match: %s", w.Body.String())
 	}
+
+	resolver := h.token(resolverSub, resolverEmail)
+	stub := `{"status":"pending","title":"Rust async runtimes"}`
+	for range 50 {
+		if w := h.do("PUT", "/v1/articles/"+prodID, stub, bearerAuth(resolver), jsonBody); w.Code != http.StatusOK {
+			t.Fatalf("stub write inside the hourly burst: %d", w.Code)
+		}
+	}
+	w = h.do("PUT", "/v1/articles/"+prodID, stub, bearerAuth(resolver), jsonBody)
+	if e := decodeErr(t, w); w.Code != http.StatusTooManyRequests || e.Code != "write_budget" || w.Header().Get("Retry-After") != "12" {
+		t.Fatalf("hourly bucket spent: %d %+v %v", w.Code, e, w.Header())
+	}
+	if w := h.do("GET", "/v1/articles", "", bearerAuth(resolver)); w.Code != http.StatusOK {
+		t.Fatalf("read with the hourly bucket spent: %d", w.Code)
+	}
+	if w := h.do("POST", "/v1/articles/match", `{"q":"x","purpose":"build"}`, bearerAuth(resolver), jsonBody); !strings.Contains(w.Body.String(), `"writes":"open"`) {
+		t.Fatalf("an hourly limit is not an exhausted day: %s", w.Body.String())
+	}
 }
 
 func TestWritesFrozen(t *testing.T) {
@@ -523,5 +541,38 @@ func TestPolicyAccessors(t *testing.T) {
 	}
 	if _, ok := empty.GoliveAt(); ok {
 		t.Fatal("empty policy golive")
+	}
+}
+
+func TestMetricsSeries(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	h.do("POST", "/v1/search", `{}`, bearerAuth(h.token(synthSub, synthEmail)))
+	h.do("POST", "/v1/search", `{}`, bearerAuth("bogus"))
+	if _, ok := h.svc.Policy.ChargeWrite("synth-prod"); !ok {
+		t.Fatal("charge")
+	}
+	if err := h.svc.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the listener's first fetch", func() bool { return metricValue(t, h, refreshes(h, "ok")) == "2" })
+	m := h.metrics()
+	for _, want := range []string{
+		`cosift_v1_requests_total{principal="synth-prod",route="POST /v1/search",code="200"} 1`,
+		`cosift_v1_requests_total{principal="-",route="POST /v1/search",code="401"} 1`,
+		`cosift_v1_auth_failures_total{reason="unknown_credential"} 1`,
+		`# TYPE cosift_v1_rate_limited_total counter`,
+		`cosift_v1_writes_total{principal="synth-prod"} 1`,
+		`cosift_v1_cert_refresh_total{result="error"} 0`,
+		`cosift_v1_cert_age_seconds 0`,
+		`cosift_v1_config_reloads_total{result="ok"} 1`,
+		`cosift_v1_server_errors_total 0`,
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("no %s in\n%s", want, m)
+		}
+	}
+	h.clock.Advance(90 * time.Second)
+	if !strings.Contains(h.metrics(), "cosift_v1_cert_age_seconds 90") {
+		t.Fatalf("certificate age:\n%s", h.metrics())
 	}
 }
