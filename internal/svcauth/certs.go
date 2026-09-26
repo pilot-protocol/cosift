@@ -157,7 +157,7 @@ func (c *CertCache) Run(ctx context.Context) {
 			backoff = 0
 			wait = c.scheduled()
 		} else {
-			backoff = min(max(2*backoff, certBackoffMin), certBackoffMax)
+			backoff = nextBackoff(backoff)
 			wait = backoff
 		}
 		t := time.NewTimer(wait)
@@ -170,6 +170,10 @@ func (c *CertCache) Run(ctx context.Context) {
 			t.Stop()
 		}
 	}
+}
+
+func nextBackoff(d time.Duration) time.Duration {
+	return min(max(2*d, certBackoffMin), certBackoffMax)
 }
 
 func (c *CertCache) scheduled() time.Duration {
