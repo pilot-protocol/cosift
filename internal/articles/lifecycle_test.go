@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +48,7 @@ func TestRoutesUnavailableUntilRebuilt(t *testing.T) {
 		t.Fatalf("%d probes for %d routes", len(routes), len(h.s.Routes()))
 	}
 	for _, c := range routes {
-		rec := h.do(c.p, c.method, c.path, c.body)
+		rec := doWithin(t, 2*time.Second, func() *httptest.ResponseRecorder { return h.do(c.p, c.method, c.path, c.body) })
 		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" || !strings.Contains(rec.Body.String(), "index_unavailable") {
 			t.Errorf("%s %s during rebuild: %d %s", c.method, c.path, rec.Code, rec.Body.String())
 		}
@@ -62,6 +63,49 @@ func TestRoutesUnavailableUntilRebuilt(t *testing.T) {
 	waitFor(t, h.s.Readiness().Ready)
 	h.call(wiki, http.MethodGet, "/v1/articles/"+id, nil, http.StatusOK)
 	h.put(synthProd, ulid(2), articleBody("Go memory model"), http.StatusCreated)
+}
+
+// doWithin fails the test instead of hanging when a request does not return in time.
+func doWithin(t *testing.T, d time.Duration, fn func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- fn() }()
+	select {
+	case rec := <-done:
+		return rec
+	case <-time.After(d):
+		t.Fatal("request did not return")
+		return nil
+	}
+}
+
+func TestDefaultTimings(t *testing.T) {
+	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s, err := Open(Options{DB: db, Policy: v1.NewFakePolicy(), ThresholdsPath: t.TempDir() + "/none.json", Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.matchTimeout != time.Second || s.putTimeout != 20*time.Second || s.flushEvery != 5*time.Minute {
+		t.Errorf("match %v, put %v, flush %v", s.matchTimeout, s.putTimeout, s.flushEvery)
+	}
+	if counterDays != 14 || keepVersions != 5 {
+		t.Errorf("counter days %d, versions kept %d", counterDays, keepVersions)
+	}
+}
+
+func TestTakedownCompactsTheFamily(t *testing.T) {
+	h := newHarness(t)
+	h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated)
+	before := h.s.compacted.Load()
+	h.moderate(dashProd, ulid(1), "tombstone", "privacy", http.StatusOK)
+	waitFor(t, func() bool { return h.s.compacted.Load() > before })
+	before = h.s.compacted.Load()
+	h.moderate(dashProd, ulid(1), "erase_fingerprint", "privacy", http.StatusOK)
+	waitFor(t, func() bool { return h.s.compacted.Load() > before })
 }
 
 func TestRouteTable(t *testing.T) {

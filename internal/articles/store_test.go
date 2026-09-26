@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 
 	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/store"
@@ -207,5 +209,111 @@ func TestEmbedsEveryTextUncached(t *testing.T) {
 	h.moderate(dashProd, stub, "tombstone", "legal", http.StatusOK)
 	if _, ok := h.raw(fingerprintKey(stub)); !ok || h.emb.count("Go memory model") != 1 {
 		t.Error("the stub tombstone did not embed its title for the fingerprint")
+	}
+}
+
+// Every 'R' write path syncs: each case's change is the last write before a crash.
+func TestWritesSurviveCrash(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(h *harness)
+		op    func(h *harness)
+		check func(ix *index) bool
+	}{
+		{"create", nil, func(h *harness) { h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated) },
+			func(ix *index) bool { return ix.recs[ulid(1)] != nil && len(ix.rows[ulid(1)]) == 2 }},
+		{"stub", nil, func(h *harness) {
+			h.call(resolverProd, http.MethodPut, "/v1/articles/"+ulid(1), stubBodyFor("Go memory model", topic(1)), http.StatusCreated)
+		}, func(ix *index) bool { return ix.recs[ulid(1)] != nil && ix.claims[topic(1)] == ulid(1) }},
+		{"stub delete", func(h *harness) {
+			h.call(resolverProd, http.MethodPut, "/v1/articles/"+ulid(1), stubBodyFor("Go memory model", topic(1)), http.StatusCreated)
+		}, func(h *harness) { h.call(resolverProd, http.MethodDelete, "/v1/articles/"+ulid(1), nil, http.StatusOK) },
+			func(ix *index) bool { return ix.recs[ulid(1)] == nil && ix.claims[topic(1)] == "" }},
+		{"hold", func(h *harness) { h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated) },
+			func(h *harness) { h.moderate(dashProd, ulid(1), "hold", "", http.StatusOK) },
+			func(ix *index) bool { return ix.recs[ulid(1)] != nil && ix.recs[ulid(1)].Status == StatusHeld }},
+		{"tombstone", func(h *harness) { h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated) },
+			func(h *harness) { h.moderate(dashProd, ulid(1), "tombstone", "privacy", http.StatusOK) },
+			func(ix *index) bool {
+				return ix.recs[ulid(1)] != nil && ix.recs[ulid(1)].Residue && ix.hasFingerprint(ulid(1))
+			}},
+		{"erase fingerprint", func(h *harness) {
+			h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated)
+			h.moderate(dashProd, ulid(1), "tombstone", "privacy", http.StatusOK)
+		}, func(h *harness) { h.moderate(dashProd, ulid(1), "erase_fingerprint", "privacy", http.StatusOK) },
+			func(ix *index) bool { return ix.recs[ulid(1)] != nil && !ix.hasFingerprint(ulid(1)) }},
+		{"purge", nil, func(h *harness) {
+			h.call(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{"apply": true, "expect_records": 0}, http.StatusOK)
+		}, func(ix *index) bool { return ix.golive != nil }},
+		{"counters", func(h *harness) {
+			h.emb.set("Rust async runtimes", axis(1))
+			h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated)
+			h.match(mcpProd, map[string]any{"q": "Rust async runtimes", "reader": strings.Repeat("a", 32)}, http.StatusOK)
+		}, func(h *harness) {
+			h.s.writeMu.Lock()
+			defer h.s.writeMu.Unlock()
+			if err := h.s.flushLocked(); err != nil {
+				h.t.Fatal(err)
+			}
+		}, func(ix *index) bool { return ix.recs[ulid(1)] != nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := vfs.NewStrictMem()
+			if err := fs.MkdirAll("db", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if root, err := fs.OpenDir(""); err != nil || root.Sync() != nil {
+				t.Fatal("sync root", err)
+			}
+			emb := newFakeEmbedder()
+			open := func() (*pebble.DB, *Store) {
+				db, err := pebble.Open("db", &pebble.Options{FS: fs})
+				if err != nil {
+					t.Fatal(err)
+				}
+				s, err := Open(Options{DB: db, Embedder: emb, Policy: v1.NewFakePolicy(synthProd, resolverProd, mcpProd, dashProd, goliveAdmin),
+					Corpus: fakeCorpus{urls: map[string]bool{"https://example.org/doc": true}}, ThresholdsPath: t.TempDir() + "/none.json", Logf: func(string, ...any) {}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.Rebuild(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				return db, s
+			}
+			db, s := open()
+			h := &harness{t: t, s: s, emb: emb, mux: http.NewServeMux()}
+			for _, rt := range s.Routes() {
+				h.mux.Handle(rt.Pattern(), rt.Handler)
+			}
+			if c.setup != nil {
+				c.setup(h)
+			}
+			c.op(h)
+			fs.SetIgnoreSyncs(true)
+			close(s.stop)
+			s.jobs.Wait()
+			_ = db.Close()
+			fs.ResetToSyncedState()
+			fs.SetIgnoreSyncs(false)
+
+			db, s = open()
+			defer db.Close()
+			defer s.Close()
+			ok := true
+			s.view(func(ix *index) { ok = c.check(ix) })
+			if !ok {
+				t.Error("change lost in the crash")
+			}
+			if c.name == "counters" {
+				v, closer, err := db.Get(countersKey(ulid(1)))
+				if err != nil {
+					t.Fatal("counters lost in the crash")
+				}
+				closer.Close()
+				_ = v
+			}
+		})
 	}
 }

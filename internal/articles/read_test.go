@@ -36,6 +36,9 @@ func TestBySlugResolution(t *testing.T) {
 	addRedirect(h, "old-published", ulid(1))
 	addRedirect(h, "old-held", ulid(2))
 	addRedirect(h, "old-tombstoned", ulid(4))
+	h.call(resolverProd, http.MethodPut, "/v1/articles/"+ulid(7), stubBodyFor("Prod stub title", topic(7)), http.StatusCreated)
+	addRedirect(h, "old-prod-stub", ulid(7))
+	addRedirect(h, "old-prelive-stub", ulid(6))
 	h.restart()
 
 	type want struct {
@@ -51,6 +54,8 @@ func TestBySlugResolution(t *testing.T) {
 		"old-published":            {200, 200},
 		"old-held":                 {404, 404},
 		"old-tombstoned":           {200, 200},
+		"old-prod-stub":            {200, 200},
+		"old-prelive-stub":         {404, 200},
 		"never-existed":            {404, 404},
 	}
 	for slug, w := range cases {
@@ -226,4 +231,13 @@ func TestStatsDuringWritesReportsNoOrphans(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+func TestListUpdatedSinceIsInclusive(t *testing.T) {
+	h := newHarness(t)
+	a := article(h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated))
+	since := url.QueryEscape(a["updated_at"].(string))
+	if items := h.call(wiki, http.MethodGet, "/v1/articles?updated_since="+since, nil, http.StatusOK)["items"].([]any); len(items) != 1 {
+		t.Errorf("updated_since equal to updated_at: %v", items)
+	}
 }

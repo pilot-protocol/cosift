@@ -15,6 +15,15 @@ var (
 	resolverStagingRead = v1.Principal{ID: "resolver-staging", Kind: v1.KindOIDC, Env: v1.EnvStaging, Scopes: []v1.Scope{v1.ScopeArticlesRead}}
 )
 
+// inFlight sends a PUT from another goroutine and returns its error body with the status.
+func inFlight(h *harness, p v1.Principal, id string, body map[string]any) map[string]any {
+	rec := h.do(p, http.MethodPut, "/v1/articles/"+id, body)
+	out := map[string]any{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	out["http_status"] = rec.Code
+	return out
+}
+
 // closeStagingWrites is go-live step 1: staging principals lose their write scopes.
 func closeStagingWrites(h *harness) {
 	h.pol.SetPrincipals(synthProd, synthStagingRead, resolverProd, resolverStagingRead, mcpProd, mcpStaging, wiki, dashProd, dashStaging, goliveAdmin)
@@ -114,6 +123,9 @@ func TestPurgePrelive(t *testing.T) {
 
 	h.expectError(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{}, http.StatusGone, "golive")
 	h.expectError(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{"apply": true, "expect_records": 0}, http.StatusGone, "golive")
+	h.expectError(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{"apply": false, "x": 1}, http.StatusGone, "golive")
+	h.expectError(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", "not json", http.StatusGone, "golive")
+	h.expectError(dashProd, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{}, http.StatusForbidden, "missing_scope")
 	h.restart()
 	h.expectError(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{}, http.StatusGone, "golive")
 
@@ -144,13 +156,13 @@ func TestStagingWriteInFlightAcrossPurge(t *testing.T) {
 	h.emb.setBlock(block)
 	done := make(chan map[string]any)
 	go func() {
-		done <- h.call(synthStaging, http.MethodPut, "/v1/articles/"+ulid(1), articleBody("Staging in flight"), http.StatusForbidden)
+		done <- inFlight(h, synthStaging, ulid(1), articleBody("Staging in flight"))
 	}()
 	waitFor(t, func() bool { return h.emb.embedded("Staging in flight") })
 	closeStagingWrites(h)
 	purge(h, map[string]any{"apply": true, "expect_records": 0}, http.StatusOK)
 	close(block)
-	if out := <-done; out["code"] != "env_golive" {
+	if out := <-done; out["code"] != "env_golive" || out["http_status"] != http.StatusForbidden {
 		t.Errorf("in-flight staging write = %v", out)
 	}
 	if _, ok := h.raw(recordKey(ulid(1))); ok {
@@ -164,12 +176,12 @@ func TestReloadRemovingScopeRefusesInFlightWrite(t *testing.T) {
 	h.emb.setBlock(block)
 	done := make(chan map[string]any)
 	go func() {
-		done <- h.call(synthProd, http.MethodPut, "/v1/articles/"+ulid(1), articleBody("Rust async runtimes"), http.StatusForbidden)
+		done <- inFlight(h, synthProd, ulid(1), articleBody("Rust async runtimes"))
 	}()
 	waitFor(t, func() bool { return h.emb.embedded("Rust async runtimes") })
 	h.pol.SetPrincipals(v1.Principal{ID: "synth-prod", Kind: v1.KindOIDC, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesRead}})
 	close(block)
-	if out := <-done; out["code"] != "missing_scope" {
+	if out := <-done; out["code"] != "missing_scope" || out["http_status"] != http.StatusForbidden {
 		t.Errorf("write after its scope was removed = %v", out)
 	}
 	if _, ok := h.raw(recordKey(ulid(1))); ok {
@@ -249,4 +261,73 @@ func TestReadAllSeesPrelive(t *testing.T) {
 		t.Errorf("staging read list = %v", items)
 	}
 	h.call(mcpStaging, http.MethodGet, "/v1/articles/by-slug/staging-stub-title", nil, http.StatusOK)
+}
+
+// A record created by another environment while a write waits on the embedder.
+func TestEnvRecheckedInLock(t *testing.T) {
+	h := newHarness(t)
+	block := make(chan struct{})
+	h.emb.setBlock(block)
+	done := make(chan map[string]any)
+	go func() {
+		done <- inFlight(h, synthStaging, ulid(1), articleBody("Rust async runtimes"))
+	}()
+	waitFor(t, func() bool { return h.emb.embedded("Rust async runtimes") })
+	h.emb.setBlock(nil)
+	h.call(resolverProd, http.MethodPut, "/v1/articles/"+ulid(1), stubBodyFor("Rust async runtimes", topic(1)), http.StatusCreated)
+	close(block)
+	if out := <-done; out["code"] != "env_mismatch" || out["http_status"] != http.StatusForbidden {
+		t.Errorf("staging fill of a prod stub = %v", out)
+	}
+	if r := h.s.record(ulid(1)); r == nil || r.Status != StatusPending || r.Prelive {
+		t.Errorf("prod stub changed: %+v", r)
+	}
+}
+
+func TestEnvGoliveBeforeEnvMismatch(t *testing.T) {
+	h := newHarness(t)
+	h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated)
+	h.call(resolverProd, http.MethodPut, "/v1/articles/"+ulid(2), stubBodyFor("Go memory model", topic(2)), http.StatusCreated)
+	closeStagingWrites(h)
+	purge(h, map[string]any{"apply": true, "expect_records": 0}, http.StatusOK)
+	h.pol.SetPrincipals(allPrincipals...)
+	h.expectError(synthStaging, http.MethodPut, "/v1/articles/"+ulid(1), articleBody("Rust async runtimes"), http.StatusForbidden, "env_golive")
+	h.expectError(resolverStaging, http.MethodPut, "/v1/articles/"+ulid(2), stubBodyFor("Go memory model", topic(2)), http.StatusForbidden, "env_golive")
+	h.expectError(resolverStaging, http.MethodDelete, "/v1/articles/"+ulid(2), nil, http.StatusForbidden, "env_golive")
+}
+
+func TestConcurrentPurgeAppliesOnce(t *testing.T) {
+	h := newHarness(t)
+	closeStagingWrites(h)
+	h.s.writeMu.Lock()
+	codes := make(chan int, 2)
+	for range 2 {
+		go func() {
+			codes <- h.do(goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{"apply": true, "expect_records": 0}).Code
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	h.s.writeMu.Unlock()
+	got := []int{<-codes, <-codes}
+	slices.Sort(got)
+	if got[0] != http.StatusOK || got[1] != http.StatusGone {
+		t.Errorf("concurrent applies answered %v", got)
+	}
+}
+
+func TestRestorePendingRecheckedInLock(t *testing.T) {
+	h := newHarness(t)
+	block := make(chan struct{})
+	h.emb.setBlock(block)
+	done := make(chan map[string]any)
+	go func() { done <- inFlight(h, synthProd, ulid(1), articleBody("Rust async runtimes")) }()
+	waitFor(t, func() bool { return h.emb.embedded("Rust async runtimes") })
+	h.pol.SetGoliveAt(time.Date(2026, 10, 12, 16, 0, 0, 0, time.UTC))
+	close(block)
+	if out := <-done; out["code"] != "restore_pending" || out["http_status"] != http.StatusServiceUnavailable {
+		t.Errorf("write released after golive_at appeared = %v", out)
+	}
+	if _, ok := h.raw(recordKey(ulid(1))); ok {
+		t.Error("the write landed")
+	}
 }
