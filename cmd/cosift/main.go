@@ -136,18 +136,28 @@ func main() {
 	os.Exit(1)
 }
 
-// handleSIGHUP runs rs on every SIGHUP for the life of the process.
-func handleSIGHUP(rs *v1.Reloaders) {
+// handleSIGHUP runs rs on every SIGHUP until the returned stop is called.
+func handleSIGHUP(rs *v1.Reloaders) (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	log.Printf("svcauth: SIGHUP reload enabled")
+	done := make(chan struct{})
 	go func() {
-		for range ch {
-			if err := rs.Reload(); err != nil {
-				log.Printf("pebble-serve: SIGHUP reload: %v", err)
+		for {
+			select {
+			case <-ch:
+				if err := rs.Reload(); err != nil {
+					log.Printf("pebble-serve: SIGHUP reload: %v", err)
+				}
+			case <-done:
+				return
 			}
 		}
 	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
 }
 
 func run(cfgPath string) error {

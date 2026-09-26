@@ -19,6 +19,9 @@ var sighupReloaders v1.Reloaders
 
 var svcAuthPath = svcauth.DefaultPath
 
+// v1CertSource replaces the Google certificate fetch in tests; nil is Google.
+var v1CertSource svcauth.CertSource
+
 // articleLayer is the article store as the /v1 listener mounts it.
 type articleLayer interface {
 	Routes() []v1.Route
@@ -47,7 +50,7 @@ type v1Listener struct {
 
 // startV1 starts the /v1 listener on its own server and mux. A missing or
 // invalid service-auth.json leaves it down; :7777 is never affected.
-func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config) *v1Listener {
+func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders) *v1Listener {
 	l := &v1Listener{}
 	rd := &v1.Readiness{}
 	svc, err := svcauth.New(svcauth.Options{
@@ -58,6 +61,7 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config) *v1Listene
 		AdminToken:     cfg.Server.AdminToken,
 		ClientIPHeader: cfg.Server.ClientIPHeader,
 		Readiness:      rd,
+		CertSource:     v1CertSource,
 	})
 	if err != nil {
 		log.Printf("pebble-serve: ERROR %v — /v1 listener disabled", err)
@@ -81,7 +85,7 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config) *v1Listene
 	s.v1svc = svc
 	if l.articles != nil {
 		svc.Policy.SetSwapLocker(l.articles.WriteLocker())
-		sighupReloaders.Add("articles", l.articles.ReloadConfig)
+		rs.Add("articles", l.articles.ReloadConfig)
 		l.rebuild.Add(1)
 		go func() {
 			defer l.rebuild.Done()
@@ -91,7 +95,7 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config) *v1Listene
 		}()
 	}
 	svc.Start(ctx)
-	sighupReloaders.Add("service-auth", func() error { return svc.Reload(ctx) })
+	rs.Add("service-auth", func() error { return svc.Reload(ctx) })
 	return l
 }
 

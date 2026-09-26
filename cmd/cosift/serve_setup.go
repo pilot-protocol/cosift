@@ -553,7 +553,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
-	v1l := srv.startV1(ctx, cfg)
+	v1l := srv.startV1(ctx, cfg, &sighupReloaders)
 
 	log.Printf("pebble-serve: listening on %s (PebbleStore at %s)", *addr, *dir)
 	// Production state observed on GH200: after a restart series that
