@@ -124,3 +124,13 @@ func TestKeyRotation(t *testing.T) {
 		}
 	}
 }
+
+func TestClientIPHeaderTrimmed(t *testing.T) {
+	for _, name := range []string{" X-Client-IP ", "\tX-Client-IP", "x-client-ip  "} {
+		h := newHarness(t, baseConfig(), withClientIPHeader(name))
+		wantUnauthenticated(t, h.do("GET", "/v1/articles", "", bearerAuth(testKeys["community-wiki"]), header("X-Client-IP", "203.0.113.9")))
+		if got := h.lastReason(); got != "key_forwarded" {
+			t.Errorf("client_ip_header %q: reason %q", name, got)
+		}
+	}
+}

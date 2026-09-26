@@ -289,3 +289,37 @@ func TestCertFetchIsDetachedAndBounded(t *testing.T) {
 		t.Fatalf("transport: header limit %d, guarded dialer %v, proxy %v", tr.MaxResponseHeaderBytes, tr.DialContext != nil, tr.Proxy != nil)
 	}
 }
+
+// Without a copy the age still grows from the loop's start or the last good
+// fetch, and the 503s count as auth_unavailable failures.
+func TestCertAgeWithoutCopy(t *testing.T) {
+	h := newHarness(t, baseConfig(), withoutCerts())
+	if strings.Contains(h.metrics(), "cosift_v1_cert_age_seconds") {
+		t.Fatal("age reported before the loop ran")
+	}
+	block := make(chan struct{})
+	defer close(block)
+	h.src.SetBlock(block)
+	runCerts(t, h)
+	waitFor(t, "the loop", func() bool { return h.src.Fetches() == 1 })
+	h.clock.Advance(100 * time.Second)
+	if v := metricValue(t, h, "cosift_v1_cert_age_seconds "); v != "100" {
+		t.Fatalf("age before any copy %q", v)
+	}
+	w := h.do("POST", "/v1/search", `{}`, bearerAuth(h.token(synthSub, synthEmail)))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", w.Code)
+	}
+	if v := metricValue(t, h, `cosift_v1_auth_failures_total{reason="auth_unavailable"} `); v != "1" {
+		t.Fatalf("auth_unavailable failures %q", v)
+	}
+
+	h2 := newHarness(t, baseConfig())
+	h2.clock.Advance(6*time.Hour + 24*time.Hour + time.Minute)
+	if h2.svc.certs.Usable() {
+		t.Fatal("copy still usable")
+	}
+	if v := metricValue(t, h2, "cosift_v1_cert_age_seconds "); v != "108060" {
+		t.Fatalf("age after the copy was dropped %q", v)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,12 +24,16 @@ type Options struct {
 	Pepper         []byte
 	PeerAuthToken  string
 	AdminToken     string
+	MainAddr       string
 	ClientIPHeader string
-	Readiness      *v1.Readiness
-	Logger         *log.Logger
-	Now            func() time.Time
-	CertSource     CertSource
-	Validator      TokenValidator
+	// Readiness gates every route not marked Ungated; the article store owns it.
+	Readiness *v1.Readiness
+	// Policy is built before the article store, which takes it; nil makes one.
+	Policy     *Policy
+	Logger     *log.Logger
+	Now        func() time.Time
+	CertSource CertSource
+	Validator  TokenValidator
 }
 
 // Service is the /v1 listener: config, credentials, limits, audit and the
@@ -50,6 +55,9 @@ type Service struct {
 	addr     string
 	closed   bool
 	certsRun bool
+
+	summaryEvery time.Duration
+	done         chan struct{}
 }
 
 // New builds the service; Mount the route table before Start.
@@ -60,6 +68,7 @@ func New(opts Options) (*Service, error) {
 	if opts.Logger == nil {
 		opts.Logger = log.Default()
 	}
+	opts.ClientIPHeader = strings.TrimSpace(opts.ClientIPHeader)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -69,14 +78,20 @@ func New(opts Options) (*Service, error) {
 	if opts.CertSource == nil {
 		opts.CertSource = HTTPCertSource(NewCertHTTPClient())
 	}
-	m := NewMetrics()
+	if opts.Policy == nil {
+		opts.Policy = NewPolicy(nil, opts.Now)
+	}
+	m := opts.Policy.metrics
 	s := &Service{
 		opts:    opts,
-		Policy:  NewPolicy(m, opts.Now),
+		Policy:  opts.Policy,
 		Metrics: m,
 		log:     opts.Logger,
 		now:     opts.Now,
 		ready:   opts.Readiness,
+
+		summaryEvery: 15 * time.Second,
+		done:         make(chan struct{}),
 	}
 	s.certs = NewCertCache(opts.CertSource, m, opts.Now, s.log.Printf)
 	s.failed = newFailedAuthLimiter(opts.Now, s.log.Printf)
@@ -105,7 +120,7 @@ func (s *Service) Mount(routes []v1.Route) error {
 }
 
 func (s *Service) checks() Checks {
-	return Checks{Pepper: s.opts.Pepper, PeerAuthToken: s.opts.PeerAuthToken, AdminToken: s.opts.AdminToken}
+	return Checks{Pepper: s.opts.Pepper, PeerAuthToken: s.opts.PeerAuthToken, AdminToken: s.opts.AdminToken, MainAddr: s.opts.MainAddr}
 }
 
 func (s *Service) load() (*Config, error) {
@@ -143,22 +158,36 @@ func (s *Service) mounted() *http.ServeMux {
 	return s.mux
 }
 
-// Reload re-reads the config for SIGHUP. An invalid or missing file keeps the
-// active config; a valid one is swapped in and starts a listener that is down.
-func (s *Service) Reload(ctx context.Context) error {
+var errShuttingDown = errors.New("svcauth: shutting down")
+
+// Reload is one SIGHUP: it re-reads the config, then runs also, the SIGHUP's
+// other reloaders, and counts one outcome for them all. An invalid or missing
+// file keeps the active config; a valid one is swapped in and starts a
+// listener that is down.
+func (s *Service) Reload(ctx context.Context, also ...v1.Reloader) error {
+	err := s.reloadConfig(ctx)
+	if errors.Is(err, errShuttingDown) {
+		return err
+	}
+	for _, f := range also {
+		err = errors.Join(err, f())
+	}
+	s.Metrics.reload(err == nil)
+	return err
+}
+
+func (s *Service) reloadConfig(ctx context.Context) error {
 	cfg, err := s.load()
 	if err != nil {
-		s.Metrics.reload(false)
 		s.log.Printf("svcauth: ERROR reload of %s refused (%v) — previous config stays active", s.opts.Path, err)
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return errors.New("svcauth: shutting down")
+		return errShuttingDown
 	}
 	s.Policy.Install(cfg)
-	s.Metrics.reload(true)
 	s.log.Printf("svcauth: reloaded %s (%d principals)", s.opts.Path, len(cfg.Principals))
 	if !PepperOK(s.opts.Pepper) && s.Policy.state().hasKeyPrincipals() {
 		s.log.Printf("svcauth: WARN COSIFT_SVC_PEPPER absent or shorter than %d bytes — key principals cannot authenticate", MinPepperLen)
@@ -200,6 +229,7 @@ func (s *Service) listenLocked(ctx context.Context, cfg *Config) {
 	if !s.certsRun {
 		s.certsRun = true
 		go s.certs.Run(ctx)
+		go s.summaryLoop(ctx)
 	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -220,9 +250,13 @@ func (s *Service) Addr() string {
 // the article store can be flushed and closed after it returns.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
+	wasClosed := s.closed
 	s.closed = true
 	srv := s.srv
 	s.mu.Unlock()
+	if !wasClosed {
+		close(s.done)
+	}
 	if srv == nil {
 		return nil
 	}
@@ -230,5 +264,22 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if err != nil {
 		_ = srv.Close()
 	}
+	s.failed.flush(s.now(), true)
 	return err
+}
+
+// summaryLoop writes throttled clients' pending counts when no new failure does.
+func (s *Service) summaryLoop(ctx context.Context) {
+	t := time.NewTicker(s.summaryEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.done:
+			return
+		case <-t.C:
+			s.failed.flush(s.now(), false)
+		}
+	}
 }

@@ -306,3 +306,35 @@ func TestListenBindFailure(t *testing.T) {
 		t.Fatalf("old listener: %d", code)
 	}
 }
+
+// One SIGHUP counts one outcome: ok only when the config and every other
+// reloader succeeded; the others run even when the config is invalid.
+func TestReloadCountsOneOutcome(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	fail := errors.New("thresholds invalid")
+	var ran int
+	ok := func() error { ran++; return nil }
+	bad := func() error { ran++; return fail }
+	counts := func() (string, string) {
+		return metricValue(t, h, `cosift_v1_config_reloads_total{result="ok"} `), metricValue(t, h, `cosift_v1_config_reloads_total{result="error"} `)
+	}
+	if err := h.svc.Reload(t.Context(), ok, ok); err != nil {
+		t.Fatal(err)
+	}
+	if o, e := counts(); o != "1" || e != "0" || ran != 2 {
+		t.Fatalf("all ok: ok %s error %s ran %d", o, e, ran)
+	}
+	if err := h.svc.Reload(t.Context(), ok, bad); !errors.Is(err, fail) {
+		t.Fatalf("a failing reloader: %v", err)
+	}
+	if o, e := counts(); o != "1" || e != "1" || ran != 4 {
+		t.Fatalf("one failing: ok %s error %s ran %d", o, e, ran)
+	}
+	writeConfig(t, h.path, "{")
+	if err := h.svc.Reload(t.Context(), ok); err == nil {
+		t.Fatal("invalid config accepted")
+	}
+	if o, e := counts(); o != "1" || e != "2" || ran != 5 {
+		t.Fatalf("invalid config: ok %s error %s ran %d", o, e, ran)
+	}
+}

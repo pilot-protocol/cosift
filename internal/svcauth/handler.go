@@ -75,6 +75,7 @@ func (s *Service) chain(rt v1.Route) http.Handler {
 		out := s.authenticate(r, st)
 		if out.unavailable {
 			ri.reason, ri.client = "auth_unavailable", clientKey(r, s.opts.ClientIPHeader)
+			s.Metrics.authFailure(ri.reason)
 			v1.WriteError(w, v1.AuthUnavailable())
 			return
 		}
@@ -109,12 +110,9 @@ func scopeCheck(scopes []v1.Scope, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := v1.PrincipalFrom(r.Context())
-		if !ok || !p.HasAny(scopes...) {
-			v1.WriteError(w, v1.MissingScope(scopes[0]))
-			return
+		if _, ok := v1.RequireAny(w, r, scopes...); ok {
+			next.ServeHTTP(w, r)
 		}
-		next.ServeHTTP(w, r)
 	})
 }
 
