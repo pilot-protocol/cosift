@@ -60,6 +60,18 @@ func (l *failedAuthLimiter) fail(client string, fa FailedAuth) (time.Duration, b
 	return e.b.wait(rate), false
 }
 
+// flush writes the pending summaries a minute old, or all of them.
+func (l *failedAuthLimiter) flush(now time.Time, all bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for k, e := range l.clients {
+		if e.suppressed > 0 && (all || now.Sub(e.summaryAt) >= throttleSummaryEvery) {
+			l.summary(k, e)
+			e.summaryAt = now
+		}
+	}
+}
+
 func (l *failedAuthLimiter) summary(client string, e *failEntry) {
 	if l.logf != nil {
 		l.logf("v1 auth_throttled client=%s count=%d", client, e.suppressed)
@@ -67,7 +79,8 @@ func (l *failedAuthLimiter) summary(client string, e *failEntry) {
 	e.suppressed = 0
 }
 
-// sweep drops clients whose bucket has refilled, flushing any pending count.
+// sweep drops clients whose bucket has refilled, once their pending count
+// has gone out in a summary.
 func (l *failedAuthLimiter) sweep(now time.Time, fa FailedAuth) {
 	if now.Sub(l.lastSweep) < failSweepEvery {
 		return
@@ -79,10 +92,13 @@ func (l *failedAuthLimiter) sweep(now time.Time, fa FailedAuth) {
 		if e.b.tokens < capacity {
 			continue
 		}
-		if e.suppressed > 0 {
+		recent := now.Sub(e.summaryAt) < throttleSummaryEvery
+		if e.suppressed == 0 && !recent {
+			delete(l.clients, k)
+		} else if e.suppressed > 0 && !recent {
 			l.summary(k, e)
+			e.summaryAt = now
 		}
-		delete(l.clients, k)
 	}
 }
 
