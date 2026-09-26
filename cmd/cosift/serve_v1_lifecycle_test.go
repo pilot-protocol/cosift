@@ -191,6 +191,8 @@ func TestSIGHUPDuringSlowStart(t *testing.T) {
 
 type fakeArticleLayer struct {
 	deps     articleDeps
+	ready    v1.Readiness
+	reloads  int
 	lock     sync.Mutex
 	entered  chan struct{}
 	release  chan struct{}
@@ -215,15 +217,22 @@ func (a *fakeArticleLayer) Routes() []v1.Route {
 	})}}
 }
 
+func (a *fakeArticleLayer) Readiness() *v1.Readiness { return &a.ready }
+
 func (a *fakeArticleLayer) WriteLocker() sync.Locker { return &a.lock }
 
 func (a *fakeArticleLayer) Rebuild(context.Context) error {
 	a.event("rebuild")
-	a.deps.readiness.SetReady()
+	a.ready.SetReady()
 	return nil
 }
 
-func (a *fakeArticleLayer) ReloadConfig() error { return nil }
+func (a *fakeArticleLayer) ReloadThresholds() error {
+	a.mu.Lock()
+	a.reloads++
+	a.mu.Unlock()
+	return nil
+}
 
 func (a *fakeArticleLayer) Close() error {
 	a.event("close")
@@ -237,7 +246,7 @@ func (a *fakeArticleLayer) Close() error {
 				a.storeErr = fmt.Errorf("panic: %v", p)
 			}
 		}()
-		_, _, a.storeErr = a.deps.store.CorpusStats(context.Background())
+		_, _, a.storeErr = a.deps.db.CorpusStats(context.Background())
 	}()
 	return nil
 }
@@ -262,8 +271,8 @@ func TestV1ShutdownOrder(t *testing.T) {
 	oldPath, oldUID, oldSrc, oldOpen := svcAuthPath, svcAuthOwnerUID, v1CertSource, openArticles
 	svcAuthPath, svcAuthOwnerUID = cfgPath, uint32(os.Getuid())
 	v1CertSource = svcauthtest.NewSource(svcauthtest.JWKS(svcauthtest.NewSigner("k")), 21600).Fetch
-	openArticles = func(d articleDeps) (articleLayer, error) {
-		if d.store == nil || d.policy == nil || d.readiness == nil {
+	openArticles = func(_ context.Context, d articleDeps) (articleLayer, error) {
+		if d.db == nil || d.corpus == nil || d.policy == nil || d.thresholdsPath == "" {
 			return nil, errors.New("missing dependency")
 		}
 		a.deps = d
@@ -617,4 +626,104 @@ func TestV1DenseUsesUncachedEmbedder(t *testing.T) {
 	if files() == 0 {
 		t.Fatal("/search wrote no cache file either; the assertion above is vacuous")
 	}
+}
+
+// The article store's own Readiness gates its routes, its write lock guards
+// the config swap, its thresholds reload on SIGHUP, and it shares the Policy
+// the listener enforces.
+func TestV1ArticleWiring(t *testing.T) {
+	key, keyID, err := svcauth.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Addr := freeAddr(t)
+	cfgPath := filepath.Join(t.TempDir(), "service-auth.json")
+	b, _ := json.Marshal(map[string]any{"schema_version": 1, "listen": v1Addr, "principals": []any{
+		map[string]any{"id": "community-wiki", "kind": "key", "keys": []any{map[string]any{"key_id": keyID, "digest": svcauth.FormatDigest(svcauth.Digest([]byte(v1TestPepper), key))}}, "env": "prod", "scopes": []string{"articles:read"}, "rpm": 6000},
+	}})
+	if err := os.WriteFile(cfgPath, b, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	a := &fakeArticleLayer{entered: make(chan struct{}), release: make(chan struct{})}
+	close(a.release)
+	rebuilt := make(chan struct{})
+	oldPath, oldUID, oldSrc, oldOpen := svcAuthPath, svcAuthOwnerUID, v1CertSource, openArticles
+	svcAuthPath, svcAuthOwnerUID = cfgPath, uint32(os.Getuid())
+	v1CertSource = svcauthtest.NewSource(svcauthtest.JWKS(svcauthtest.NewSigner("k")), 21600).Fetch
+	openArticles = func(_ context.Context, d articleDeps) (articleLayer, error) {
+		a.deps = d
+		return &blockingRebuild{fakeArticleLayer: a, until: rebuilt}, nil
+	}
+	t.Cleanup(func() { svcAuthPath, svcAuthOwnerUID, v1CertSource, openArticles = oldPath, oldUID, oldSrc, oldOpen })
+	t.Setenv("COSIFT_SVC_PEPPER", v1TestPepper)
+
+	f := newV1Fixture(t)
+	var rs v1.Reloaders
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := f.srv.startV1(ctx, &config.Config{}, &rs)
+	defer l.stop()
+	get := func() (int, string) {
+		req, _ := http.NewRequest("GET", "http://"+v1Addr+"/v1/articles", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get(); code != 503 || !strings.Contains(body, `"code":"index_unavailable"`) {
+		t.Fatalf("before the store's rebuild: %d %s", code, body)
+	}
+	close(rebuilt)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if code, _ := get(); code == 200 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the store's readiness never opened the article routes")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p, ok := a.deps.policy.Principal("community-wiki"); !ok || p.Env != v1.EnvProd {
+		t.Fatalf("the store's policy is not the listener's: %+v %v", p, ok)
+	}
+	a.lock.Lock()
+	reloaded := make(chan error, 1)
+	go func() { reloaded <- rs.Reload() }()
+	select {
+	case err := <-reloaded:
+		a.lock.Unlock()
+		t.Fatalf("a reload swapped the config while the store lock was held (%v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	a.lock.Unlock()
+	if err := <-reloaded; err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	n := a.reloads
+	a.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("thresholds reloaded %d times", n)
+	}
+	l.stop()
+	l.closeArticles()
+	if got := strings.Join(a.events, ","); got != "rebuild,handler done,close" {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// blockingRebuild holds the store's rebuild until released.
+type blockingRebuild struct {
+	*fakeArticleLayer
+	until chan struct{}
+}
+
+func (b *blockingRebuild) Rebuild(ctx context.Context) error {
+	<-b.until
+	return b.fakeArticleLayer.Rebuild(ctx)
 }

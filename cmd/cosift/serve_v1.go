@@ -17,7 +17,10 @@ import (
 // sighupReloaders is what a SIGHUP runs; see handleSIGHUP.
 var sighupReloaders v1.Reloaders
 
-var svcAuthPath = svcauth.DefaultPath
+var (
+	svcAuthPath        = svcauth.DefaultPath
+	articlesConfigPath = "/etc/cosift/articles.json"
+)
 
 // v1CertSource replaces the Google certificate fetch in tests; nil is Google.
 var v1CertSource svcauth.CertSource
@@ -25,21 +28,24 @@ var v1CertSource svcauth.CertSource
 // articleLayer is the article store as the /v1 listener mounts it.
 type articleLayer interface {
 	Routes() []v1.Route
+	// Readiness is store-owned; it gates every article route.
+	Readiness() *v1.Readiness
 	WriteLocker() sync.Locker
 	Rebuild(ctx context.Context) error
-	ReloadConfig() error
+	ReloadThresholds() error
 	Close() error
 }
 
 type articleDeps struct {
-	store     *store.PebbleStore
-	embedder  embed.Embedder
-	policy    v1.Policy
-	readiness *v1.Readiness
+	db             *store.PebbleStore
+	embedder       embed.Embedder
+	policy         v1.Policy
+	corpus         *store.PebbleStore
+	thresholdsPath string
 }
 
 // openArticles opens the article store; nil until the store is linked in.
-var openArticles func(articleDeps) (articleLayer, error)
+var openArticles func(context.Context, articleDeps) (articleLayer, error)
 
 type v1Listener struct {
 	svc      *svcauth.Service
@@ -52,7 +58,18 @@ type v1Listener struct {
 // invalid service-auth.json leaves it down; :7777 is never affected.
 func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders) *v1Listener {
 	l := &v1Listener{}
+	pol := svcauth.NewPolicy(nil, nil)
+	routes := s.v1RetrievalRoutes()
 	rd := &v1.Readiness{}
+	if openArticles != nil {
+		a, err := openArticles(ctx, articleDeps{db: s.store, embedder: s.v1Embedder, policy: pol, corpus: s.store, thresholdsPath: articlesConfigPath})
+		if err != nil {
+			log.Printf("pebble-serve: ERROR article store not opened — article routes disabled")
+		} else {
+			l.articles, rd = a, a.Readiness()
+			routes = append(routes, a.Routes()...)
+		}
+	}
 	svc, err := svcauth.New(svcauth.Options{
 		Path:           svcAuthPath,
 		OwnerUID:       svcAuthOwnerUID,
@@ -61,31 +78,20 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 		AdminToken:     cfg.Server.AdminToken,
 		ClientIPHeader: cfg.Server.ClientIPHeader,
 		Readiness:      rd,
+		Policy:         pol,
 		CertSource:     v1CertSource,
 	})
+	if err == nil {
+		err = svc.Mount(routes)
+	}
 	if err != nil {
-		log.Printf("pebble-serve: ERROR %v — /v1 listener disabled", err)
-		return l
-	}
-	routes := s.v1RetrievalRoutes()
-	if openArticles != nil {
-		a, err := openArticles(articleDeps{store: s.store, embedder: s.v1Embedder, policy: svc.Policy, readiness: rd})
-		if err != nil {
-			log.Printf("pebble-serve: ERROR article store not opened — article routes disabled")
-		} else {
-			l.articles = a
-			routes = append(routes, a.Routes()...)
-		}
-	}
-	if err := svc.Mount(routes); err != nil {
 		log.Printf("pebble-serve: ERROR %v — /v1 listener disabled", err)
 		return l
 	}
 	l.svc = svc
 	s.v1svc = svc
 	if l.articles != nil {
-		svc.Policy.SetSwapLocker(l.articles.WriteLocker())
-		rs.Add("articles", l.articles.ReloadConfig)
+		pol.SetSwapLocker(l.articles.WriteLocker())
 		l.rebuild.Add(1)
 		go func() {
 			defer l.rebuild.Done()
@@ -96,6 +102,9 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 	}
 	svc.Start(ctx)
 	rs.Add("service-auth", func() error { return svc.Reload(ctx) })
+	if l.articles != nil {
+		rs.Add("articles", l.articles.ReloadThresholds)
+	}
 	return l
 }
 

@@ -36,10 +36,6 @@ func (s *pebbleHTTP) v1RetrievalRoutes() []v1.Route {
 	}
 }
 
-func v1InvalidField(field, rule string) v1.Error {
-	return v1.Error{Status: http.StatusUnprocessableEntity, Code: "invalid_field", Detail: "invalid field", Field: field, Rule: rule}
-}
-
 func v1DenseUnavailable() v1.Error {
 	return v1.Error{Status: http.StatusServiceUnavailable, Code: "dense_unavailable", Detail: "dense retrieval unavailable", RetryAfter: 10 * time.Second}
 }
@@ -95,13 +91,13 @@ func (s *pebbleHTTP) handleV1Search(w http.ResponseWriter, r *http.Request) {
 		q = *req.Q
 	}
 	if rule := v1QueryRule(q); rule != "" {
-		v1.WriteError(w, v1InvalidField("q", rule))
+		v1.WriteError(w, v1.InvalidField("q", rule))
 		return
 	}
 	k := v1DefaultK
 	if req.K != nil {
 		if k = *req.K; k < 1 || k > v1MaxK {
-			v1.WriteError(w, v1InvalidField("k", "range"))
+			v1.WriteError(w, v1.InvalidField("k", "range"))
 			return
 		}
 	}
@@ -124,7 +120,7 @@ func (s *pebbleHTTP) handleV1Search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		v1.WriteError(w, v1InvalidField("retriever", "enum"))
+		v1.WriteError(w, v1.InvalidField("retriever", "enum"))
 		return
 	}
 	out := make([]v1SearchHit, 0, k)
@@ -194,17 +190,17 @@ func (s *pebbleHTTP) handleV1Contents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.URLs == nil || len(*req.URLs) == 0 {
-		v1.WriteError(w, v1InvalidField("urls", "required"))
+		v1.WriteError(w, v1.InvalidField("urls", "required"))
 		return
 	}
 	urls := *req.URLs
 	if len(urls) > v1MaxURLs {
-		v1.WriteError(w, v1InvalidField("urls", "too_many"))
+		v1.WriteError(w, v1.InvalidField("urls", "too_many"))
 		return
 	}
 	for i, u := range urls {
 		if u == "" || len(u) > v1MaxURLBytes {
-			v1.WriteError(w, v1InvalidField("urls["+strconv.Itoa(i)+"]", "length"))
+			v1.WriteError(w, v1.InvalidField("urls["+strconv.Itoa(i)+"]", "length"))
 			return
 		}
 	}
