@@ -214,6 +214,7 @@ func (p *Policy) ChargeWrite(id string) (time.Duration, bool) {
 		retry = max(retry, b.hour.wait(rate))
 	}
 	if refused {
+		p.metrics.limited(id, "write_budget")
 		return retry, false
 	}
 	b.hour.tokens--

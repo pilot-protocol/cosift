@@ -40,7 +40,7 @@ func TestPrincipalRateLimit(t *testing.T) {
 	}
 }
 
-// §6: failures from one client turn into 429 auth_throttled after the burst,
+// Failures from one client turn into 429 auth_throttled after the burst,
 // logged once a minute, and never block a request that authenticates.
 func TestFailedAuthLimiter(t *testing.T) {
 	h := newHarness(t, baseConfig())
@@ -165,13 +165,15 @@ func TestWriteBudget(t *testing.T) {
 			t.Errorf("%s has a write allowance", id)
 		}
 	}
-	if !strings.Contains(h.metrics(), `cosift_v1_writes_total{principal="synth-prod"} 4`) {
-		t.Fatal(h.metrics())
+	for _, want := range []string{`cosift_v1_writes_total{principal="synth-prod"} 4`, `cosift_v1_rate_limited_total{principal="synth-prod",kind="write_budget"} 2`} {
+		if !strings.Contains(h.metrics(), want) {
+			t.Fatalf("no %s in\n%s", want, h.metrics())
+		}
 	}
 }
 
-// fakeArticles stands in for W3's handlers: it applies the SA §5.1, §5.3 and
-// §6 rules through internal/v1 and the Policy, so the auth half is proven.
+// fakeArticles stands in for the article handlers: it applies the scope, env
+// and write-budget rules through internal/v1 and the Policy.
 type fakeArticles struct {
 	pol     v1.Policy
 	lock    sync.Mutex
@@ -312,7 +314,7 @@ func newFakeArticlesHarness(t *testing.T, cfg map[string]any) (*harness, *fakeAr
 
 const article = `{"status":"published","title":"Rust async runtimes"}`
 
-// §5.1 auth half: the stub-only principal cannot publish, and the build match
+// The stub-only principal cannot publish, and the build match
 // needs write or stub.
 func TestPerOperationScope(t *testing.T) {
 	h, _ := newFakeArticlesHarness(t, baseConfig())
@@ -339,7 +341,7 @@ func TestPerOperationScope(t *testing.T) {
 	}
 }
 
-// §5.3 auth half: environment binding in both directions, on writes and on
+// Environment binding in both directions, on writes and on
 // moderation with the two dashboard keys, always before any 409.
 func TestEnvBinding(t *testing.T) {
 	h, _ := newFakeArticlesHarness(t, baseConfig())
@@ -435,7 +437,7 @@ func TestGoliveLocksAndSwapUnderLock(t *testing.T) {
 	<-swapped
 }
 
-// §6: the write budget is charged after decoding and before validation, so a
+// The write budget is charged after decoding and before validation, so a
 // refused write costs as much as an accepted one; reads pass while it is spent.
 func TestWriteBudgetThroughHandlers(t *testing.T) {
 	cfg := baseConfig()

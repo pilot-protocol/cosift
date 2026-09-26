@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -201,9 +202,9 @@ func (s *pebbleHTTP) handleV1Contents(w http.ResponseWriter, r *http.Request) {
 		v1.WriteError(w, v1InvalidField("urls", "too_many"))
 		return
 	}
-	for _, u := range urls {
+	for i, u := range urls {
 		if u == "" || len(u) > v1MaxURLBytes {
-			v1.WriteError(w, v1InvalidField("urls", "length"))
+			v1.WriteError(w, v1InvalidField("urls["+strconv.Itoa(i)+"]", "length"))
 			return
 		}
 	}

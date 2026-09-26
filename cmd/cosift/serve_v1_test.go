@@ -175,7 +175,7 @@ func (f *v1Fixture) token() string {
 	return f.signer.Token(svcauthtest.Claims(v1SynthSub, v1SynthEmail, time.Now()))
 }
 
-// articleStubRoutes is the ARTICLES.md §4 table with no-op handlers.
+// articleStubRoutes is the article route table with no-op handlers.
 func articleStubRoutes() []v1.Route {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { v1.WriteJSON(w, http.StatusOK, map[string]any{}) })
 	read := []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesReadAll}
@@ -260,7 +260,7 @@ func TestV1SearchBM25(t *testing.T) {
 	}
 }
 
-// AR §8 "Search": no decay whatever COSIFT_DEFAULT_DECAY_DAYS says, and the
+// No decay whatever COSIFT_DEFAULT_DECAY_DAYS says, and the
 // fixture is one where /search would decay.
 func TestV1SearchNoDecay(t *testing.T) {
 	t.Setenv("COSIFT_DEFAULT_DECAY_DAYS", "30")
@@ -284,7 +284,7 @@ func TestV1SearchNoDecay(t *testing.T) {
 	}
 }
 
-// AR §8 "Search": an entity-shaped query is not rewritten.
+// An entity-shaped query is not rewritten.
 func TestV1SearchNoExpansion(t *testing.T) {
 	f := newV1Fixture(t)
 	q := "who created zephyrcore"
@@ -311,7 +311,7 @@ func TestV1SearchNoExpansion(t *testing.T) {
 	}
 }
 
-// AR §8 "Search": /v1/search never writes the query log.
+// /v1/search never writes the query log.
 func TestV1SearchWritesNoQueryLog(t *testing.T) {
 	f := newV1Fixture(t)
 	qlog := filepath.Join(t.TempDir(), "qlog.jsonl")
@@ -415,7 +415,7 @@ func TestV1SearchDense(t *testing.T) {
 	}
 }
 
-// AR §4.11: dense is 503 dense_unavailable with no graph, no embedder, a
+// Dense is 503 dense_unavailable with no graph, no embedder, a
 // failing embedder or the graph lock unavailable, and never falls back.
 func TestV1SearchDenseUnavailable(t *testing.T) {
 	f := newV1Fixture(t)
@@ -446,7 +446,7 @@ func TestV1SearchDenseUnavailable(t *testing.T) {
 	}
 }
 
-// AR §4.11: the compaction's in-memory phase holds the graph write lock, so
+// The compaction's in-memory phase holds the graph write lock, so
 // dense is 503 then; its persist phase does not make dense unavailable.
 func TestV1SearchDenseDuringCompaction(t *testing.T) {
 	f := newV1Fixture(t)
@@ -534,12 +534,15 @@ func TestV1Contents(t *testing.T) {
 		{`{"urls":[]}`, "required", 422},
 		{many, "too_many", 422},
 		{`{"urls":[""]}`, "length", 422},
-		{`{"urls":["https://x.example/` + strings.Repeat("a", 2048) + `"]}`, "length", 422},
+		{`{"urls":["https://x.example/a","https://x.example/` + strings.Repeat("a", 2048) + `"]}`, "length", 422},
 		{`{"urls":["x"],"text":true}`, "", 400},
 	} {
 		w := f.v1Call(f.srv.handleV1Contents, tc.body)
 		if e := v1ErrCode(t, w); w.Code != tc.code || e.Rule != tc.rule {
 			t.Errorf("%.50s: %d %+v", tc.body, w.Code, e)
+		}
+		if e := v1ErrCode(t, w); tc.rule == "length" && e.Field != "urls[0]" && e.Field != "urls[1]" {
+			t.Errorf("%.50s: field %q", tc.body, e.Field)
 		}
 	}
 	twenty := `{"urls":[` + strings.TrimSuffix(strings.Repeat(`"https://x.example/a",`, 20), ",") + `]}`
@@ -569,7 +572,7 @@ func TestCutUTF8(t *testing.T) {
 
 var muxPattern = regexp.MustCompile(`mux\.HandleFunc\("([A-Z]+) (/[^"]*)"`)
 
-// §1 / §10.6: every route of the :7777 mux, as registered in serve_setup.go,
+// Every route of the :7777 mux, as registered in serve_setup.go,
 // is the JSON 404 on the /v1 listener, even with a valid credential.
 func TestPort7777RoutesUnreachableOnV1(t *testing.T) {
 	src, err := os.ReadFile("serve_setup.go")
@@ -605,7 +608,7 @@ func TestPort7777RoutesUnreachableOnV1(t *testing.T) {
 	}
 }
 
-// AR §4: the full table, retrieval plus the article routes, registers on one
+// The full table, retrieval plus the article routes, registers on one
 // mux.
 func TestV1RouteTableRegisters(t *testing.T) {
 	f := newV1Fixture(t)
@@ -665,7 +668,7 @@ func TestV1RetrievalThroughListener(t *testing.T) {
 	}
 }
 
-// §1.2: a SIGHUP with a good file starts a listener that was down, a bad and
+// A SIGHUP with a good file starts a listener that was down, a bad and
 // a deleted file keep the previous config.
 func TestSIGHUPReload(t *testing.T) {
 	f := newV1Fixture(t)
