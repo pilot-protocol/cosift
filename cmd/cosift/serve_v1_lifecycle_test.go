@@ -10,10 +10,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,7 +101,7 @@ func (w *lineWatcher) seen(substr string, d time.Duration) bool {
 	}
 }
 
-// §11 §1: a SIGHUP during a slow start does not kill the engine. The config
+// A SIGHUP during a slow start does not kill the engine. The config
 // is a FIFO, so the process blocks reading it, before any HNSW load.
 func TestSIGHUPDuringSlowStart(t *testing.T) {
 	bin := buildCosift(t)
@@ -240,7 +242,7 @@ func (a *fakeArticleLayer) Close() error {
 	return nil
 }
 
-// AR §1.2 / IMP-9: shutdown stops :7779 with :7777 and drains its handlers,
+// Shutdown stops :7779 with :7777 and drains its handlers,
 // then closes the article store, then Pebble.
 func TestV1ShutdownOrder(t *testing.T) {
 	dir := t.TempDir()
@@ -477,7 +479,7 @@ func TestSvcAuthCheck(t *testing.T) {
 	}
 }
 
-// The binary maps the CLIs' outcomes to the §9 exit codes.
+// The binary maps the CLIs' outcomes to their exit codes.
 func TestSvcCLIExitCodes(t *testing.T) {
 	bin := buildCosift(t)
 	dir := t.TempDir()
@@ -513,5 +515,106 @@ func TestSvcCLIExitCodes(t *testing.T) {
 	}
 	if code, _, _ := run(nil, "svc-auth", "check", "--file", filepath.Join(dir, "missing.json"), "--pepper-file", none); code != 1 {
 		t.Errorf("check refused: exit %d", code)
+	}
+}
+
+// /v1/search embeds with the inner client, so the on-disk embedding
+// cache that /search fills gains no file for a /v1 query.
+func TestV1DenseUsesUncachedEmbedder(t *testing.T) {
+	f := populatedPebbleStore(t)
+	if err := f.hnsw.Persist(context.Background(), f.ps); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	var mu sync.Mutex
+	var embedded []string
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		embedded = append(embedded, req.Input...)
+		mu.Unlock()
+		data := make([]map[string]any, len(req.Input))
+		for i, in := range req.Input {
+			data[i] = map[string]any{"index": i, "embedding": deterministicVec(in, f.dim)}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer embedSrv.Close()
+
+	signer := svcauthtest.NewSigner("kid-1")
+	v1Addr := freeAddr(t)
+	cfgPath := filepath.Join(t.TempDir(), "service-auth.json")
+	b, _ := json.Marshal(map[string]any{"schema_version": 1, "listen": v1Addr, "principals": []any{
+		map[string]any{"id": "synth-prod", "kind": "oidc", "sub": v1SynthSub, "email": v1SynthEmail, "env": "prod", "scopes": []string{"retrieve:read"}, "rpm": 6000},
+	}})
+	if err := os.WriteFile(cfgPath, b, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	oldPath, oldUID, oldSrc := svcAuthPath, svcAuthOwnerUID, v1CertSource
+	svcAuthPath, svcAuthOwnerUID = cfgPath, uint32(os.Getuid())
+	v1CertSource = svcauthtest.NewSource(svcauthtest.JWKS(signer), 21600).Fetch
+	t.Cleanup(func() { svcAuthPath, svcAuthOwnerUID, v1CertSource = oldPath, oldUID, oldSrc })
+	t.Setenv("COSIFT_LOAD_HNSW", "true")
+	cacheDir := t.TempDir()
+	mainAddr := freeAddr(t)
+	cfg := &config.Config{Server: config.Server{Addr: mainAddr}, Embeddings: config.Embeddings{URL: embedSrv.URL, Model: "m", Dim: f.dim, CacheDir: cacheDir}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runPebbleServe(ctx, cfg, []string{"-dir", f.dir, "-addr", mainAddr}) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	query := "raft leader election uncached"
+	dense := func() (int, string) {
+		req, _ := http.NewRequest("POST", "http://"+v1Addr+"/v1/search", strings.NewReader(`{"q":"`+query+`","retriever":"dense","k":3}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+signer.Token(svcauthtest.Claims(v1SynthSub, v1SynthEmail, time.Now())))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		code, body := dense()
+		if code == 200 {
+			if !strings.Contains(body, `"retriever":"dense"`) || !strings.Contains(body, `"url":"https://x.example/`) {
+				t.Fatalf("dense response %s", body)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dense never served: %d %s", code, body)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	files := func() int {
+		entries, _ := os.ReadDir(cacheDir)
+		return len(entries)
+	}
+	mu.Lock()
+	sawQuery := slices.Contains(embedded, query)
+	mu.Unlock()
+	if !sawQuery {
+		t.Fatalf("the /v1 query never reached the embedder: %q", embedded)
+	}
+	if n := files(); n != 0 {
+		t.Fatalf("/v1/search left %d files in the embedding cache", n)
+	}
+	resp, err := http.Get("http://" + mainAddr + "/search?q=" + strings.ReplaceAll(query, " ", "+") + "&retriever=dense")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if files() == 0 {
+		t.Fatal("/search wrote no cache file either; the assertion above is vacuous")
 	}
 }
