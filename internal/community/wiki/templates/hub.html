@@ -1,0 +1,14 @@
+{{define "main"}}<section class="wiki-hub" aria-label="{{.Heading}}">
+<h1>{{.Heading}}</h1>
+{{range .Groups}}<h2>{{.Letter}}</h2>
+<ul class="wiki-list">
+{{range .Items}}<li><a href="/wiki/{{.Slug}}">{{.Title}}</a></li>
+{{end}}</ul>
+{{else}}<p>No articles yet.</p>
+{{end}}{{if or .Prev .Next}}<nav class="wiki-pages" aria-label="Pages">
+{{with .Prev}}<a href="{{.}}" rel="prev">Previous</a>
+{{end}}<span>Page {{.Page}} of {{.Pages}}</span>
+{{with .Next}}<a href="{{.}}" rel="next">Next</a>
+{{end}}</nav>
+{{end}}</section>
+{{end}}

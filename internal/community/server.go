@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/community/wiki"
 	"github.com/pilot-protocol/cosift/internal/crawler"
 	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
@@ -54,6 +55,8 @@ type Config struct {
 	AllowTestPayments           bool // Explicit opt-in for an isolated QA ledger only.
 	StripePortalConfigurationID string
 	GAMeasurementID             string
+	GSCVerification             string
+	Wiki                        wiki.Config
 }
 
 type bucket struct {
@@ -74,11 +77,16 @@ type Server struct {
 	guestSalt        string
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
+	wiki             *wiki.Wiki
+	index            []byte
 }
 
 func Open(cfg Config) (*Server, error) {
 	if cfg.GAMeasurementID != "" && !regexp.MustCompile(`^G-[A-Z0-9]+$`).MatchString(cfg.GAMeasurementID) {
 		return nil, fmt.Errorf("COSIFT_GA_MEASUREMENT_ID must match G-[A-Z0-9]+")
+	}
+	if err := wiki.CheckGSC(cfg.GSCVerification); err != nil {
+		return nil, err
 	}
 	if err := cfg.defaultLimits(); err != nil {
 		return nil, err
@@ -132,6 +140,19 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	wc := cfg.Wiki
+	wc.PublicURL, wc.GAMeasurementID, wc.GSCVerification, wc.ClientIP = cfg.PublicURL, cfg.GAMeasurementID, cfg.GSCVerification, s.clientIP
+	if s.wiki, err = wiki.New(wc); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if s.index, err = assets.ReadFile("web/index.html"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if cfg.GSCVerification != "" {
+		s.index = bytes.Replace(s.index, []byte("</head>"), []byte(`<meta name="google-site-verification" content="`+cfg.GSCVerification+"\" />\n  </head>"), 1)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/auth/config", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]bool{"shared": s.cfg.Shared != nil, "supports_password": s.sharedPasswordProvider() != nil})
@@ -140,9 +161,12 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/verify", s.sharedFinish)
 	mux.HandleFunc("POST /api/auth/password", s.sharedPassword)
 	mux.HandleFunc("POST /api/shared", s.auth(s.sharedTool))
-	mux.HandleFunc("GET /{$}", s.asset("index.html", "text/html; charset=utf-8"))
-	mux.HandleFunc("GET /login", s.asset("index.html", "text/html; charset=utf-8"))
-	mux.HandleFunc("GET /signup", s.asset("index.html", "text/html; charset=utf-8"))
+	for _, page := range []string{"GET /{$}", "GET /login", "GET /signup"} {
+		mux.HandleFunc(page, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(s.index)
+		})
+	}
 	mux.HandleFunc("GET /app.js", s.asset("app.js", "text/javascript; charset=utf-8"))
 	mux.HandleFunc("GET /style.css", s.asset("style.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /sample.csv", func(w http.ResponseWriter, r *http.Request) {
@@ -174,12 +198,16 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("DELETE /api/saved/{id}", s.auth(s.unsave))
 	mux.HandleFunc("GET /api/submissions", s.auth(s.submissions))
 	mux.HandleFunc("POST /api/submissions", s.auth(s.submit))
+	s.wiki.Mount(mux)
 	s.handler = s.protect(mux)
 	return s, nil
 }
 
 func (s *Server) Close() error                                     { return s.db.Close() }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+
+// Wiki is the public article page layer, dark unless COSIFT_WIKI_PUBLIC=1.
+func (s *Server) Wiki() *wiki.Wiki { return s.wiki }
 
 func (s *Server) asset(name, kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -751,6 +779,9 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 // after enqueue but before acknowledgement may resend; frontier enqueue is
 // idempotent. Only one Run loop should own a community database.
 func (s *Server) Run(ctx context.Context) {
+	pages := make(chan struct{})
+	go func() { defer close(pages); s.wiki.Run(ctx) }()
+	defer func() { <-pages }()
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
