@@ -85,7 +85,11 @@ def main():
                         for route in ('/','/signup','/login','/app.js','/style.css','/sample.csv','/healthz','/api/limits','/api/credits','/search?q=test','/answer?q=test','/research?q=test'):
                             assert call(route,host=host)[0]==200,(host,route)
                         assert call('/api/payments/webhook','POST',host)[0]==200
-                        for route in ('/query','/find','/find_similar','/contents','/stats','/metrics','/queue','/domains','/verify','/sla','/admin','/admin/community-enqueue','/debug/pprof/','/unknown','/search/','/api','/openapi.json'):
+                        for route in ('/wiki','/wiki/rust-async-runtimes','/wiki/index/2','/wiki/v/dev-docs','/wiki/v/dev-docs/2','/wiki.css','/wiki.js','/sitemap.xml','/sitemaps/wiki-1.xml','/robots.txt','/wiki/rust-async-runtimes?utm_source=x'):
+                            before=len(received)
+                            assert call(route,host=host)[0]==200,(host,route)
+                            assert len(received)==before+1 and received[-1][0]==route,(host,route,'did not reach the community app')
+                        for route in ('/query','/find','/find_similar','/contents','/stats','/metrics','/queue','/domains','/verify','/sla','/admin','/admin/community-enqueue','/debug/pprof/','/unknown','/search/','/api','/openapi.json','/wikis','/wiki-x','/sitemaps','/sitemap.xml.gz','/robots.txt.bak','/wiki.jsx'):
                             before=len(received)
                             status,_=call(route,host=host)
                             assert status==404,(host,route,status,'native route bypass')
@@ -116,7 +120,7 @@ def main():
                         status,_,_,_=send('/v1/articles/match','POST',host,[('Authorization',oidc),('Content-Type','application/json')],b'{"q":"'+b'a'*(1<<20)+b'"}')
                         assert status==413,(host,'an oversized /v1 body',status)
                         time.sleep(.2)
-                    print('PASS: both public hosts route app/API/health to community; native, operational, admin and unknown routes cannot bypass it.')
+                    print('PASS: both public hosts route app/API/health and the /wiki pages, sitemaps and robots.txt to community; native, operational, admin and unknown routes cannot bypass it.')
                     print('PASS: /v1 refuses csk_ keys at the edge, proxies OIDC bearers with exactly one X-Forwarded-For, and passes the engine\'s JSON 404 through.')
                 finally:
                     process.terminate()

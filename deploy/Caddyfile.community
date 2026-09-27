@@ -23,7 +23,7 @@ cosift.pilotprotocol.network, origin.cosift.pilotprotocol.network {
 	handle @legacy_ui {
 		redir * /login 302
 	}
-	@community path / /login /signup /app.js /style.css /sample.csv /healthz /api/* /search /answer /research
+	@community path / /login /signup /app.js /style.css /sample.csv /healthz /api/* /search /answer /research /wiki /wiki/* /wiki.css /wiki.js /sitemap.xml /sitemaps/* /robots.txt
 	handle @community {
 		reverse_proxy 127.0.0.1:7780 {
 			header_up X-Forwarded-For {client_ip}
