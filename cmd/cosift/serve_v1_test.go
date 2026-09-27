@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,12 +51,29 @@ type fixedEmbedder struct {
 	err  error
 	mu   sync.Mutex
 	seen []string
+	// blockOn holds a call embedding this text until block is closed.
+	blockOn string
+	block   chan struct{}
+	entered chan struct{}
 }
 
-func (e *fixedEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+func (e *fixedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	e.mu.Lock()
 	e.seen = append(e.seen, texts...)
+	block, entered := e.block, e.entered
+	hold := block != nil && slices.Contains(texts, e.blockOn)
 	e.mu.Unlock()
+	if hold {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if e.err != nil {
 		return nil, e.err
 	}
@@ -65,6 +83,19 @@ func (e *fixedEmbedder) Embed(_ context.Context, texts []string) ([][]float32, e
 	}
 	return out, nil
 }
+func (e *fixedEmbedder) calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.seen)
+}
+
+func (e *fixedEmbedder) holdOn(text string) (entered, release chan struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.blockOn, e.block, e.entered = text, make(chan struct{}), make(chan struct{}, 1)
+	return e.entered, e.block
+}
+
 func (e *fixedEmbedder) Model() string { return "fixed" }
 func (e *fixedEmbedder) Dim() int      { return e.dim }
 
