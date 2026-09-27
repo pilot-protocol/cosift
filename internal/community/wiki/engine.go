@@ -100,9 +100,11 @@ func failed(code string) result { return result{kind: outFail, code: code} }
 // engine calls only GET by-slug and GET list on the /v1 listener. The key
 // goes on those two requests and nowhere else.
 type engine struct {
-	base string
-	key  string
-	http *http.Client
+	base        string
+	key         string
+	http        *http.Client
+	slugTimeout time.Duration
+	listTimeout time.Duration
 }
 
 func newEngine(base, key string) *engine {
@@ -114,7 +116,7 @@ func newEngine(base, key string) *engine {
 		IdleConnTimeout:       60 * time.Second,
 		DisableCompression:    true,
 	}
-	return &engine{base: base, key: key, http: &http.Client{
+	return &engine{base: base, key: key, slugTimeout: bySlugTimeout, listTimeout: listTimeout, http: &http.Client{
 		Transport:     tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -174,7 +176,7 @@ func errorCode(body []byte) string {
 }
 
 func (e *engine) bySlug(ctx context.Context, slug string) result {
-	ctx, cancel := context.WithTimeout(ctx, bySlugTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.slugTimeout)
 	defer cancel()
 	status, body, code := e.get(ctx, "/v1/articles/by-slug/"+slug, bySlugLimit)
 	if code != "" {
@@ -249,7 +251,7 @@ func (e *engine) list(ctx context.Context, cursor string) (engineList, string) {
 		}
 		path += "&cursor=" + url.QueryEscape(cursor)
 	}
-	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.listTimeout)
 	defer cancel()
 	status, body, code := e.get(ctx, path, listLimit)
 	if code != "" {

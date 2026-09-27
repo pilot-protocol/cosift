@@ -125,19 +125,19 @@ func heading(line string) (int, string) {
 	return k, t
 }
 
-type item struct {
+type listLine struct {
 	indent, content int
 	ordered         bool
 	text            string
 }
 
-func listItem(line string) (item, bool) {
+func listItem(line string) (listLine, bool) {
 	n, rest := indentOf(line)
 	k := 0
 	ordered := false
 	switch {
 	case rest == "":
-		return item{}, false
+		return listLine{}, false
 	case rest[0] == '-' || rest[0] == '*' || rest[0] == '+':
 		k = 1
 	default:
@@ -145,15 +145,15 @@ func listItem(line string) (item, bool) {
 			k++
 		}
 		if k == 0 || k >= len(rest) || (rest[k] != '.' && rest[k] != ')') {
-			return item{}, false
+			return listLine{}, false
 		}
 		k++
 		ordered = true
 	}
 	if k < len(rest) && rest[k] != ' ' && rest[k] != '\t' {
-		return item{}, false
+		return listLine{}, false
 	}
-	return item{indent: n, content: n + k + 1, ordered: ordered, text: strings.TrimSpace(rest[k:])}, true
+	return listLine{indent: n, content: n + k + 1, ordered: ordered, text: strings.TrimSpace(rest[k:])}, true
 }
 
 func (r *renderer) blocks(src string) {

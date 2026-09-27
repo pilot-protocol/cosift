@@ -404,7 +404,7 @@ func (w *Wiki) store(slug string, e *entry, now time.Time) {
 		}
 	}
 	w.drop(slug)
-	if len(w.pages) >= pageCap || now.Sub(w.swept) >= notFoundBound {
+	if len(w.pages) >= pageCap || now.Sub(w.swept) >= notFoundBound || (e.status == http.StatusNotFound && w.negatives >= negativeCap) {
 		w.sweep(now)
 	}
 	if len(w.pages) >= pageCap || (e.status == http.StatusNotFound && w.negatives >= negativeCap) {
