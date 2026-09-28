@@ -109,9 +109,10 @@
   border-top: 1px solid var(--line);
 }
 .wiki-citations {
-  padding-left: 22px;
+  list-style: none;
+  padding-left: 0;
 }
-.wiki-citations li {
+.wiki-citations > li {
   margin-bottom: 18px;
 }
 .wiki-cite-title {
@@ -121,7 +122,27 @@
   color: var(--muted);
   font-size: 12px;
 }
+.wiki-cite-quotes {
+  list-style: none;
+  margin: 0;
+  padding-left: 0;
+}
+.wiki-cite-quotes li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.wiki-cite-quotes li + li {
+  margin-top: 10px;
+}
+.wiki-cite-n {
+  flex: none;
+  color: var(--lime);
+  font-size: 14px;
+}
 .wiki-citations blockquote {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   padding-left: 12px;
   border-left: 2px solid var(--line);

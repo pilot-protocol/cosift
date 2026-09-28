@@ -5,14 +5,16 @@
 </header>
 <div class="wiki-body">
 {{.Body}}</div>
-{{if .Citations}}<section class="wiki-sources" aria-label="Sources">
+{{if .Sources}}<section class="wiki-sources" aria-label="Sources">
 <h2>Sources</h2>
-<ol class="wiki-citations">
-{{range .Citations}}<li id="cite-{{.N}}">
+<ul class="wiki-citations">
+{{range .Sources}}<li class="wiki-source">
 <p class="wiki-cite-title">{{if .Link}}<a href="{{.Link}}" rel="nofollow noopener">{{.Title}}</a>{{else}}{{.Title}}{{end}} <span class="wiki-cite-host">{{.Host}}</span></p>
-<blockquote><p>{{.Quote}}</p></blockquote>
+<ul class="wiki-cite-quotes">
+{{range .Quotes}}<li id="cite-{{.N}}"><span class="wiki-cite-n">[{{.N}}]</span><blockquote><p>{{.Quote}}</p></blockquote></li>
+{{end}}</ul>
 </li>
-{{end}}</ol>
+{{end}}</ul>
 </section>
 {{end}}<aside class="wiki-aside" aria-label="About this article">
 <p>This article was written by an AI system from the sources listed. It can contain mistakes: check the sources before relying on it.</p>

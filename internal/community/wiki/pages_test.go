@@ -34,6 +34,16 @@ func find(n *html.Node, match func(*html.Node) bool) []*html.Node {
 
 func tag(name string) func(*html.Node) bool { return func(n *html.Node) bool { return n.Data == name } }
 
+// ancestor finds the nearest matching ancestor of n, or nil.
+func ancestor(n *html.Node, match func(*html.Node) bool) *html.Node {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && match(p) {
+			return p
+		}
+	}
+	return nil
+}
+
 func textOf(n *html.Node) string {
 	var b strings.Builder
 	var walk func(*html.Node)
@@ -213,10 +223,13 @@ func TestArticlePage(t *testing.T) {
 		t.Fatal("no updated date, vertical or tier")
 	}
 	lis := find(doc, func(n *html.Node) bool { return n.Data == "li" && strings.HasPrefix(attr(n, "id"), "cite-") })
-	if len(lis) != 3 || attr(lis[2], "id") != "cite-3" || !strings.Contains(textOf(lis[2]), "Idle worker threads steal queued tasks") || !strings.Contains(textOf(lis[2]), "blog.example.net") {
+	src3 := ancestor(lis[2], func(n *html.Node) bool { return n.Data == "li" && attr(n, "class") == "wiki-source" })
+	if len(lis) != 3 || attr(lis[2], "id") != "cite-3" || !strings.Contains(textOf(lis[2]), "Idle worker threads steal queued tasks") ||
+		src3 == nil || !strings.Contains(textOf(src3), "blog.example.net") {
 		t.Fatalf("citations: %d", len(lis))
 	}
-	out := find(lis[0], tag("a"))
+	src1 := ancestor(lis[0], func(n *html.Node) bool { return n.Data == "li" && attr(n, "class") == "wiki-source" })
+	out := find(src1, tag("a"))
 	if len(out) != 1 || attr(out[0], "href") != "https://docs.example.org/async/runtime-tutorial" || attr(out[0], "rel") != "nofollow noopener" {
 		t.Fatal("citation link")
 	}
@@ -243,6 +256,83 @@ func TestArticlePage(t *testing.T) {
 	markers := find(doc, func(n *html.Node) bool { return n.Data == "a" && strings.HasPrefix(attr(n, "href"), "#cite-") })
 	if len(markers) < 3 {
 		t.Fatalf("%d citation markers", len(markers))
+	}
+}
+
+// TestSourceTitleIsTheFirstCited pins: a URL cited under differing titles shows its first-cited title.
+func TestSourceTitleIsTheFirstCited(t *testing.T) {
+	h := newHarness(t)
+	rec := with(published("source-title", "Source title"), "citations", []any{
+		map[string]any{"n": 1, "url": "https://a.example/page", "title": "First title", "host": "a.example", "quote": "First quote."},
+		map[string]any{"n": 2, "url": "https://b.example/page", "title": "B title", "host": "b.example", "quote": "B quote."},
+		map[string]any{"n": 3, "url": "https://a.example/page", "title": "Later title", "host": "a.example", "quote": "Second quote."},
+	})
+	h.refresh()
+	h.v1.set("source-title", jsonReply(200, rec))
+	doc := structure(t, "source-title", h.get("/wiki/source-title").Body.String())
+
+	titles := find(doc, func(n *html.Node) bool { return n.Data == "p" && attr(n, "class") == "wiki-cite-title" })
+	if len(titles) != 2 || !strings.Contains(textOf(titles[0]), "First title") || strings.Contains(textOf(titles[0]), "Later title") {
+		t.Fatalf("source titles: %d, first %q", len(titles), textOf(titles[0]))
+	}
+}
+
+// TestSourcesGroupedByURL pins: one Sources entry per URL, each quote showing its own [n].
+func TestSourcesGroupedByURL(t *testing.T) {
+	h := newHarness(t)
+	cite := func(n int, src string) map[string]any {
+		return map[string]any{"n": n, "url": "https://" + src + ".example/page", "title": strings.ToUpper(src) + " title", "host": src + ".example", "quote": fmt.Sprintf("Quote %d from %s.", n, src)}
+	}
+	rec := with(published("grouped-sources", "Grouped sources"), "citations", []any{
+		cite(1, "a"), cite(2, "b"), cite(3, "a"), cite(4, "c"), cite(5, "a"), cite(6, "b"),
+	}, "body_md", "## Overview\n\nA claim [4] and another [5].\n")
+	h.refresh()
+	h.v1.set("grouped-sources", jsonReply(200, rec))
+	doc := structure(t, "grouped-sources", h.get("/wiki/grouped-sources").Body.String())
+
+	section := find(doc, func(n *html.Node) bool { return n.Data == "section" && attr(n, "class") == "wiki-sources" })
+	if len(section) != 1 || len(find(section[0], tag("ol"))) != 0 {
+		t.Fatal("the Sources list is not unnumbered")
+	}
+	srcs := find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "class") == "wiki-source" })
+	want := []struct {
+		src string
+		ns  []int
+	}{{"a", []int{1, 3, 5}}, {"b", []int{2, 6}}, {"c", []int{4}}}
+	if len(srcs) != len(want) {
+		t.Fatalf("%d sources, want %d (one per URL)", len(srcs), len(want))
+	}
+	for i, w := range want {
+		titles := find(srcs[i], func(n *html.Node) bool { return n.Data == "p" && attr(n, "class") == "wiki-cite-title" })
+		if len(titles) != 1 || textOf(titles[0]) != strings.ToUpper(w.src)+" title "+w.src+".example" {
+			t.Fatalf("source %d: %d title lines, text %q", i, len(titles), textOf(srcs[i]))
+		}
+		quotes := find(srcs[i], func(n *html.Node) bool { return n.Data == "li" && strings.HasPrefix(attr(n, "id"), "cite-") })
+		if len(quotes) != len(w.ns) {
+			t.Fatalf("source %d: %d quotes, want %d", i, len(quotes), len(w.ns))
+		}
+		for k, c := range w.ns {
+			num := find(quotes[k], func(n *html.Node) bool { return n.Data == "span" && attr(n, "class") == "wiki-cite-n" })
+			if attr(quotes[k], "id") != fmt.Sprintf("cite-%d", c) || len(num) != 1 || quotes[k].FirstChild != num[0] ||
+				textOf(quotes[k]) != fmt.Sprintf("[%d]Quote %d from %s.", c, c, w.src) {
+				t.Fatalf("source %d quote %d: id %q, text %q", i, k, attr(quotes[k], "id"), textOf(quotes[k]))
+			}
+		}
+	}
+	markers := find(doc, func(n *html.Node) bool { return n.Data == "a" && strings.HasPrefix(attr(n, "href"), "#cite-") })
+	for _, m := range markers {
+		target := find(doc, func(n *html.Node) bool { return n.Data == "li" && "#"+attr(n, "id") == attr(m, "href") })
+		if len(target) != 1 || !strings.HasPrefix(textOf(target[0]), textOf(m)) {
+			t.Fatalf("body marker %s does not land on a quote showing it", textOf(m))
+		}
+	}
+	if len(markers) != 3 {
+		t.Fatalf("%d body markers, want 3", len(markers))
+	}
+	for _, id := range []string{"cite-1", "cite-2", "cite-3", "cite-4", "cite-5", "cite-6"} {
+		if len(find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "id") == id })) != 1 {
+			t.Fatalf("missing anchor %s", id)
+		}
 	}
 }
 
@@ -558,8 +648,10 @@ func TestControlCharactersStrippedFromEveryField(t *testing.T) {
 	if got := textOf(find(doc, tag("h1"))[0]); got != "Dirty title" {
 		t.Fatalf("h1 %q", got)
 	}
-	if got := textOf(find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "id") == "cite-1" })[0]); !strings.Contains(got, "Cite title docs.example.org") || !strings.Contains(got, "Cite quote") {
-		t.Fatalf("citation text %q", got)
+	cite1 := find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "id") == "cite-1" })[0]
+	src := ancestor(cite1, func(n *html.Node) bool { return n.Data == "li" && attr(n, "class") == "wiki-source" })
+	if src == nil || !strings.Contains(textOf(src), "Cite title docs.example.org") || !strings.Contains(textOf(cite1), "Cite quote") {
+		t.Fatalf("citation text src=%q quote=%q", textOf(src), textOf(cite1))
 	}
 }
 

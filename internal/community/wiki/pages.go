@@ -56,9 +56,15 @@ type articleLD struct {
 	Publisher     ldOrg  `json:"publisher"`
 }
 
-type citationView struct {
-	N                        int
-	Link, Title, Host, Quote string
+type quoteView struct {
+	N     int
+	Quote string
+}
+
+// sourceView is one Sources-list entry, its quotes in first-cited order.
+type sourceView struct {
+	Link, Title, Host string
+	Quotes            []quoteView
 }
 
 type articleView struct {
@@ -66,7 +72,7 @@ type articleView struct {
 	Title, Vertical, VerticalSlug string
 	Tier, Updated, UpdatedISO     string
 	Body                          template.HTML
-	Citations                     []citationView
+	Sources                       []sourceView
 	ReportHref                    string
 }
 
@@ -140,17 +146,27 @@ func (w *Wiki) renderArticle(rec *engineRecord) []byte {
 	canonical := w.canonical("/wiki/" + rec.Slug)
 	desc := summary(rec.Lead)
 	links := map[string]string{}
-	var cites []citationView
+	var sources []sourceView
+	bySource := map[string]int{}
 	for _, c := range rec.Citations {
-		v := citationView{N: c.N, Title: cleanLine(c.Title), Host: cleanLine(c.Host), Quote: cleanLine(c.Quote)}
 		if linkable(c.URL) {
-			v.Link = c.URL
 			links[c.URL] = c.URL
 		}
-		if v.Title == "" {
-			v.Title = v.Host
+		i, ok := bySource[c.URL]
+		if !ok {
+			title, host := cleanLine(c.Title), cleanLine(c.Host)
+			if title == "" {
+				title = host
+			}
+			link := ""
+			if linkable(c.URL) {
+				link = c.URL
+			}
+			i = len(sources)
+			bySource[c.URL] = i
+			sources = append(sources, sourceView{Link: link, Title: title, Host: host})
 		}
-		cites = append(cites, v)
+		sources[i].Quotes = append(sources[i].Quotes, quoteView{N: c.N, Quote: cleanLine(c.Quote)})
 	}
 	updated, updatedISO := displayDate(rec.UpdatedAt)
 	_, createdISO := displayDate(rec.CreatedAt)
@@ -163,8 +179,8 @@ func (w *Wiki) renderArticle(rec *engineRecord) []byte {
 	return execute(articleTmpl, articleView{
 		Head: h, Title: title, Vertical: verticals[rec.Vertical], VerticalSlug: rec.Vertical,
 		Tier: tiers[rec.QualityTier], Updated: updated, UpdatedISO: updatedISO,
-		Body:      renderBody(rec.Lead+"\n\n"+rec.BodyMD, links, len(rec.Citations)),
-		Citations: cites, ReportHref: w.reportHref(canonical),
+		Body:    renderBody(rec.Lead+"\n\n"+rec.BodyMD, links, len(rec.Citations)),
+		Sources: sources, ReportHref: w.reportHref(canonical),
 	})
 }
 
