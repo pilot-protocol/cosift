@@ -21,7 +21,7 @@ var (
 	reserved      = map[string]bool{"v": true, "index": true, "sitemap": true, "search": true, "api": true, "admin": true, "random": true, "new": true}
 	verticals     = map[string]string{"dev-docs": "Developer docs", "technology-news": "Technology news", "research": "Research", "other": "Other"}
 	verticalOrder = []string{"dev-docs", "technology-news", "research", "other"}
-	tiers         = map[string]string{"strong": "Strong", "ok": "OK", "thin": "Thin"}
+	tiers         = map[string]string{"strong": "High", "ok": "Medium", "thin": "Low"}
 )
 
 // pageSlug is AR §4's slug pattern (≤ 80 bytes) minus the reserved words.

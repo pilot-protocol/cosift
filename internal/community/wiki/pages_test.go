@@ -209,7 +209,7 @@ func TestArticlePage(t *testing.T) {
 	if strings.Contains(p, "wiki-badge") || strings.Contains(p, "AI-generated") {
 		t.Fatal("the old top badge is still there")
 	}
-	if !strings.Contains(p, `<time datetime="2026-10-06T10:00:00Z">Oct 6, 2026</time>`) || !strings.Contains(p, "Developer docs") || !strings.Contains(p, "Strong quality") {
+	if !strings.Contains(p, `<time datetime="2026-10-06T10:00:00Z">Oct 6, 2026</time>`) || !strings.Contains(p, "Developer docs") || !strings.Contains(p, "High quality") {
 		t.Fatal("no updated date, vertical or tier")
 	}
 	lis := find(doc, func(n *html.Node) bool { return n.Data == "li" && strings.HasPrefix(attr(n, "id"), "cite-") })
@@ -350,7 +350,7 @@ func TestStubRendersOnlyStubFields(t *testing.T) {
 	wantPage(t, p, 200, public(300))
 	body := p.Body.String()
 	structure(t, "stub", body)
-	for _, c := range []string{"CANARY", "canary.example", "cafecafe", "Strong", "Oct 9", "2026-10-09", "ld+json"} {
+	for _, c := range []string{"CANARY", "canary.example", "cafecafe", "Strong", "High", " quality", "Oct 9", "2026-10-09", "ld+json"} {
 		if strings.Contains(body, c) {
 			t.Fatalf("the stub rendered %q", c)
 		}
@@ -560,5 +560,20 @@ func TestControlCharactersStrippedFromEveryField(t *testing.T) {
 	}
 	if got := textOf(find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "id") == "cite-1" })[0]); !strings.Contains(got, "Cite title docs.example.org") || !strings.Contains(got, "Cite quote") {
 		t.Fatalf("citation text %q", got)
+	}
+}
+
+func TestPublicQualityNames(t *testing.T) {
+	h := newHarness(t)
+	h.refresh()
+	for tier, want := range map[string]string{"strong": "High quality", "ok": "Medium quality", "thin": "Low quality"} {
+		slug := "tier-" + tier
+		h.v1.set(slug, jsonReply(200, with(published(slug, "Tier "+tier), "quality_tier", tier)))
+		h.clock.Add(time.Second)
+		doc := structure(t, slug, h.get("/wiki/"+slug).Body.String())
+		line := textOf(find(doc, func(n *html.Node) bool { return n.Data == "p" && attr(n, "class") == "wiki-meta" })[0])
+		if !strings.Contains(line, "· "+want) || strings.Contains(strings.ToLower(line), tier+" quality") {
+			t.Fatalf("%s: status line %q, want %q", tier, line, want)
+		}
 	}
 }
