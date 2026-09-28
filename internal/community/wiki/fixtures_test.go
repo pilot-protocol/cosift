@@ -19,8 +19,8 @@ type fixture struct {
 	cites                                             []cite
 }
 
-// promoted is published and strong in the pages' own environment.
-func (f fixture) promoted() bool { return f.kind == "promoted" }
+// promoted is published in the pages' own environment at the default promotion_min_tier, ok.
+func (f fixture) promoted() bool { return f.kind == "promoted" || f.kind == "ok" }
 
 func stackID(n int) string {
 	const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

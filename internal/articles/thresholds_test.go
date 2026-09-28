@@ -34,7 +34,7 @@ func TestLoadThresholds(t *testing.T) {
 		t.Fatalf("absent = %+v, %v", got, err)
 	}
 	writeThresholds(t, path, `{"schema_version": 1, "theta_covered": 0.8, "theta_related": 0.7, "measured": true}`)
-	if got, err := LoadThresholds(path); err != nil || got != (Thresholds{0.8, 0.7, true}) {
+	if got, err := LoadThresholds(path); err != nil || got != (Thresholds{Covered: 0.8, Related: 0.7, Measured: true, PromotionMinTier: "ok"}) {
 		t.Fatalf("valid = %+v, %v", got, err)
 	}
 	bad := []string{
@@ -87,7 +87,7 @@ func TestReloadKeepsPreviousOnInvalid(t *testing.T) {
 	if err := h.s.ReloadThresholds(); err == nil {
 		t.Fatal("invalid file reloaded")
 	}
-	if got := h.s.th(); got != (Thresholds{0.9, 0.8, true}) {
+	if got := h.s.th(); got != (Thresholds{Covered: 0.9, Related: 0.8, Measured: true, PromotionMinTier: "ok"}) {
 		t.Errorf("thresholds after an invalid reload = %+v", got)
 	}
 	stats := h.call(dashProd, "GET", "/v1/articles/stats", nil, 200)

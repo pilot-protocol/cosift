@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -104,12 +105,18 @@ func TestStackPages(t *testing.T) {
 	if !slices.Equal(listed, promoted) {
 		t.Fatalf("the A–Z hub lists %v, want %v", listed, promoted)
 	}
+	perVertical := map[string]int{}
+	for _, f := range fixtures(t) {
+		if f.promoted() {
+			perVertical[f.vertical]++
+		}
+	}
 	for _, f := range fixtures(t) {
 		if !f.promoted() {
 			continue
 		}
 		v := get(srv, "/wiki/v/"+f.vertical).Body.String()
-		if !strings.Contains(v, `href="/wiki/`+f.slug+`"`) || strings.Count(v, `<li><a href="/wiki/`) != 1 {
+		if !strings.Contains(v, `href="/wiki/`+f.slug+`"`) || strings.Count(v, `<li><a href="/wiki/`) != perVertical[f.vertical] {
 			t.Fatalf("vertical %s:\n%s", f.vertical, v)
 		}
 	}
@@ -117,8 +124,8 @@ func TestStackPages(t *testing.T) {
 	for n := 1; ; n++ {
 		rec := get(srv, fmt.Sprintf("/sitemaps/wiki-%d.xml", n))
 		if rec.Code == 404 {
-			if n != 3 {
-				t.Fatalf("%d sitemap files, want 2", n-1)
+			if n-1 != (len(promoted)+1)/2 {
+				t.Fatalf("%d sitemap files for %d promoted at 2 a file", n-1, len(promoted))
 			}
 			break
 		}
@@ -130,7 +137,7 @@ func TestStackPages(t *testing.T) {
 	if !slices.Equal(mapped, promoted) {
 		t.Fatalf("the sitemaps list %v, want exactly %v", mapped, promoted)
 	}
-	if idx := get(srv, "/sitemap.xml").Body.String(); strings.Count(idx, "<sitemap>") != 2 {
+	if idx := get(srv, "/sitemap.xml").Body.String(); strings.Count(idx, "<sitemap>") != (len(promoted)+1)/2 {
 		t.Fatalf("sitemap index:\n%s", idx)
 	}
 }
@@ -385,5 +392,50 @@ func TestWikiLimiterKeysByForwardedClient(t *testing.T) {
 	c.Add(2 * time.Second)
 	if miss("203.0.113.7").Code == 429 {
 		t.Fatal("the window did not reset at 60 s")
+	}
+}
+
+func TestStackPromotionTierReload(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("articles.json must belong to root")
+	}
+	s := newStack(t)
+	all := fixtures(t)
+	strong, ok := all[0], all[4]
+	s.put("synth-prod", strong)
+	s.put("synth-prod", ok)
+	c := newClock()
+	srv := s.pages(t, true, c.Now)
+	listed := func() (hub, sitemap bool) {
+		t.Helper()
+		c.Add(time.Second)
+		if err := srv.Wiki().Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		h, m := get(srv, "/wiki").Body.String(), get(srv, "/sitemaps/wiki-1.xml").Body.String()
+		if !strings.Contains(h, strong.title) || !strings.Contains(m, strong.slug) {
+			t.Fatal("the strong article left the hub or the sitemap")
+		}
+		return strings.Contains(h, ok.title), strings.Contains(m, "/wiki/"+ok.slug+"<")
+	}
+	reload := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(s.thresholds, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.store.ReloadThresholds(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hub, sitemap := listed(); !hub || !sitemap {
+		t.Fatalf("default ok: the ok article is on the hub %v, in the sitemap %v", hub, sitemap)
+	}
+	reload(`{"schema_version": 1, "theta_covered": 0.78, "theta_related": 0.74, "promotion_min_tier": "strong"}`)
+	if hub, sitemap := listed(); hub || sitemap {
+		t.Fatalf("strong: the ok article is on the hub %v, in the sitemap %v", hub, sitemap)
+	}
+	reload(`{"schema_version": 1, "theta_covered": 0.78, "theta_related": 0.74, "promotion_min_tier": "ok"}`)
+	if hub, sitemap := listed(); !hub || !sitemap {
+		t.Fatalf("back to ok: the ok article is on the hub %v, in the sitemap %v", hub, sitemap)
 	}
 }

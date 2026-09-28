@@ -135,7 +135,7 @@ func TestListFiltersAndCursor(t *testing.T) {
 	}
 	h.expectError(wiki, http.MethodGet, "/v1/articles?order=slug&cursor="+url.QueryEscape(upd["next_cursor"].(string)), nil, http.StatusBadRequest, "invalid_cursor")
 	h.expectError(wiki, http.MethodGet, "/v1/articles?cursor=garbage", nil, http.StatusBadRequest, "invalid_cursor")
-	if items := h.call(wiki, http.MethodGet, "/v1/articles?promoted=true&vertical=dev-docs", nil, http.StatusOK)["items"].([]any); len(items) != 2 {
+	if items := h.call(wiki, http.MethodGet, "/v1/articles?promoted=true&vertical=dev-docs", nil, http.StatusOK)["items"].([]any); len(items) != 3 {
 		t.Errorf("promoted dev-docs = %v", items)
 	}
 	since := h.clock.Now().Add(-90 * time.Second).UTC().Format(time.RFC3339)

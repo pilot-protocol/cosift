@@ -33,8 +33,11 @@ func visible(p v1.Principal, r *Record) bool { return p.Env == v1.EnvStaging || 
 
 func (s *Store) fullView(ix *index, r *Record) json.RawMessage {
 	now := s.now()
-	return full(r, s.counters.readers7d(r.ID, now), s.counters.days(r.ID, now), ix.hasFingerprint(r.ID))
+	return full(r, s.promoted(r), s.counters.readers7d(r.ID, now), s.counters.days(r.ID, now), ix.hasFingerprint(r.ID))
 }
+
+// promoted is computed at read time, so a reloaded promotion_min_tier applies to every record at once.
+func (s *Store) promoted(r *Record) bool { return promotedAt(r, s.th().PromotionMinTier) }
 
 func (s *Store) handleGet(w http.ResponseWriter, r *http.Request, p v1.Principal) {
 	id := r.PathValue("id")
@@ -54,7 +57,7 @@ func (s *Store) handleGet(w http.ResponseWriter, r *http.Request, p v1.Principal
 		case all:
 			out = s.fullView(ix, rec)
 		case eligible(p, rec):
-			out = rec.public()
+			out = rec.public(s.promoted(rec))
 		}
 	})
 	if out == nil {
@@ -92,7 +95,7 @@ func (s *Store) handleBySlug(w http.ResponseWriter, r *http.Request, p v1.Princi
 		case all:
 			out = s.fullView(ix, rec)
 		case eligible(p, rec):
-			out = rec.public()
+			out = rec.public(s.promoted(rec))
 		case rec.Status == StatusPending && visible(p, rec):
 			out = rec.stub()
 		case rec.Status == StatusTombstoned && visible(p, rec):
@@ -132,6 +135,7 @@ type listQuery struct {
 	statuses     map[string]bool
 	prelive      *bool
 	all          bool
+	minTier      string
 }
 
 type cursor struct {
@@ -235,7 +239,7 @@ func (q *listQuery) match(p v1.Principal, r *Record) bool {
 	} else if !eligible(p, r) {
 		return false
 	}
-	if q.promoted != nil && r.Promoted != *q.promoted {
+	if q.promoted != nil && promotedAt(r, q.minTier) != *q.promoted {
 		return false
 	}
 	if q.vertical != "" && r.Vertical != q.vertical {
@@ -260,6 +264,7 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request, p v1.Principa
 		v1.WriteError(w, *e)
 		return
 	}
+	q.minTier = s.th().PromotionMinTier
 	var after *cursor
 	if c := r.URL.Query().Get("cursor"); c != "" {
 		b, err := base64.RawURLEncoding.DecodeString(c)
@@ -310,7 +315,7 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request, p v1.Principa
 	items := make([]listItem, 0, end-start)
 	for _, e := range entries[start:end] {
 		it := listItem{ID: e.rec.ID, Slug: e.rec.Slug, Title: e.rec.Title, Vertical: e.rec.Vertical,
-			QualityTier: e.rec.QualityTier, Promoted: e.rec.Promoted, Status: e.rec.Status, Version: e.rec.Version,
+			QualityTier: e.rec.QualityTier, Promoted: promotedAt(e.rec, q.minTier), Status: e.rec.Status, Version: e.rec.Version,
 			UpdatedAt: e.rec.UpdatedAt, Readers7d: e.readers}
 		if all {
 			pl := e.rec.Prelive

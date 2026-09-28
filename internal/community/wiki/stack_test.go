@@ -74,11 +74,13 @@ func (c *corpus) HasDocument(_ context.Context, url string) (bool, error) {
 }
 
 type stack struct {
-	t      testing.TB
-	addr   string
-	keys   map[string]string
-	signer *svcauthtest.Signer
-	corpus *corpus
+	t          testing.TB
+	addr       string
+	keys       map[string]string
+	signer     *svcauthtest.Signer
+	corpus     *corpus
+	store      *articles.Store
+	thresholds string
 }
 
 func freeAddr(t testing.TB) string {
@@ -99,11 +101,13 @@ func newStack(t testing.TB) *stack {
 	}
 	s := &stack{t: t, addr: freeAddr(t), keys: map[string]string{}, signer: svcauthtest.NewSigner("wiki-test"), corpus: &corpus{urls: map[string]bool{}}}
 	pol := svcauth.NewPolicy(nil, nil)
+	s.thresholds = filepath.Join(dir, "articles.json")
 	st, err := articles.Open(articles.Options{DB: db, Embedder: hashEmbedder{}, Policy: pol, Corpus: s.corpus,
-		ThresholdsPath: filepath.Join(dir, "articles.json"), Logf: func(string, ...any) {}})
+		ThresholdsPath: s.thresholds, Logf: func(string, ...any) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.store = st
 	key := func(id, env string, scopes ...string) map[string]any {
 		k, _, err := svcauth.NewKey()
 		if err != nil {

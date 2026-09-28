@@ -252,8 +252,8 @@ type publicView struct {
 	UpdatedAt   string     `json:"updated_at"`
 }
 
-func (r *Record) public() publicView {
-	return publicView{r.ID, r.Slug, r.Title, r.Lead, r.BodyMD, nonNil(r.Citations), r.QualityTier, r.Promoted,
+func (r *Record) public(promoted bool) publicView {
+	return publicView{r.ID, r.Slug, r.Title, r.Lead, r.BodyMD, nonNil(r.Citations), r.QualityTier, promoted,
 		r.Vertical, r.Status, true, r.Version, r.CreatedAt, r.UpdatedAt}
 }
 
@@ -286,10 +286,13 @@ func (r *Record) written() writeView {
 }
 
 // full is the read_all projection: every stored field plus the read-side extras.
-func full(r *Record, readers7d int, byDay map[string]int, hasFingerprint bool) json.RawMessage {
+func full(r *Record, promoted bool, readers7d int, byDay map[string]int, hasFingerprint bool) json.RawMessage {
 	b, _ := r.MarshalJSON()
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(b, &m)
+	if _, ok := m["promoted"]; ok {
+		m["promoted"], _ = json.Marshal(promoted)
+	}
 	m["readers_7d"], _ = json.Marshal(readers7d)
 	if byDay == nil {
 		byDay = map[string]int{}

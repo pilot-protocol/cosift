@@ -195,7 +195,7 @@ func serveVerdict(ix *index, p v1.Principal, b *matchBody, q []float32, th Thres
 		if owner := ix.claims[*b.TopicID]; owner != "" {
 			if sc, ok := scores[owner]; ok && !math.IsInf(float64(sc), -1) && float64(sc) >= th.Related {
 				covered := ix.recs[owner]
-				return serveResult{Verdict: "covered", Match: "alias", Score: rounded(sc), Article: covered.public()}, covered
+				return serveResult{Verdict: "covered", Match: "alias", Score: rounded(sc), Article: covered.public(promotedAt(covered, th.PromotionMinTier))}, covered
 			}
 		}
 	}
@@ -204,7 +204,7 @@ func serveVerdict(ix *index, p v1.Principal, b *matchBody, q []float32, th Thres
 	case rec == nil:
 		return serveResult{Verdict: "none"}, nil
 	case top.atLeast(th.Covered):
-		return serveResult{Verdict: "covered", Match: "embedding", Score: rounded(top.score), Article: rec.public()}, rec
+		return serveResult{Verdict: "covered", Match: "embedding", Score: rounded(top.score), Article: rec.public(promotedAt(rec, th.PromotionMinTier))}, rec
 	case top.atLeast(th.Related):
 		return serveResult{Verdict: "related", Match: "embedding", Score: rounded(top.score), Article: refView{ID: rec.ID, Slug: rec.Slug, Title: rec.Title}}, nil
 	}
