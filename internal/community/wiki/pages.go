@@ -166,7 +166,7 @@ func (w *Wiki) renderArticle(rec *engineRecord) []byte {
 			bySource[c.URL] = i
 			sources = append(sources, sourceView{Link: link, Title: title, Host: host})
 		}
-		sources[i].Quotes = append(sources[i].Quotes, quoteView{N: c.N, Quote: cleanLine(c.Quote)})
+		sources[i].Quotes = append(sources[i].Quotes, quoteView{N: c.N, Quote: cleanQuote(c.Quote)})
 	}
 	updated, updatedISO := displayDate(rec.UpdatedAt)
 	_, createdISO := displayDate(rec.CreatedAt)

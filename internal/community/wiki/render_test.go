@@ -187,6 +187,46 @@ func TestCleanStripsControls(t *testing.T) {
 	}
 }
 
+func TestCleanQuote(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"plain", "A runtime drives futures to completion.", "A runtime drives futures to completion."},
+		{"numeric marker verbatim", "rolled oats. [3]", "rolled oats. [3]"},
+		{"padded marker verbatim", "rolled oats. [ 51 ]", "rolled oats. [ 51 ]"},
+		{"letter marker verbatim", "a claim[a] follows", "a claim[a] follows"},
+		{"index verbatim", "sys.argv[1] holds the first argument.", "sys.argv[1] holds the first argument."},
+		{"bracketed year verbatim", "The law passed in [2019] changed it.", "The law passed in [2019] changed it."},
+		{"citation needed verbatim", "a claim [citation needed] follows", "a claim [citation needed] follows"},
+		{"space before comma", "word , next", "word, next"},
+		{"space before comma at the end", "word ,", "word,"},
+		{"space before period at the end", "the end .", "the end."},
+		{"each mark", "a ; b : c ! d ? e", "a; b: c! d? e"},
+		{"paren padding", "( word )", "(word)"},
+		{"paren then period", "( word ) .", "(word)."},
+		{"paren-period run", "the pipeline (CI/CD ).", "the pipeline (CI/CD)."},
+		{"comma-paren run", "word ,)", "word,)"},
+		{"nested paren run", "( a ( b ))", "(a (b))"},
+		{"leading dot word", "built on .NET", "built on .NET"},
+		{"file extension", "the extension .json", "the extension .json"},
+		{"relative path", "Run ./configure first", "Run ./configure first"},
+		{"pseudo-class", "The :hover state", "The :hover state"},
+		{"css important", "Use !important sparingly", "Use !important sparingly"},
+		{"two-mark operator", "The ?. operator", "The ?. operator"},
+		{"null-coalescing operator", "the ?? operator", "the ?? operator"},
+		{"scope operator", "the :: operator", "the :: operator"},
+		{"ellipsis", "and so on ...", "and so on ..."},
+		{"all marker keeps the original", "[51]", "[51]"},
+		{"lone mark keeps the original", " . ", "."},
+		{"whitespace collapsed", "  a \t b\n c  ", "a b c"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cleanQuote(tc.in); got != tc.want {
+				t.Fatalf("cleanQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLinkableCitations(t *testing.T) {
 	for u, want := range map[string]bool{
 		"https://docs.example.org/guide": true, "http://x.example/a?b=c#d": true, `https://x.example/a"b`: true,

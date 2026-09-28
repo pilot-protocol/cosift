@@ -336,6 +336,36 @@ func TestSourcesGroupedByURL(t *testing.T) {
 	}
 }
 
+// TestQuotesShownVerbatimOnThePage pins: a displayed quote keeps its brackets and loses only stray spacing.
+func TestQuotesShownVerbatimOnThePage(t *testing.T) {
+	h := newHarness(t)
+	quotes := []struct{ in, want string }{
+		{"rolled oats. [ 51 ]", "rolled oats. [ 51 ]"},
+		{"sys.argv[1] holds the first argument .", "sys.argv[1] holds the first argument."},
+		{"The law passed in [2019] changed it [a] .", "The law passed in [2019] changed it [a]."},
+		{"[3]", "[3]"},
+		{"Built on .NET ( see ./configure ) , too", "Built on .NET (see ./configure), too"},
+	}
+	var cites []any
+	for i, q := range quotes {
+		cites = append(cites, map[string]any{"n": i + 1, "url": fmt.Sprintf("https://a.example/%d", i+1), "title": "A title", "host": "a.example", "quote": q.in})
+	}
+	rec := with(published("quote-cleanup", "Quote cleanup"), "citations", cites)
+	h.refresh()
+	h.v1.set("quote-cleanup", jsonReply(200, rec))
+	doc := structure(t, "quote-cleanup", h.get("/wiki/quote-cleanup").Body.String())
+
+	for i, q := range quotes {
+		li := find(doc, func(n *html.Node) bool { return n.Data == "li" && attr(n, "id") == fmt.Sprintf("cite-%d", i+1) })
+		if len(li) != 1 {
+			t.Fatalf("no cite-%d", i+1)
+		}
+		if got := textOf(find(li[0], tag("blockquote"))[0]); got != q.want {
+			t.Fatalf("quote %q displayed as %q, want %q", q.in, got, q.want)
+		}
+	}
+}
+
 func jsonLD(t *testing.T, doc *html.Node) map[string]any {
 	t.Helper()
 	blocks := find(doc, func(n *html.Node) bool { return n.Data == "script" && attr(n, "type") == "application/ld+json" })

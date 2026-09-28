@@ -35,6 +35,24 @@ func clean(s string) string {
 // cleanLine is clean for single-line text, with whitespace runs collapsed.
 func cleanLine(s string) string { return strings.Join(strings.Fields(clean(s)), " ") }
 
+// cleanQuote is cleanLine without the space after ( or before a closing run.
+func cleanQuote(s string) string {
+	fields := strings.Fields(clean(s))
+	var b strings.Builder
+	for i, f := range fields {
+		if i > 0 && !strings.HasSuffix(fields[i-1], "(") && !closingRun(f) {
+			b.WriteByte(' ')
+		}
+		b.WriteString(f)
+	}
+	return b.String()
+}
+
+// closingRun is a lone , . ; : ! ? ) or a run of them containing ).
+func closingRun(f string) bool {
+	return strings.Trim(f, ",.;:!?)") == "" && (len(f) == 1 || strings.Contains(f, ")"))
+}
+
 // linkable is a citation URL the page may link to: absolute http(s), printable ASCII.
 func linkable(raw string) bool {
 	for i := 0; i < len(raw); i++ {
