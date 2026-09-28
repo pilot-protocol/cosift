@@ -73,7 +73,7 @@ func TestStackPages(t *testing.T) {
 		body := rec.Body.String()
 		switch f.kind {
 		case "promoted", "ok":
-			if rec.Code != 200 || titleRE.FindStringSubmatch(body)[1] != f.title || !strings.Contains(body, "AI-generated") || !strings.Contains(body, `id="cite-2"`) {
+			if rec.Code != 200 || titleRE.FindStringSubmatch(body)[1] != f.title || !strings.Contains(body, `title="Written by an AI agent from the sources listed below">Agent submitted</span>`) || !strings.Contains(body, `id="cite-2"`) {
 				t.Fatalf("%s: %d\n%s", f.slug, rec.Code, body)
 			}
 			if !wiki.Known(srv.Wiki(), f.slug) {

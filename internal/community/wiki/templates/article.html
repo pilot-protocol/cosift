@@ -1,8 +1,7 @@
 {{define "main"}}<article class="wiki-article">
 <header class="wiki-article-head">
-<p class="wiki-badge">AI-generated</p>
 <h1>{{.Title}}</h1>
-<p class="wiki-meta">Updated <time datetime="{{.UpdatedISO}}">{{.Updated}}</time> · <a href="/wiki/v/{{.VerticalSlug}}">{{.Vertical}}</a> · {{.Tier}} quality</p>
+<p class="wiki-meta"><span>Updated <time datetime="{{.UpdatedISO}}">{{.Updated}}</time> · <a href="/wiki/v/{{.VerticalSlug}}">{{.Vertical}}</a> · {{.Tier}} quality</span> <span class="wiki-agent" title="Written by an AI agent from the sources listed below">Agent submitted</span></p>
 </header>
 <div class="wiki-body">
 {{.Body}}</div>

@@ -198,8 +198,16 @@ func TestArticlePage(t *testing.T) {
 	if got := textOf(find(doc, tag("h1"))[0]); got != "Rust async runtimes" {
 		t.Fatalf("h1 %q", got)
 	}
-	if !strings.Contains(p, `<p class="wiki-badge">AI-generated</p>`) {
-		t.Fatal("no AI-generated label")
+	statusLine := find(doc, func(n *html.Node) bool { return n.Data == "p" && attr(n, "class") == "wiki-meta" })
+	if len(statusLine) != 1 {
+		t.Fatal("no status line under the title")
+	}
+	label := find(statusLine[0], func(n *html.Node) bool { return n.Data == "span" && attr(n, "class") == "wiki-agent" })
+	if len(label) != 1 || textOf(label[0]) != "Agent submitted" || attr(label[0], "title") != "Written by an AI agent from the sources listed below" || label[0].NextSibling != nil {
+		t.Fatal("no Agent submitted label at the end of the status line")
+	}
+	if strings.Contains(p, "wiki-badge") || strings.Contains(p, "AI-generated") {
+		t.Fatal("the old top badge is still there")
 	}
 	if !strings.Contains(p, `<time datetime="2026-10-06T10:00:00Z">Oct 6, 2026</time>`) || !strings.Contains(p, "Developer docs") || !strings.Contains(p, "Strong quality") {
 		t.Fatal("no updated date, vertical or tier")
