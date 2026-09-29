@@ -303,7 +303,7 @@ func TestRouteScopeCheck(t *testing.T) {
 		{testKeys["dash-prod"], "POST", "/v1/articles/purge-prelive", "requires scope articles:admin"},
 		{testKeys["dash-prod"], "POST", "/v1/articles/match", "requires scope articles:read"},
 		{h.token(synthSub, synthEmail), "DELETE", "/v1/articles/01J8ZC2Q7W4X9M3K5N6P8R0T2V", "requires scope articles:stub"},
-		{testKeys["dash-staging"], "PUT", "/v1/articles/01J8ZC2Q7W4X9M3K5N6P8R0T2V", "requires scope articles:write"},
+		{testKeys["dash-staging"], "PUT", "/v1/articles/01J8ZC2Q7W4X9M3K5N6P8R0T2V", "requires scope articles:write or articles:stub"},
 	}
 	for _, tc := range cases {
 		w := h.do(tc.method, tc.path, `{}`, bearerAuth(tc.cred), jsonBody)

@@ -190,7 +190,7 @@ func TestReadersCountedOnlyForCountingPrincipal(t *testing.T) {
 func TestBuildNeedsWriteOrStub(t *testing.T) {
 	h := newHarness(t)
 	body := map[string]any{"q": "x", "purpose": "build"}
-	if out := h.expectError(mcpProd, http.MethodPost, "/v1/articles/match", body, http.StatusForbidden, "missing_scope"); out["detail"] != "requires scope articles:write" {
+	if out := h.expectError(mcpProd, http.MethodPost, "/v1/articles/match", body, http.StatusForbidden, "missing_scope"); out["detail"] != "requires scope articles:write or articles:stub" {
 		t.Errorf("detail = %v", out["detail"])
 	}
 	h.expectError(dashProd, http.MethodPost, "/v1/articles/match", body, http.StatusForbidden, "missing_scope")

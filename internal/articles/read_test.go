@@ -163,7 +163,7 @@ func TestReadScopes(t *testing.T) {
 	h := newHarness(t)
 	h.put(synthProd, ulid(1), articleBody("Rust async runtimes"), http.StatusCreated)
 	for _, path := range []string{"/v1/articles/" + ulid(1), "/v1/articles/by-slug/rust-async-runtimes", "/v1/articles"} {
-		if out := h.expectError(goliveAdmin, http.MethodGet, path, nil, http.StatusForbidden, "missing_scope"); out["detail"] != "requires scope articles:read" {
+		if out := h.expectError(goliveAdmin, http.MethodGet, path, nil, http.StatusForbidden, "missing_scope"); out["detail"] != "requires scope articles:read or articles:read_all" {
 			t.Errorf("%s: %v", path, out)
 		}
 	}

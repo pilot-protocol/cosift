@@ -61,6 +61,8 @@ func TestWriteError(t *testing.T) {
 			map[string]string{"WWW-Authenticate": `Bearer realm="cosift-v1"`}},
 		{"missing_scope", MissingScope(ScopeArticlesWrite),
 			`{"error": "Forbidden", "status": 403, "code": "missing_scope", "detail": "requires scope articles:write"}`, nil},
+		{"missing_scope of two", MissingScope(ScopeArticlesWrite, ScopeArticlesStub),
+			`{"error": "Forbidden", "status": 403, "code": "missing_scope", "detail": "requires scope articles:write or articles:stub"}`, nil},
 		{"env_mismatch", EnvMismatch(),
 			`{"error": "Forbidden", "status": 403, "code": "env_mismatch", "detail": "record belongs to another environment"}`, nil},
 		{"gone", Error{Status: 410, Code: "gone", Detail: "article removed"},

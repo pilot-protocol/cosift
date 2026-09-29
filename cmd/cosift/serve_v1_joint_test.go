@@ -309,6 +309,11 @@ func TestJointPerOperationScope(t *testing.T) {
 	}
 	j.want(j.do("synth-prod", "PUT", "/v1/articles/"+jointID(2), jointStub("Writers do not write stubs", "8624225e00000001")), 403, "missing_scope")
 	j.want(j.do("resolver-prod", "PUT", "/v1/articles/"+jointID(3), jointStub("Resolver stub title", "8624225e00000002")), 201, "")
+	r = j.do("mcp-prod", "PUT", "/v1/articles/"+jointID(4), jointStub("Readers write no stubs", "8624225e00000003"))
+	j.want(r, 403, "missing_scope")
+	if r.body["detail"] != "requires scope articles:write or articles:stub" {
+		t.Fatalf("detail %v", r.body["detail"])
+	}
 	j.want(j.do("mcp-prod", "POST", "/v1/articles/match", map[string]any{"q": "x", "purpose": "build"}), 403, "missing_scope")
 	j.want(j.do("dash-prod", "POST", "/v1/articles/match", map[string]any{"q": "x"}), 403, "missing_scope")
 	j.want(j.do("synth-prod", "POST", "/v1/articles/match", map[string]any{"q": "x", "purpose": "build"}), 200, "")

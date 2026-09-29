@@ -108,7 +108,7 @@ func RequireAny(w http.ResponseWriter, r *http.Request, scopes ...Scope) (Princi
 		return Principal{}, false
 	}
 	if !p.HasAny(scopes...) {
-		WriteError(w, MissingScope(scopes[0]))
+		WriteError(w, MissingScope(scopes...))
 		return Principal{}, false
 	}
 	return p, true

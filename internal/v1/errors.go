@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -65,8 +66,12 @@ func Unauthenticated() Error {
 	return Error{Status: http.StatusUnauthorized, Code: "unauthenticated", Detail: "missing or invalid credential"}
 }
 
-func MissingScope(s Scope) Error {
-	return Error{Status: http.StatusForbidden, Code: "missing_scope", Detail: "requires scope " + string(s)}
+func MissingScope(scopes ...Scope) Error {
+	names := make([]string, len(scopes))
+	for i, s := range scopes {
+		names[i] = string(s)
+	}
+	return Error{Status: http.StatusForbidden, Code: "missing_scope", Detail: "requires scope " + strings.Join(names, " or ")}
 }
 
 func EnvMismatch() Error {
