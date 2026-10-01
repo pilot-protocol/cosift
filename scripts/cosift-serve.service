@@ -25,7 +25,9 @@ Environment=COSIFT_PEBBLE_CACHE_MB=32768
 # OPENAI_API_KEY and friends — root-owned, 0640, root:ubuntu. Never in ./.env.
 EnvironmentFile=-/etc/cosift/cosift.env
 ExecStart=/home/ubuntu/cosift -config /home/ubuntu/cosift.json pebble-serve -dir /home/ubuntu/cosift-data/pebble -addr 127.0.0.1:7777 -crawl-seeds-file /home/ubuntu/seeds.txt -crawl-checkpoint 60s
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
+RestartForceExitStatus=SIGHUP
 RestartSec=5
 LimitNOFILE=131072
 TimeoutStopSec=30

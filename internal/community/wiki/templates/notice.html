@@ -1,0 +1,7 @@
+{{define "main"}}<section class="wiki-notice" aria-label="{{.Heading}}">
+<h1>{{.Heading}}</h1>
+<p>{{.Text}}</p>
+{{with .Link}}<p><a href="{{.}}">Continue</a></p>
+{{end}}<p><a href="/wiki">Browse articles A–Z</a></p>
+</section>
+{{end}}

@@ -26,6 +26,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pilot-protocol/cosift/internal/store"
 )
@@ -84,6 +85,8 @@ type HNSW struct {
 	slot       byte               // on-disk node slot the graph was loaded from / last persisted to
 	persisted  int                // node count named by the last meta written
 	renumbered bool               // ids changed in memory since the last full persist
+
+	probeWaiters atomic.Int32
 }
 
 type hnswNode struct {
@@ -694,7 +697,53 @@ func (h *HNSW) Search(_ context.Context, query []float32, k int) []VectorHit {
 
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.searchLocked(q, k)
+}
 
+// maxProbeWaiters bounds the goroutines TrySearch leaves queued for the read
+// lock while a writer holds it.
+const maxProbeWaiters = 32
+
+// TrySearch is Search, or ok=false when the read lock is not obtained within
+// wait (the compaction holds the write lock for minutes).
+func (h *HNSW) TrySearch(ctx context.Context, query []float32, k int, wait time.Duration) ([]VectorHit, bool) {
+	if len(query) != h.dim {
+		return nil, true
+	}
+	q := make([]float32, len(query))
+	copy(q, query)
+	normalizeInPlace(q)
+
+	if h.probeWaiters.Add(1) > maxProbeWaiters {
+		h.probeWaiters.Add(-1)
+		return nil, false
+	}
+	got := make(chan struct{})
+	abandon := make(chan struct{})
+	go func() {
+		defer h.probeWaiters.Add(-1)
+		h.mu.RLock()
+		select {
+		case got <- struct{}{}:
+		case <-abandon:
+			h.mu.RUnlock()
+		}
+	}()
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-got:
+		defer h.mu.RUnlock()
+		return h.searchLocked(q, k), true
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	close(abandon)
+	return nil, false
+}
+
+// searchLocked runs a search for a normalised query; the caller holds mu.
+func (h *HNSW) searchLocked(q []float32, k int) []VectorHit {
 	if len(h.nodes) == 0 {
 		return nil
 	}

@@ -16,12 +16,12 @@ function node() {
   querySelector(){return this.button ||= node()}, click(){return this.onclick?.()},
  };
 }
-async function app(boot = true) {
+async function app(boot = true, hash = '', signIn = true) {
  const nodes = new Map(), pending = [];
  const get = id => { if(!nodes.has(id)) nodes.set(id,node()); return nodes.get(id) };
- const context = vm.createContext({document:{getElementById:get, createElement:node, createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]},
+ const context = vm.createContext({document:{getElementById:get, createElement:tag=>Object.assign(node(),{tagName:String(tag).toUpperCase()}), createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]},
   URL, URLSearchParams, FormData, AbortController, DOMException, Intl, console,
-  crypto:{randomUUID:()=> 'test-checkout-key'}, location:{pathname:'/',search:'',assign:url=>{context.destination=url}}, history:{replaceState(){}},
+  crypto:{randomUUID:()=> 'test-checkout-key'}, location:{pathname:'/',search:'',hash,assign:url=>{context.destination=url}}, history:{replaceState(){}},
   setTimeout:()=>0,clearTimeout(){},setInterval(){},
   fetch:(url,opts)=>new Promise(resolve=>pending.push({url,opts,resolve})),
  });
@@ -32,7 +32,7 @@ async function app(boot = true) {
   pending.splice(i,1)[0].resolve({ok:status<400,status,json:async()=>data});
  };
  run(source); respond('auth/config',{shared:false}); await tick(); if (boot) { respond('me',{},401); await tick(); respond('limits',policy); await tick(); }
- run('user = {id:"A",name:"Alice",interests:[],onboarded:true}');
+ if (signIn) run('user = {id:"A",name:"Alice",interests:[],onboarded:true}');
  return {run,respond,get,pending,context};
 }
 test('logout during search clears private state and permits another search',async()=>{
@@ -283,4 +283,57 @@ test('password setup requires an email code and passes the new password only to 
  a.get('auth-restart').onclick();
  assert.equal(a.get('password-field').hidden,true);
  assert.equal(form.elements.password.value,'');
+});
+async function lookup(a, data) {
+ a.run('sharedAuth=true');
+ const form=a.get('shared-form');
+ a.get('shared-action').value='cosift_lookup'; a.get('shared-topic').value='rust async runtimes';
+ const done=form.onsubmit({preventDefault(){},target:form}); await tick();
+ assert.deepEqual(JSON.parse(a.pending.find(p=>p.url==='/api/shared').opts.body),{tool:'cosift_lookup',topic:'rust async runtimes'});
+ a.respond('shared',data); await tick(); a.respond('shared',{topics:[]}); await done;
+ return a.get('shared-result').children;
+}
+test('coverage view renders a covered article as text with its canonical link and cited sources', async () => {
+ const a=await app();
+ const out=await lookup(a,{coverage:'covered',kind:'article',article_id:'01J8ZC2Q7W4X9M3K5N6P8R0T2V',title:'Rust async runtimes',
+  url:'https://cosift.pilotprotocol.network/wiki/rust-async-runtimes',quality:'strong',text:'Lead.\n\n## Execution model\n\n<img src=x onerror=alert(1)> [1]',
+  citations:[{n:1,url:'https://tokio.example/tutorial',title:'Tutorial'},{n:2,url:'http://docs.example.org/x',title:''}],updated_at:'2026-10-06T10:00:00Z',ai_generated:true});
+ assert.equal(out[0].textContent,'Cosift has an article on this topic.');
+ const title=out[1].children[0];
+ assert.equal(title.textContent,'Rust async runtimes'); assert.equal(title.href,'https://cosift.pilotprotocol.network/wiki/rust-async-runtimes');
+ assert.deepEqual([out[1].tagName,out[2].tagName,out[3].tagName],['H3','PRE','OL']);
+ assert.equal(out[2].textContent,'Lead.\n\n## Execution model\n\n<img src=x onerror=alert(1)> [1]');
+ assert.equal(out[2].innerHTML,undefined);
+ const sources=out[3].children.map(li=>li.children[0]);
+ assert.deepEqual(sources.map(s=>[s.textContent,s.href,s.rel]),[['Tutorial','https://tokio.example/tutorial','noopener noreferrer'],['http://docs.example.org/x','http://docs.example.org/x','noopener noreferrer']]);
+});
+test('coverage view links a related article by title only', async () => {
+ const a=await app();
+ const out=await lookup(a,{coverage:'thin',retry_after_days:7,covers_well:[],requested:false,related_article:{title:'Rust async runtimes',url:'https://cosift.pilotprotocol.network/wiki/rust-async-runtimes'}});
+ assert.match(out[0].textContent,/No complete article/);
+ assert.equal(out[1].textContent,'Related article: ');
+ assert.equal(out[1].children[0].textContent,'Rust async runtimes');
+ assert.equal(out[1].children[0].href,'https://cosift.pilotprotocol.network/wiki/rust-async-runtimes');
+ assert.equal(out.length,2);
+});
+test('coverage view leaves javascript: URLs inert', async () => {
+ const a=await app();
+ const covered=await lookup(a,{coverage:'covered',kind:'article',title:'X',url:'javascript:alert(1)',text:'t',citations:[{n:1,url:'JavaScript:alert(2)',title:'bad'},{n:2,url:'data:text/html,x',title:'bad2'}]});
+ assert.equal(covered[1].children[0].href,undefined);
+ assert.deepEqual(covered[3].children.map(li=>li.children[0].href),[undefined,undefined]);
+ const related=await lookup(a,{coverage:'none',related_article:{title:'Y',url:' javascript:alert(3)'}});
+ assert.equal(related[1].children[0].href,undefined);
+ assert.equal(related[1].children[0].textContent,'Y');
+});
+test('the #agents link opens the Agents view', async () => {
+ const a=await app(false,'#agents',false);
+ const answer=async (route,data,status)=>{ for (let i=0;i<50&&!a.pending.some(p=>p.url==='/api/'+route);i++) await tick(); a.respond(route,data,status); await tick(); };
+ await answer('me',{},401); await answer('limits',policy); await answer('limits',policy); await answer('guest',{retry_at:0});
+ for (let i=0;i<10;i++) await tick();
+ assert.equal(a.get('app').hidden,false);
+ assert.equal(a.get('view-connect').hidden,false);
+ assert.equal(a.get('view-search').hidden,true);
+ const plain=await app(true,'',false);
+ assert.equal(plain.get('auth').hidden,false);
+ assert.equal(plain.get('app').hidden,true);
 });

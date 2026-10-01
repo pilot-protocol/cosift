@@ -870,7 +870,8 @@ async function initialize() {
     catch (e) { if (e.status !== 401) throw e; user = null; }
     await refreshLimits();
     if (location.pathname === "/login" && signingUp) $("auth-toggle").click();
-    if (user) await enter();
+    if (location.hash === "#agents") { await enter(); await view("connect"); }
+    else if (user) await enter();
     else showScreen("auth");
     showPaymentReturn().catch(e => notify(e.message, true));
   } catch (e) {
@@ -1025,15 +1026,25 @@ $("shared-form").onsubmit = event => {
     $("shared-result").replaceChildren();
     if (action === "add") $("shared-result").append(el("p","Topic followed."));
     else if (action === "cosift_request") $("shared-result").append(el("p",data.detail || "Article request recorded."));
-    else {
-      $("shared-result").append(el("p",data.coverage === "covered" ? "Cosift has an article on this topic." : "No complete article is available yet. You can still search the webpage index."));
-      const article = data.kind === "article" ? data : data.related_article;
-      if (article) {
-        $("shared-result").append(el("p",article.text || ""));
-        for (const citation of article.citations || []) {
-          const url = typeof citation === "string" ? citation : citation.url;
-          $("shared-result").append(link(url, typeof citation === "string" ? citation : citation.title || url));
-        }
+    else if (data.coverage === "covered" && data.kind === "article") {
+      $("shared-result").append(el("p","Cosift has an article on this topic."));
+      const heading = el("h3");
+      heading.append(link(data.url, data.title || data.url || "Article"));
+      $("shared-result").append(heading, el("pre", String(data.text || ""), "shared-article-text"));
+      const sources = el("ol");
+      for (const citation of Array.isArray(data.citations) ? data.citations : []) {
+        const item = el("li");
+        item.append(link(citation?.url, citation?.title || citation?.url || ""));
+        sources.append(item);
+      }
+      if (sources.children.length) $("shared-result").append(sources);
+    } else {
+      $("shared-result").append(el("p","No complete article is available yet. You can still search the webpage index."));
+      const related = data.related_article;
+      if (related) {
+        const pointer = el("p","Related article: ");
+        pointer.append(link(related.url, related.title || related.url || "Article"));
+        $("shared-result").append(pointer);
       }
     }
     await refreshSharedTopics();

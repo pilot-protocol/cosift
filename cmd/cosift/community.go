@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community"
+	"github.com/pilot-protocol/cosift/internal/community/wiki"
 	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
@@ -56,7 +57,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID")})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
 	if err != nil {
 		return err
 	}
@@ -367,4 +368,14 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	}
 	_, err = os.Stdout.Write(result)
 	return err
+}
+
+// wikiConfig reads the public page switch and its engine key; the key is never logged.
+func wikiConfig() wiki.Config {
+	return wiki.Config{
+		Public:       os.Getenv("COSIFT_WIKI_PUBLIC") == "1",
+		EngineURL:    os.Getenv("COSIFT_WIKI_ENGINE_URL"),
+		EngineKey:    os.Getenv("COSIFT_WIKI_ENGINE_KEY"),
+		ReportMailto: os.Getenv("COSIFT_REPORT_MAILTO"),
+	}
 }

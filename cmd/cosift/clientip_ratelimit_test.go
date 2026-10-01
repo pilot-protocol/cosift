@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -707,6 +708,24 @@ func TestClientIPHeaderBeatsForgedXFF(t *testing.T) {
 
 // A loopback whitelist entry makes a bucket inert behind a local reverse
 // proxy; the WARN must name every limiter that carries one, not just rl.
+// lockedBuffer is a log sink the server's background goroutines may write while a test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
 func TestLoopbackWhitelistWarnCoversEveryLimiter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -714,7 +733,7 @@ func TestLoopbackWhitelistWarnCoversEveryLimiter(t *testing.T) {
 	t.Setenv("COSIFT_RATELIMIT_RPM", "240")
 	t.Setenv("COSIFT_RATELIMIT_WHITELIST", "127.0.0.1")
 	t.Setenv("COSIFT_RATELIMIT_LLM_WHITELIST", "127.0.0.1")
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	prev := log.Writer()
 	log.SetOutput(io.MultiWriter(prev, &buf))
 	t.Cleanup(func() { log.SetOutput(prev) })
