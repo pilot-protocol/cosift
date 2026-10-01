@@ -8,7 +8,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"syscall"
+
+	"github.com/pilot-protocol/cosift/internal/fileowner"
 )
 
 const DefaultThresholdsPath = "/etc/cosift/articles.json"
@@ -49,11 +50,11 @@ func LoadThresholds(path string) (Thresholds, error) {
 	if err != nil {
 		return Thresholds{}, err
 	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
+	owner, ok := fileowner.UID(fi)
 	switch {
 	case !fi.Mode().IsRegular():
 		return Thresholds{}, errors.New("not a regular file")
-	case !ok || st.Uid != thresholdsOwner:
+	case !ok || owner != thresholdsOwner:
 		return Thresholds{}, fmt.Errorf("owner must be uid %d", thresholdsOwner)
 	case fi.Mode().Perm()&0o027 != 0:
 		return Thresholds{}, errors.New("mode must not grant group write or any other access")
