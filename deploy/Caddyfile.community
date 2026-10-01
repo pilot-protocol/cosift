@@ -23,13 +23,31 @@ cosift.pilotprotocol.network, origin.cosift.pilotprotocol.network {
 	handle @legacy_ui {
 		redir * /login 302
 	}
-	@community path / /login /signup /app.js /style.css /sample.csv /healthz /api/* /search /answer /research
+	@community path / /login /signup /app.js /style.css /sample.csv /healthz /api/* /search /answer /research /wiki /wiki/* /wiki.css /wiki.js /sitemap.xml /sitemaps/* /robots.txt
 	handle @community {
 		reverse_proxy 127.0.0.1:7780 {
 			header_up X-Forwarded-For {client_ip}
 			header_up -CF-Connecting-IP
 			transport http {
 				response_header_timeout 240s
+			}
+		}
+	}
+	handle /v1/* {
+		@service_key header_regexp Authorization (?i)^\s*bearer\s+csk_
+		handle @service_key {
+			respond "forbidden" 403
+		}
+		handle {
+			request_body {
+				max_size 1MB
+			}
+			reverse_proxy 127.0.0.1:7779 {
+				header_up X-Forwarded-For {client_ip}
+				header_up -CF-Connecting-IP
+				transport http {
+					response_header_timeout 30s
+				}
 			}
 		}
 	}

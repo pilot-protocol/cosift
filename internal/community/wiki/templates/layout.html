@@ -1,0 +1,41 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Head.Title}}</title>
+{{with .Head.Description}}<meta name="description" content="{{.}}">
+{{end}}{{with .Head.Canonical}}<link rel="canonical" href="{{.}}">
+{{end}}{{with .Head.Prev}}<link rel="prev" href="{{.}}">
+{{end}}{{with .Head.Next}}<link rel="next" href="{{.}}">
+{{end}}{{with .Head.OG}}<meta property="og:type" content="{{.Type}}">
+<meta property="og:site_name" content="Cosift">
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:description" content="{{.Description}}">
+<meta property="og:url" content="{{.URL}}">
+{{end}}{{with .Head.GSC}}<meta name="google-site-verification" content="{{.}}">
+{{end}}<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/wiki.css">
+{{with .Head.GA}}<script src="/wiki.js" data-ga="{{.}}" defer></script>
+{{end}}{{with .Head.JSONLD}}<script type="application/ld+json">{{.}}</script>
+{{end}}</head>
+<body class="wiki">
+<header class="wiki-header">
+<a class="brand" href="/">cosift<span>●</span></a>
+<nav class="wiki-nav" aria-label="Articles">
+<a href="/wiki">A–Z</a>
+<a href="/wiki/v/dev-docs">Developer docs</a>
+<a href="/wiki/v/technology-news">Technology news</a>
+<a href="/wiki/v/research">Research</a>
+<a href="/wiki/v/other">Other</a>
+</nav>
+</header>
+<main class="wiki-main">
+{{template "main" .}}
+</main>
+<footer class="wiki-footer">
+<p class="fine">Cosift articles are written by AI from cited sources. <a href="/">Search Cosift</a> · <a href="/#agents">Connect an agent</a></p>
+</footer>
+</body>
+</html>
+{{end}}

@@ -1100,6 +1100,7 @@ main { padding-top: 24px; }
 #shared-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .7fr) auto; gap: 16px; align-items: end; margin-bottom: 20px; }
 #shared-form label { margin: 0; }
 #shared-result:empty { display: none; }
+.shared-article-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 #shared-refresh { margin-top: 4px; }
 .setup-grid { gap: 20px; margin-top: 28px; }
 .setup-grid .panel { min-width: 0; }

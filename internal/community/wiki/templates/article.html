@@ -1,0 +1,25 @@
+{{define "main"}}<article class="wiki-article">
+<header class="wiki-article-head">
+<h1>{{.Title}}</h1>
+<p class="wiki-meta"><span>Updated <time datetime="{{.UpdatedISO}}">{{.Updated}}</time> · <a href="/wiki/v/{{.VerticalSlug}}">{{.Vertical}}</a> · {{.Tier}} quality</span> <span class="wiki-agent" title="Written by an AI agent from the sources listed below">Agent submitted</span></p>
+</header>
+<div class="wiki-body">
+{{.Body}}</div>
+{{if .Sources}}<section class="wiki-sources" aria-label="Sources">
+<h2>Sources</h2>
+<ul class="wiki-citations">
+{{range .Sources}}<li class="wiki-source">
+<p class="wiki-cite-title">{{if .Link}}<a href="{{.Link}}" rel="nofollow noopener">{{.Title}}</a>{{else}}{{.Title}}{{end}} <span class="wiki-cite-host">{{.Host}}</span></p>
+<ul class="wiki-cite-quotes">
+{{range .Quotes}}<li id="cite-{{.N}}"><span class="wiki-cite-n">[{{.N}}]</span><blockquote><p>{{.Quote}}</p></blockquote></li>
+{{end}}</ul>
+</li>
+{{end}}</ul>
+</section>
+{{end}}<aside class="wiki-aside" aria-label="About this article">
+<p>This article was written by an AI system from the sources listed. It can contain mistakes: check the sources before relying on it.</p>
+<p><a href="{{.ReportHref}}">Report a problem with this article</a></p>
+<p><a class="wiki-cta" href="/#agents">Use Cosift articles in your agent</a></p>
+</aside>
+</article>
+{{end}}

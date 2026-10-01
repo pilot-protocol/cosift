@@ -652,6 +652,9 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cosift_request_duration_seconds_sum{endpoint=%q} %.6f\n", path, float64(m.sumNanos.Load())/1e9)
 		return true
 	})
+	if s.v1svc != nil {
+		s.v1svc.Metrics.WritePrometheus(w)
+	}
 }
 
 // HTTP form of `cosift verify`. Same comparison (running

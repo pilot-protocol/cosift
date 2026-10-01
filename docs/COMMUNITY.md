@@ -13,7 +13,7 @@ People can:
 - Submit public webpage URLs in a multiline field or a CSV upload after signing in.
 - See their most recent 200 contributions, indexing status and credit balance.
 - Submit the same URLs or CSV files using `cosift contribute`, optionally extracting text and computing embeddings locally.
-- Follow topics across the web and MCP, check article coverage, and record requests for missing articles. Automatic article authoring is still in development.
+- Follow topics across the web and MCP, check article coverage, and record requests for missing articles.
 - View monthly credits and manage an optional paid subscription or subscriber top-up when live payments are configured.
 
 Guests share one persistent cooldown per public IP. A successful **Search holds
