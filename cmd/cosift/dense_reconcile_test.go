@@ -321,22 +321,27 @@ func TestHNSWCompactAsyncJob(t *testing.T) {
 	if code != http.StatusAccepted || body["status"] != "started" {
 		t.Fatalf("start: %d %v", code, body)
 	}
+	rerun := false
 	for i := 0; i < 200; i++ {
 		if srv.compact.snapshot()["state"] != "running" {
 			break
 		}
-		if c, _ := post(""); c != http.StatusConflict && c != http.StatusAccepted {
+		switch c, _ := post(""); c {
+		case http.StatusConflict:
+		case http.StatusAccepted:
+			rerun = true
+		default:
 			t.Fatalf("second POST while running: %d", c)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	srv.bgJobs.Wait()
 	snap := srv.compact.snapshot()
-	if snap["state"] != "done" || snap["phase"] != "done" || snap["persisted"] != true {
+	if snap["state"] != "done" || snap["phase"] != "done" {
 		t.Fatalf("snapshot after run: %v", snap)
 	}
-	if snap["removed"].(int) != 1 {
-		t.Fatalf("removed: %v", snap["removed"])
+	if !rerun && (snap["persisted"] != true || snap["removed"].(int) != 1) {
+		t.Fatalf("snapshot after run: %v", snap)
 	}
 	raw, err := srv.buildStatsBody(context.Background())
 	if err != nil {
