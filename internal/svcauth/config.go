@@ -15,9 +15,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/fileowner"
 	v1 "github.com/pilot-protocol/cosift/internal/v1"
 )
 
@@ -149,8 +149,8 @@ func ReadFile(path string, uid uint32) ([]byte, error) {
 	if !st.Mode().IsRegular() {
 		return nil, errors.New("not a regular file")
 	}
-	sys, ok := st.Sys().(*syscall.Stat_t)
-	if !ok || sys.Uid != uid {
+	owner, ok := fileowner.UID(st)
+	if !ok || owner != uid {
 		return nil, fmt.Errorf("owner must be uid %d", uid)
 	}
 	if st.Mode().Perm()&0o027 != 0 {
