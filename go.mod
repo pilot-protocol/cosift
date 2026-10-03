@@ -3,7 +3,7 @@ module github.com/pilot-protocol/cosift
 go 1.26.8
 
 require (
-	cloud.google.com/go/firestore v1.25.0
+	cloud.google.com/go/firestore v1.26.0
 	cloud.google.com/go/secretmanager v1.21.0
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
