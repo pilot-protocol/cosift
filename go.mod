@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	cloud.google.com/go/firestore v1.25.0
-	cloud.google.com/go/secretmanager v1.21.0
+	cloud.google.com/go/secretmanager v1.22.0
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/stripe/stripe-go/v86 v86.4.2
