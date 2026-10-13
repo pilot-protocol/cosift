@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -135,4 +136,27 @@ func TestCommunityRoutesServeBeforeTheIndexIsReady(t *testing.T) {
 	j.want(j.do("dash-prod", "GET", "/v1/articles/stats", nil), 503, "index_unavailable")
 	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 200, "")
 	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 503, "community_unavailable")
+}
+
+// Deleting the broker's scopes or the principal and reloading closes the routes at once.
+func TestBrokerRevocationOnReload(t *testing.T) {
+	j, _ := communityJoint(t)
+	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 200, "")
+	principalOfCfg(j.cfg, "community-broker")["scopes"] = []string{"articles:read"}
+	if err := j.reload(); err != nil {
+		t.Fatal(err)
+	}
+	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 403, "missing_scope")
+	j.cfg["principals"] = slices.DeleteFunc(j.cfg["principals"].([]any), func(p any) bool { return p.(map[string]any)["id"] == "community-broker" })
+	if err := j.reload(); err != nil {
+		t.Fatal(err)
+	}
+	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 401, "unauthenticated")
+}
+
+// Request bodies are capped per route.
+func TestCommunityBodyCaps(t *testing.T) {
+	j, _ := communityJoint(t)
+	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", map[string]any{"url": strings.Repeat("a", v1EnqueueBodyLimit)}), 413, "body_too_large")
+	j.want(j.do("community-broker", "POST", "/v1/community/moderate", map[string]any{"text": strings.Repeat("a", v1ModerateBodyLimit)}), 413, "body_too_large")
 }
