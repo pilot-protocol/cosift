@@ -186,3 +186,5 @@ func (c *Client) Contributor(ctx context.Context, cid string) (Contributor, erro
 func (c *Client) Account(ctx context.Context, uid string) (Identity, error) {
 	return googleStore{db: c.db}.Account(ctx, uid)
 }
+
+func NewAwardSource(db *firestore.Client) AwardSource { return &Client{db: db} }
