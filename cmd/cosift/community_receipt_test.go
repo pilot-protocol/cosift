@@ -290,6 +290,41 @@ func TestCommunityEnqueueReceiptJSONCarriesTheIndexContract(t *testing.T) {
 	}
 }
 
+func TestCommunityEnqueueReceiptFitsTheAppReadCap(t *testing.T) {
+	long := "https://example.com/" + strings.Repeat("&", 2000)
+	for name, tc := range map[string]struct {
+		final     string
+		wantFinal bool
+	}{
+		"short final URL is named":       {"https://example.com/moved", true},
+		"oversized final URL is omitted": {long, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error) {
+				return crawler.ContributionReceipt{Indexed: true, Novel: true, ContentHash: strings.Repeat("e", 64), FinalURL: tc.final, ContentIndexComplete: true}, nil
+			}}
+			s.crawlCommunityReady.Store(true)
+			r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"https://example.com/page","approved_content_hash":"`+strings.Repeat("a", 64)+`"}`))
+			r.Header.Set("Authorization", "Bearer secret")
+			w := httptest.NewRecorder()
+			s.handleCommunityEnqueue(w, r)
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != 200 {
+				t.Fatalf("code %d body %.200s", w.Code, w.Body.String())
+			}
+			if w.Body.Len() > 4096 {
+				t.Fatalf("receipt is %d bytes, over the app's 4096-byte read cap", w.Body.Len())
+			}
+			if _, has := body["final_url"]; has != tc.wantFinal {
+				t.Fatalf("final_url present = %v, want %v", has, tc.wantFinal)
+			}
+			if body["indexed"] != true || body["novel"] != true || body["content_hash"] != strings.Repeat("e", 64) {
+				t.Fatalf("receipt lost its verdict: %.200s", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestCommunityReceiptExistingURLStaysIneligible(t *testing.T) {
 	db := openReceiptStore(t)
 	completeContentIndex(t, db)

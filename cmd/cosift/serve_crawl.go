@@ -30,6 +30,9 @@ type crawlEnqueueReq struct {
 	Lane string `json:"lane,omitempty"`
 }
 
+// Keeps the receipt under the app's 4096-byte read cap even if JSON escaping expands every byte sixfold.
+const maxReceiptFinalURL = 512
+
 // Community intake uses a separate endpoint so an older or unguarded backend
 // cannot silently accept public submissions through the historical admin API.
 func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +87,9 @@ func (s *pebbleHTTP) handleCommunityEnqueue(w http.ResponseWriter, r *http.Reque
 		}
 		writeProblem(w, http.StatusBadGateway, "webpage could not be indexed")
 		return
+	}
+	if len(receipt.FinalURL) > maxReceiptFinalURL {
+		receipt.FinalURL = ""
 	}
 	writeJSON(w, http.StatusOK, receipt)
 }
