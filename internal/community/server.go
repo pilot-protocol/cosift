@@ -198,6 +198,7 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
+	mux.HandleFunc("POST /api/meter", s.meter)
 	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})

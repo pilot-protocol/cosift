@@ -104,22 +104,23 @@ func sharedToken(r *http.Request) string {
 }
 func sharedProblem(w http.ResponseWriter, err error) {
 	status := 503
+	code := "unavailable"
 	message := "shared Cosift services are unavailable; please retry"
 	switch {
 	case errors.Is(err, sharedaccount.ErrUnauthorized):
-		status = 401
+		status, code = 401, "unauthorized"
 		message = "session invalid or revoked; sign in again"
 	case errors.Is(err, sharedaccount.ErrBanned):
-		status = 403
+		status, code = 403, "banned"
 		message = "account suspended"
 	case errors.Is(err, sharedaccount.ErrInvalid):
-		status = 400
+		status, code = 400, "invalid"
 		message = "invalid shared account request"
 	case errors.Is(err, sharedaccount.ErrLimited):
-		status = 429
+		status, code = 429, "rate_limited"
 		message = "shared service limit reached; retry later"
 	}
-	problem(w, status, message)
+	problemCode(w, status, message, code, nil)
 }
 func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHandler, optional bool) {
 	_, cookieErr := requestSessionCookie(r)
