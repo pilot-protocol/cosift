@@ -40,6 +40,9 @@ const dailyContributionLimit = 1000
 // maxSubmissionAttempts bounds retries of transient failures; with the backoff the last one runs about two hours in.
 const maxSubmissionAttempts = 12
 
+// maxReceiptBytes leaves room for a final URL whose characters the JSON encoder escapes to six bytes each.
+const maxReceiptBytes = 64 << 10
+
 type Config struct {
 	Shared                      sharedaccount.Provider
 	SharedPasswordEnabled       bool // Enable only after the upstream password service is deployed.
@@ -871,8 +874,8 @@ func (s *Server) dispatch(ctx context.Context) error {
 				ContentIndexComplete bool `json:"content_index_complete"`
 			}
 			if ok {
-				data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
-				ok = readErr == nil && len(data) <= 4096 && json.Unmarshal(data, &receipt) == nil
+				data, readErr := io.ReadAll(io.LimitReader(res.Body, maxReceiptBytes+1))
+				ok = readErr == nil && len(data) <= maxReceiptBytes && json.Unmarshal(data, &receipt) == nil
 				if ok {
 					hash, hashErr := hex.DecodeString(receipt.ContentHash)
 					if receipt.Indexed {
