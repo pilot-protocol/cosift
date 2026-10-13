@@ -289,3 +289,20 @@ func TestCommunityEnqueueReceiptJSONCarriesTheIndexContract(t *testing.T) {
 		t.Fatalf("receipt JSON: %s", w.Body.String())
 	}
 }
+
+func TestCommunityReceiptExistingURLStaysIneligible(t *testing.T) {
+	db := openReceiptStore(t)
+	completeContentIndex(t, db)
+	ctx := context.Background()
+	if _, err := db.UpsertDocument(ctx, &store.Document{URL: "https://example.com/present", Title: "Guide", Text: "already here"}); err != nil {
+		t.Fatal(err)
+	}
+	s := newReceiptServer(db, func(ctx context.Context, raw string, _ *crawler.LocalArtifact, _ string) (crawler.ContributionReceipt, error) {
+		_ = crawler.ReportNovelty(ctx, crawler.NoveltyDecision{FinalURL: raw, Novel: true})
+		return crawler.ContributionReceipt{Indexed: true, Novel: true, ContentHash: strings.Repeat("f", 64)}, nil
+	})
+	r, err := s.fetchCommunityReceipt(ctx, "present-url-job-1", "https://example.com/present", nil, strings.Repeat("a", 64))
+	if err != nil || r.Novel {
+		t.Fatalf("URL already stored when the submission arrived: %+v %v", r, err)
+	}
+}
