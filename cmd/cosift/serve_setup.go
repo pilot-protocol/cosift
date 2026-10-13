@@ -464,8 +464,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// peer-token gate is enforced at the mux level (belt-and-suspenders with any
 	// per-handler check), closing gaps where a handler forgets to inline it.
 	awrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.requireAdmin(h))) }
-	// alwrap = awrap + the LLM tier. peer_auth_token is empty in production, so
-	// an LLM-spending admin route is reachable unauthenticated.
+	// alwrap = awrap + the LLM tier. With peer_auth_token empty (production
+	// sets it) an LLM-spending admin route is reachable unauthenticated.
 	alwrap := func(h http.HandlerFunc) http.HandlerFunc {
 		return srv.count(srv.llmRateLimit(srv.rateLimit(srv.requireAdmin(h))))
 	}

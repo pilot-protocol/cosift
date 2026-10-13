@@ -42,6 +42,9 @@ func TestPeerTokenOK(t *testing.T) {
 		{"real token plus suffix", "Bearer s3cretX", "s3cret", false},
 		{"missing header", "", "s3cret", false},
 		{"wrong scheme", "Basic s3cret", "s3cret", false},
+		{"raw token without a scheme", "s3cret", "s3cret", false},
+		{"scheme without a token", "Bearer ", "s3cret", false},
+		{"lower-case scheme", "bearer s3cret", "s3cret", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +52,18 @@ func TestPeerTokenOK(t *testing.T) {
 				t.Fatalf("peerTokenOK(%q, %q) = %v, want %v", tc.auth, tc.want, got, tc.ok)
 			}
 		})
+	}
+}
+
+func TestBearerTokenRequiresScheme(t *testing.T) {
+	for auth, want := range map[string]string{"Bearer abc": "abc", "abc": "", "Basic abc": "", "bearer abc": "", "Bearer ": "", "": ""} {
+		r := httptest.NewRequest(http.MethodGet, "/admin/x", nil)
+		if auth != "" {
+			r.Header.Set("Authorization", auth)
+		}
+		if got := bearerToken(r); got != want {
+			t.Errorf("bearerToken(%q) = %q, want %q", auth, got, want)
+		}
 	}
 }
 
