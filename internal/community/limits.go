@@ -48,7 +48,7 @@ func (s *Server) limitPolicy() map[string]any {
 		"member":                             map[string]any{"search": modeLimit{s.cfg.SearchRPM, 60}, "answer": modeLimit{s.cfg.AnswerRPM, 60}, "research": modeLimit{s.cfg.ResearchPer10Min, 600}},
 		"member_free_requests_per_minute":    0,
 		"all_authenticated_requests_metered": true,
-		"request_credit_costs":               requestCreditCosts(),
+		"request_credit_costs":               reportedCreditCosts(),
 		"credits_bypass_caps":                false,
 	}
 }

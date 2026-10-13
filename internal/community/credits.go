@@ -18,6 +18,18 @@ func requestCreditCosts() map[string]int {
 	return map[string]int{"search": 1, "answer": 2, "research": 3}
 }
 
+// meterCreditCosts prices what the meter debits; it never feeds guest intervals, pack prices or retrieval caps.
+func meterCreditCosts() map[string]int { return map[string]int{"article": 2} }
+
+// reportedCreditCosts is what the API shows; nothing that enforces a limit iterates it.
+func reportedCreditCosts() map[string]int {
+	out := requestCreditCosts()
+	for kind, cost := range meterCreditCosts() {
+		out[kind] = cost
+	}
+	return out
+}
+
 // The ledger key makes the monthly grant atomic across processes and channels.
 func (s *Server) grantMonthlyCredits(ctx context.Context, userID string, now time.Time) error {
 	if userID == "" {
@@ -40,9 +52,9 @@ func (s *Server) credits(w http.ResponseWriter, r *http.Request, u User) {
 	end := start.AddDate(0, 1, 0)
 	if err := s.db.QueryRowContext(r.Context(), `SELECT COALESCE(sum(delta),0),
 COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='monthly_free' THEN delta ELSE 0 END),0),
-COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='verified_contribution' THEN delta ELSE 0 END),0),
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason IN ('verified_contribution','contribution_award','royalty','fetch_verified') THEN delta ELSE 0 END),0),
 COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='stripe_purchase' THEN delta ELSE 0 END),0),
-COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason='extra_request' THEN -delta ELSE 0 END),0)
+COALESCE(sum(CASE WHEN created_at>=? AND created_at<? AND reason IN ('extra_request','article_read','clawback') THEN -delta ELSE 0 END),0)
 FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end.Unix(), start.Unix(), end.Unix(), start.Unix(), end.Unix(), u.ID).Scan(&balance, &free, &earned, &purchased, &spent); err != nil {
 		problem(w, 500, "credits unavailable")
 		return
@@ -52,7 +64,7 @@ FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end
 		problem(w, 503, "billing status unavailable")
 		return
 	}
-	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": 0, "all_authenticated_requests_metered": true, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
+	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": 0, "all_authenticated_requests_metered": true, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": reportedCreditCosts(), "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
 	if s.cfg.ContributionReward {
 		out["verified_contribution_reward"] = contributionReward
 		out["verified_contribution_daily_cap"] = s.cfg.ContributionRewardDailyCap
