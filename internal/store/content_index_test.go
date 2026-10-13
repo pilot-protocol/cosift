@@ -31,6 +31,13 @@ func mustLive(t *testing.T, p *PebbleStore, text string, exclude int64, want boo
 	}
 }
 
+func clearContentIndex(t *testing.T, p *PebbleStore) {
+	t.Helper()
+	if err := p.db.DeleteRange([]byte{famContentSHA}, []byte{famContentSHA + 1}, pebble.Sync); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContentIndexCoversEveryDocumentWritePath(t *testing.T) {
 	p := newPebbleStore(t)
 	ctx := context.Background()
@@ -100,6 +107,84 @@ func TestContentIndexIgnoresMalformedHashes(t *testing.T) {
 	defer it.Close()
 	if it.First() {
 		t.Fatal("malformed hash was indexed")
+	}
+}
+
+func TestBackfillContentSHAIndexesExistingDocumentsAndMarksComplete(t *testing.T) {
+	p := newPebbleStore(t)
+	ctx := context.Background()
+	for _, text := range []string{"one", "two", "three"} {
+		if _, err := p.UpsertDocument(ctx, contentDoc("https://example.com/"+text, text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearContentIndex(t, p)
+	mustLive(t, p, "two", 0, false)
+	if done, _ := p.ContentIndexComplete(ctx); done {
+		t.Fatal("index reported complete before a backfill")
+	}
+
+	res, err := p.BackfillContentSHA(ctx, false, nil)
+	if err != nil || res.Scanned != 3 || res.Indexed != 3 || res.AlreadyComplete {
+		t.Fatalf("backfill %+v %v", res, err)
+	}
+	mustLive(t, p, "two", 0, true)
+	if done, _ := p.ContentIndexComplete(ctx); !done {
+		t.Fatal("backfill did not mark the index complete")
+	}
+
+	again, err := p.BackfillContentSHA(ctx, false, nil)
+	if err != nil || !again.AlreadyComplete || again.Scanned != 0 {
+		t.Fatalf("re-run after completion should be a no-op: %+v %v", again, err)
+	}
+	clearContentIndex(t, p)
+	rescan, err := p.BackfillContentSHA(ctx, true, nil)
+	if err != nil || rescan.Scanned != 3 || rescan.AlreadyComplete {
+		t.Fatalf("rescan %+v %v", rescan, err)
+	}
+	mustLive(t, p, "three", 0, true)
+}
+
+func TestBackfillContentSHAResumesAfterInterruption(t *testing.T) {
+	old := contentSHABatch
+	contentSHABatch = 2
+	t.Cleanup(func() { contentSHABatch = old })
+	p := newPebbleStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	texts := []string{"a", "b", "c", "d", "e"}
+	for _, text := range texts {
+		if _, err := p.UpsertDocument(ctx, contentDoc("https://example.com/"+text, text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearContentIndex(t, p)
+
+	first, err := p.BackfillContentSHA(ctx, false, func(r ContentSHABackfill) {
+		if r.Scanned >= 2 {
+			cancel()
+		}
+	})
+	if err == nil || first.Scanned < 2 || first.Scanned >= 5 {
+		t.Fatalf("expected an interrupted pass, got %+v %v", first, err)
+	}
+	if done, _ := p.ContentIndexComplete(context.Background()); done {
+		t.Fatal("interrupted pass marked the index complete")
+	}
+
+	second, err := p.BackfillContentSHA(context.Background(), false, nil)
+	if err != nil || second.ResumedFrom != first.LastID || second.Scanned != 5-first.Scanned {
+		t.Fatalf("resume %+v after %+v: %v", second, first, err)
+	}
+	for _, text := range texts {
+		mustLive(t, p, text, 0, true)
+	}
+	if done, _ := p.ContentIndexComplete(context.Background()); !done {
+		t.Fatal("resumed pass did not complete")
+	}
+	if _, closer, err := p.db.Get(metaKey(metaContentSHACursor)); err == nil {
+		closer.Close()
+		t.Fatal("cursor left behind after completion")
 	}
 }
 
