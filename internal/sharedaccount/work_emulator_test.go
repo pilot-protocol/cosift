@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"cloud.google.com/go/firestore"
 )
 
 func TestEmulatorJoinStateReadsTheAccountAndItsContributor(t *testing.T) {
@@ -134,3 +136,5 @@ func TestEmulatorConcurrentCounterAddsAllLand(t *testing.T) {
 		t.Fatalf("%v", counters)
 	}
 }
+
+func firestoreMerge() firestore.SetOption { return firestore.MergeAll }

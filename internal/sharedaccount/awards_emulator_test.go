@@ -24,7 +24,7 @@ func emulatorClient(t *testing.T) *Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for _, name := range []string{"credit_awards", "contributors", "accounts", "contributions"} {
+	for _, name := range []string{"credit_awards", "contributors", "accounts", "contributions", "alerts"} {
 		it := db.Collection(name).Documents(ctx)
 		for {
 			doc, err := it.Next()

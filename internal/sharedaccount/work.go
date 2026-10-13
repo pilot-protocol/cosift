@@ -20,6 +20,7 @@ type JoinState struct {
 type WorkSource interface {
 	JoinState(ctx context.Context, uid string) (JoinState, error)
 	AddCounters(ctx context.Context, cid string, add map[string]int64) error
+	RaiseAlert(ctx context.Context, a Alert) error
 }
 
 var counterFields = map[string]bool{"fetch_claimed": true, "fetch_submitted": true, "fetch_verified": true, "fetch_mismatch": true, "fetch_rejected": true, "fetch_credits": true}
