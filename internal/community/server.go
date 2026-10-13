@@ -54,6 +54,9 @@ type Config struct {
 	BrokerKey                   string // The engine's csk_ key for community delivery and moderation; sent to EngineURL only.
 	EngineURL                   string // The engine's loopback /v1 origin; empty means the default.
 	Awards                      bool   // Apply pending credit awards; needs shared accounts and the article cross-check.
+	Work                        bool   // Serve /api/work/* and run the settled, counter, alert and push loops; needs shared accounts and the broker key.
+	FetchDailyCap               int    // Pages credited per account per UTC day; 0 means the default.
+	Environment                 string // "prod" or "staging", the label of the alerts the app raises.
 	Articles                    ArticleReader
 	TrustedProxies              []string
 	GuestInterval               time.Duration
@@ -96,6 +99,8 @@ type Server struct {
 	awards           *awardPoller
 	articles         ArticleReader
 	slugs            slugCache
+	work             workRuntime
+	now              func() time.Time
 	index            []byte
 }
 
@@ -132,6 +137,7 @@ func Open(cfg Config) (*Server, error) {
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
+	s.now = time.Now
 	s.paymentClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.pageClient = newModerationClient()
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
