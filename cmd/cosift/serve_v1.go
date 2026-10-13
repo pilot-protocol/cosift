@@ -75,7 +75,7 @@ type v1Listener struct {
 func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders, mainAddr string) *v1Listener {
 	l := &v1Listener{}
 	pol := svcauth.NewPolicy(nil, nil)
-	routes := s.v1RetrievalRoutes()
+	routes := append(s.v1RetrievalRoutes(), s.v1CommunityRoutes()...)
 	rd := &v1.Readiness{}
 	if openArticles != nil {
 		a, err := openArticles(articleDeps{db: s.store, embedder: s.v1Embedder, policy: pol, thresholdsPath: articlesConfigPath})

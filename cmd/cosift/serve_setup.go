@@ -493,8 +493,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", awrap(srv.handleCrawlEnqueue))
-	mux.HandleFunc("POST /admin/community-enqueue", awrap(srv.handleCommunityEnqueue))
-	mux.HandleFunc("POST /admin/community-moderate", awrap(srv.handleCommunityModerate))
+	// An unrouted /admin POST is a 404; the landing page's GET / would otherwise make it a 405.
+	mux.HandleFunc("POST /admin/", func(w http.ResponseWriter, r *http.Request) { writeProblem(w, http.StatusNotFound, "not found") })
 	mux.HandleFunc("POST /admin/allow-domain", awrap(srv.handleAllowDomain))
 	mux.HandleFunc("POST /admin/frontier-purge-host", awrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", awrap(srv.handleFrontierClear))

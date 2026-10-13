@@ -12,37 +12,32 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/crawler"
 )
 
-func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
+func TestCommunityEnqueueRequiresGuard(t *testing.T) {
 	called := 0
-	s := &pebbleHTTP{cluster: config.Cluster{PeerAuthToken: "secret"}, crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact, approvedHash string) (crawler.ContributionReceipt, error) {
+	s := &pebbleHTTP{crawlCommunityFetch: func(ctx context.Context, raw string, artifact *crawler.LocalArtifact, approvedHash string) (crawler.ContributionReceipt, error) {
 		called++
 		if raw != "https://example.com/guide" {
 			t.Errorf("bad contribution %s", raw)
 		}
 		return crawler.ContributionReceipt{Indexed: true, Novel: true}, nil
 	}}
-	call := func(token, url string) int {
-		r := httptest.NewRequest("POST", "/admin/community-enqueue", strings.NewReader(`{"url":"`+url+`","approved_content_hash":"`+strings.Repeat("a", 64)+`"}`))
-		r.Header.Set("Authorization", "Bearer "+token)
+	call := func(url string) int {
+		r := httptest.NewRequest("POST", "/v1/community/enqueue", strings.NewReader(`{"url":"`+url+`","approved_content_hash":"`+strings.Repeat("a", 64)+`"}`))
 		w := httptest.NewRecorder()
 		s.handleCommunityEnqueue(w, r)
 		return w.Code
 	}
-	if got := call("wrong", "https://example.com/guide"); got != 401 {
-		t.Fatalf("auth %d", got)
-	}
-	if got := call("secret", "https://example.com/guide"); got != 503 {
+	if got := call("https://example.com/guide"); got != 503 {
 		t.Fatalf("unguarded %d", got)
 	}
 	s.crawlCommunityReady.Store(true)
-	if got := call("secret", "http://localhost/private"); got != 400 {
+	if got := call("http://localhost/private"); got != 400 {
 		t.Fatalf("local URL %d", got)
 	}
-	if got := call("secret", "https://example.com/guide"); got != 200 {
+	if got := call("https://example.com/guide"); got != 200 {
 		t.Fatalf("valid %d", got)
 	}
 	if called != 1 {
