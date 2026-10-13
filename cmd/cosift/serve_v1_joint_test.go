@@ -35,6 +35,7 @@ var jointOIDC = map[string]oidcID{
 	"synth-staging":    {"300000000000000000003", "synth-staging@cosift-test.iam.gserviceaccount.com"},
 	"resolver-prod":    {"300000000000000000004", "resolver-prod@cosift-test.iam.gserviceaccount.com"},
 	"resolver-staging": {"300000000000000000005", "resolver-staging@cosift-test.iam.gserviceaccount.com"},
+	"intake-prod":      {"300000000000000000006", "intake-prod@cosift-test.iam.gserviceaccount.com"},
 }
 
 type joint struct {
@@ -66,6 +67,7 @@ func jointConfig(listen string, keys map[string]string) map[string]any {
 		oidc("synth-staging", "staging", []string{"articles:read", "articles:write", "retrieve:read"}, "writes_per_hour", 600, "writes_burst", 600, "writes_per_day", 5000),
 		oidc("resolver-prod", "prod", []string{"articles:read", "articles:stub", "retrieve:read"}),
 		oidc("resolver-staging", "staging", []string{"articles:read", "articles:stub", "retrieve:read"}),
+		oidc("intake-prod", "prod", []string{"articles:read", "articles:contribute", "retrieve:read"}, "writes_per_hour", 120, "writes_burst", 20, "writes_per_day", 700),
 		key("community-wiki", "prod", []string{"articles:read"}),
 		key("community-broker", "prod", []string{"community:intake", "work:broker"}),
 		key("dash-prod", "prod", []string{"articles:read_all", "articles:moderate"}),
@@ -271,7 +273,7 @@ func TestJointRouteTable(t *testing.T) {
 			t.Errorf("%s is not mounted", rt.Pattern())
 		}
 	}
-	if n := len(j.l.articles.Routes()); n != 11 {
+	if n := len(j.l.articles.Routes()); n != 12 {
 		t.Fatalf("%d article routes", n)
 	}
 	j.want(j.do("synth-prod", "POST", "/v1/search", map[string]any{"q": "consensus"}), 200, "")
@@ -312,7 +314,7 @@ func TestJointPerOperationScope(t *testing.T) {
 	j.want(j.do("resolver-prod", "PUT", "/v1/articles/"+jointID(3), jointStub("Resolver stub title", "8624225e00000002")), 201, "")
 	r = j.do("mcp-prod", "PUT", "/v1/articles/"+jointID(4), jointStub("Readers write no stubs", "8624225e00000003"))
 	j.want(r, 403, "missing_scope")
-	if r.body["detail"] != "requires scope articles:write or articles:stub" {
+	if r.body["detail"] != "requires scope articles:write or articles:stub or articles:contribute" {
 		t.Fatalf("detail %v", r.body["detail"])
 	}
 	j.want(j.do("mcp-prod", "POST", "/v1/articles/match", map[string]any{"q": "x", "purpose": "build"}), 403, "missing_scope")
@@ -744,9 +746,11 @@ func TestJointEmbedCacheAndShutdownFlush(t *testing.T) {
 		if m.code != 200 || m.body["verdict"] != "covered" {
 			t.Fatalf("match: %d %s", m.code, m.raw)
 		}
+		j.want(j.do("intake-prod", "PUT", "/v1/articles/"+id, jointContribution(title, jointCid, "lead", "A contributed lead. It differs.", "expected_version", 1)), 200, "")
+		j.want(j.do("dash-prod", "POST", "/v1/articles/"+id+"/revert", map[string]any{"to_version": 1, "reason_code": "quality", "by": "operator"}), 200, "")
 		denseReady()
 		if n := files(); n != 0 {
-			t.Fatalf("the /v1 match, PUT and search left %d cache files", n)
+			t.Fatalf("the /v1 match, PUT, contribution, revert and search left %d cache files", n)
 		}
 	})
 	serve(func(mainAddr string) {
