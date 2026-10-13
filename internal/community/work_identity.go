@@ -75,4 +75,6 @@ type workRuntime struct {
 	salts  workSalts
 	source sharedaccount.WorkSource
 	joins  *joinCache
+
+	counters fetchCounters
 }
