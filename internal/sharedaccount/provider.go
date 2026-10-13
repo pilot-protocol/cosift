@@ -51,6 +51,7 @@ type PasswordProvider interface {
 
 var tokenPattern = regexp.MustCompile(`^ck_([1-9][0-9]{0,5})_([A-Z2-7]{39})$`)
 var UIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
+var versionPattern = regexp.MustCompile(`^[1-9][0-9]{0,5}$`)
 
 func Parse(raw string) (string, error) {
 	parts := tokenPattern.FindStringSubmatch(raw)
@@ -83,8 +84,12 @@ type identityStore interface {
 type verifier struct {
 	store  identityStore
 	pepper func(context.Context, string) ([]byte, error)
+	// latest resolves the current pepper version; nil leaves the version unbounded.
+	latest func(context.Context) (int, error)
+	now    func() time.Time
 	mu     sync.Mutex
 	keys   map[string][]byte
+	bound  versionBound
 }
 
 func (v *verifier) verify(ctx context.Context, raw string) (Identity, error) {
@@ -92,12 +97,21 @@ func (v *verifier) verify(ctx context.Context, raw string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	if err = v.admit(ctx, id); err != nil {
+		return Identity{}, err
+	}
 	v.mu.Lock()
 	key := v.keys[id]
 	v.mu.Unlock()
 	if key == nil {
+		if v.missing(id) {
+			return Identity{}, ErrUnauthorized
+		}
 		key, err = v.pepper(ctx, id)
 		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				v.noteMissing(id)
+			}
 			return Identity{}, err
 		}
 		if len(key) != 32 {
