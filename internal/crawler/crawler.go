@@ -1232,6 +1232,7 @@ func (c *Crawler) FetchAndIndexNow(ctx context.Context, url string) error {
 
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
 	approvedHash, _ := ctx.Value(approvedContentKey{}).(string)
+	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
 	u, _ := url.Parse(item.URL)
 	// Prior enqueueLinks already
 	// filters via allowedDomain, but stale frontier entries from before
@@ -1286,7 +1287,10 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 
 	// Look up prior doc once: needed for both conditional GET (validators) and
 	// content-hash dedup later. Missing is fine — empty prior means full fetch.
-	prior, _ := c.store.GetDocByURL(ctx, item.URL)
+	prior, priorErr := c.store.GetDocByURL(ctx, item.URL)
+	if st != nil && priorErr != nil && !docNotFound(priorErr) {
+		return priorErr
+	}
 
 	// If we already have a
 	// healthy copy of this URL fetched within COSIFT_REFETCH_AFTER_HOURS,
@@ -1388,7 +1392,6 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// A contribution that redirected is stored under its final URL, so that is
 	// the copy to compare against.
 	existing := prior
-	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
 	if st != nil && existing == nil && finalURL != item.URL {
 		var gerr error
 		if existing, gerr = c.store.GetDocByURL(ctx, finalURL); gerr != nil && !docNotFound(gerr) {
@@ -1426,6 +1429,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	}
 	if st != nil {
 		st.docURL = finalURL
+		if err := c.decideNovelty(ctx, st, existing, finalURL, sha[:]); err != nil {
+			return err
+		}
 	}
 	doc := &store.Document{
 		URL:           finalURL,

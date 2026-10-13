@@ -24,8 +24,8 @@ func (s *siteRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	key := r.URL.Scheme + "://" + r.URL.Host + r.URL.Path
 	s.mu.Lock()
 	s.hits[key]++
-	s.mu.Unlock()
 	route, ok := s.routes[key]
+	s.mu.Unlock()
 	switch {
 	case !ok:
 		return &http.Response{StatusCode: 404, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
@@ -33,6 +33,12 @@ func (s *siteRT) RoundTrip(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 302, Header: http.Header{"Location": {strings.TrimPrefix(route, "redirect:")}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 	}
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(route)), Request: r}, nil
+}
+
+func (s *siteRT) setRoute(key, body string) {
+	s.mu.Lock()
+	s.routes[key] = body
+	s.mu.Unlock()
 }
 
 func (s *siteRT) hitsFor(key string) int {
@@ -58,9 +64,11 @@ func redirectFixture(t *testing.T, routes map[string]string, cfgMod func(*Crawle
 	return c, rt, emb
 }
 
-func approvedFor(t *testing.T, raw string) string {
+func approvedFor(t *testing.T, raw string) string { return approvedForHTML(t, raw, sampleHTML) }
+
+func approvedForHTML(t *testing.T, raw, html string) string {
 	t.Helper()
-	parsed, err := Parse([]byte(sampleHTML), raw)
+	parsed, err := Parse([]byte(html), raw)
 	if err != nil {
 		t.Fatal(err)
 	}

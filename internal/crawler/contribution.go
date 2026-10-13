@@ -13,16 +13,36 @@ import (
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
-// FetchContribution uses the same index and embedding budget as the bulk
-// crawler, but an independent direct-only transport. It never discovers links
-// or sitemaps, so unreviewed descendants cannot enter the bulk frontier.
-// The community database is the durable queue; callers retry transient errors.
-// The result reports whether this URL was absent before the accepted fetch.
+// ContributionReceipt reports one accepted contribution. Novel means new
+// content: no document at either URL or with the same hash, on a complete index.
 type ContributionReceipt struct {
-	Indexed     bool   `json:"indexed"`
-	Novel       bool   `json:"novel"`
-	ContentHash string `json:"content_hash"`
-	FinalURL    string `json:"final_url,omitempty"`
+	Indexed              bool   `json:"indexed"`
+	Novel                bool   `json:"novel"`
+	ContentHash          string `json:"content_hash"`
+	FinalURL             string `json:"final_url,omitempty"`
+	ContentIndexComplete bool   `json:"content_index_complete"`
+}
+
+// NoveltyDecision is the verdict taken just before a contribution's first write.
+type NoveltyDecision struct {
+	FinalURL string `json:"final_url"`
+	Novel    bool   `json:"novel"`
+}
+
+type noveltyRecorderKey struct{}
+
+// WithNoveltyRecorder has contribution fetches report to fn before writing; an
+// error from fn aborts the write.
+func WithNoveltyRecorder(ctx context.Context, fn func(NoveltyDecision) error) context.Context {
+	return context.WithValue(ctx, noveltyRecorderKey{}, fn)
+}
+
+// ReportNovelty delivers a verdict to the recorder installed on ctx, if any.
+func ReportNovelty(ctx context.Context, d NoveltyDecision) error {
+	if fn, ok := ctx.Value(noveltyRecorderKey{}).(func(NoveltyDecision) error); ok {
+		return fn(d)
+	}
+	return nil
 }
 
 type (
@@ -44,7 +64,41 @@ func docNotFound(err error) bool {
 // contributionState carries what a contribution fetch learned out of the
 // shared crawl pipeline.
 type contributionState struct {
-	docURL string // URL of the document holding the fetched content
+	docURL  string // URL of the document holding the fetched content
+	decided bool
+	novel   bool
+}
+
+// decideNovelty rules on a contribution about to be written; existing is the
+// document already stored under its submitted or final URL.
+func (c *Crawler) decideNovelty(ctx context.Context, st *contributionState, existing *store.Document, finalURL string, sha []byte) error {
+	novel := false
+	if existing == nil {
+		var err error
+		if novel, err = c.contentNovel(ctx, finalURL, sha); err != nil {
+			return err
+		}
+	}
+	st.decided, st.novel = true, novel
+	return ReportNovelty(ctx, NoveltyDecision{FinalURL: finalURL, Novel: novel})
+}
+
+// contentNovel reports whether the content is new: the index is complete, no
+// live document carries the hash, and no document whose hash cannot be compared
+// sits at a variant of the URL.
+func (c *Crawler) contentNovel(ctx context.Context, finalURL string, sha []byte) (bool, error) {
+	ci, ok := c.store.(ContentIndexer)
+	if !ok {
+		return false, nil
+	}
+	if complete, err := ci.ContentIndexComplete(ctx); err != nil || !complete {
+		return false, err
+	}
+	if live, err := ci.HasLiveContent(ctx, sha, 0); err != nil || live {
+		return false, err
+	}
+	held, err := ci.HasUncomparableVariant(ctx, finalURL, 0)
+	return !held, err
 }
 
 // contributionHopAllowed applies the crawler's domain policy and the intake
@@ -81,6 +135,10 @@ type approvedContentKey struct{}
 // ContributionURL returns the document key used when indexing a contribution.
 func ContributionURL(raw string) (string, error) { return canonicalize(raw) }
 
+// FetchContribution uses the same index and embedding budget as the bulk
+// crawler, but an independent direct-only transport. It never discovers links
+// or sitemaps, so unreviewed descendants cannot enter the bulk frontier.
+// The community database is the durable queue; callers retry transient errors.
 func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *LocalArtifact, approvedHash string) (ContributionReceipt, error) {
 	if !ValidApprovedContentHash(approvedHash) {
 		return ContributionReceipt{}, fmt.Errorf("%w: approved content hash is required", ErrContributionRejected)
@@ -121,7 +179,6 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	case <-ctx.Done():
 		return ContributionReceipt{}, ctx.Err()
 	}
-	prior, _ := c.store.GetDocByURL(ctx, canon)
 	safe := c.contributionCrawler
 	if artifact != nil {
 		if artifact.URL != raw {
@@ -163,5 +220,11 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 		return ContributionReceipt{}, fmt.Errorf("%w: stored webpage differs from moderated content", ErrContributionRejected)
 	}
 	sum := sha256.Sum256([]byte(doc.Text))
-	return ContributionReceipt{Indexed: true, Novel: prior == nil, ContentHash: hex.EncodeToString(sum[:]), FinalURL: docURL}, nil
+	receipt := ContributionReceipt{Indexed: true, Novel: st.decided && st.novel, ContentHash: hex.EncodeToString(sum[:]), FinalURL: docURL}
+	if ci, ok := c.store.(ContentIndexer); ok {
+		if receipt.ContentIndexComplete, err = ci.ContentIndexComplete(ctx); err != nil {
+			return ContributionReceipt{}, err
+		}
+	}
+	return receipt, nil
 }
