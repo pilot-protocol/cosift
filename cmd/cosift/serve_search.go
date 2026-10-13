@@ -33,10 +33,7 @@ func (s *pebbleHTTP) forwardURLToPeer(ctx context.Context, rawURL, peerAddr stri
 	body, _ := json.Marshal(crawlEnqueueReq{URL: rawURL})
 	// peerAddr is host:port; assume http inside the cluster (mTLS / VPN
 	// would be a wrapper concern). Switch to https://... if peers expose TLS.
-	path := "/admin/crawl-enqueue"
-	if s.crawlPublicOnly.Load() {
-		path = "/admin/community-enqueue"
-	}
+	const path = "/admin/crawl-enqueue"
 	endpoint := "http://" + peerAddr + path
 	if strings.HasPrefix(peerAddr, "http://") || strings.HasPrefix(peerAddr, "https://") {
 		endpoint = strings.TrimRight(peerAddr, "/") + path

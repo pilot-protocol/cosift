@@ -38,10 +38,6 @@ func TestCommunityEnqueueRequiresGuardAndAuth(t *testing.T) {
 	if got := call("secret", "https://example.com/guide"); got != 503 {
 		t.Fatalf("unguarded %d", got)
 	}
-	s.crawlPublicOnly.Store(true)
-	if got := call("secret", "https://example.com/guide"); got != 503 {
-		t.Fatalf("adult filter must also be enabled: %d", got)
-	}
 	s.crawlCommunityReady.Store(true)
 	if got := call("secret", "http://localhost/private"); got != 400 {
 		t.Fatalf("local URL %d", got)

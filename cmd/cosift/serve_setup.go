@@ -1101,7 +1101,6 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	s.crawlAllowDomain = c.AddAllowedDomain
 	// Publish only after all crawler hooks are initialized. The listener is
 	// already accepting requests while HNSW/crawler initialization runs.
-	s.crawlPublicOnly.Store(cfg.Crawler.PublicOnly)
 	s.crawlCommunityFetch = c.FetchContribution
 	s.crawlCommunityReady.Store(true)
 	for _, u := range seeds {
@@ -1277,7 +1276,6 @@ type pebbleHTTP struct {
 	// can hand off forwarded URLs into the in-process frontier. Nil when no
 	// in-serve crawler is wired.
 	crawlSeed           func(url string) error
-	crawlPublicOnly     atomic.Bool
 	crawlCommunityReady atomic.Bool
 	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error)
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
