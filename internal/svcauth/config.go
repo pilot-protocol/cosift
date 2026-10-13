@@ -77,9 +77,11 @@ type KeyConfig struct {
 	CreatedAt string
 }
 
-// Writer reports whether the principal holds a write or stub scope.
+// Writer reports whether the principal holds a write, stub or contribute scope.
 func (p PrincipalConfig) Writer() bool {
-	return slices.Contains(p.Scopes, v1.ScopeArticlesWrite) || slices.Contains(p.Scopes, v1.ScopeArticlesStub)
+	return slices.ContainsFunc(p.Scopes, func(s v1.Scope) bool {
+		return s == v1.ScopeArticlesWrite || s == v1.ScopeArticlesStub || s == v1.ScopeArticlesContribute
+	})
 }
 
 func (p PrincipalConfig) principal() v1.Principal {
@@ -379,7 +381,7 @@ func samePort(listen, main string) bool {
 }
 
 var (
-	oidcScopes = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeRetrieveRead}
+	oidcScopes = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeArticlesContribute, v1.ScopeRetrieveRead}
 	keyScopes  = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesReadAll, v1.ScopeArticlesModerate, v1.ScopeArticlesAdmin, v1.ScopeCommunityIntake, v1.ScopeWorkBroker}
 )
 
@@ -501,7 +503,7 @@ func (rp rawPrincipal) validate() (PrincipalConfig, error) {
 			p.WritesPerDay = *rp.WritesPerDay
 		}
 	} else if rp.WritesPerHour != nil || rp.WritesBurst != nil || rp.WritesPerDay != nil {
-		return p, errors.New("writes_*: only allowed with articles:write or articles:stub")
+		return p, errors.New("writes_*: only allowed with articles:write, articles:stub or articles:contribute")
 	}
 	if rp.CountsReads != nil && *rp.CountsReads {
 		if !slices.Contains(p.Scopes, v1.ScopeArticlesRead) || p.Env != v1.EnvProd {
@@ -525,6 +527,9 @@ func checkScopes(kind v1.Kind, env v1.Env, scopes []v1.Scope) error {
 	}
 	if slices.Contains(scopes, v1.ScopeArticlesAdmin) && (len(scopes) != 1 || kind != v1.KindKey || env != v1.EnvProd) {
 		return errors.New("scopes: articles:admin must be the only scope of a prod key principal")
+	}
+	if slices.Contains(scopes, v1.ScopeArticlesContribute) && (slices.Contains(scopes, v1.ScopeArticlesWrite) || slices.Contains(scopes, v1.ScopeArticlesStub)) {
+		return errors.New("scopes: articles:contribute may not be combined with articles:write or articles:stub")
 	}
 	if slices.ContainsFunc(scopes, communityScope) {
 		if slices.ContainsFunc(scopes, func(s v1.Scope) bool { return !communityScope(s) }) {

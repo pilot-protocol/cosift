@@ -18,7 +18,7 @@ type Policy interface {
 	// WritesExhausted reports, without charging, whether today's allowance is spent.
 	WritesExhausted(id string) bool
 	// StagingWriters returns the sorted ids of staging principals holding
-	// articles:write or articles:stub; empty, not nil, when there are none.
+	// articles:write, articles:stub or articles:contribute; empty, not nil, when there are none.
 	StagingWriters() []string
 	GoliveAt() (time.Time, bool)
 }
@@ -140,7 +140,7 @@ func (f *FakePolicy) StagingWriters() []string {
 	defer f.mu.Unlock()
 	ids := []string{}
 	for id, p := range f.principals {
-		if p.Env == EnvStaging && p.HasAny(ScopeArticlesWrite, ScopeArticlesStub) {
+		if p.Env == EnvStaging && p.HasAny(ScopeArticlesWrite, ScopeArticlesStub, ScopeArticlesContribute) {
 			ids = append(ids, id)
 		}
 	}
