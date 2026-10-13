@@ -160,3 +160,78 @@ func TestRevertReplayAndRequestID(t *testing.T) {
 		t.Errorf("replay survived a later moderation action: %v", again)
 	}
 }
+
+func TestRevertReplayComesBeforeIllegalTransitionAndAfterEnvMismatch(t *testing.T) {
+	h := newHarness(t)
+	id := historyABB(h)
+	rid := id + "_01J9D6T1F7G8H9J0K1M2N3P4Q5"
+	h.revert(id, revertBodyFor(2, "request_id", rid), http.StatusOK)
+	h.put(synthProd, id, with(articleBody("Rust async runtimes"), "status", "held", "lead", leadOf("rebuilt"), "expected_version", 5), http.StatusOK)
+	if got := fullOf(h, id); got["status"] != "held" {
+		t.Fatalf("setup: status %v", got["status"])
+	}
+	replay := h.revert(id, revertBodyFor(2, "request_id", rid), http.StatusOK)
+	if replay["replayed"] != true || !slices.Equal(ints(replay["reverted_versions"]), []int{3, 4}) || !slices.Equal(toStrings(replay["reverted_contributors"]), []string{cid(2)}) {
+		t.Errorf("replay on a held record = %v", replay)
+	}
+	h.revertError(id, revertBodyFor(2, "request_id", "another"), http.StatusConflict, "illegal_transition")
+	h.expectError(dashStaging, http.MethodPost, "/v1/articles/"+id+"/revert", revertBodyFor(2, "request_id", rid), http.StatusForbidden, "env_mismatch")
+}
+
+func TestRevertKeepsOriginCommunityWhenTheTargetIsSynth(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	h.put(synthProd, id, with(articleBody("Rust async runtimes"), "lead", leadOf("one")), http.StatusCreated)
+	h.contribute(id, contribBody("Rust async runtimes", cid(1), "lead", leadOf("two"), "expected_version", 1), http.StatusOK)
+	h.revert(id, revertBodyFor(1), http.StatusOK)
+	h.restart()
+	if got := fullOf(h, id); got["origin"] != "community" || got["lead"] != leadOf("one") {
+		t.Errorf("full origin %v lead %q", got["origin"], got["lead"])
+	}
+	if pub := h.call(wiki, http.MethodGet, "/v1/articles/"+id, nil, http.StatusOK); pub["origin"] != "community" {
+		t.Errorf("public origin %v", pub["origin"])
+	}
+}
+
+func TestRevertCreatedVersionsDoNotListTheirInheritedContributor(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	h.contribute(id, contribBody("Rust async runtimes", cid(1), "lead", leadOf("one")), http.StatusCreated)
+	h.contribute(id, contribBody("Rust async runtimes", cid(2), "lead", leadOf("two"), "expected_version", 1), http.StatusOK)
+	h.revert(id, revertBodyFor(1), http.StatusOK)
+	if got := fullOf(h, id); got["version"] != 3.0 || got["version_contributor"] != cid(1) {
+		t.Fatalf("setup: v%v contributor %v", got["version"], got["version_contributor"])
+	}
+	out := h.revert(id, revertBodyFor(2), http.StatusOK)
+	if out["result"] != "reverted" || len(ints(out["reverted_versions"])) != 0 || len(toStrings(out["reverted_contributors"])) != 0 {
+		t.Errorf("revert over a revert-created version = %v", out)
+	}
+}
+
+func TestRevertThatTookNothingOutStillReplays(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	h.contribute(id, contribBody("Rust async runtimes", cid(1), "lead", leadOf("one")), http.StatusCreated)
+	h.contribute(id, contribBody("Rust async runtimes", cid(2), "lead", leadOf("two"), "expected_version", 1), http.StatusOK)
+	h.revert(id, revertBodyFor(1), http.StatusOK)
+	first := h.revert(id, revertBodyFor(2, "request_id", "empty-1"), http.StatusOK)
+	if first["result"] != "reverted" || len(ints(first["reverted_versions"])) != 0 {
+		t.Fatalf("first = %v", first)
+	}
+	replay := h.revert(id, revertBodyFor(2, "request_id", "empty-1"), http.StatusOK)
+	if replay["result"] != "reverted" || replay["replayed"] != true || len(ints(replay["reverted_versions"])) != 0 || article(replay)["version"] != 4.0 {
+		t.Errorf("replay = %v", replay)
+	}
+}
+
+func TestRevertStoresEmptyListsAsArrays(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	h.put(synthProd, id, with(articleBody("Rust async runtimes"), "lead", leadOf("one")), http.StatusCreated)
+	h.put(synthProd, id, with(articleBody("Rust async runtimes"), "lead", leadOf("two"), "expected_version", 1), http.StatusOK)
+	h.revert(id, revertBodyFor(1, "request_id", "empty-1"), http.StatusOK)
+	m := fullOf(h, id)["moderation"].(map[string]any)
+	if cs, ok := m["reverted_contributors"].([]any); !ok || len(cs) != 0 {
+		t.Errorf("stored reverted_contributors = %#v", m["reverted_contributors"])
+	}
+}
