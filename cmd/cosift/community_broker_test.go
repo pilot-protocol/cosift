@@ -44,3 +44,21 @@ func TestCommunityStartsWithoutABrokerKey(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestCommunityAwardsSwitchIsStrictAndNeedsSharedAccounts(t *testing.T) {
+	t.Setenv("COSIFT_COMMUNITY_ADMIN_TOKEN", "")
+	t.Setenv("COSIFT_WIKI_PUBLIC", "0")
+	t.Setenv("COSIFT_COMMUNITY_AWARDS", "yes")
+	if err := runCommunityOnce(t); err == nil || !strings.Contains(err.Error(), "COSIFT_COMMUNITY_AWARDS must be 0 or 1") {
+		t.Fatalf("a non-binary switch: %v", err)
+	}
+	t.Setenv("COSIFT_COMMUNITY_AWARDS", "1")
+	t.Setenv("COSIFT_AUTH_MODE", "local")
+	if err := runCommunityOnce(t); err == nil || !strings.Contains(err.Error(), "COSIFT_AUTH_MODE=shared") {
+		t.Fatalf("awards without shared accounts: %v", err)
+	}
+	t.Setenv("COSIFT_COMMUNITY_AWARDS", "0")
+	if err := runCommunityOnce(t); err != nil {
+		t.Fatalf("awards off: %v", err)
+	}
+}

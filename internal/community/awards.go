@@ -1,6 +1,7 @@
 package community
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,19 +12,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/community/wiki"
 	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 const (
 	awardPageSize       = 50
 	awardsPerCIDPerTick = 5
-	awardPollEvery      = 30 * time.Second
 	awardRetryFloor     = 30 * time.Second
 	awardRetryCeil      = time.Hour
 	awardTerminalAge    = 7 * 24 * time.Hour
 	awardInvalidLogGap  = time.Hour
 	awardMemory         = 10000
 )
+
+var awardPollEvery = 30 * time.Second
 
 var (
 	articleAwardID  = regexp.MustCompile(`^(art|rev):([0-9A-HJKMNP-TV-Z]{26})$`)
@@ -380,4 +383,44 @@ ON CONFLICT(id) DO NOTHING`, id, userID, -a.Amount, userID, now)
 		return 0, errors.Join(err, errors.New("ledger row missing"))
 	}
 	return delta, nil
+}
+
+func (s *Server) runAwards(ctx context.Context) {
+	tick := time.NewTicker(awardPollEvery)
+	defer tick.Stop()
+	for {
+		if err := s.pollAwards(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("community: award poll failed")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func newConfiguredPoller(cfg Config) (*awardPoller, error) {
+	if cfg.BrokerKey != "" && cfg.BrokerKey == cfg.Wiki.EngineKey {
+		return nil, fmt.Errorf("COSIFT_COMMUNITY_BROKER_KEY and COSIFT_WIKI_ENGINE_KEY must be different keys")
+	}
+	if !cfg.Awards {
+		return nil, nil
+	}
+	src, ok := cfg.Shared.(sharedaccount.AwardSource)
+	if !ok {
+		return nil, fmt.Errorf("COSIFT_COMMUNITY_AWARDS requires COSIFT_AUTH_MODE=shared")
+	}
+	articles := cfg.Articles
+	if articles == nil {
+		if !brokerKeyPattern.MatchString(cfg.Wiki.EngineKey) {
+			return nil, fmt.Errorf("COSIFT_COMMUNITY_AWARDS requires COSIFT_WIKI_ENGINE_KEY for the article cross-check")
+		}
+		client, err := newEngineClient(cmp.Or(cfg.Wiki.EngineURL, wiki.DefaultEngineURL), cfg.Wiki.EngineKey)
+		if err != nil {
+			return nil, fmt.Errorf("COSIFT_WIKI_ENGINE_URL must be a loopback http origin")
+		}
+		articles = engineArticles{client}
+	}
+	return newAwardPoller(src, articles), nil
 }

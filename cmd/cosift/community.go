@@ -48,6 +48,10 @@ func runCommunity(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	awards, err := communityAwardsFromEnv()
+	if err != nil {
+		return err
+	}
 	var trusted []string
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
@@ -65,7 +69,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), Awards: awards, TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
 	if err != nil {
 		return err
 	}
@@ -92,6 +96,17 @@ func runCommunity(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// communityAwardsFromEnv reads the credit poller's switch: 0 (default) or 1.
+func communityAwardsFromEnv() (bool, error) {
+	switch strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_AWARDS")) {
+	case "", "0":
+		return false, nil
+	case "1":
+		return true, nil
+	}
+	return false, fmt.Errorf("COSIFT_COMMUNITY_AWARDS must be 0 or 1")
 }
 
 // communityRewardFromEnv reads the contribution-reward switch (off by default) and the per-account daily cap (0 = default).

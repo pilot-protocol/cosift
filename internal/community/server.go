@@ -52,6 +52,8 @@ type Config struct {
 	PublicURL                   string
 	BrokerKey                   string // The engine's csk_ key for community delivery and moderation; sent to EngineURL only.
 	EngineURL                   string // The engine's loopback /v1 origin; empty means the default.
+	Awards                      bool   // Apply pending credit awards; needs shared accounts and the article cross-check.
+	Articles                    ArticleReader
 	TrustedProxies              []string
 	GuestInterval               time.Duration
 	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
@@ -151,6 +153,10 @@ func Open(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	if err := s.bindSharedNamespace(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if s.awards, err = newConfiguredPoller(cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -788,6 +794,11 @@ func (s *Server) Run(ctx context.Context) {
 	pages := make(chan struct{})
 	go func() { defer close(pages); s.wiki.Run(ctx) }()
 	defer func() { <-pages }()
+	if s.awards != nil {
+		awards := make(chan struct{})
+		go func() { defer close(awards); s.runAwards(ctx) }()
+		defer func() { <-awards }()
+	}
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
