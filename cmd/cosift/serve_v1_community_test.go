@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pilot-protocol/cosift/internal/config"
 	"github.com/pilot-protocol/cosift/internal/crawler"
+	"github.com/pilot-protocol/cosift/internal/embed"
 	"github.com/pilot-protocol/cosift/internal/svcauth/svcauthtest"
 )
 
@@ -165,4 +167,30 @@ func TestCommunityModerateContract(t *testing.T) {
 			t.Fatalf("reply %q: %d %s", reply, w.Code, w.Body)
 		}
 	}
+}
+
+type slowChat struct {
+	communitySafetyChat
+	d time.Duration
+}
+
+func (c *slowChat) Chat(ctx context.Context, msgs []embed.ChatMsg) (string, error) {
+	time.Sleep(c.d)
+	return c.communitySafetyChat.Chat(ctx, msgs)
+}
+
+// Both calls run longer than the listener's write timeout and still answer: each handler lifts the deadline.
+func TestCommunityRoutesOutliveTheWriteTimeout(t *testing.T) {
+	old := v1WriteTimeout
+	v1WriteTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { v1WriteTimeout = old })
+	j := newJoint(t, nil, nil)
+	j.srv.chat = &slowChat{communitySafetyChat{reply: `{"decision":"allow","category":"safe"}`, t: t, calls: 0}, 800 * time.Millisecond}
+	j.srv.crawlCommunityFetch = func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error) {
+		time.Sleep(800 * time.Millisecond)
+		return crawler.ContributionReceipt{Indexed: true}, nil
+	}
+	j.srv.crawlCommunityReady.Store(true)
+	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 200, "")
+	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 200, "")
 }

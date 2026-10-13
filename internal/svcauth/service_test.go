@@ -231,6 +231,48 @@ func TestShutdownDrains(t *testing.T) {
 	}
 }
 
+// A handler that lifts the write deadline through the response writer outlives
+// the server's write timeout; one that does not is cut. The default is 30 s.
+func TestWriteTimeoutLift(t *testing.T) {
+	const hold = 600 * time.Millisecond
+	slow := func(lift bool) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if lift {
+				_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+			}
+			time.Sleep(hold)
+			v1.WriteJSON(w, http.StatusOK, map[string]any{})
+		})
+	}
+	h := newHarness(t, baseConfig(), withWriteTimeout(200*time.Millisecond), withRoutes(func(func(string, v1.Principal, *http.Request)) []v1.Route {
+		return []v1.Route{
+			{Method: "GET", Path: "/v1/articles", Scopes: []v1.Scope{v1.ScopeArticlesRead}, Handler: slow(true)},
+			{Method: "GET", Path: "/v1/articles/stats", Scopes: []v1.Scope{v1.ScopeArticlesRead}, Handler: slow(false)},
+		}
+	}))
+	h.svc.Start(t.Context())
+	get := func(path string) (int, error) {
+		req, _ := http.NewRequest("GET", "http://"+h.svc.Addr()+path, nil)
+		req.Header.Set("Authorization", "Bearer "+testKeys["community-wiki"])
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, nil
+	}
+	if code, err := get("/v1/articles"); err != nil || code != http.StatusOK {
+		t.Fatalf("a handler that lifts the deadline: %d %v", code, err)
+	}
+	if code, err := get("/v1/articles/stats"); err == nil {
+		t.Fatalf("a handler that does not lift the deadline was served: %d", code)
+	}
+	if d := newHarness(t, baseConfig()).svc.opts.WriteTimeout; d != 30*time.Second {
+		t.Fatalf("default write timeout %s", d)
+	}
+}
+
 func TestShutdownGivesUp(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)

@@ -237,6 +237,10 @@ func withClientIPHeader(h string) harnessOpt {
 	return func(c *harnessCfg) { c.opts.ClientIPHeader = h }
 }
 
+func withWriteTimeout(d time.Duration) harnessOpt {
+	return func(c *harnessCfg) { c.opts.WriteTimeout = d }
+}
+
 func withoutCerts() harnessOpt { return func(c *harnessCfg) { c.noFill = true } }
 
 func withRoutes(f func(record func(string, v1.Principal, *http.Request)) []v1.Route) harnessOpt {
