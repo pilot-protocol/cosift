@@ -2,6 +2,8 @@ package sharedaccount
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/grpc/codes"
@@ -17,7 +19,10 @@ type JoinState struct {
 
 type WorkSource interface {
 	JoinState(ctx context.Context, uid string) (JoinState, error)
+	AddCounters(ctx context.Context, cid string, add map[string]int64) error
 }
+
+var counterFields = map[string]bool{"fetch_claimed": true, "fetch_submitted": true, "fetch_verified": true, "fetch_mismatch": true, "fetch_rejected": true, "fetch_credits": true}
 
 var _ WorkSource = (*Client)(nil)
 
@@ -60,4 +65,29 @@ func (c *Client) JoinState(ctx context.Context, uid string) (JoinState, error) {
 		}
 	}
 	return out, nil
+}
+
+// AddCounters increments counters.fetch_* with a field-masked update; it writes no other field and never creates the contributor.
+func (c *Client) AddCounters(ctx context.Context, cid string, add map[string]int64) error {
+	if !cidPattern.MatchString(cid) {
+		return ErrInvalid
+	}
+	updates := make([]firestore.Update, 0, len(add))
+	for _, name := range slices.Sorted(maps.Keys(add)) {
+		if !counterFields[name] {
+			return ErrInvalid
+		}
+		updates = append(updates, firestore.Update{Path: "counters." + name, Value: firestore.Increment(add[name])})
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	_, err := c.db.Collection("contributors").Doc(cid).Update(ctx, updates)
+	switch {
+	case err == nil:
+		return nil
+	case status.Code(err) == codes.NotFound:
+		return ErrNotFound
+	}
+	return ErrUnavailable
 }
