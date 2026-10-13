@@ -37,6 +37,9 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 const dailyContributionLimit = 1000
 
+// maxSubmissionAttempts bounds retries of transient failures; with the backoff the last one runs about two hours in.
+const maxSubmissionAttempts = 12
+
 type Config struct {
 	Shared                      sharedaccount.Provider
 	SharedPasswordEnabled       bool // Enable only after the upstream password service is deployed.
@@ -844,6 +847,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		indexed := false
 		permanent := false
 		refused := false
+		unreachable := false
 		if sendErr == nil {
 			permanent = res.StatusCode == http.StatusUnprocessableEntity || res.StatusCode == http.StatusConflict
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
@@ -883,11 +887,15 @@ func (s *Server) dispatch(ctx context.Context) error {
 			res.Body.Close()
 		} else if ctx.Err() == nil {
 			log.Printf("community: POST %s failed: backend unreachable; retained for retry", enqueueRoute)
+			unreachable = backendUnreachable(sendErr)
 		}
 		status = "pending"
 		reason = "Content checks passed; waiting for crawler delivery."
 		if refused {
 			status, reason = statusConfigError, configErrorReason
+		}
+		if unreachable {
+			status = statusBackendDown
 		}
 		if permanent {
 			status = "unverified"
@@ -913,12 +921,18 @@ type job struct {
 	attempts int
 }
 
-// record stores a job's outcome. A configuration error keeps its attempts and retries slowly, since waiting out the backoff cannot fix it.
+// record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
 func (s *Server) record(ctx context.Context, j job, status, reason string) error {
 	attempts := j.attempts + 1
 	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
-	if status == statusConfigError {
+	switch status {
+	case statusConfigError:
 		attempts, next = j.attempts, time.Now().Add(configErrorRetry)
+	case statusBackendDown:
+		status, attempts, next = "pending", j.attempts, time.Now().Add(backendDownRetry)
+	}
+	if status == "pending" && attempts >= maxSubmissionAttempts {
+		status, reason = "unverified", "The webpage could not be checked or delivered after repeated attempts."
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=? WHERE id=?`, status, reason, attempts, next.Unix(), j.id)
 	return err

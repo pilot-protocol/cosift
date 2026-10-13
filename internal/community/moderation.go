@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -65,7 +67,15 @@ const (
 	statusConfigError = "config_error"
 	configErrorReason = "Content checks are unavailable while the service is being configured. This will be retried automatically."
 	configErrorRetry  = time.Hour
+	statusBackendDown = "backend_down"
+	backendDownRetry  = 5 * time.Minute
 )
+
+// backendUnreachable is a failure to connect at all, which no page or model reply can cause; it must not use up delivery attempts.
+func backendUnreachable(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
 
 // A 401 or 403 means the backend rejected the app's credentials, which retrying cannot fix.
 func backendRefusedCredentials(status int) bool {
@@ -165,6 +175,9 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)
+			if backendUnreachable(err) {
+				return statusBackendDown, "Waiting for content safety checks.", ""
+			}
 		}
 		return "pending", "Waiting for content safety checks.", ""
 	}
