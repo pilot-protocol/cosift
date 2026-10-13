@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"strings"
@@ -56,6 +57,19 @@ func newModerationClient() *http.Client {
 		return err
 	}
 	return client
+}
+
+const (
+	moderateRoute     = "/admin/community-moderate"
+	enqueueRoute      = "/admin/community-enqueue"
+	statusConfigError = "config_error"
+	configErrorReason = "Content checks are unavailable while the service is being configured. This will be retried automatically."
+	configErrorRetry  = time.Hour
+)
+
+// A 401 or 403 means the backend rejected the app's credentials, which retrying cannot fix.
+func backendRefusedCredentials(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 // prevalidate runs before delivery. Only an explicit allow decision may enter
@@ -142,16 +156,25 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 		return status, reason, ""
 	}
 	b, _ := json.Marshal(doc)
-	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-moderate", bytes.NewReader(b))
+	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+moderateRoute, bytes.NewReader(b))
 	checkReq.Header.Set("Content-Type", "application/json")
 	checkReq.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
 	client := *s.client
 	client.Timeout = 60 * time.Second
 	checkRes, err := client.Do(checkReq)
 	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)
+		}
 		return "pending", "Waiting for content safety checks.", ""
 	}
 	defer checkRes.Body.Close()
+	if checkRes.StatusCode != 200 {
+		log.Printf("community: POST %s returned HTTP %d", moderateRoute, checkRes.StatusCode)
+		if backendRefusedCredentials(checkRes.StatusCode) {
+			return statusConfigError, configErrorReason, ""
+		}
+	}
 	var verdict ModerationVerdict
 	decision := json.NewDecoder(io.LimitReader(checkRes.Body, 4096))
 	decision.DisallowUnknownFields()

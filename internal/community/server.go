@@ -43,7 +43,7 @@ type Config struct {
 	DataDir                     string
 	Backend                     string
 	PublicURL                   string
-	AdminToken                  string // Only used for crawl-enqueue, never forwarded with searches.
+	AdminToken                  string // Sent only to the backend's community moderation and enqueue routes, never with searches.
 	TrustedProxies              []string
 	GuestInterval               time.Duration
 	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
@@ -789,13 +789,9 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status='pending' AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
+	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status IN ('pending','config_error') AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
 	if err != nil {
 		return err
-	}
-	type job struct {
-		id, url  string
-		attempts int
 	}
 	jobs := []job{}
 	for rows.Next() {
@@ -821,8 +817,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		}
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
-			delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
-			if _, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=attempts+1,next_attempt=? WHERE id=?`, status, reason, time.Now().Add(delay).Unix(), j.id); err != nil {
+			if err := s.record(ctx, j, status, reason); err != nil {
 				return err
 			}
 			continue
@@ -839,7 +834,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 		}
 		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact, "approved_content_hash": approvedContentHash})
-		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
+		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+enqueueRoute, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
 		delivery := *s.client
@@ -848,11 +843,13 @@ func (s *Server) dispatch(ctx context.Context) error {
 		ok := false
 		indexed := false
 		permanent := false
+		refused := false
 		if sendErr == nil {
 			permanent = res.StatusCode == http.StatusUnprocessableEntity || res.StatusCode == http.StatusConflict
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
+			refused = backendRefusedCredentials(res.StatusCode)
 			if !ok {
-				log.Printf("community: contribution delivery returned HTTP %d", res.StatusCode)
+				log.Printf("community: POST %s returned HTTP %d", enqueueRoute, res.StatusCode)
 			}
 			var receipt struct {
 				Indexed     bool   `json:"indexed"`
@@ -885,10 +882,13 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			res.Body.Close()
 		} else if ctx.Err() == nil {
-			log.Printf("community: contribution backend unavailable; retained for retry")
+			log.Printf("community: POST %s failed: backend unreachable; retained for retry", enqueueRoute)
 		}
 		status = "pending"
 		reason = "Content checks passed; waiting for crawler delivery."
+		if refused {
+			status, reason = statusConfigError, configErrorReason
+		}
 		if permanent {
 			status = "unverified"
 			reason = "The webpage or local artifact does not meet index validation policy. Check the allowed domain, current page content, and embedding model."
@@ -901,11 +901,25 @@ func (s *Server) dispatch(ctx context.Context) error {
 				reason = "Content checks passed and webpage indexed."
 			}
 		}
-		delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
-		_, err = s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=attempts+1,next_attempt=? WHERE id=?`, status, reason, time.Now().Add(delay).Unix(), j.id)
-		if err != nil {
+		if err := s.record(ctx, j, status, reason); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+type job struct {
+	id, url  string
+	attempts int
+}
+
+// record stores a job's outcome. A configuration error keeps its attempts and retries slowly, since waiting out the backoff cannot fix it.
+func (s *Server) record(ctx context.Context, j job, status, reason string) error {
+	attempts := j.attempts + 1
+	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
+	if status == statusConfigError {
+		attempts, next = j.attempts, time.Now().Add(configErrorRetry)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=? WHERE id=?`, status, reason, attempts, next.Unix(), j.id)
+	return err
 }
