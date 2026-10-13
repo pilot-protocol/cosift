@@ -90,6 +90,7 @@ type Server struct {
 	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
 	wiki             *wiki.Wiki
 	engine           *engineClient
+	awards           *awardPoller
 	index            []byte
 }
 

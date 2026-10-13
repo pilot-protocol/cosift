@@ -1,0 +1,71 @@
+{
+ "award_ids": [
+  {
+   "reason": "article",
+   "parts": {
+    "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V4"
+   },
+   "award_id": "art:01J9A3Q7W4X9M3K5N6P8R0T2V4",
+   "ledger_id": "award:art:01J9A3Q7W4X9M3K5N6P8R0T2V4"
+  },
+  {
+   "reason": "revision",
+   "parts": {
+    "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V5"
+   },
+   "award_id": "rev:01J9A3Q7W4X9M3K5N6P8R0T2V5",
+   "ledger_id": "award:rev:01J9A3Q7W4X9M3K5N6P8R0T2V5"
+  },
+  {
+   "reason": "royalty",
+   "parts": {
+    "day": "2026-10-14",
+    "article_id": "01J9A3Q8B2C3D4E5F6G7H8J9K0",
+    "cid": "0f1e2d3c4b5a6978"
+   },
+   "award_id": "roy:2026-10-14:01J9A3Q8B2C3D4E5F6G7H8J9K0:0f1e2d3c4b5a6978",
+   "ledger_id": "award:roy:2026-10-14:01J9A3Q8B2C3D4E5F6G7H8J9K0:0f1e2d3c4b5a6978"
+  },
+  {
+   "reason": "clawback",
+   "parts": {
+    "request_id": "01J9A3Q8B2C3D4E5F6G7H8J9K0_01J9B4R8C3D4E5F6G7H8J9K0M1",
+    "cid": "1a2b3c4d5e6f7081"
+   },
+   "award_id": "claw:01J9A3Q8B2C3D4E5F6G7H8J9K0_01J9B4R8C3D4E5F6G7H8J9K0M1:1a2b3c4d5e6f7081",
+   "ledger_id": "award:claw:01J9A3Q8B2C3D4E5F6G7H8J9K0_01J9B4R8C3D4E5F6G7H8J9K0M1:1a2b3c4d5e6f7081"
+  }
+ ],
+ "ledger_clamp": [
+  {
+   "balance": 300,
+   "abs_amount": 500,
+   "applied_delta": -300
+  },
+  {
+   "balance": 0,
+   "abs_amount": 500,
+   "applied_delta": 0
+  },
+  {
+   "balance": 800,
+   "abs_amount": 500,
+   "applied_delta": -500
+  },
+  {
+   "balance": 500,
+   "abs_amount": 500,
+   "applied_delta": -500
+  },
+  {
+   "balance": 1,
+   "abs_amount": 500,
+   "applied_delta": -1
+  },
+  {
+   "balance": -50,
+   "abs_amount": 500,
+   "applied_delta": 0
+  }
+ ]
+}
