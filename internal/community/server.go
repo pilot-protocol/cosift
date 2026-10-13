@@ -78,6 +78,7 @@ type Server struct {
 	guestSalt        string
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
+	hostGaps         hostGaps
 	wiki             *wiki.Wiki
 	index            []byte
 }
@@ -814,6 +815,12 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if wait := s.crawlWait(ctx, j.url); wait > 0 {
+			if err := s.requeue(ctx, j, wait); err != nil {
+				return err
+			}
+			continue
+		}
 		status, reason, approvedContentHash := s.prevalidate(ctx, j.id, j.url)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
@@ -914,6 +921,17 @@ func (s *Server) dispatch(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// requeue schedules a job for later without counting an attempt.
+func (s *Server) requeue(ctx context.Context, j job, wait time.Duration) error {
+	at := time.Now().Add(wait)
+	next := at.Unix()
+	if at.Nanosecond() > 0 {
+		next++
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, "Waiting to check the webpage.", next, j.id)
+	return err
 }
 
 type job struct {

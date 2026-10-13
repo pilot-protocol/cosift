@@ -11,7 +11,9 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/adultfilter"
@@ -82,6 +84,43 @@ func backendRefusedCredentials(status int) bool {
 	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
+const maxCrawlDelay = 15 * time.Second
+
+// crawlWait is how long the site's robots crawl delay still holds back the next page check; the caller requeues instead of sleeping.
+func (s *Server) crawlWait(ctx context.Context, raw string) time.Duration {
+	allowed, delay, err := s.moderationRobots.Allowed(ctx, raw)
+	u, parseErr := url.Parse(raw)
+	if err != nil || !allowed || delay <= 0 || delay > maxCrawlDelay || parseErr != nil {
+		return 0
+	}
+	return s.hostGaps.reserve(u.Host, delay, time.Now())
+}
+
+// hostGaps spaces page checks to one host by its crawl delay.
+type hostGaps struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+// reserve returns how much longer to wait, or zero after recording a check at now.
+func (g *hostGaps) reserve(host string, gap time.Duration, now time.Time) time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for h, t := range g.last {
+		if now.Sub(t) >= maxCrawlDelay {
+			delete(g.last, h)
+		}
+	}
+	if t, ok := g.last[host]; ok && now.Sub(t) < gap {
+		return gap - now.Sub(t)
+	}
+	if g.last == nil {
+		g.last = map[string]time.Time{}
+	}
+	g.last[host] = now
+	return 0
+}
+
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
@@ -96,17 +135,8 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 	if !allowed {
 		return "unverified", "The website does not permit automated page checks.", ""
 	}
-	if delay > 0 {
-		if delay > 15*time.Second {
-			return "unverified", "The website requires a longer crawl delay than validation supports.", ""
-		}
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return "pending", "Validation interrupted.", ""
-		case <-timer.C:
-		}
+	if delay > maxCrawlDelay {
+		return "unverified", "The website requires a longer crawl delay than validation supports.", ""
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
