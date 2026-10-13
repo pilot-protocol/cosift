@@ -20,6 +20,7 @@ type fakeWork struct {
 	adds     int
 	alerts   []sharedaccount.Alert
 	alertErr error
+	alertTry int
 }
 
 func newFakeWork() *fakeWork {
@@ -70,6 +71,7 @@ func (f *fakeWork) RaiseAlert(_ context.Context, a sharedaccount.Alert) error {
 	f.enter("RaiseAlert")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.alertTry++
 	if f.alertErr != nil {
 		return f.alertErr
 	}

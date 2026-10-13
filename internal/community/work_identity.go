@@ -77,4 +77,5 @@ type workRuntime struct {
 	joins  *joinCache
 
 	counters fetchCounters
+	alerts   alertQueue
 }

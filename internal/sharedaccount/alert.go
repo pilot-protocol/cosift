@@ -42,7 +42,7 @@ func AlertDedupKey(kind, subject string) string {
 	return hex.EncodeToString(sum[:])[:24]
 }
 
-func (a Alert) validate() error {
+func (a Alert) Validate() error {
 	switch {
 	case !alertKinds[a.Kind]:
 		return fmt.Errorf("%w: alert kind", ErrInvalid)

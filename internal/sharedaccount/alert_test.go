@@ -67,7 +67,7 @@ func TestAnAlertIsScannedAcrossItsFieldsAndNeverEchoesTheMatch(t *testing.T) {
 	tid := strings.Repeat("cd", 32)
 	a := Alert{Kind: "work_moderation_ceiling", Severity: "warning", Subject: "2026-10-12", SubjectKind: "day", Title: "Work moderation ceiling reached", Detail: "Fetch-work moderation calls are halted for the rest of the UTC day.", Now: time.Now(),
 		Labels: map[string]string{"first": tid[:32], "second": tid[32:]}}
-	err := a.validate()
+	err := a.Validate()
 	if err == nil {
 		t.Fatal("a tid split across two labels was accepted")
 	}
@@ -97,7 +97,7 @@ func TestTheWorkModerationAlertLeakVectors(t *testing.T) {
 		{"a cid whose digits make a run", "2026-10-12", "Contributor a481516bcdef0123 has awards pending.", nil, detailCode},
 	} {
 		a := Alert{Kind: "work_moderation_ceiling", Severity: "warning", Subject: c.subject, SubjectKind: "day", Title: title, Detail: c.detail, Labels: c.labels, Now: time.Now()}
-		err := a.validate()
+		err := a.Validate()
 		switch {
 		case c.refusal == "" && err != nil:
 			t.Errorf("%s: refused (%v)", c.name, err)
@@ -109,7 +109,7 @@ func TestTheWorkModerationAlertLeakVectors(t *testing.T) {
 
 func TestAnAlertOutsideTheCommunityKindsAndBoundsIsRefused(t *testing.T) {
 	good := Alert{Kind: "work_moderation_ceiling", Severity: "warning", Subject: "2026-10-12", SubjectKind: "day", Title: "t", Detail: "d", Now: time.Now()}
-	if err := good.validate(); err != nil {
+	if err := good.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*Alert){
@@ -131,7 +131,7 @@ func TestAnAlertOutsideTheCommunityKindsAndBoundsIsRefused(t *testing.T) {
 	} {
 		a := good
 		mutate(&a)
-		if a.validate() == nil {
+		if a.Validate() == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}

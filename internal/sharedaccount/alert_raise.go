@@ -10,7 +10,7 @@ import (
 
 // RaiseAlert writes one occurrence: it creates the row, or counts it and reopens a resolved row; an acked row stays acked.
 func (c *Client) RaiseAlert(ctx context.Context, a Alert) error {
-	if err := a.validate(); err != nil {
+	if err := a.Validate(); err != nil {
 		return err
 	}
 	now := a.Now.UTC()
