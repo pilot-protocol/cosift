@@ -63,6 +63,9 @@ type Document struct {
 	// mask-icon variants). Resolved to absolute against the page URL. Empty
 	// when absent. —"link-card" rendering.
 	Favicon string
+	// VerifiedBy says whose text an attested document holds: "server" or "quorum".
+	// Empty for every other document.
+	VerifiedBy string
 }
 
 // Stats summarizes index state for the CLI.
@@ -283,6 +286,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// re-fetched docs as new ones. UpsertDocument only writes this on
 		// initial INSERT (the ON CONFLICT UPDATE clause leaves it unchanged).
 		{"documents", "first_indexed_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"documents", "verified_by", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, err := s.columnExists(ctx, m.table, m.column)
 		if err != nil {
@@ -368,8 +372,8 @@ func (s *Store) UpsertDocument(ctx context.Context, d *Document) (int64, error) 
 	// what crawl-status' rolling-rate windows rely on to distinguish new
 	// indexed docs from idempotent re-fetches.
 	const q = `
-INSERT INTO documents (url, domain, title, text, lang, source, quality, fetched_at, content_sha, doc_len, etag, last_modified, change_count, last_changed_at, published_at, author, image, favicon, first_indexed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO documents (url, domain, title, text, lang, source, quality, fetched_at, content_sha, doc_len, etag, last_modified, change_count, last_changed_at, published_at, author, image, favicon, first_indexed_at, verified_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(url) DO UPDATE SET
   domain          = excluded.domain,
   title           = excluded.title,
@@ -387,7 +391,8 @@ ON CONFLICT(url) DO UPDATE SET
   published_at    = excluded.published_at,
   author          = excluded.author,
   image           = excluded.image,
-  favicon         = excluded.favicon
+  favicon         = excluded.favicon,
+  verified_by     = excluded.verified_by
 RETURNING id;`
 	var publishedUnix int64
 	if !d.PublishedAt.IsZero() {
@@ -400,6 +405,7 @@ RETURNING id;`
 		d.ETag, d.LastModified, d.ChangeCount, d.LastChangedAt,
 		publishedUnix, d.Author, d.Image, d.Favicon,
 		d.FetchedAt.Unix(), // first_indexed_at — set on INSERT only; ON CONFLICT UPDATE leaves it
+		d.VerifiedBy,
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -410,11 +416,11 @@ RETURNING id;`
 
 // GetDocByURL retrieves a single document, or sql.ErrNoRows if missing.
 func (s *Store) GetDocByURL(ctx context.Context, url string) (*Document, error) {
-	const q = `SELECT id, url, COALESCE(domain,''), COALESCE(title,''), COALESCE(text,''), COALESCE(lang,''), COALESCE(source,''), COALESCE(quality,0), COALESCE(fetched_at,0), content_sha, COALESCE(etag,''), COALESCE(last_modified,''), COALESCE(change_count,0), COALESCE(last_changed_at,0), COALESCE(published_at,0), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,'') FROM documents WHERE url = ?;`
+	const q = `SELECT id, url, COALESCE(domain,''), COALESCE(title,''), COALESCE(text,''), COALESCE(lang,''), COALESCE(source,''), COALESCE(quality,0), COALESCE(fetched_at,0), content_sha, COALESCE(etag,''), COALESCE(last_modified,''), COALESCE(change_count,0), COALESCE(last_changed_at,0), COALESCE(published_at,0), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,''), COALESCE(verified_by,'') FROM documents WHERE url = ?;`
 	d := &Document{}
 	var fetched, published int64
 	err := s.db.QueryRowContext(ctx, q, url).Scan(
-		&d.ID, &d.URL, &d.Domain, &d.Title, &d.Text, &d.Lang, &d.Source, &d.Quality, &fetched, &d.ContentSHA, &d.ETag, &d.LastModified, &d.ChangeCount, &d.LastChangedAt, &published, &d.Author, &d.Image, &d.Favicon,
+		&d.ID, &d.URL, &d.Domain, &d.Title, &d.Text, &d.Lang, &d.Source, &d.Quality, &fetched, &d.ContentSHA, &d.ETag, &d.LastModified, &d.ChangeCount, &d.LastChangedAt, &published, &d.Author, &d.Image, &d.Favicon, &d.VerifiedBy,
 	)
 	if err != nil {
 		return nil, err
@@ -693,7 +699,7 @@ func (s *Store) ListDocuments(ctx context.Context, limit int) ([]*Document, erro
 	// include published_at so callers can filter by date without an
 	// N+1 lookup. Zero published_at means "no JSON-LD datePublished extracted"
 	// (same convention as Document.PublishedAt elsewhere).
-	q := `SELECT id, url, COALESCE(domain,''), COALESCE(title,''), COALESCE(text,''), COALESCE(lang,''), COALESCE(source,''), COALESCE(quality,0), COALESCE(fetched_at,0), content_sha, COALESCE(etag,''), COALESCE(last_modified,''), COALESCE(change_count,0), COALESCE(last_changed_at,0), COALESCE(published_at,0), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,'') FROM documents ORDER BY id ASC`
+	q := `SELECT id, url, COALESCE(domain,''), COALESCE(title,''), COALESCE(text,''), COALESCE(lang,''), COALESCE(source,''), COALESCE(quality,0), COALESCE(fetched_at,0), content_sha, COALESCE(etag,''), COALESCE(last_modified,''), COALESCE(change_count,0), COALESCE(last_changed_at,0), COALESCE(published_at,0), COALESCE(author,''), COALESCE(image,''), COALESCE(favicon,''), COALESCE(verified_by,'') FROM documents ORDER BY id ASC`
 	args := []any{}
 	if limit > 0 {
 		q += " LIMIT ?"
@@ -708,7 +714,7 @@ func (s *Store) ListDocuments(ctx context.Context, limit int) ([]*Document, erro
 	for rows.Next() {
 		d := &Document{}
 		var fetched, published int64
-		if err := rows.Scan(&d.ID, &d.URL, &d.Domain, &d.Title, &d.Text, &d.Lang, &d.Source, &d.Quality, &fetched, &d.ContentSHA, &d.ETag, &d.LastModified, &d.ChangeCount, &d.LastChangedAt, &published, &d.Author, &d.Image, &d.Favicon); err != nil {
+		if err := rows.Scan(&d.ID, &d.URL, &d.Domain, &d.Title, &d.Text, &d.Lang, &d.Source, &d.Quality, &fetched, &d.ContentSHA, &d.ETag, &d.LastModified, &d.ChangeCount, &d.LastChangedAt, &published, &d.Author, &d.Image, &d.Favicon, &d.VerifiedBy); err != nil {
 			return nil, err
 		}
 		d.FetchedAt = time.Unix(fetched, 0)
