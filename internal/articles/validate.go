@@ -24,21 +24,22 @@ var (
 
 // putBody is the article PUT; engine-owned fields are accepted and ignored.
 type putBody struct {
-	Status          *string      `json:"status"`
-	ExpectedVersion *int         `json:"expected_version"`
-	Title           string       `json:"title"`
-	Lead            string       `json:"lead"`
-	BodyMD          string       `json:"body_md"`
-	Citations       []Citation   `json:"citations"`
-	QualityTier     string       `json:"quality_tier"`
-	Vertical        string       `json:"vertical"`
-	Sensitivity     *Sensitivity `json:"sensitivity"`
-	Aliases         []string     `json:"aliases"`
-	TopicIDs        []string     `json:"topic_ids"`
-	ClusterIDs      []string     `json:"cluster_ids"`
-	Models          *Models      `json:"models"`
-	Build           *Build       `json:"build"`
-	AIGenerated     *bool        `json:"ai_generated"`
+	Status          *string         `json:"status"`
+	ExpectedVersion *int            `json:"expected_version"`
+	Title           string          `json:"title"`
+	Lead            string          `json:"lead"`
+	BodyMD          string          `json:"body_md"`
+	Citations       []Citation      `json:"citations"`
+	QualityTier     string          `json:"quality_tier"`
+	Vertical        string          `json:"vertical"`
+	Sensitivity     *Sensitivity    `json:"sensitivity"`
+	Aliases         []string        `json:"aliases"`
+	TopicIDs        []string        `json:"topic_ids"`
+	ClusterIDs      []string        `json:"cluster_ids"`
+	Models          *Models         `json:"models"`
+	Build           *Build          `json:"build"`
+	AIGenerated     *bool           `json:"ai_generated"`
+	Contributor     json.RawMessage `json:"contributor"`
 
 	Schema          json.RawMessage `json:"schema"`
 	ID              json.RawMessage `json:"id"`

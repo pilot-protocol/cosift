@@ -37,6 +37,14 @@ func errBlocked(p v1.Principal, blocker *Record) v1.Error {
 	return conflictWith(v1.Error{Status: http.StatusConflict, Code: "blocked", Detail: "title is blocked by a moderated record"}, p, blocker)
 }
 
+func errTierRegression() v1.Error {
+	return v1.Error{Status: http.StatusConflict, Code: "tier_regression", Detail: "quality tier is below the stored article's"}
+}
+
+func errContributorsFull() v1.Error {
+	return v1.Error{Status: http.StatusConflict, Code: "contributors_full", Detail: "article has the maximum number of contributors"}
+}
+
 func errVersionConflict(current *int) v1.Error {
 	return v1.Error{Status: http.StatusConflict, Code: "version_conflict", Detail: "version conflict", CurrentVersion: current}
 }

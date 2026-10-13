@@ -77,7 +77,7 @@ func (s *Store) handleMatch(w http.ResponseWriter, r *http.Request, p v1.Princip
 	if !allowed(w, r, v1.ScopeArticlesRead) {
 		return
 	}
-	if build && !allowed(w, r, v1.ScopeArticlesWrite, v1.ScopeArticlesStub) {
+	if build && !allowed(w, r, v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeArticlesContribute) {
 		return
 	}
 	if s.refuseRestorePending(w) {
