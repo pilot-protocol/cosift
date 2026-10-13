@@ -55,7 +55,7 @@ func (s *Server) clientIP(r *http.Request) string {
 }
 
 func (s *Server) guestKey(r *http.Request) string {
-	return tokenHash(s.guestSalt + ":" + s.clientIP(r))
+	return tokenHash(s.guestSalt + ":" + netKey(s.clientIP(r)))
 }
 
 func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
