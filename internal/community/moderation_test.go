@@ -32,10 +32,10 @@ func TestContributionModerationMustAllowBeforeEnqueue(t *testing.T) {
 			queued := 0
 			s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/admin/community-moderate":
+				case "/v1/community/moderate":
 					w.WriteHeader(tc.status)
 					io.WriteString(w, tc.verdict)
-				case "/admin/community-enqueue":
+				case "/v1/community/enqueue":
 					queued++
 					io.WriteString(w, `{"queued":"https://example.com/page"}`)
 				default:

@@ -46,7 +46,6 @@ func TestCommunityRewardEnv(t *testing.T) {
 }
 
 func TestCommunityRefusesAnInvalidRewardSwitch(t *testing.T) {
-	t.Setenv("COSIFT_COMMUNITY_ADMIN_TOKEN", "admin")
 	t.Setenv("COSIFT_COMMUNITY_CONTRIBUTION_REWARD", "enabled")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -61,7 +60,6 @@ func TestCommunityRewardEnvReachesTheCreditsEndpoint(t *testing.T) {
 		on, cap string
 		want    bool
 	}{{"", "", false}, {"on", "7", true}} {
-		t.Setenv("COSIFT_COMMUNITY_ADMIN_TOKEN", "admin")
 		t.Setenv("COSIFT_COMMUNITY_CONTRIBUTION_REWARD", tc.on)
 		t.Setenv("COSIFT_COMMUNITY_CONTRIBUTION_REWARD_DAILY_CAP", tc.cap)
 		t.Setenv("COSIFT_WIKI_PUBLIC", "0")

@@ -21,9 +21,9 @@ func rewardServer(t *testing.T, mutate func(*Config), receipt func(url string) r
 	t.Helper()
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			var in struct {
 				URL string `json:"url"`
 			}

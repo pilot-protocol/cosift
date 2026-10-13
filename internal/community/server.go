@@ -50,7 +50,8 @@ type Config struct {
 	DataDir                     string
 	Backend                     string
 	PublicURL                   string
-	AdminToken                  string // Sent only to the backend's community moderation and enqueue routes, never with searches.
+	BrokerKey                   string // The engine's csk_ key for community delivery and moderation; sent to EngineURL only.
+	EngineURL                   string // The engine's loopback /v1 origin; empty means the default.
 	TrustedProxies              []string
 	GuestInterval               time.Duration
 	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
@@ -85,6 +86,7 @@ type Server struct {
 	hostGaps         hostGaps
 	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
 	wiki             *wiki.Wiki
+	engine           *engineClient
 	index            []byte
 }
 
@@ -107,8 +109,9 @@ func Open(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("public URL must use HTTPS except on localhost")
 		}
 	}
-	if cfg.AdminToken == "" {
-		return nil, fmt.Errorf("COSIFT_COMMUNITY_ADMIN_TOKEN is required for contribution delivery")
+	engine, err := newEngineClient(cfg.EngineURL, cfg.BrokerKey)
+	if err != nil {
+		return nil, err
 	}
 	cfg.Backend = strings.TrimRight(cfg.Backend, "/")
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
@@ -116,7 +119,7 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
+	s := &Server{db: db, cfg: cfg, engine: engine, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -823,12 +826,23 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if len(jobs) > 0 {
 		defer func() { s.backendDown.Store(down) }()
 	}
+	warned := false
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if down {
 			if err := s.record(ctx, j, statusBackendDown, backendDownReason); err != nil {
+				return err
+			}
+			continue
+		}
+		if !s.engine.configured() {
+			if !warned {
+				log.Printf("community: COSIFT_COMMUNITY_BROKER_KEY is not set; submissions wait as a configuration error")
+				warned = true
+			}
+			if err := s.record(ctx, j, statusConfigError, configErrorReason); err != nil {
 				return err
 			}
 			continue
@@ -863,12 +877,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 		}
 		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact, "approved_content_hash": approvedContentHash})
-		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+enqueueRoute, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
-		delivery := *s.client
-		delivery.Timeout = 150 * time.Second
-		res, sendErr := delivery.Do(req)
+		res, sendErr := s.engine.post(ctx, enqueueRoute, body, enqueueTimeout)
 		ok := false
 		indexed := false
 		permanent := false

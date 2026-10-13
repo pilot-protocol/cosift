@@ -41,6 +41,9 @@ func runCommunity(ctx context.Context, args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
+	if os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN") != "" {
+		return fmt.Errorf("COSIFT_COMMUNITY_ADMIN_TOKEN is no longer used and must be unset; the app delivers with COSIFT_COMMUNITY_BROKER_KEY")
+	}
 	rewardOn, rewardCap, err := communityRewardFromEnv()
 	if err != nil {
 		return err
@@ -62,7 +65,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, AdminToken: os.Getenv("COSIFT_COMMUNITY_ADMIN_TOKEN"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
+	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
 	if err != nil {
 		return err
 	}

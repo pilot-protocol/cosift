@@ -22,14 +22,14 @@ type approvalBackend struct {
 func (b *approvalBackend) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			b.moderations.Add(1)
 			if code := int(b.moderateStatus.Load()); code != 0 {
 				w.WriteHeader(code)
 				return
 			}
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			b.deliveries.Add(1)
 			var in struct {
 				Hash string `json:"approved_content_hash"`

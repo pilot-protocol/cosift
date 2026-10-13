@@ -64,9 +64,6 @@ func newModerationClient() *http.Client {
 }
 
 const (
-	moderateRoute     = "/admin/community-moderate"
-	enqueueRoute      = "/admin/community-enqueue"
-	healthRoute       = "/healthz"
 	statusConfigError = "config_error"
 	configErrorReason = "Content checks are unavailable while the service is being configured. This will be retried automatically."
 	configErrorRetry  = time.Hour
@@ -81,21 +78,8 @@ func backendUnreachable(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
-// backendReachable is false only when the backend cannot be connected to; any HTTP reply counts as reachable.
-func (s *Server) backendReachable(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", s.cfg.Backend+healthRoute, nil)
-	if err != nil {
-		return true
-	}
-	res, err := s.client.Do(req)
-	if err != nil {
-		return !backendUnreachable(err)
-	}
-	res.Body.Close()
-	return true
-}
+// backendReachable is false only when the engine listener cannot be connected to; any HTTP reply counts as reachable.
+func (s *Server) backendReachable(ctx context.Context) bool { return s.engine.reachable(ctx) }
 
 // A 401 or 403 means the backend rejected the app's credentials, which retrying cannot fix.
 func backendRefusedCredentials(status int) bool {
@@ -218,12 +202,7 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 		return "allowed", "Content checks passed.", approved
 	}
 	b, _ := json.Marshal(doc)
-	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+moderateRoute, bytes.NewReader(b))
-	checkReq.Header.Set("Content-Type", "application/json")
-	checkReq.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
-	client := *s.client
-	client.Timeout = 60 * time.Second
-	checkRes, err := client.Do(checkReq)
+	checkRes, err := s.engine.post(ctx, moderateRoute, b, moderateTimeout)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)

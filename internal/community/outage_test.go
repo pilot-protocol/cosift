@@ -17,9 +17,9 @@ type outageBackend struct{ failDeliveries atomic.Int32 }
 func (b *outageBackend) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			if b.failDeliveries.Add(-1) >= 0 {
 				w.WriteHeader(502)
 				return
@@ -52,15 +52,15 @@ func TestModerationOutageDoesNotUseUpAttempts(t *testing.T) {
 	captureLog(t)
 	b := &outageBackend{}
 	s := testServer(t, b.handler())
-	live := s.cfg.Backend
+	live := s.engine.base
 	cookie := account(t, s, "member@example.com")
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	exhaust(t, s, 3*maxSubmissionAttempts)
 	if status, attempts := attemptsAndStatus(t, s); status != "pending" || attempts != 0 {
 		t.Fatalf("an unreachable backend left the row %s after %d attempts", status, attempts)
 	}
-	s.cfg.Backend = live
+	s.engine.base = live
 	exhaust(t, s, 1)
 	if got := listSubmissions(t, s, cookie); got[0].Status != "indexed" {
 		t.Fatalf("the submission did not recover with the backend: %s", got[0].Status)
@@ -72,16 +72,16 @@ func TestDeliveryOutageDoesNotUseUpAttempts(t *testing.T) {
 	b := &outageBackend{}
 	b.failDeliveries.Store(1)
 	s := testServer(t, b.handler())
-	live := s.cfg.Backend
+	live := s.engine.base
 	cookie := account(t, s, "member@example.com")
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
 	exhaust(t, s, 1)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	exhaust(t, s, 3*maxSubmissionAttempts)
 	if status, attempts := attemptsAndStatus(t, s); status != "pending" || attempts != 1 {
 		t.Fatalf("an unreachable backend left the row %s after %d attempts, want pending after the one real failure", status, attempts)
 	}
-	s.cfg.Backend = live
+	s.engine.base = live
 	exhaust(t, s, 1)
 	if got := listSubmissions(t, s, cookie); got[0].Status != "indexed" {
 		t.Fatalf("the submission did not recover with the backend: %s", got[0].Status)
@@ -93,7 +93,7 @@ func TestBackendOutageSpacesTheNextProbe(t *testing.T) {
 	s := testServer(t, nil)
 	cookie := account(t, s, "member@example.com")
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	if err := s.dispatch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +133,12 @@ func TestBackendOutageCostsNoPageFetchesAfterTheFirstRound(t *testing.T) {
 	captureLog(t)
 	b := &outageBackend{}
 	s := testServer(t, b.handler())
-	live := s.cfg.Backend
+	live := s.engine.base
 	cookie := account(t, s, "member@example.com")
 	urls := []string{"https://example.com/one", "https://example.com/two", "https://example.org/three"}
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": urls}, cookie), 202)
 	fetches := countPageFetches(s)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	exhaust(t, s, 1)
 	onset := fetches.Load()
 	if onset == 0 || onset > 2 {
@@ -148,7 +148,7 @@ func TestBackendOutageCostsNoPageFetchesAfterTheFirstRound(t *testing.T) {
 	if n := fetches.Load(); n != onset {
 		t.Fatalf("the outage cost %d more third-party fetches over 11 rounds", n-onset)
 	}
-	s.cfg.Backend = live
+	s.engine.base = live
 	exhaust(t, s, 1)
 	for _, got := range listSubmissions(t, s, cookie) {
 		if got.Status != "indexed" {
@@ -169,7 +169,7 @@ func TestBackendIsProbedOnceAfterAnOutageAndNeverWhileHealthy(t *testing.T) {
 		}
 		inner.ServeHTTP(w, r)
 	}))
-	live := s.cfg.Backend
+	live := s.engine.base
 	cookie := account(t, s, "member@example.com")
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/zero"}}, cookie), 202)
 	exhaust(t, s, 1)
@@ -178,9 +178,9 @@ func TestBackendIsProbedOnceAfterAnOutageAndNeverWhileHealthy(t *testing.T) {
 	}
 	urls := []string{"https://example.com/one", "https://example.com/two", "https://example.org/three"}
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": urls}, cookie), 202)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	exhaust(t, s, 3)
-	s.cfg.Backend = live
+	s.engine.base = live
 	exhaust(t, s, 1)
 	if probes.Load() != 1 {
 		t.Fatalf("the round after the outage made %d backend checks for %d submissions, want 1", probes.Load(), len(urls))
@@ -204,12 +204,12 @@ func TestResettingBackendAfterAnOutageStillUsesUpAttempts(t *testing.T) {
 			conn.Close()
 		}
 	}))
-	live := s.cfg.Backend
+	live := s.engine.base
 	cookie := account(t, s, "member@example.com")
 	expect(t, request(t, s, "POST", "/api/submissions", map[string]any{"urls": []string{"https://example.com/guide"}}, cookie), 202)
-	s.cfg.Backend = refusedBackend(t)
+	s.engine.base = refusedBackend(t)
 	exhaust(t, s, 2)
-	s.cfg.Backend = live
+	s.engine.base = live
 	exhaust(t, s, 2*maxSubmissionAttempts)
 	if status, _ := attemptsAndStatus(t, s); status != "unverified" {
 		t.Fatalf("a backend that resets connections after an outage ended %s", status)

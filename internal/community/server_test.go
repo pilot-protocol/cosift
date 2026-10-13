@@ -15,6 +15,8 @@ import (
 	"github.com/pilot-protocol/cosift/internal/crawler"
 )
 
+const testBrokerKey = "csk_0123456789abcdef_ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST"
+
 func testServer(t *testing.T, backend http.Handler) *Server {
 	t.Helper()
 	if backend == nil {
@@ -22,7 +24,7 @@ func testServer(t *testing.T, backend http.Handler) *Server {
 	}
 	b := httptest.NewServer(backend)
 	t.Cleanup(b.Close)
-	s, err := Open(Config{DataDir: t.TempDir(), Backend: b.URL, PublicURL: "http://localhost:7780", AdminToken: "backend-secret"})
+	s, err := Open(Config{DataDir: t.TempDir(), Backend: b.URL, PublicURL: "http://localhost:7780", BrokerKey: testBrokerKey, EngineURL: b.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,12 +238,12 @@ func TestCSVAtomicValidationAndAttribution(t *testing.T) {
 func TestDeliveryRetrySurvivesRestart(t *testing.T) {
 	attempts := 0
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/admin/community-moderate" {
+		if r.URL.Path == "/v1/community/moderate" {
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
 			return
 		}
 		attempts++
-		if r.URL.Path != "/admin/community-enqueue" || r.Header.Get("Authorization") != "Bearer backend-secret" {
+		if r.URL.Path != "/v1/community/enqueue" || r.Header.Get("Authorization") != "Bearer "+testBrokerKey {
 			t.Errorf("incorrect delivery: %s", r.URL.Path)
 		}
 		var in struct {
@@ -353,7 +355,7 @@ func TestNormalizeURL(t *testing.T) {
 func TestPermanentArtifactRejectionIsNotRetried(t *testing.T) {
 	calls := 0
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/admin/community-moderate" {
+		if r.URL.Path == "/v1/community/moderate" {
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
 			return
 		}
@@ -381,7 +383,7 @@ func TestMalformedDeliveryReceiptStaysRetryable(t *testing.T) {
 		t.Run(receipt, func(t *testing.T) {
 			var submissionID string
 			s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/admin/community-moderate" {
+				if r.URL.Path == "/v1/community/moderate" {
 					io.WriteString(w, `{"decision":"allow","category":"safe"}`)
 					return
 				}

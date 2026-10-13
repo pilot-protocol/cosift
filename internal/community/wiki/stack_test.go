@@ -250,7 +250,7 @@ func (s *stack) seed() {
 // pages opens the full community app over the stack with the pages key.
 func (s *stack) pages(t testing.TB, public bool, now func() time.Time, edit ...func(*community.Config)) *community.Server {
 	t.Helper()
-	cfg := community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "wiki-test-admin",
+	cfg := community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 		Wiki: wiki.Config{Public: public, EngineURL: "http://" + s.addr, EngineKey: s.keys["community-wiki"], ReportMailto: "reports@example.org", Now: now, Logf: t.Logf}}
 	for _, e := range edit {
 		e(&cfg)

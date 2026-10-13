@@ -31,9 +31,9 @@ func routeServer(t *testing.T, statuses map[string]*int) *Server {
 			return
 		}
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			io.WriteString(w, `{"indexed":true,"novel":false,"content_hash":"`+strings.Repeat("a", 64)+`"}`)
 		}
 	}))
@@ -51,7 +51,7 @@ func listSubmissions(t *testing.T, s *Server, cookie *http.Cookie) []Submission 
 }
 
 func TestBackendAuthFailureIsLoggedAndSurfaced(t *testing.T) {
-	for _, route := range []string{"/admin/community-moderate", "/admin/community-enqueue"} {
+	for _, route := range []string{"/v1/community/moderate", "/v1/community/enqueue"} {
 		for _, code := range []int{401, 403} {
 			t.Run(route+"/"+http.StatusText(code), func(t *testing.T) {
 				logs := captureLog(t)
@@ -69,8 +69,8 @@ func TestBackendAuthFailureIsLoggedAndSurfaced(t *testing.T) {
 				if !strings.Contains(logs.String(), route) || !strings.Contains(logs.String(), "HTTP "+strconv.Itoa(code)) {
 					t.Fatalf("refusal not logged with route and status: %q", logs.String())
 				}
-				if strings.Contains(logs.String(), "backend-secret") || strings.Contains(got[0].Reason, "backend-secret") {
-					t.Fatal("the admin token leaked")
+				if strings.Contains(logs.String(), testBrokerKey) || strings.Contains(got[0].Reason, testBrokerKey) {
+					t.Fatal("the broker key leaked")
 				}
 				var attempts int
 				var next int64
@@ -95,7 +95,7 @@ func TestEveryNon200BackendResponseIsLogged(t *testing.T) {
 	for _, tc := range []struct {
 		route string
 		code  int
-	}{{"/admin/community-moderate", 500}, {"/admin/community-moderate", 429}, {"/admin/community-enqueue", 502}, {"/admin/community-enqueue", 404}} {
+	}{{"/v1/community/moderate", 500}, {"/v1/community/moderate", 429}, {"/v1/community/enqueue", 502}, {"/v1/community/enqueue", 404}} {
 		logs := captureLog(t)
 		code := tc.code
 		s := routeServer(t, map[string]*int{tc.route: &code})
@@ -107,7 +107,7 @@ func TestEveryNon200BackendResponseIsLogged(t *testing.T) {
 		if got := listSubmissions(t, s, cookie); got[0].Status != "pending" {
 			t.Errorf("%s %d: status %s, want a plain retry", tc.route, tc.code, got[0].Status)
 		}
-		if !strings.Contains(logs.String(), tc.route) || !strings.Contains(logs.String(), "HTTP "+strconv.Itoa(tc.code)) || strings.Contains(logs.String(), "backend-secret") {
+		if !strings.Contains(logs.String(), tc.route) || !strings.Contains(logs.String(), "HTTP "+strconv.Itoa(tc.code)) || strings.Contains(logs.String(), testBrokerKey) {
 			t.Errorf("%s %d: log %q", tc.route, tc.code, logs.String())
 		}
 	}

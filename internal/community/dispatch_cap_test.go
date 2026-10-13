@@ -26,10 +26,10 @@ func TestDeliveryFailuresStopAtTheAttemptCap(t *testing.T) {
 	var moderated, delivered atomic.Int32
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			moderated.Add(1)
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			delivered.Add(1)
 			w.WriteHeader(502)
 		}
@@ -84,9 +84,9 @@ func TestExactAttemptCapAllowsOneLastSuccess(t *testing.T) {
 	var delivered atomic.Int32
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			if delivered.Add(1) < maxSubmissionAttempts {
 				w.WriteHeader(502)
 				return
@@ -107,9 +107,9 @@ func TestAttemptCapIsExact(t *testing.T) {
 	var delivered atomic.Int32
 	s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/admin/community-moderate":
+		case "/v1/community/moderate":
 			io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-		case "/admin/community-enqueue":
+		case "/v1/community/enqueue":
 			delivered.Add(1)
 			w.WriteHeader(502)
 		}

@@ -260,7 +260,7 @@ func TestSwitchOffIsDarkWithNoEngineCalls(t *testing.T) {
 	for _, public := range []bool{false, true} {
 		engine, calls := counting(t)
 		c := newClock()
-		srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x",
+		srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 			Wiki: wiki.Config{Public: public, EngineURL: engine.URL, EngineKey: offKey, ReportMailto: "reports@example.org", Now: c.Now, Logf: t.Logf}})
 		if err != nil {
 			t.Fatal(err)
@@ -295,7 +295,7 @@ func TestSwitchOffIsDarkWithNoEngineCalls(t *testing.T) {
 }
 
 func TestSearchConsoleTagOnHome(t *testing.T) {
-	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x",
+	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 		GSCVerification: "gsc-token_0123456789"})
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +307,7 @@ func TestSearchConsoleTagOnHome(t *testing.T) {
 			t.Fatalf("%s lacks the Search Console tag", p)
 		}
 	}
-	plain, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x"})
+	plain, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestSearchConsoleTagOnHome(t *testing.T) {
 	if strings.Contains(get(plain, "/").Body.String(), "google-site-verification") {
 		t.Fatal("a tag without a token")
 	}
-	if _, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x",
+	if _, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 		GSCVerification: `bad"><script>`}); err == nil || !strings.Contains(err.Error(), "COSIFT_GSC_VERIFICATION") {
 		t.Fatalf("a bad token was accepted: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestSearchConsoleTagOnHome(t *testing.T) {
 
 func TestWikiLimiterLeavesLoginAlone(t *testing.T) {
 	engine, _ := counting(t)
-	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x",
+	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 		Wiki: wiki.Config{Public: true, EngineURL: engine.URL, EngineKey: offKey, ReportMailto: "reports@example.org", Logf: func(string, ...any) {}}})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestWikiLimiterLeavesLoginAlone(t *testing.T) {
 func TestWikiLimiterKeysByForwardedClient(t *testing.T) {
 	engine, _ := counting(t)
 	c := newClock()
-	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example", AdminToken: "x",
+	srv, err := community.Open(community.Config{DataDir: t.TempDir(), Backend: "http://127.0.0.1:9", PublicURL: "https://cosift.example",
 		TrustedProxies: []string{"127.0.0.1/32"},
 		Wiki:           wiki.Config{Public: true, EngineURL: engine.URL, EngineKey: offKey, ReportMailto: "reports@example.org", Now: c.Now, Logf: func(string, ...any) {}}})
 	if err != nil {
