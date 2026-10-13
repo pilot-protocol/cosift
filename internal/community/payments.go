@@ -71,7 +71,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 400, "a checkout idempotency key of 16–64 letters, digits, underscores or hyphens is required")
 		return
 	}
-	if !s.allow("checkout:"+u.ID, 10, time.Minute) {
+	if !s.allowUser("checkout:"+u.ID, 10, time.Minute) {
 		w.Header().Set("Retry-After", "60")
 		problem(w, 429, "too many checkout attempts; try again in a minute")
 		return

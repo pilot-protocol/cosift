@@ -59,19 +59,15 @@ type Config struct {
 	Wiki                        wiki.Config
 }
 
-type bucket struct {
-	count int
-	until time.Time
-}
 type Server struct {
 	db               *sql.DB
 	cfg              Config
 	client           *http.Client
 	paymentClient    *http.Client
 	handler          http.Handler
-	mu               sync.Mutex
 	billingMu        sync.Mutex // Serializes provider-state refreshes in this single gateway.
-	limits           map[string]bucket
+	anonLimits       *limiter
+	userLimits       *limiter
 	hashSlots        chan struct{}
 	trustedProxies   []netip.Prefix
 	guestSalt        string
@@ -109,7 +105,7 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, limits: map[string]bucket{}, hashSlots: make(chan struct{}, 4), client: &http.Client{
+	s := &Server{db: db, cfg: cfg, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -269,30 +265,6 @@ func decode(r *http.Request, v any) error {
 	return nil
 }
 
-func (s *Server) allow(key string, n int, window time.Duration) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	for k, b := range s.limits {
-		if now.After(b.until) {
-			delete(s.limits, k)
-		}
-	}
-	b := s.limits[key]
-	if b.until.IsZero() {
-		if len(s.limits) >= 10000 {
-			return false
-		}
-		b.until = now.Add(window)
-	}
-	if b.count >= n {
-		return false
-	}
-	b.count++
-	s.limits[key] = b
-	return true
-}
-
 func passwordHash(password, salt string) string {
 	b, err := pbkdf2.Key(sha256.New, password, []byte(salt), 600000, 32)
 	if err != nil {
@@ -307,8 +279,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 			problem(w, 409, "use shared email-code login")
 			return
 		}
-		ip := s.clientIP(r)
-		if !s.allow("auth:"+ip, 30, time.Minute) {
+		if !s.allow("auth:"+s.clientNet(r), 30, time.Minute) {
 			problem(w, 429, "too many attempts; try again in a minute")
 			return
 		}
@@ -664,7 +635,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, http.StatusUnauthorized, "contributions require login")
 		return
 	}
-	if !s.allow("submit:"+u.ID+":"+s.clientIP(r), 20, time.Minute) {
+	if !s.allowUser("submit:"+u.ID+":"+s.clientNet(r), 20, time.Minute) {
 		problem(w, 429, "too many submissions; try again in a minute")
 		return
 	}

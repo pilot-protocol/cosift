@@ -161,7 +161,7 @@ func (s *Server) sharedStart(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "shared login is not enabled")
 		return
 	}
-	if !s.allow("shared-auth:"+s.clientIP(r), 10, time.Minute) {
+	if !s.allow("shared-auth:"+s.clientNet(r), 10, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -190,7 +190,7 @@ func (s *Server) sharedFinish(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "shared login is not enabled")
 		return
 	}
-	if !s.allow("shared-verify:"+s.clientIP(r), 20, time.Minute) {
+	if !s.allow("shared-verify:"+s.clientNet(r), 20, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -249,7 +249,7 @@ func (s *Server) sharedPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "shared password login is not enabled")
 		return
 	}
-	if !s.allow("shared-password:"+s.clientIP(r), 10, time.Minute) {
+	if !s.allow("shared-password:"+s.clientNet(r), 10, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -309,7 +309,7 @@ func (s *Server) sharedTool(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 404, "shared topics are not enabled")
 		return
 	}
-	if !s.allow("shared-tools:"+u.ID, 30, time.Minute) {
+	if !s.allowUser("shared-tools:"+u.ID, 30, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
