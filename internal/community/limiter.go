@@ -33,13 +33,18 @@ func (l *limiter) drop(e *list.Element) {
 }
 
 func (l *limiter) allow(key string, n int, window time.Duration, now time.Time) bool {
+	ok, _ := l.take(key, n, window, now)
+	return ok
+}
+
+func (l *limiter) take(key string, n int, window time.Duration, now time.Time) (bool, time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for e := l.order.Front(); e != nil && !e.Value.(*limitEntry).until.After(now); e = l.order.Front() {
 		l.drop(e)
 	}
 	if n < 1 {
-		return false
+		return false, now.Add(window)
 	}
 	if e, ok := l.keys[key]; ok {
 		b := e.Value.(*limitEntry)
@@ -47,17 +52,18 @@ func (l *limiter) allow(key string, n int, window time.Duration, now time.Time) 
 			l.drop(e)
 		} else {
 			if b.count >= n {
-				return false
+				return false, b.until
 			}
 			b.count++
-			return true
+			return true, b.until
 		}
 	}
 	for len(l.keys) >= l.max {
 		l.drop(l.order.Front())
 	}
-	l.keys[key] = l.order.PushBack(&limitEntry{key: key, count: 1, until: now.Add(window)})
-	return true
+	until := now.Add(window)
+	l.keys[key] = l.order.PushBack(&limitEntry{key: key, count: 1, until: until})
+	return true, until
 }
 
 // allow limits unauthenticated keys (client network, attacker-chosen email); allowUser limits keys that need a session.

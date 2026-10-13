@@ -78,6 +78,7 @@ type Server struct {
 	billingMu        sync.Mutex // Serializes provider-state refreshes in this single gateway.
 	anonLimits       *limiter
 	userLimits       *limiter
+	routeLimits      *limiter
 	hashSlots        chan struct{}
 	trustedProxies   []netip.Prefix
 	guestSalt        string
@@ -119,7 +120,7 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, engine: engine, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
+	s := &Server{db: db, cfg: cfg, engine: engine, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), routeLimits: newLimiter(routeLimiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
