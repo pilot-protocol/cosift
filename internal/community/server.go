@@ -814,7 +814,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		status, reason, approvedContentHash := s.prevalidate(ctx, j.url)
+		status, reason, approvedContentHash := s.prevalidate(ctx, j.id, j.url)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}

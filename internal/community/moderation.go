@@ -85,7 +85,7 @@ func backendRefusedCredentials(status int) bool {
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
-func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, approvedContentHash string) {
+func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (status, reason, approvedContentHash string) {
 	if _, err := NormalizeURL(raw); err != nil {
 		return "rejected", "URL is not an eligible public webpage.", ""
 	}
@@ -165,6 +165,10 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	if status, reason := ObviousQualityProblem(doc); status != "" {
 		return status, reason, ""
 	}
+	approved := crawler.ApprovedContentHash(doc.Title, doc.Text)
+	if s.approvalRecorded(ctx, submissionID, approved) {
+		return "allowed", "Content checks passed.", approved
+	}
 	b, _ := json.Marshal(doc)
 	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+moderateRoute, bytes.NewReader(b))
 	checkReq.Header.Set("Content-Type", "application/json")
@@ -196,12 +200,29 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	}
 	switch verdict.Decision {
 	case "allow":
-		return "allowed", "Content checks passed.", crawler.ApprovedContentHash(doc.Title, doc.Text)
+		s.recordApproval(ctx, submissionID, approved)
+		return "allowed", "Content checks passed.", approved
 	case "uncertain":
 		return "unverified", "This webpage could not be confidently validated.", ""
 	default:
 		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm", "spam": "Spam or search manipulation", "low_quality": "Garbage or content without useful information"}
 		return "rejected", labels[verdict.Category] + " is not accepted.", ""
+	}
+}
+
+// An allow verdict is kept per submission and approved hash, so delivery retries of unchanged content skip the LLM.
+func (s *Server) approvalRecorded(ctx context.Context, submissionID, hash string) bool {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM submission_approvals WHERE submission_id=? AND content_hash=?`, submissionID, hash).Scan(&found)
+	return err == nil
+}
+
+func (s *Server) recordApproval(ctx context.Context, submissionID, hash string) {
+	if submissionID == "" {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO submission_approvals(submission_id,content_hash) VALUES(?,?) ON CONFLICT DO NOTHING`, submissionID, hash); err != nil {
+		log.Printf("community: could not record a content approval: %v", err)
 	}
 }
 

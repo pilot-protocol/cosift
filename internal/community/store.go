@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
 CREATE INDEX IF NOT EXISTS credit_owner ON credit_ledger(user_id);
 CREATE TABLE IF NOT EXISTS submission_artifacts (
  submission_id TEXT PRIMARY KEY REFERENCES submissions(id) ON DELETE CASCADE,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS submission_approvals (
+ submission_id TEXT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,content_hash TEXT NOT NULL,
+ PRIMARY KEY(submission_id,content_hash));
 CREATE TABLE IF NOT EXISTS payment_checkouts (
  id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),
  amount_cents INTEGER NOT NULL,credits INTEGER NOT NULL,currency TEXT NOT NULL,
