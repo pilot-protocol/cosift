@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"container/list"
 	"context"
 	"io"
 	"net/http"
@@ -36,26 +37,58 @@ type robotsRules struct {
 // Implementation notes:
 //   - We are lenient when robots.txt is missing or 4xx/5xx — return Allowed=true.
 //     This matches most modern crawler libraries' behavior.
-//   - Cache TTL: 24h per host.
+//   - Cache TTL: 24h per host. The cache is also bounded by entry count and
+//     retained bytes, evicting the least recently used host first.
 //   - We follow the REP (Robots Exclusion Protocol) draft semantics: longest UA
 //     prefix wins; for path rules, Allow with a longer pattern beats Disallow.
 //   - Supported directives: User-agent, Disallow, Allow, Crawl-delay, Sitemap.
 //   - Pattern wildcards: '*' supported; '$' end-anchor supported.
 type Robots struct {
-	mu     sync.RWMutex
-	cache  map[string]*robotsRules
-	client *http.Client
-	ua     string
-	ttl    time.Duration
+	mu         sync.Mutex
+	cache      map[string]*list.Element // value: *robotsEntry
+	lru        *list.List               // front = most recently used
+	bytes      int64
+	maxEntries int
+	maxBytes   int64
+	client     *http.Client
+	ua         string
+	ttl        time.Duration
 }
 
-// NewRobots constructs a Robots cache.
+type robotsEntry struct {
+	key   string
+	rules *robotsRules
+	size  int64
+}
+
+// Default cache bounds for NewRobots.
+const (
+	DefaultRobotsMaxEntries = 50_000
+	DefaultRobotsMaxBytes   = 64 << 20
+)
+
+// NewRobots constructs a Robots cache with the default bounds.
 func NewRobots(client *http.Client, userAgent string) *Robots {
+	return NewRobotsWithLimits(client, userAgent, DefaultRobotsMaxEntries, DefaultRobotsMaxBytes)
+}
+
+// NewRobotsWithLimits constructs a Robots cache holding at most maxEntries
+// hosts and about maxBytes of parsed rules; non-positive limits use the defaults.
+func NewRobotsWithLimits(client *http.Client, userAgent string, maxEntries int, maxBytes int64) *Robots {
+	if maxEntries <= 0 {
+		maxEntries = DefaultRobotsMaxEntries
+	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultRobotsMaxBytes
+	}
 	return &Robots{
-		cache:  make(map[string]*robotsRules),
-		client: client,
-		ua:     userAgent,
-		ttl:    24 * time.Hour,
+		cache:      make(map[string]*list.Element),
+		lru:        list.New(),
+		maxEntries: maxEntries,
+		maxBytes:   maxBytes,
+		client:     client,
+		ua:         userAgent,
+		ttl:        24 * time.Hour,
 	}
 }
 
@@ -66,18 +99,7 @@ func (r *Robots) Allowed(ctx context.Context, rawURL string) (bool, time.Duratio
 	if err != nil {
 		return false, 0, err
 	}
-	key := u.Scheme + "://" + u.Host
-
-	r.mu.RLock()
-	rules, ok := r.cache[key]
-	r.mu.RUnlock()
-
-	if !ok || time.Since(rules.fetchedAt) > r.ttl {
-		rules = r.fetch(ctx, key)
-		r.mu.Lock()
-		r.cache[key] = rules
-		r.mu.Unlock()
-	}
+	rules := r.rulesFor(ctx, u.Scheme+"://"+u.Host)
 
 	path := u.Path
 	if path == "" {
@@ -99,18 +121,7 @@ func (r *Robots) Sitemaps(ctx context.Context, hostURL string) []string {
 	if err != nil || u.Host == "" {
 		return nil
 	}
-	key := u.Scheme + "://" + u.Host
-
-	r.mu.RLock()
-	rules, ok := r.cache[key]
-	r.mu.RUnlock()
-
-	if !ok || time.Since(rules.fetchedAt) > r.ttl {
-		rules = r.fetch(ctx, key)
-		r.mu.Lock()
-		r.cache[key] = rules
-		r.mu.Unlock()
-	}
+	rules := r.rulesFor(ctx, u.Scheme+"://"+u.Host)
 
 	if len(rules.sitemaps) == 0 {
 		return nil
@@ -119,6 +130,63 @@ func (r *Robots) Sitemaps(ctx context.Context, hostURL string) []string {
 	out := make([]string, len(rules.sitemaps))
 	copy(out, rules.sitemaps)
 	return out
+}
+
+// rulesFor returns the host's rules, refetching once the TTL has passed.
+func (r *Robots) rulesFor(ctx context.Context, key string) *robotsRules {
+	r.mu.Lock()
+	if el, ok := r.cache[key]; ok {
+		if e := el.Value.(*robotsEntry); time.Since(e.rules.fetchedAt) <= r.ttl {
+			r.lru.MoveToFront(el)
+			r.mu.Unlock()
+			return e.rules
+		}
+	}
+	r.mu.Unlock()
+
+	rules := r.fetch(ctx, key)
+	r.store(key, rules)
+	return rules
+}
+
+func (r *Robots) store(key string, rules *robotsRules) {
+	size := rules.size() + int64(len(key))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if el, ok := r.cache[key]; ok {
+		e := el.Value.(*robotsEntry)
+		r.bytes += size - e.size
+		e.rules, e.size = rules, size
+		r.lru.MoveToFront(el)
+	} else {
+		r.cache[key] = r.lru.PushFront(&robotsEntry{key: key, rules: rules, size: size})
+		r.bytes += size
+	}
+	for r.lru.Len() > 1 && (r.lru.Len() > r.maxEntries || r.bytes > r.maxBytes) {
+		oldest := r.lru.Back()
+		e := oldest.Value.(*robotsEntry)
+		r.lru.Remove(oldest)
+		delete(r.cache, e.key)
+		r.bytes -= e.size
+	}
+}
+
+// size estimates the bytes a parsed robots.txt keeps alive.
+func (rr *robotsRules) size() int64 {
+	const header = 16
+	n := int64(128)
+	for _, g := range rr.groups {
+		n += 96
+		for _, vals := range [][]string{g.agents, g.disallow, g.allow} {
+			for _, v := range vals {
+				n += int64(len(v)) + header
+			}
+		}
+	}
+	for _, v := range rr.sitemaps {
+		n += int64(len(v)) + header
+	}
+	return n
 }
 
 func (r *Robots) fetch(ctx context.Context, base string) *robotsRules {
@@ -175,7 +243,7 @@ func parseRobots(body string) *robotsRules {
 				current = &rules.groups[len(rules.groups)-1]
 			}
 			if current != nil {
-				current.agents = append(current.agents, strings.ToLower(val))
+				current.agents = append(current.agents, strings.Clone(strings.ToLower(val)))
 			}
 			expectingUA = true
 		case "disallow":
@@ -183,13 +251,13 @@ func parseRobots(body string) *robotsRules {
 			if current == nil {
 				continue
 			}
-			current.disallow = append(current.disallow, val)
+			current.disallow = append(current.disallow, strings.Clone(val))
 		case "allow":
 			expectingUA = false
 			if current == nil {
 				continue
 			}
-			current.allow = append(current.allow, val)
+			current.allow = append(current.allow, strings.Clone(val))
 		case "crawl-delay":
 			expectingUA = false
 			if current == nil {
@@ -205,7 +273,7 @@ func parseRobots(body string) *robotsRules {
 			// Modern crawlers auto-discover sitemap URLs from robots.txt.
 			expectingUA = false
 			if val != "" {
-				rules.sitemaps = append(rules.sitemaps, val)
+				rules.sitemaps = append(rules.sitemaps, strings.Clone(val))
 			}
 		default:
 			expectingUA = false
