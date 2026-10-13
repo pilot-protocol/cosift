@@ -263,7 +263,7 @@ func cutSlug(s string) string {
 	return strings.Trim(s, "-")
 }
 
-var reservedSlugs = set("v", "index", "sitemap", "search", "api", "admin", "random", "new")
+var reservedSlugs = set("v", "index", "sitemap", "search", "api", "admin", "random", "new", "style", "terms", "wanted")
 
 // assignSlug returns base when it is free, else the first free disambiguated form.
 func assignSlug(base string, taken func(string) bool) string {

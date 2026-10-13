@@ -436,12 +436,16 @@ func (s *Store) handleStats(w http.ResponseWriter, r *http.Request, p v1.Princip
 }
 
 type versionSummary struct {
-	Version       int    `json:"version"`
-	UpdatedAt     string `json:"updated_at"`
-	QualityTier   string `json:"quality_tier"`
-	ContentSHA256 string `json:"content_sha256"`
-	Models        Models `json:"models"`
-	Build         Build  `json:"build"`
+	Version            int     `json:"version"`
+	UpdatedAt          string  `json:"updated_at"`
+	Status             string  `json:"status"`
+	SensitivityClass   string  `json:"sensitivity_class"`
+	QualityTier        string  `json:"quality_tier"`
+	ContentSHA256      string  `json:"content_sha256"`
+	Models             Models  `json:"models"`
+	Build              Build   `json:"build"`
+	VersionContributor *string `json:"version_contributor"`
+	RevertsTo          int     `json:"reverts_to,omitempty"`
 }
 
 func (s *Store) handleVersions(w http.ResponseWriter, r *http.Request, p v1.Principal) {
@@ -474,7 +478,7 @@ func (s *Store) handleVersions(w http.ResponseWriter, r *http.Request, p v1.Prin
 		if len(v.Build.RetrievalParams) == 0 {
 			v.Build.RetrievalParams = json.RawMessage("{}")
 		}
-		out = append(out, versionSummary{v.Version, v.UpdatedAt, v.QualityTier, v.ContentSHA256, v.Models, v.Build})
+		out = append(out, versionSummary{v.Version, v.UpdatedAt, v.Status, v.Sensitivity.Class, v.QualityTier, v.ContentSHA256, v.Models, v.Build, v.VersionContributor, v.RevertsTo})
 	}
 	v1.WriteJSON(w, http.StatusOK, map[string]any{"current": rec.Version, "versions": out})
 }

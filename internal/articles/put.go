@@ -11,9 +11,18 @@ import (
 )
 
 const (
-	keepVersions    = 5
-	maxContributors = 64
+	keepVersions          = 5
+	keepVersionsCommunity = 20
+	maxContributors       = 64
 )
+
+// keepFor is how many prior versions a record keeps.
+func keepFor(r *Record) int {
+	if r.origin() == originCommunity {
+		return keepVersionsCommunity
+	}
+	return keepVersions
+}
 
 // writeScope is the scope an article PUT runs under; no principal holds both.
 func writeScope(p v1.Principal) v1.Scope {
@@ -307,7 +316,7 @@ func (s *Store) commitArticle(p v1.Principal, id string, b *putBody, vecs map[st
 	if pl.result == "updated" && pl.content {
 		prevJSON, _ := pl.prev.MarshalJSON()
 		_ = bt.Set(versionKey(id, pl.prev.Version), prevJSON, nil)
-		if err := s.pruneVersions(bt, id, pl.prev.Version); err != nil {
+		if err := s.pruneVersions(bt, id, pl.prev.Version, keepFor(pl.rec)); err != nil {
 			bt.Close()
 			return nil, fail(v1.InternalError()), false
 		}
@@ -350,9 +359,9 @@ func storedVectors(r *Record, rows []row) map[string][]float32 {
 	return out
 }
 
-// pruneVersions deletes prior versions of id beyond the newest keepVersions,
+// pruneVersions deletes prior versions of id beyond the newest keep,
 // counting newest as one of them.
-func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest int) error {
+func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest, keep int) error {
 	lower, upper := versionPrefix(id)
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
 	if err != nil {
@@ -366,7 +375,7 @@ func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest int) error {
 		}
 	}
 	slices.Sort(versions)
-	for len(versions) > keepVersions {
+	for len(versions) > keep {
 		_ = bt.Delete(versionKey(id, versions[0]), nil)
 		versions = versions[1:]
 	}
