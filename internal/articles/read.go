@@ -133,6 +133,7 @@ type listQuery struct {
 	vertical     string
 	updatedSince time.Time
 	statuses     map[string]bool
+	tiers        map[string]bool
 	prelive      *bool
 	all          bool
 	minTier      string
@@ -146,7 +147,7 @@ type cursor struct {
 	R int    `json:"r,omitempty"`
 }
 
-var listParams = set("cursor", "status", "promoted", "vertical", "updated_since", "prelive", "order", "limit")
+var listParams = set("cursor", "status", "tier", "promoted", "vertical", "updated_since", "prelive", "order", "limit")
 
 func parseBool(v string) (*bool, bool) {
 	switch v {
@@ -208,10 +209,19 @@ func parseList(r *http.Request, all bool) (listQuery, string, *v1.Error) {
 			default:
 				return q, "", fail(errInvalidParam("status"))
 			}
-			if !all && st != StatusPublished {
+			if !all && st != StatusPublished && st != StatusPending {
 				return q, "", fail(errInvalidParam("status"))
 			}
 			q.statuses[st] = true
+		}
+	}
+	if vals.Has("tier") {
+		q.tiers = map[string]bool{}
+		for _, t := range strings.Split(vals.Get("tier"), ",") {
+			if !qualityTiers[t] {
+				return q, "", fail(errInvalidParam("tier"))
+			}
+			q.tiers[t] = true
 		}
 	}
 	if vals.Has("prelive") {
@@ -223,9 +233,19 @@ func parseList(r *http.Request, all bool) (listQuery, string, *v1.Error) {
 	}
 	h := sha256.Sum256([]byte(strings.Join([]string{
 		strconv.FormatBool(all), q.order, vals.Get("promoted"), q.vertical, vals.Get("updated_since"),
-		vals.Get("status"), vals.Get("prelive"),
+		vals.Get("status"), vals.Get("tier"), vals.Get("prelive"),
 	}, "\x00")))
 	return q, hex.EncodeToString(h[:8]), nil
+}
+
+// listable is what articles:read may list: published records, and visible stubs when status asks for them.
+func (q *listQuery) listable(p v1.Principal, r *Record) bool {
+	if q.statuses == nil || q.statuses[StatusPublished] {
+		if eligible(p, r) {
+			return true
+		}
+	}
+	return q.statuses[StatusPending] && r.Status == StatusPending && visible(p, r)
 }
 
 func (q *listQuery) match(p v1.Principal, r *Record) bool {
@@ -236,7 +256,10 @@ func (q *listQuery) match(p v1.Principal, r *Record) bool {
 		if q.prelive != nil && r.Prelive != *q.prelive {
 			return false
 		}
-	} else if !eligible(p, r) {
+	} else if !q.listable(p, r) {
+		return false
+	}
+	if q.tiers != nil && !q.tiers[r.QualityTier] {
 		return false
 	}
 	if q.promoted != nil && promotedAt(r, q.minTier) != *q.promoted {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -138,7 +139,11 @@ func (s *Store) handleStatus(w http.ResponseWriter, r *http.Request, p v1.Princi
 	if cur := s.idx.recs[id]; cur != nil {
 		view.Status, view.StatusChangedAt, view.HasFingerprint = &cur.Status, cur.StatusChangedAt, s.idx.hasFingerprint(id)
 	}
-	v1.WriteJSON(w, http.StatusOK, map[string]any{"result": "ok", "article": view})
+	out := map[string]any{"result": "ok", "article": view}
+	if b.Action == "tombstone" {
+		out["contributors"] = nonNil(slices.Clone(rec.Contributors))
+	}
+	v1.WriteJSON(w, http.StatusOK, out)
 }
 
 func (s *Store) putRecordLocked(r *Record) error {
