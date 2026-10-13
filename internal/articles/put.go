@@ -495,6 +495,7 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 			return nil, fail(errBlocked(p, blocker))
 		}
 	}
+	rec.RevertsTo = 0
 	if contribute {
 		rec.Origin, rec.VersionContributor = originCommunity, &cid
 		if !slices.Contains(rec.Contributors, cid) {

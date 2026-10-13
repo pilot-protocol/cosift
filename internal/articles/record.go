@@ -47,6 +47,15 @@ type Moderation struct {
 	By         string `json:"by"`
 	ReasonCode string `json:"reason_code,omitempty"`
 	At         string `json:"at"`
+	*Revert
+}
+
+// Revert is what a revert adds to the record's last moderation action.
+type Revert struct {
+	RequestID            string   `json:"request_id,omitempty"`
+	ToVersion            int      `json:"to_version"`
+	RevertedVersions     []int    `json:"reverted_versions"`
+	RevertedContributors []string `json:"reverted_contributors"`
 }
 
 // Record is an 'R a' value. Its stored shape depends on whether it is an
@@ -203,6 +212,10 @@ func (r *Record) clone() *Record {
 	}
 	if r.Moderation != nil {
 		m := *r.Moderation
+		if m.Revert != nil {
+			rv := *m.Revert
+			m.Revert = &rv
+		}
 		c.Moderation = &m
 	}
 	return &c
