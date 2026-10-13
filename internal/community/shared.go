@@ -53,27 +53,8 @@ func (s *Server) sharedUser(ctx context.Context, identity sharedaccount.Identity
 		return User{}, err
 	}
 	defer tx.Rollback()
-	var id string
-	err = tx.QueryRowContext(ctx, `SELECT user_id FROM shared_identities WHERE uid=?`, identity.UID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, identity.Email).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			id = randomID()
-			_, err = tx.ExecContext(ctx, `INSERT INTO users(id,email,name,salt,password_hash,created_at) VALUES(?,?,?,?,?,?)`, id, identity.Email, strings.Split(identity.Email, "@")[0], randomID(), "", time.Now().Unix())
-		}
-		if err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO shared_identities(uid,user_id) VALUES(?,?)`, identity.UID, id); err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash='' WHERE id=?`, id); err != nil {
-			return User{}, err
-		}
-	} else if err != nil {
+	id, err := linkSharedUser(ctx, tx, identity.UID, identity.Email)
+	if err != nil {
 		return User{}, err
 	}
 	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT id,email,name,interests,onboarded FROM users WHERE id=?`, id))
@@ -87,6 +68,36 @@ func (s *Server) sharedUser(ctx context.Context, identity sharedaccount.Identity
 		return User{}, err
 	}
 	return u, nil
+}
+
+// linkSharedUser returns the user linked to uid; with no link it links the user of the verified email, or creates one.
+func linkSharedUser(ctx context.Context, tx *sql.Tx, uid, email string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT user_id FROM shared_identities WHERE uid=?`, uid).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, email).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		id = randomID()
+		_, err = tx.ExecContext(ctx, `INSERT INTO users(id,email,name,salt,password_hash,created_at) VALUES(?,?,?,?,?,?)`, id, email, strings.Split(email, "@")[0], randomID(), "", time.Now().Unix())
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO shared_identities(uid,user_id) VALUES(?,?)`, uid, id); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash='' WHERE id=?`, id); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func sharedToken(r *http.Request) string {
