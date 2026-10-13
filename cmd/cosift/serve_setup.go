@@ -60,6 +60,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	if err != nil {
 		return err
 	}
+	moderationLimit, err := cfg.Work.CommunityModerationLimit()
+	if err != nil {
+		return err
+	}
 
 	ps, err := store.OpenPebble(*dir)
 	if err != nil {
@@ -199,6 +203,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		startupDocs: vectorNodes, // placeholder; overwritten below
 	}
 	srv.communityCaps = caps
+	srv.communityModerationsPerDay = &moderationLimit
 	// Read actual doc count at startup for crawl-rate baseline. Uses
 	// CorpusStats (the atomic-mirror indexed_docs counter) — NOT
 	// Stats.Documents which scans the raw 'd' family. The two diverge
@@ -1285,6 +1290,13 @@ type pebbleHTTP struct {
 	crawlCommunityReady atomic.Bool
 	communityCaps       communityCaps
 	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error)
+
+	// communityModerationsPerDay is the daily ceiling of the moderate route; nil is the default.
+	communityModerationsPerDay *int
+	communityModerationMu      sync.Mutex
+	communityModerations       communityModerationCounts
+	communityNow               func() time.Time
+
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)

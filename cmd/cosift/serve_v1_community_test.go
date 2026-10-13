@@ -119,8 +119,7 @@ func TestCommunityEnqueueErrors(t *testing.T) {
 
 // The moderate success body has exactly decision and category; every error is a /v1 error.
 func TestCommunityModerateContract(t *testing.T) {
-	chat := &communitySafetyChat{reply: `{"decision":"reject","category":"spam"}`, t: t}
-	s := &pebbleHTTP{chat: chat}
+	s, _ := ceilingServer(t, 1000, &communitySafetyChat{reply: `{"decision":"reject","category":"spam"}`, t: t})
 	doc := func(mut func(m map[string]any)) string {
 		m := map[string]any{}
 		for k, v := range moderateBody {

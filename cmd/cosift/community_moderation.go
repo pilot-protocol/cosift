@@ -27,8 +27,9 @@ var (
 	errModerationUnavailable = errors.New("content safety service unavailable")
 )
 
-// moderateDocument returns the content-safety verdict for doc.
-func (s *pebbleHTTP) moderateDocument(ctx context.Context, doc community.ModerationDocument) (community.ModerationVerdict, error) {
+// moderateDocument returns the content-safety verdict for doc. reserve, when set, runs once just
+// before the model is asked, so a document decided without the model takes nothing from it.
+func (s *pebbleHTTP) moderateDocument(ctx context.Context, doc community.ModerationDocument, reserve func() error) (community.ModerationVerdict, error) {
 	if adultfilter.IsAdult("", "", doc.URL) {
 		return community.ModerationVerdict{Decision: "reject", Category: "adult"}, nil
 	}
@@ -46,6 +47,11 @@ func (s *pebbleHTTP) moderateDocument(ctx context.Context, doc community.Moderat
 	}
 	if s.chat == nil {
 		return community.ModerationVerdict{}, errModerationUnavailable
+	}
+	if reserve != nil {
+		if err := reserve(); err != nil {
+			return community.ModerationVerdict{}, err
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
 	defer cancel()

@@ -142,13 +142,22 @@ func (s *pebbleHTTP) handleCommunityModerate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	liftWriteDeadline(w)
-	verdict, err := s.moderateDocument(r.Context(), doc)
+	verdict, err := s.moderateDocument(r.Context(), doc, s.reserveCommunityModeration)
+	var ceiling *ceilingError
 	switch {
 	case err == nil:
+		s.communityModerations.ok.Add(1)
 		v1.WriteJSON(w, http.StatusOK, verdict)
+	case errors.As(err, &ceiling):
+		s.communityModerations.ceiling.Add(1)
+		e := v1Problem(http.StatusServiceUnavailable, "moderation_unavailable", "daily moderation ceiling reached")
+		e.Ceiling, e.RetryAfter = true, ceiling.retry
+		v1.WriteError(w, e)
 	case errors.Is(err, errModerationInvalidURL):
+		s.communityModerations.errs.Add(1)
 		v1.WriteError(w, v1Problem(http.StatusBadRequest, "invalid_url", "invalid url"))
 	default:
+		s.communityModerations.errs.Add(1)
 		v1.WriteError(w, v1Problem(http.StatusServiceUnavailable, "moderation_unavailable", "content safety service unavailable"))
 	}
 }

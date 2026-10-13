@@ -655,6 +655,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.v1svc != nil {
 		s.v1svc.Metrics.WritePrometheus(w)
 	}
+	writeCommunityModerationMetrics(w, s)
 }
 
 // HTTP form of `cosift verify`. Same comparison (running

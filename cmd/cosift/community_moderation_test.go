@@ -48,12 +48,12 @@ func TestCommunityModerationStrictVerdicts(t *testing.T) {
 		{`{"decision":"allow","category":"safe"} {"decision":"reject","category":"phishing"}`, 503},
 		{`not JSON`, 503},
 	} {
-		s := &pebbleHTTP{chat: &communitySafetyChat{reply: tc.reply, t: t}}
+		s, _ := ceilingServer(t, 1000, &communitySafetyChat{reply: tc.reply, t: t})
 		if w := v1Call(t, s.handleCommunityModerate, string(b)); w.Code != tc.status {
 			t.Errorf("reply %s status %d want %d", tc.reply, w.Code, tc.status)
 		}
 	}
-	s := &pebbleHTTP{}
+	s, _ := ceilingServer(t, 1000, nil)
 	if w := v1Call(t, s.handleCommunityModerate, string(b)); w.Code != 503 {
 		t.Fatal("no model must not imply allow")
 	}
