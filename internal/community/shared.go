@@ -134,7 +134,7 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 	}
 	token := sharedToken(r)
 	if _, err := sharedaccount.Parse(token); err != nil {
-		sharedProblem(w, err)
+		s.authFailed(w, r, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -144,7 +144,7 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 		if errors.Is(err, sharedaccount.ErrUnauthorized) && r.Header.Get("Authorization") == "" {
 			s.clearSession(w, r)
 		}
-		sharedProblem(w, err)
+		s.authFailed(w, r, err)
 		return
 	}
 	u, err := s.sharedUser(ctx, identity)
