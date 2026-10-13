@@ -97,7 +97,7 @@ func sharedToken(r *http.Request) string {
 		}
 		return ""
 	}
-	if c, e := r.Cookie(cookieName); e == nil {
+	if c, e := requestSessionCookie(r); e == nil {
 		return c.Value
 	}
 	return ""
@@ -122,7 +122,7 @@ func sharedProblem(w http.ResponseWriter, err error) {
 	problem(w, status, message)
 }
 func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHandler, optional bool) {
-	_, cookieErr := r.Cookie(cookieName)
+	_, cookieErr := requestSessionCookie(r)
 	if optional && cookieErr != nil && r.Header.Get("Authorization") == "" {
 		next(w, r, User{})
 		return
@@ -141,7 +141,7 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 	identity, err := s.cfg.Shared.Verify(ctx, token)
 	if err != nil {
 		if errors.Is(err, sharedaccount.ErrUnauthorized) && r.Header.Get("Authorization") == "" {
-			http.SetCookie(w, s.sharedCookie("", -1))
+			s.clearSession(w, r)
 		}
 		sharedProblem(w, err)
 		return
@@ -152,9 +152,6 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 		return
 	}
 	next(w, r, u)
-}
-func (s *Server) sharedCookie(token string, age int) *http.Cookie {
-	return &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode, MaxAge: age, Expires: time.Now().Add(time.Duration(age) * time.Second)}
 }
 func (s *Server) sharedStart(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Shared == nil {
@@ -301,7 +298,7 @@ func (s *Server) sharedIssued(w http.ResponseWriter, r *http.Request, issued sha
 		}
 		return
 	}
-	http.SetCookie(w, s.sharedCookie(issued.Token, int(sessionAge.Seconds())))
+	s.setSession(w, issued.Token)
 	respond(w, 200, u)
 }
 func (s *Server) sharedTool(w http.ResponseWriter, r *http.Request, u User) {

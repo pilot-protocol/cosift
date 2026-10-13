@@ -347,7 +347,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 		}
 		token := randomID()
 		expires := time.Now().Add(sessionAge)
-		if old, err := r.Cookie(cookieName); err == nil {
+		for _, old := range sessionCookies(r) {
 			_, _ = s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(old.Value))
 		}
 		_, err = s.db.ExecContext(r.Context(), `INSERT INTO sessions(hash,user_id,expires_at) VALUES(?,?,?)`, tokenHash(token), id, expires.Unix())
@@ -355,7 +355,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 			problem(w, 500, "could not create session")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: int(sessionAge.Seconds())})
+		s.setSession(w, token)
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT id,email,name,interests,onboarded FROM users WHERE id=?`, id))
 		if err != nil {
 			problem(w, 500, "could not load account")
@@ -373,14 +373,14 @@ func (s *Server) auth(next userHandler) http.HandlerFunc {
 			s.sharedAuth(w, r, next, false)
 			return
 		}
-		cookie, err := r.Cookie(cookieName)
+		cookie, err := requestSessionCookie(r)
 		if err != nil {
 			problem(w, 401, "sign in to continue")
 			return
 		}
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT u.id,u.email,u.name,u.interests,u.onboarded FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.hash=? AND s.expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
-			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+			s.clearSession(w, r)
 			problem(w, 401, "session expired; sign in again")
 			return
 		}
@@ -398,16 +398,17 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, u User) {
 			sharedProblem(w, err)
 			return
 		}
-		http.SetCookie(w, s.sharedCookie("", -1))
+		s.clearSession(w, r)
 		respond(w, 200, map[string]bool{"ok": true})
 		return
 	}
-	c, _ := r.Cookie(cookieName)
-	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
-		problem(w, 500, "could not sign out")
-		return
+	for _, c := range sessionCookies(r) {
+		if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
+			problem(w, 500, "could not sign out")
+			return
+		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+	s.clearSession(w, r)
 	respond(w, 200, map[string]bool{"ok": true})
 }
 

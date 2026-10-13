@@ -284,11 +284,10 @@ func TestSharedFinishUsesSecureCookieAndIndependentCleanupContext(t *testing.T) 
 		}}
 		w := sharedJSON(s, "/api/auth/verify", `{"request_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","code":"012345"}`, "", "")
 		expect(t, w, 200)
-		cookies := w.Result().Cookies()
-		if len(cookies) != 1 {
+		c := cookieNamed(w, hostName)
+		if c == nil || len(w.Result().Cookies()) != 2 {
 			t.Fatal("missing session cookie")
 		}
-		c := cookies[0]
 		if c.Value != sharedTestToken || !c.Secure || !c.HttpOnly || c.Path != "/" || c.SameSite != http.SameSiteLaxMode || c.MaxAge != int(sessionAge.Seconds()) || !c.Expires.After(time.Now()) {
 			t.Fatalf("unsafe session cookie: %+v", c)
 		}
