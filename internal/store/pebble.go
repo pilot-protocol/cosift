@@ -116,7 +116,8 @@ const (
 	//                          only one host's lists (O(site_docs)) instead of
 	//                          the global 'p' family (O(corpus)). Written
 	//                          alongside 'p' when COSIFT_HOST_PARTITION=1.
-	famFrontier byte = 'f' // 'f' + 'u' + url → packed frontier entry
+	famContentSHA byte = 'C' // 'C' + sha256(text)(32) + docID(8) → empty; see content_index.go
+	famFrontier   byte = 'f' // 'f' + 'u' + url → packed frontier entry
 	//                       Status byte +
 	//                       depth + priority + enqueued_at + attempts + host
 	//                       + last_error all in one value. Secondary indexes
@@ -362,6 +363,9 @@ func (p *PebbleStore) UpsertDocument(ctx context.Context, d *Document) (int64, e
 		if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
 			return 0, err
 		}
+	}
+	if err := setContentSHA(batch, d.ContentSHA, id); err != nil {
+		return 0, err
 	}
 	// Only update next_doc_id meta on a NEW allocation. Updating it on
 	// re-crawls would clobber it to a LOWER value, so the next genuine new
@@ -1527,6 +1531,9 @@ func (p *PebbleStore) WriteCrawlResult(
 			return 0, err
 		}
 	}
+	if err := setContentSHA(batch, d.ContentSHA, id); err != nil {
+		return 0, err
+	}
 	if isNew {
 		if err := batch.Set(metaKey("next_doc_id"), idBuf, nil); err != nil {
 			return 0, err
@@ -2356,6 +2363,9 @@ func (p *PebbleStore) UpsertDocumentBatch(ctx context.Context, docs []*Document)
 			if err := batch.Set(hostKey(d.Domain, id), nil, nil); err != nil {
 				return nil, err
 			}
+		}
+		if err := setContentSHA(batch, d.ContentSHA, id); err != nil {
+			return nil, err
 		}
 		_ = isNew
 	}
