@@ -19,12 +19,14 @@ type communityReceiptRecord struct {
 	PayloadHash         string                       `json:"payload_hash"`
 	ApprovedContentHash string                       `json:"approved_content_hash,omitempty"`
 	Eligible            bool                         `json:"eligible"`
+	Decision            *crawler.NoveltyDecision     `json:"decision,omitempty"`
 	Receipt             *crawler.ContributionReceipt `json:"receipt,omitempty"`
 }
 
-// Journal intent before indexing and the receipt before returning HTTP success.
-// A lost response, failed reward write, or restart must replay the same novelty
-// decision. Keys live in Pebble's metadata family and are included in backups.
+// Journal intent before indexing, the content novelty verdict before the first
+// write, and the receipt before returning HTTP success. A lost response, failed
+// reward write, or restart must replay the same novelty decision. Keys live in
+// Pebble's metadata family and are included in backups.
 func (s *pebbleHTTP) fetchCommunityReceipt(ctx context.Context, id, raw string, artifact *crawler.LocalArtifact, approvedHash string) (crawler.ContributionReceipt, error) {
 	if !crawler.ValidApprovedContentHash(approvedHash) {
 		return crawler.ContributionReceipt{}, fmt.Errorf("%w: approved content hash is required", crawler.ErrContributionRejected)
@@ -86,7 +88,7 @@ func (s *pebbleHTTP) fetchCommunityReceipt(ctx context.Context, id, raw string, 
 			return crawler.ContributionReceipt{}, fmt.Errorf("%w: approval differs from recorded submission", crawler.ErrContributionRejected)
 		}
 		if record.Receipt != nil {
-			return *record.Receipt, nil
+			return s.replayCommunityReceipt(ctx, record, raw)
 		}
 	} else if errors.Is(err, pebble.ErrNotFound) {
 		canon, canonicalErr := crawler.ContributionURL(raw)
@@ -105,15 +107,76 @@ func (s *pebbleHTTP) fetchCommunityReceipt(ctx context.Context, id, raw string, 
 	} else {
 		return crawler.ContributionReceipt{}, err
 	}
+	ctx = crawler.WithNoveltyRecorder(ctx, func(d crawler.NoveltyDecision) error {
+		if record.Decision != nil {
+			return nil // an earlier attempt already ruled, possibly before its write
+		}
+		record.Decision = &d
+		data, _ := json.Marshal(record)
+		return db.Set(key, data, pebble.Sync)
+	})
 	receipt, err := s.crawlCommunityFetch(ctx, raw, artifact, approvedHash)
 	if err != nil {
 		return crawler.ContributionReceipt{}, err
 	}
-	receipt.Novel = receipt.Indexed && record.Eligible
+	complete, err := s.store.ContentIndexComplete(ctx)
+	if err != nil {
+		return crawler.ContributionReceipt{}, err
+	}
+	novel := receipt.Novel
+	if record.Decision != nil {
+		novel = record.Decision.Novel
+	}
+	receipt.Novel = receipt.Indexed && record.Eligible && novel && complete
+	receipt.ContentIndexComplete = complete
 	record.Receipt = &receipt
 	data, _ := json.Marshal(record)
 	if err = db.Set(key, data, pebble.Sync); err != nil {
 		return crawler.ContributionReceipt{}, err
 	}
 	return receipt, nil
+}
+
+// replayCommunityReceipt returns a journaled receipt under current semantics.
+func (s *pebbleHTTP) replayCommunityReceipt(ctx context.Context, record communityReceiptRecord, raw string) (crawler.ContributionReceipt, error) {
+	receipt := *record.Receipt
+	complete, err := s.store.ContentIndexComplete(ctx)
+	if err != nil {
+		return crawler.ContributionReceipt{}, err
+	}
+	receipt.ContentIndexComplete = complete
+	if receipt.Novel && record.Decision == nil && complete {
+		if receipt.Novel, err = s.contentUnclaimed(ctx, raw, receipt); err != nil {
+			return crawler.ContributionReceipt{}, err
+		}
+	}
+	receipt.Novel = receipt.Novel && complete
+	return receipt, nil
+}
+
+// contentUnclaimed reports whether no other document holds the receipt's content.
+func (s *pebbleHTTP) contentUnclaimed(ctx context.Context, raw string, receipt crawler.ContributionReceipt) (bool, error) {
+	docURL := receipt.FinalURL
+	if docURL == "" {
+		var err error
+		if docURL, err = crawler.ContributionURL(raw); err != nil {
+			return false, err
+		}
+	}
+	doc, err := s.store.GetDocByURL(ctx, docURL)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	sha, err := hex.DecodeString(receipt.ContentHash)
+	if err != nil {
+		return false, nil
+	}
+	if live, err := s.store.HasLiveContent(ctx, sha, doc.ID); err != nil || live {
+		return false, err
+	}
+	held, err := s.store.HasUncomparableVariant(ctx, docURL, doc.ID)
+	return !held, err
 }
