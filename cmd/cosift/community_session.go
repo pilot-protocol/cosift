@@ -23,6 +23,34 @@ func (s communitySession) cookie() *http.Cookie {
 	return &http.Cookie{Name: "cosift_session", Value: s.Token, Path: "/", HttpOnly: true, Secure: len(s.Origin) >= 6 && s.Origin[:6] == "https:", Expires: s.Expires}
 }
 
+// cookies sends the legacy name every server reads, plus the __Host- name on HTTPS origins so it keeps working once the legacy name is dropped.
+func (s communitySession) cookies() []*http.Cookie {
+	legacy := s.cookie()
+	if !legacy.Secure {
+		return []*http.Cookie{legacy}
+	}
+	host := *legacy
+	host.Name = "__Host-cosift_session"
+	return []*http.Cookie{legacy, &host}
+}
+
+// loginSessionCookie picks the live session cookie from a login response, preferring the __Host- name.
+func loginSessionCookie(cookies []*http.Cookie) *http.Cookie {
+	var legacy *http.Cookie
+	for _, c := range cookies {
+		if c.Value == "" || c.MaxAge < 0 {
+			continue
+		}
+		switch c.Name {
+		case "__Host-cosift_session":
+			return c
+		case "cosift_session":
+			legacy = c
+		}
+	}
+	return legacy
+}
+
 func readCommunitySession(path, origin string, allowExpired bool) (communitySession, error) {
 	s, err := readCommunitySessionFile(path, allowExpired)
 	if err != nil {

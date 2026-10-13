@@ -223,11 +223,13 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 			return err
 		}
 		// Logout must reach the server even when the local expiry has elapsed.
-		cookie := saved.cookie()
+		cookies := saved.cookies()
 		if *logout {
-			cookie.Expires = time.Time{}
+			for _, c := range cookies {
+				c.Expires = time.Time{}
+			}
 		}
-		jar.SetCookies(u, []*http.Cookie{cookie})
+		jar.SetCookies(u, cookies)
 	}
 	var loginCookie *http.Cookie
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -252,10 +254,8 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 		}
 		defer res.Body.Close()
 		if path == "login" {
-			for _, c := range res.Cookies() {
-				if c.Name == "cosift_session" {
-					loginCookie = c
-				}
+			if c := loginSessionCookie(res.Cookies()); c != nil {
+				loginCookie = c
 			}
 		}
 		data, err := io.ReadAll(io.LimitReader(res.Body, (4<<20)+1))
