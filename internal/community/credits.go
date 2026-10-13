@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
 const contributionReward = 10
+const defaultContributionRewardDailyCap = 10
 const monthlyFreeCredits = 1000
 
 func requestCreditCosts() map[string]int {
@@ -49,7 +52,11 @@ FROM credit_ledger WHERE user_id=?`, start.Unix(), end.Unix(), start.Unix(), end
 		problem(w, 503, "billing status unavailable")
 		return
 	}
-	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": 0, "all_authenticated_requests_metered": true, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "verified_contribution_reward": contributionReward, "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
+	out := map[string]any{"balance": balance, "monthly_free_credits": monthlyFreeCredits, "monthly": map[string]any{"month": start.Format("2006-01"), "starts_at": start.Format(time.RFC3339), "timezone": "UTC", "free": free, "earned": earned, "purchased": purchased, "spent": spent}, "free_requests_per_minute": 0, "all_authenticated_requests_metered": true, "limits": s.limitPolicy(), "extra_request_cost": 1, "request_credit_costs": requestCreditCosts(), "payments_enabled": s.paymentsEnabled(), "payment_mode": s.paymentMode(), "credit_pack": creditPack()}
+	if s.cfg.ContributionReward {
+		out["verified_contribution_reward"] = contributionReward
+		out["verified_contribution_daily_cap"] = s.cfg.ContributionRewardDailyCap
+	}
 	for key, value := range billing {
 		out[key] = value
 	}
@@ -77,11 +84,15 @@ SELECT ?,?,-?,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		message := fmt.Sprintf("insufficient credits: %s requires %d credits; contribute verified new webpages or use your next monthly grant", mode, cost)
+		var ways []string
 		if s.paymentsEnabled() {
-			message = fmt.Sprintf("insufficient credits: %s requires %d credits; add credits in Billing, contribute verified webpages, or use your next monthly grant", mode, cost)
+			ways = append(ways, "add credits in Billing")
 		}
-		problem(w, 429, message)
+		if s.cfg.ContributionReward {
+			ways = append(ways, "contribute verified new webpages")
+		}
+		ways = append(ways, "use your next monthly grant")
+		problem(w, 429, fmt.Sprintf("insufficient credits: %s requires %d credits; %s", mode, cost, strings.Join(ways, " or ")))
 		return nil, false
 	}
 	return func(success bool) {
@@ -96,11 +107,21 @@ SELECT ?,?,-?,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit
 	}, true
 }
 
-func (s *Server) rewardContribution(ctx context.Context, submissionID, contentHash string) error {
+// rewardContribution mints the reward only behind the switch, for a complete content index, and under the account's rolling daily cap.
+func (s *Server) rewardContribution(ctx context.Context, submissionID, contentHash string, indexComplete bool) error {
+	if !s.cfg.ContributionReward {
+		return nil
+	}
+	if !indexComplete {
+		log.Printf("community: contribution reward withheld: the backend's content index is incomplete")
+		return nil
+	}
 	// Global content uniqueness prevents the same page, mirrored URLs, retries,
 	// and separate accounts from receiving the same reward twice.
+	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO credit_ledger(id,user_id,delta,reason,created_at)
 SELECT ?,user_id,?,'verified_contribution',? FROM submissions WHERE id=? AND user_id IS NOT NULL
-ON CONFLICT(id) DO NOTHING`, "contribution:"+contentHash, contributionReward, time.Now().Unix(), submissionID)
+AND (SELECT count(*) FROM credit_ledger WHERE user_id=submissions.user_id AND reason='verified_contribution' AND created_at>?)<?
+ON CONFLICT(id) DO NOTHING`, "contribution:"+contentHash, contributionReward, now.Unix(), submissionID, now.Add(-24*time.Hour).Unix(), s.cfg.ContributionRewardDailyCap)
 	return err
 }

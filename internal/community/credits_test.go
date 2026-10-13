@@ -21,12 +21,13 @@ func TestCreditsRewardOnceSpendAndRefund(t *testing.T) {
 		}
 		w.Write([]byte(`{"results":[]}`))
 	}))
+	s.cfg.ContributionReward = true
 	cookie := account(t, s, "credit@example.com")
 	var u User
 	json.Unmarshal(request(t, s, "GET", "/api/me", nil, cookie).Body.Bytes(), &u)
 	s.db.Exec(`INSERT INTO submissions(id,user_id,url,created_at) VALUES('first',?,'https://example.com/a',0),('second',?,'https://example.com/b',0)`, u.ID, u.ID)
 	for _, id := range []string{"first", "first", "second"} {
-		if err := s.rewardContribution(context.Background(), id, strings.Repeat("a", 64)); err != nil {
+		if err := s.rewardContribution(context.Background(), id, strings.Repeat("a", 64), true); err != nil {
 			t.Fatal(err)
 		}
 	}

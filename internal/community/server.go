@@ -53,6 +53,8 @@ type Config struct {
 	StripeSecretKey             string
 	StripeWebhookSecret         string
 	AllowTestPayments           bool // Explicit opt-in for an isolated QA ledger only.
+	ContributionReward          bool // Mint the contribution reward; off until the backend's content index is built.
+	ContributionRewardDailyCap  int  // Rewards per account per rolling 24 hours; 0 means the default.
 	StripePortalConfigurationID string
 	GAMeasurementID             string
 	GSCVerification             string
@@ -857,6 +859,8 @@ func (s *Server) dispatch(ctx context.Context) error {
 				Novel       bool   `json:"novel"`
 				ContentHash string `json:"content_hash"`
 				Queued      string `json:"queued"` // explicit acknowledgement from older guarded backends
+				// Absent from older backends, so their receipts never mint.
+				ContentIndexComplete bool `json:"content_index_complete"`
 			}
 			if ok {
 				data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
@@ -873,7 +877,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			if ok {
 				indexed = receipt.Indexed
 				if receipt.Indexed && receipt.Novel && len(receipt.ContentHash) == 64 {
-					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash); err != nil {
+					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash, receipt.ContentIndexComplete); err != nil {
 						res.Body.Close()
 						return err
 					}

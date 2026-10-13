@@ -155,6 +155,21 @@ test('monthly credits render actual totals and clear on account reset', async ()
  assert.match(a.get('credit-month').textContent,/2026-09/);
  a.run('resetAccount()'); assert.equal(a.get('monthly-credits').hidden,true);
 });
+test('contribution copy promises credits only while the server reports a reward', async () => {
+ const a=await app(); const ids=['contribute-intro','reward-indexed','billing-reward','cli-reward','free-reward'];
+ for (const id of ids) a.get(id).textContent='plain '+id;
+ const credits=async data=>{ const refresh=a.run('refreshCredits()'); await tick(); a.respond('credits',data); await refresh; };
+ await credits({balance:5});
+ for (const id of ids) assert.equal(a.get(id).textContent,'plain '+id);
+ await credits({balance:5,verified_contribution_reward:10,verified_contribution_daily_cap:7});
+ assert.match(a.get('reward-indexed').textContent,/earns 10 credits.*up to 7 pages a day/);
+ assert.match(a.get('billing-reward').textContent,/earns 10 credits.*up to 7 pages a day/);
+ assert.match(a.get('contribute-intro').textContent,/earn credits/);
+ assert.match(a.get('cli-reward').textContent,/earns credits/);
+ assert.match(a.get('free-reward').textContent,/Earn more/);
+ await credits({balance:5});
+ for (const id of ids) assert.equal(a.get(id).textContent,'plain '+id);
+});
 test('analytics emits a pageview without query strings or account fields', async () => {
  const a=await app(); a.context.window={}; a.context.document.head=node();
  Object.assign(a.context.location,{origin:'https://cosift.example',pathname:'/login',search:'?email=private@example.com&token=secret'});

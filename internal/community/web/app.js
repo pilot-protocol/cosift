@@ -328,6 +328,23 @@ $("skip-interests").onclick = async () => {
     notify(e.message, true);
   }
 };
+function renderReward(c) {
+  const credits = Number(c.verified_contribution_reward) || 0;
+  const cap = Number(c.verified_contribution_daily_cap) || 0;
+  const paid = `New content earns ${credits.toLocaleString()} credits${cap ? `, for up to ${cap.toLocaleString()} pages a day` : ""}. Duplicates earn no additional credits.`;
+  const copy = {
+    "contribute-intro": "Submit public articles or documentation and earn credits for new content.",
+    "reward-indexed": paid,
+    "billing-reward": paid,
+    "cli-reward": "Verified new content earns credits.",
+    "free-reward": "Earn more by contributing useful public pages.",
+  };
+  for (const [id, text] of Object.entries(copy)) {
+    const node = $(id);
+    if (node.dataset.plain === undefined) node.dataset.plain = node.textContent;
+    node.textContent = credits > 0 ? text : node.dataset.plain;
+  }
+}
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
   $("monthly-credits").hidden = true;
@@ -337,6 +354,7 @@ async function refreshCredits() {
   $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
+    renderReward(c);
     $("credit-balance").textContent =
       `${Number(c.balance).toLocaleString()} credits available`;
     $("billing-balance").textContent = Number(c.balance).toLocaleString();
@@ -481,7 +499,7 @@ function suggestions() {
   }
 }
 async function view(name) {
-  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
+  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages."); return; }
   if (name === "billing" && !user) { showScreen("auth"); notify("Sign in to manage your credits."); return; }
   if (name === "shared" && (!sharedAuth || !user)) return;
   for (const value of ["search", "saved", "contribute", "shared", "connect", "billing"])
@@ -741,7 +759,7 @@ async function refreshSaved() {
 }
 $("contribution-form").onsubmit = (event) => {
   event.preventDefault();
-  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
+  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages."); return; }
   busy(event.target, async () => {
     const text = $("urls").value.trim(),
       file = $("csv").files[0];
