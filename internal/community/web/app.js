@@ -73,11 +73,12 @@ function notify(message, error = false) {
     error ? 10000 : 5500,
   );
 }
+const REQUEST_TIMEOUT_MS = { research: 200000, answer: 200000, search: 30000 };
 async function api(path, method = "GET", body, controller = new AbortController()) {
   const generation = accountGeneration;
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); },
-    path.startsWith("research") ? 180000 : path.startsWith("answer") ? 90000 : 30000);
+    REQUEST_TIMEOUT_MS[path.split(/[?/]/)[0]] ?? 30000);
   pendingRequests.add(controller);
   try {
     const headers = { "X-Cosift-Client": "community" };

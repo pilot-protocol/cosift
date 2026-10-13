@@ -452,6 +452,9 @@ func (s *Server) interests(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, u)
 }
 
+// retrievalTimeout bounds an answer or research call to the backend; the browser's timeout must be longer.
+const retrievalTimeout = 3 * time.Minute
+
 func validQuery(q string) bool   { return strings.TrimSpace(q) != "" && len(q) <= 500 }
 func validMode(mode string) bool { return mode == "search" || mode == "answer" || mode == "research" }
 func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode string) {
@@ -510,10 +513,11 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", s.cfg.Backend+"/"+mode+"?"+params.Encode(), nil)
 	client := *s.client
 	if mode != "search" {
-		client.Timeout = 3 * time.Minute
+		client.Timeout = retrievalTimeout
 	}
 	res, err := client.Do(req)
 	if err != nil {
+		completed = r.Context().Err() != nil // a hung-up caller keeps the charge: the backend may have done the work
 		problem(w, 502, mode+" is temporarily unavailable; please try again")
 		return
 	}
@@ -524,6 +528,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		return
 	}
 	if err != nil || res.StatusCode != 200 || len(body) > 4<<20 || !json.Valid(body) {
+		completed = err != nil && r.Context().Err() != nil
 		problem(w, 502, mode+" is temporarily unavailable; please try again")
 		return
 	}
