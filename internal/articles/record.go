@@ -80,6 +80,11 @@ type Record struct {
 	Moderation      *Moderation `json:"moderation"`
 	Prelive         bool        `json:"prelive"`
 
+	Origin             string   `json:"origin"`
+	Contributors       []string `json:"contributors"`
+	VersionContributor *string  `json:"version_contributor"`
+	RevertsTo          int      `json:"reverts_to"`
+
 	Residue      bool   `json:"residue"`
 	ReasonCode   string `json:"reason_code"`
 	TombstonedAt string `json:"tombstoned_at"`
@@ -143,6 +148,11 @@ type articleJSON struct {
 	StatusChangedAt string      `json:"status_changed_at"`
 	Moderation      *Moderation `json:"moderation"`
 	Prelive         bool        `json:"prelive"`
+
+	Origin             string   `json:"origin"`
+	Contributors       []string `json:"contributors"`
+	VersionContributor *string  `json:"version_contributor"`
+	RevertsTo          int      `json:"reverts_to,omitempty"`
 }
 
 func nonNil[T any](s []T) []T {
@@ -168,7 +178,8 @@ func (r *Record) MarshalJSON() ([]byte, error) {
 	return json.Marshal(articleJSON{r.Schema, r.ID, r.Slug, r.BaseSlug, r.Title, r.Lead, r.BodyMD,
 		nonNil(r.Citations), r.QualityTier, r.Promoted, r.Vertical, r.Status, r.Sensitivity, r.AIGenerated,
 		nonNil(r.Aliases), nonNil(r.TopicIDs), nonNil(r.ClusterIDs), r.Models, b, r.Version, r.ContentSHA256,
-		r.CreatedAt, r.UpdatedAt, r.StatusChangedAt, r.Moderation, r.Prelive})
+		r.CreatedAt, r.UpdatedAt, r.StatusChangedAt, r.Moderation, r.Prelive,
+		r.origin(), nonNil(r.Contributors), r.VersionContributor, r.RevertsTo})
 }
 
 func decodeRecord(b []byte) (*Record, error) {
@@ -185,11 +196,29 @@ func (r *Record) clone() *Record {
 	c.Aliases = slices.Clone(r.Aliases)
 	c.TopicIDs = slices.Clone(r.TopicIDs)
 	c.ClusterIDs = slices.Clone(r.ClusterIDs)
+	c.Contributors = slices.Clone(r.Contributors)
+	if r.VersionContributor != nil {
+		v := *r.VersionContributor
+		c.VersionContributor = &v
+	}
 	if r.Moderation != nil {
 		m := *r.Moderation
 		c.Moderation = &m
 	}
 	return &c
+}
+
+const (
+	originSynth     = "synth"
+	originCommunity = "community"
+)
+
+// origin reads a record written before contributions as synth.
+func (r *Record) origin() string {
+	if r.Origin == originCommunity {
+		return originCommunity
+	}
+	return originSynth
 }
 
 func (r *Record) setStatus(status, at string) {
@@ -236,25 +265,27 @@ func contentHash(r *Record) string {
 }
 
 type publicView struct {
-	ID          string     `json:"id"`
-	Slug        string     `json:"slug"`
-	Title       string     `json:"title"`
-	Lead        string     `json:"lead"`
-	BodyMD      string     `json:"body_md"`
-	Citations   []Citation `json:"citations"`
-	QualityTier string     `json:"quality_tier"`
-	Promoted    bool       `json:"promoted"`
-	Vertical    string     `json:"vertical"`
-	Status      string     `json:"status"`
-	AIGenerated bool       `json:"ai_generated"`
-	Version     int        `json:"version"`
-	CreatedAt   string     `json:"created_at"`
-	UpdatedAt   string     `json:"updated_at"`
+	ID           string     `json:"id"`
+	Slug         string     `json:"slug"`
+	Title        string     `json:"title"`
+	Lead         string     `json:"lead"`
+	BodyMD       string     `json:"body_md"`
+	Citations    []Citation `json:"citations"`
+	QualityTier  string     `json:"quality_tier"`
+	Promoted     bool       `json:"promoted"`
+	Vertical     string     `json:"vertical"`
+	Status       string     `json:"status"`
+	AIGenerated  bool       `json:"ai_generated"`
+	Origin       string     `json:"origin"`
+	Contributors []string   `json:"contributors"`
+	Version      int        `json:"version"`
+	CreatedAt    string     `json:"created_at"`
+	UpdatedAt    string     `json:"updated_at"`
 }
 
 func (r *Record) public(promoted bool) publicView {
 	return publicView{r.ID, r.Slug, r.Title, r.Lead, r.BodyMD, nonNil(r.Citations), r.QualityTier, promoted,
-		r.Vertical, r.Status, true, r.Version, r.CreatedAt, r.UpdatedAt}
+		r.Vertical, r.Status, true, r.origin(), nonNil(slices.Clone(r.Contributors)), r.Version, r.CreatedAt, r.UpdatedAt}
 }
 
 type stubView struct {

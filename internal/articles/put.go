@@ -431,6 +431,10 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 			return nil, fail(errBlocked(p, blocker))
 		}
 	}
+	if rec.Origin == "" {
+		rec.Origin = originSynth
+	}
+	rec.VersionContributor = nil
 	pl.claims = newTopics
 	pl.write, pl.content = true, true
 	return pl, nil

@@ -55,6 +55,11 @@ type putBody struct {
 	Residue         json.RawMessage `json:"residue"`
 	ReasonCode      json.RawMessage `json:"reason_code"`
 	TombstonedAt    json.RawMessage `json:"tombstoned_at"`
+
+	Origin             json.RawMessage `json:"origin"`
+	Contributors       json.RawMessage `json:"contributors"`
+	VersionContributor json.RawMessage `json:"version_contributor"`
+	RevertsTo          json.RawMessage `json:"reverts_to"`
 }
 
 // stubBody is the stub PUT, decoded strictly.
