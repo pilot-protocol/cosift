@@ -20,7 +20,7 @@ func TestParseBaseConfig(t *testing.T) {
 	if cfg.Listen != DefaultListen || cfg.FailedAuth != (FailedAuth{30, 10}) || cfg.WritesFrozen || !cfg.GoliveAt.IsZero() {
 		t.Fatalf("top level %+v", cfg)
 	}
-	if len(cfg.Principals) != 8 {
+	if len(cfg.Principals) != 9 {
 		t.Fatalf("%d principals", len(cfg.Principals))
 	}
 	mcp := cfg.Principals[0]
@@ -163,6 +163,21 @@ func TestParseRejects(t *testing.T) {
 		{"writes_per_day 0", func(c map[string]any) { principalByID(c, "synth-prod")["writes_per_day"] = 0 }, "principals[1].writes_per_day"},
 		{"counts_reads on staging", func(c map[string]any) { principalByID(c, "synth-staging")["counts_reads"] = true }, "principals[2].counts_reads"},
 		{"counts_reads without read", func(c map[string]any) { principalByID(c, "dash-prod")["counts_reads"] = true }, "principals[6].counts_reads"},
+		{"oidc community:intake", func(c map[string]any) { principalByID(c, "mcp-prod")["scopes"] = []string{"community:intake"} }, "community:intake not allowed on a oidc principal"},
+		{"oidc work:broker", func(c map[string]any) {
+			principalByID(c, "mcp-prod")["scopes"] = []string{"articles:read", "work:broker"}
+		}, "work:broker not allowed on a oidc principal"},
+		{"broker on staging", func(c map[string]any) { principalByID(c, "community-broker")["env"] = "staging" }, "principals[8].scopes: community:intake and work:broker require env prod"},
+		{"intake beside a read scope", func(c map[string]any) {
+			principalByID(c, "community-broker")["scopes"] = []string{"community:intake", "articles:read"}
+		}, "principals[8].scopes: community:intake and work:broker may not be combined with other scopes"},
+		{"work:broker beside a moderate scope", func(c map[string]any) {
+			principalByID(c, "community-broker")["scopes"] = []string{"work:broker", "articles:moderate"}
+		}, "principals[8].scopes: community:intake and work:broker may not be combined with other scopes"},
+		{"wiki key gains the intake scope", func(c map[string]any) {
+			principalByID(c, "community-wiki")["scopes"] = []string{"articles:read", "community:intake"}
+		}, "principals[5].scopes: community:intake and work:broker may not be combined with other scopes"},
+		{"writes_per_hour on the broker", func(c map[string]any) { principalByID(c, "community-broker")["writes_per_hour"] = 3 }, "principals[8].writes_*"},
 		{"digest equals the admin token's", func(c map[string]any) {
 			principalByID(c, "dash-prod")["keys"] = []any{map[string]any{"key_id": "fedcba9876543210", "digest": FormatDigest(Digest([]byte(testPepper), adminToken))}}
 		}, "principals[6].keys[0].digest: equals the digest of an existing engine token"},
@@ -182,6 +197,21 @@ func TestParseRejects(t *testing.T) {
 				t.Fatalf("error %q, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseCommunityScopes(t *testing.T) {
+	for _, scopes := range [][]string{{"community:intake"}, {"work:broker"}, {"community:intake", "work:broker"}} {
+		c := baseConfig()
+		principalByID(c, "community-broker")["scopes"] = scopes
+		cfg, err := Parse(mustJSON(c), testChecks())
+		if err != nil {
+			t.Fatalf("%v: %v", scopes, err)
+		}
+		p := cfg.Principals[8]
+		if p.ID != "community-broker" || p.Kind != v1.KindKey || p.Env != v1.EnvProd || p.RPM != 3000 || p.Burst != 750 || p.Writer() || len(p.Scopes) != len(scopes) {
+			t.Fatalf("%v: %+v", scopes, p)
+		}
 	}
 }
 
