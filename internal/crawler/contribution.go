@@ -3,8 +3,14 @@ package crawler
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
+
+	"github.com/pilot-protocol/cosift/internal/store"
 )
 
 // FetchContribution uses the same index and embedding budget as the bulk
@@ -16,6 +22,47 @@ type ContributionReceipt struct {
 	Indexed     bool   `json:"indexed"`
 	Novel       bool   `json:"novel"`
 	ContentHash string `json:"content_hash"`
+	FinalURL    string `json:"final_url,omitempty"`
+}
+
+type (
+	contributionStateKey struct{}
+	redirectPolicyKey    struct{}
+)
+
+// withoutRedirectPolicy exempts a request from the hop policy: a refused robots.txt
+// redirect would read as "no robots.txt" and allow everything.
+func withoutRedirectPolicy(ctx context.Context) context.Context {
+	return context.WithValue(ctx, redirectPolicyKey{}, nil)
+}
+
+// docNotFound recognises a missing document from either store backend.
+func docNotFound(err error) bool {
+	return errors.Is(err, store.ErrNotFound) || errors.Is(err, sql.ErrNoRows)
+}
+
+// contributionState carries what a contribution fetch learned out of the
+// shared crawl pipeline.
+type contributionState struct {
+	docURL string // URL of the document holding the fetched content
+}
+
+// contributionHopAllowed applies the crawler's domain policy and the intake
+// URL rules to every redirect hop, the final URL being the last hop. Ports and
+// resolved addresses are enforced by the public dialer on each connection.
+func (c *Crawler) contributionHopAllowed(raw string) error {
+	reject := func(why string) error { return fmt.Errorf("%w: redirect target %s", ErrContributionRejected, why) }
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
+		return reject("is not a public web address")
+	}
+	if _, err := netip.ParseAddr(u.Hostname()); err == nil {
+		return reject("is an IP address")
+	}
+	if !c.allowedDomain(raw) {
+		return reject("is excluded by crawler policy")
+	}
+	return nil
 }
 
 // ApprovedContentHash binds a moderation decision to the exact parsed document.
@@ -38,7 +85,10 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	if !ValidApprovedContentHash(approvedHash) {
 		return ContributionReceipt{}, fmt.Errorf("%w: approved content hash is required", ErrContributionRejected)
 	}
+	st := &contributionState{}
 	ctx = context.WithValue(ctx, approvedContentKey{}, approvedHash)
+	ctx = context.WithValue(ctx, contributionStateKey{}, st)
+	ctx = context.WithValue(ctx, redirectPolicyKey{}, c.contributionHopAllowed)
 	canon, err := canonicalize(raw)
 	if err != nil {
 		return ContributionReceipt{}, err
@@ -96,9 +146,16 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 	}
 	defer safe.takeCompletedInline(canon)
 	if err := safe.FetchAndIndexNow(ctx, canon); err != nil {
+		if errors.Is(err, errNonPublicTarget) {
+			err = fmt.Errorf("%w: %v", ErrContributionRejected, err)
+		}
 		return ContributionReceipt{}, err
 	}
-	doc, err := c.store.GetDocByURL(ctx, canon)
+	docURL := canon
+	if st.docURL != "" {
+		docURL = st.docURL
+	}
+	doc, err := c.store.GetDocByURL(ctx, docURL)
 	if err != nil || doc == nil {
 		return ContributionReceipt{}, fmt.Errorf("contribution did not produce an indexable document")
 	}
@@ -106,5 +163,5 @@ func (c *Crawler) FetchContribution(ctx context.Context, raw string, artifact *L
 		return ContributionReceipt{}, fmt.Errorf("%w: stored webpage differs from moderated content", ErrContributionRejected)
 	}
 	sum := sha256.Sum256([]byte(doc.Text))
-	return ContributionReceipt{Indexed: true, Novel: prior == nil, ContentHash: hex.EncodeToString(sum[:])}, nil
+	return ContributionReceipt{Indexed: true, Novel: prior == nil, ContentHash: hex.EncodeToString(sum[:]), FinalURL: docURL}, nil
 }

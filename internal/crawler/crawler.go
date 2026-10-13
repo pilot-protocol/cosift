@@ -374,9 +374,12 @@ func newBare(cfg config.Crawler) *Crawler {
 	return c
 }
 
-func checkRedirect(_ *http.Request, via []*http.Request) error {
+func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 5 {
 		return errors.New("too many redirects")
+	}
+	if policy, ok := req.Context().Value(redirectPolicyKey{}).(func(string) error); ok {
+		return policy(req.URL.String())
 	}
 	return nil
 }
@@ -1382,10 +1385,21 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	finalU, _ := url.Parse(finalURL)
 	sha := sha256.Sum256([]byte(parsed.Text))
 
+	// A contribution that redirected is stored under its final URL, so that is
+	// the copy to compare against.
+	existing := prior
+	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
+	if st != nil && existing == nil && finalURL != item.URL {
+		var gerr error
+		if existing, gerr = c.store.GetDocByURL(ctx, finalURL); gerr != nil && !docNotFound(gerr) {
+			return gerr
+		}
+	}
+
 	// Content-hash dedup: if the server gave us a 200 but the content_hash matches,
 	// the index work is already done. Update validators + fetched_at and exit.
 	// Catches servers that don't send ETag/Last-Modified (so 304 isn't available).
-	if existing := prior; existing != nil {
+	if existing != nil {
 		if bytes.Equal(existing.ContentSHA, sha[:]) && (approvedHash == "" || existing.Title == parsed.Title) {
 			existing.FetchedAt = time.Now()
 			if res.etag != "" {
@@ -1397,6 +1411,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			if _, e := c.store.UpsertDocument(ctx, existing); e != nil {
 				return e
 			}
+			if st != nil {
+				st.docURL = existing.URL
+			}
 			return nil
 		}
 	}
@@ -1404,8 +1421,11 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// Content is new-or-changed at this point (the unchanged paths above
 	// returned early). Propagate prior change history; bookkeeping bumps after upsert.
 	var changeCount int64
-	if prior != nil {
-		changeCount = prior.ChangeCount
+	if existing != nil {
+		changeCount = existing.ChangeCount
+	}
+	if st != nil {
+		st.docURL = finalURL
 	}
 	doc := &store.Document{
 		URL:           finalURL,
