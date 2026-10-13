@@ -111,7 +111,7 @@ func (s *Server) allowRetrieval(w http.ResponseWriter, r *http.Request, u User, 
 	}
 	seconds := max(int64(1), until-now)
 	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-	respond(w, 429, map[string]any{"error": fmt.Sprintf("%s limit reached (%d per %d seconds). Credits cannot exceed this limit.", mode, limit, window), "mode": mode, "retry_at": until, "retry_after_seconds": seconds})
+	respond(w, 429, map[string]any{"error": fmt.Sprintf("%s limit reached (%d per %d seconds). Credits cannot exceed this limit.", mode, limit, window), "code": "rate_limited", "mode": mode, "retry_at": until, "retry_after_seconds": seconds})
 	return nil, false
 }
 

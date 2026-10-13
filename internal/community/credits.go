@@ -104,7 +104,12 @@ SELECT ?,?,-?,'extra_request',? WHERE (SELECT COALESCE(sum(delta),0) FROM credit
 			ways = append(ways, "contribute verified new webpages")
 		}
 		ways = append(ways, "use your next monthly grant")
-		problem(w, 429, fmt.Sprintf("insufficient credits: %s requires %d credits; %s", mode, cost, strings.Join(ways, " or ")))
+		var balance int
+		if err := s.db.QueryRowContext(r.Context(), `SELECT COALESCE(sum(delta),0) FROM credit_ledger WHERE user_id=?`, u.ID).Scan(&balance); err != nil {
+			problem(w, 500, "credits unavailable")
+			return nil, false
+		}
+		problemCode(w, 429, fmt.Sprintf("insufficient credits: %s requires %d credits; %s", mode, cost, strings.Join(ways, " or ")), "insufficient_credits", map[string]any{"credits_required": cost, "balance": balance, "topup_url": s.cfg.PublicURL + "/"})
 		return nil, false
 	}
 	return func(success bool) {
