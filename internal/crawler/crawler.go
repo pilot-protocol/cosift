@@ -30,6 +30,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
+	"golang.org/x/net/idna"
 )
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
@@ -1741,9 +1742,12 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 			return false
 		}
 	}
-	h := u.Host
+	h, ok := dialHost(u.Hostname())
+	if !ok {
+		return false
+	}
 	for _, d := range c.cfg.ExcludeDomains {
-		if strings.HasSuffix(h, d) {
+		if hostInDomain(h, d) {
 			return false
 		}
 	}
@@ -1751,7 +1755,7 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 		return true
 	}
 	for _, d := range c.cfg.IncludeDomains {
-		if strings.HasSuffix(h, d) {
+		if hostInDomain(h, d) {
 			return true
 		}
 	}
@@ -1760,6 +1764,36 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 		return true
 	}
 	return false
+}
+
+// hostInDomain matches a host from dialHost against a list entry, exactly or as
+// a dot-boundary suffix. A port on the entry is ignored.
+func hostInDomain(host, entry string) bool {
+	d := strings.ToLower(strings.TrimSpace(entry))
+	if strings.Count(d, ":") == 1 {
+		d, _, _ = strings.Cut(d, ":")
+	}
+	d, ok := dialHost(d)
+	if d = strings.Trim(d, "."); !ok || d == "" {
+		return false
+	}
+	return host == d || strings.HasSuffix(host, "."+d)
+}
+
+// dialHost returns a hostname as the transport will dial it: lowercase ASCII,
+// IDNA-mapped when it is not ASCII. It reports false for a name the transport
+// would refuse.
+func dialHost(h string) (string, bool) {
+	for i := 0; i < len(h); i++ {
+		if h[i] >= 0x80 {
+			var err error
+			if h, err = idna.Lookup.ToASCII(h); err != nil {
+				return "", false
+			}
+			break
+		}
+	}
+	return strings.TrimSuffix(strings.ToLower(h), "."), true
 }
 
 func (c *Crawler) maxCrawlDelay() time.Duration {
