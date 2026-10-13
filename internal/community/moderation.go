@@ -66,17 +66,35 @@ func newModerationClient() *http.Client {
 const (
 	moderateRoute     = "/admin/community-moderate"
 	enqueueRoute      = "/admin/community-enqueue"
+	healthRoute       = "/healthz"
 	statusConfigError = "config_error"
 	configErrorReason = "Content checks are unavailable while the service is being configured. This will be retried automatically."
 	configErrorRetry  = time.Hour
 	statusBackendDown = "backend_down"
 	backendDownRetry  = 5 * time.Minute
+	backendDownReason = "Waiting for content safety checks."
 )
 
 // backendUnreachable is a failure to connect at all, which no page or model reply can cause; it must not use up delivery attempts.
 func backendUnreachable(err error) bool {
 	var op *net.OpError
 	return errors.As(err, &op) && op.Op == "dial"
+}
+
+// backendReachable is false only when the backend cannot be connected to; any HTTP reply counts as reachable.
+func (s *Server) backendReachable(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", s.cfg.Backend+healthRoute, nil)
+	if err != nil {
+		return true
+	}
+	res, err := s.client.Do(req)
+	if err != nil {
+		return !backendUnreachable(err)
+	}
+	res.Body.Close()
+	return true
 }
 
 // A 401 or 403 means the backend rejected the app's credentials, which retrying cannot fix.
@@ -210,7 +228,7 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 		if ctx.Err() == nil {
 			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)
 			if backendUnreachable(err) {
-				return statusBackendDown, "Waiting for content safety checks.", ""
+				return statusBackendDown, backendDownReason, ""
 			}
 		}
 		return "pending", "Waiting for content safety checks.", ""

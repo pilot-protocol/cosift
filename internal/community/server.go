@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community/wiki"
@@ -82,6 +83,7 @@ type Server struct {
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
 	hostGaps         hostGaps
+	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
 	wiki             *wiki.Wiki
 	index            []byte
 }
@@ -814,9 +816,22 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	down := len(jobs) > 0 && s.backendDown.Load() && !s.backendReachable(ctx)
+	if down {
+		log.Printf("community: backend still unreachable; %d submissions wait without fetching their pages", len(jobs))
+	}
+	if len(jobs) > 0 {
+		defer func() { s.backendDown.Store(down) }()
+	}
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if down {
+			if err := s.record(ctx, j, statusBackendDown, backendDownReason); err != nil {
+				return err
+			}
+			continue
 		}
 		if wait := s.crawlWait(ctx, j.url); wait > 0 {
 			if err := s.requeue(ctx, j, wait); err != nil {
@@ -828,6 +843,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
+		down = status == statusBackendDown
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
 			if err := s.record(ctx, j, status, reason); err != nil {
@@ -905,7 +921,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			status, reason = statusConfigError, configErrorReason
 		}
 		if unreachable {
-			status = statusBackendDown
+			status, down = statusBackendDown, true
 		}
 		if permanent {
 			status = "unverified"
