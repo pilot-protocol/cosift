@@ -56,6 +56,11 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		*addr = "127.0.0.1:7777"
 	}
 
+	caps, err := communityCapsFromEnv()
+	if err != nil {
+		return err
+	}
+
 	ps, err := store.OpenPebble(*dir)
 	if err != nil {
 		return fmt.Errorf("open pebble: %w", err)
@@ -193,6 +198,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		// per-minute crawl rate without long-term counters.
 		startupDocs: vectorNodes, // placeholder; overwritten below
 	}
+	srv.communityCaps = caps
 	// Read actual doc count at startup for crawl-rate baseline. Uses
 	// CorpusStats (the atomic-mirror indexed_docs counter) — NOT
 	// Stats.Documents which scans the raw 'd' family. The two diverge
@@ -1277,6 +1283,7 @@ type pebbleHTTP struct {
 	// in-serve crawler is wired.
 	crawlSeed           func(url string) error
 	crawlCommunityReady atomic.Bool
+	communityCaps       communityCaps
 	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error)
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.

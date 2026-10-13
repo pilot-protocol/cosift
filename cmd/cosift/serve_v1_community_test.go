@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -193,4 +194,97 @@ func TestCommunityRoutesOutliveTheWriteTimeout(t *testing.T) {
 	j.srv.crawlCommunityReady.Store(true)
 	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 200, "")
 	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 200, "")
+}
+
+func TestCommunityCapsFromEnv(t *testing.T) {
+	for _, tc := range []struct {
+		enq, mod string
+		want     communityCaps
+		bad      string
+	}{
+		{"", "", communityCaps{30, 30}, ""},
+		{"10", "1", communityCaps{10, 1}, ""},
+		{"30", "30", communityCaps{30, 30}, ""},
+		{"31", "", communityCaps{}, "COSIFT_V1_ENQUEUE_PER_MIN"},
+		{"", "31", communityCaps{}, "COSIFT_V1_MODERATE_PER_MIN"},
+		{"0", "", communityCaps{}, "COSIFT_V1_ENQUEUE_PER_MIN"},
+		{"", "-1", communityCaps{}, "COSIFT_V1_MODERATE_PER_MIN"},
+		{"many", "", communityCaps{}, "COSIFT_V1_ENQUEUE_PER_MIN"},
+		{"", "1.5", communityCaps{}, "COSIFT_V1_MODERATE_PER_MIN"},
+	} {
+		t.Setenv("COSIFT_V1_ENQUEUE_PER_MIN", tc.enq)
+		t.Setenv("COSIFT_V1_MODERATE_PER_MIN", tc.mod)
+		got, err := communityCapsFromEnv()
+		if tc.bad != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.bad) {
+				t.Errorf("%q %q: %v, want an error naming %s", tc.enq, tc.mod, err, tc.bad)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%q %q: %+v %v, want %+v", tc.enq, tc.mod, got, err, tc.want)
+		}
+	}
+}
+
+// A cap above the maximum stops the engine before it opens anything.
+func TestServeRefusesACommunityCapAboveTheMaximum(t *testing.T) {
+	t.Setenv("COSIFT_V1_MODERATE_PER_MIN", "31")
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := runPebbleServe(ctx, &config.Config{}, []string{"-dir", filepath.Join(dir, "pebble"), "-addr", freeAddr(t)})
+	if err == nil || !strings.Contains(err.Error(), "COSIFT_V1_MODERATE_PER_MIN") {
+		t.Fatalf("started: %v", err)
+	}
+}
+
+// Each route stops at 30 a minute for the broker principal, with a Retry-After, independently of the other.
+func TestCommunityRoutesStopAtTheirCap(t *testing.T) {
+	j, _ := communityJoint(t)
+	for _, rt := range communityRoutes {
+		ok, limited := 0, 0
+		for range 40 {
+			r := j.do("community-broker", "POST", rt.path, rt.body)
+			switch r.code {
+			case 200:
+				ok++
+			case 429:
+				limited++
+				if r.errCode() != "rate_limited" || r.hdr.Get("Retry-After") == "" {
+					t.Fatalf("%s: %d %s %v", rt.name, r.code, r.raw, r.hdr)
+				}
+			default:
+				t.Fatalf("%s: %d %s", rt.name, r.code, r.raw)
+			}
+		}
+		if ok < 30 || ok > 31 || ok+limited != 40 {
+			t.Errorf("%s: %d served, %d limited; want 30 served", rt.name, ok, limited)
+		}
+	}
+}
+
+// The environment's caps reach the routes of a running engine.
+func TestServeHonoursTheCommunityCapEnv(t *testing.T) {
+	t.Setenv("COSIFT_V1_MODERATE_PER_MIN", "3")
+	t.Setenv("COSIFT_V1_ENQUEUE_PER_MIN", "5")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "service-auth.json")
+	signer := svcauthtest.NewSigner("k")
+	setV1Globals(t, cfgPath, filepath.Join(dir, "articles.json"), signer)
+	keys := jointKeys(t)
+	v1Addr := freeAddr(t)
+	if err := os.WriteFile(cfgPath, mustMarshal(jointConfig(v1Addr, keys)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	serveProcess(t, &config.Config{}, filepath.Join(dir, "pebble"))
+	j := &joint{v1Fixture: &v1Fixture{signer: signer}, t: t, keys: keys, addr: v1Addr}
+	for range 3 {
+		j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 503, "moderation_unavailable")
+	}
+	j.want(j.do("community-broker", "POST", "/v1/community/moderate", moderateBody), 429, "rate_limited")
+	for range 5 {
+		j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 503, "community_unavailable")
+	}
+	j.want(j.do("community-broker", "POST", "/v1/community/enqueue", enqueueBody), 429, "rate_limited")
 }

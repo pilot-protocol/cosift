@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,12 +23,41 @@ const (
 	maxReceiptFinalURL = 512
 )
 
+// communityCaps are the per-principal calls a minute each community route accepts.
+type communityCaps struct{ enqueue, moderate int }
+
+const communityCapMax = 30
+
+// communityCapsFromEnv reads COSIFT_V1_ENQUEUE_PER_MIN and COSIFT_V1_MODERATE_PER_MIN; a value outside 1-30 is an error.
+func communityCapsFromEnv() (communityCaps, error) {
+	c := communityCaps{enqueue: communityCapMax, moderate: communityCapMax}
+	for _, f := range []struct {
+		name string
+		dst  *int
+	}{{"COSIFT_V1_ENQUEUE_PER_MIN", &c.enqueue}, {"COSIFT_V1_MODERATE_PER_MIN", &c.moderate}} {
+		v := os.Getenv(f.name)
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > communityCapMax {
+			return c, fmt.Errorf("%s: must be an integer from 1 to %d", f.name, communityCapMax)
+		}
+		*f.dst = n
+	}
+	return c, nil
+}
+
 // v1CommunityRoutes are the community app's two engine calls.
 func (s *pebbleHTTP) v1CommunityRoutes() []v1.Route {
 	intake := []v1.Scope{v1.ScopeCommunityIntake}
+	caps := s.communityCaps
+	if caps == (communityCaps{}) {
+		caps = communityCaps{communityCapMax, communityCapMax}
+	}
 	return []v1.Route{
-		{Method: http.MethodPost, Path: "/v1/community/enqueue", Scopes: intake, BodyLimit: v1EnqueueBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityEnqueue)},
-		{Method: http.MethodPost, Path: "/v1/community/moderate", Scopes: intake, BodyLimit: v1ModerateBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityModerate)},
+		{Method: http.MethodPost, Path: "/v1/community/enqueue", Scopes: intake, PerMinute: caps.enqueue, BodyLimit: v1EnqueueBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityEnqueue)},
+		{Method: http.MethodPost, Path: "/v1/community/moderate", Scopes: intake, PerMinute: caps.moderate, BodyLimit: v1ModerateBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityModerate)},
 	}
 }
 
