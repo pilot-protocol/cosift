@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 const (
@@ -15,6 +17,11 @@ const (
 )
 
 type workSalts struct{ worker, net []byte }
+
+func (s *Server) initWork() error {
+	s.work.joins = newJoinCache(joinCacheKeys)
+	return s.loadWorkSalts()
+}
 
 func (s *Server) loadWorkSalts() error {
 	var err error
@@ -65,5 +72,7 @@ func (s *Server) netID(ip string) (string, bool) {
 }
 
 type workRuntime struct {
-	salts workSalts
+	salts  workSalts
+	source sharedaccount.WorkSource
+	joins  *joinCache
 }

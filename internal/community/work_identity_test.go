@@ -12,7 +12,7 @@ var opaqueID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 func workServer(t *testing.T) *Server {
 	t.Helper()
 	s := testServer(t, nil)
-	if err := s.loadWorkSalts(); err != nil {
+	if err := s.initWork(); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -93,7 +93,7 @@ func TestWorkSaltsArePersistedAndSeparate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := s.loadWorkSalts(); err != nil {
+		if err := s.initWork(); err != nil {
 			t.Fatal(err)
 		}
 		return s
