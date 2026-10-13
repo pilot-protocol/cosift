@@ -232,7 +232,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		if r.Method != "GET" && r.Method != "HEAD" && !(r.Method == "POST" && r.URL.Path == "/api/payments/webhook") {
 			// The custom header prevents cross-site form posts, including login
 			// CSRF. No CORS permissions are granted. CLI requests omit Origin.
-			if r.Header.Get("X-Cosift-Client") != "community" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.cfg.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			if !s.sameOriginClient(r) {
 				problem(w, 403, "request must originate from this community app")
 				return
 			}
@@ -240,6 +240,11 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) sameOriginClient(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	return r.Header.Get("X-Cosift-Client") == "community" && (origin == "" || origin == s.cfg.PublicURL) && r.Header.Get("Sec-Fetch-Site") != "cross-site"
 }
 
 func respond(w http.ResponseWriter, status int, v any) {
@@ -450,6 +455,11 @@ func (s *Server) interests(w http.ResponseWriter, r *http.Request, u User) {
 func validQuery(q string) bool   { return strings.TrimSpace(q) != "" && len(q) <= 500 }
 func validMode(mode string) bool { return mode == "search" || mode == "answer" || mode == "research" }
 func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode string) {
+	// A debit on an ambient cookie needs the same-origin check that protect applies to writes.
+	if u.ID != "" && r.Header.Get("Authorization") == "" && !s.sameOriginClient(r) {
+		problem(w, 403, "request must originate from this community app")
+		return
+	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if !validQuery(q) {
 		problem(w, 400, "enter a search of 1–500 characters")
