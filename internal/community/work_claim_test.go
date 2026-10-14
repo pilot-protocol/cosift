@@ -355,3 +355,36 @@ func TestClaimStopsAtTheDailyFetchCapUntilMidnightUTC(t *testing.T) {
 		t.Fatalf("after midnight: %d %s", w.Code, w.Body)
 	}
 }
+
+func TestRelayedRateLimitWaitIsClampedToAnHour(t *testing.T) {
+	for _, tc := range []struct {
+		header string
+		want   int
+	}{{"17", 17}, {"99999", 3600}, {"0", 1}, {"-5", 1}, {"", 1}, {"soon", 1}} {
+		r := newWorkRig(t)
+		r.engine.answer(fixed(429, `{"code":"rate_limited"}`))
+		if tc.header != "" {
+			r.engine.header = map[string]string{"Retry-After": tc.header}
+		}
+		w := r.claim(map[string]any{"max": 1})
+		if w.Code != 429 || w.Header().Get("Retry-After") != strconv.Itoa(tc.want) || errBody(t, w).Retry != tc.want {
+			t.Errorf("Retry-After %q: %d %q %s", tc.header, w.Code, w.Header().Get("Retry-After"), w.Body)
+		}
+	}
+}
+
+func TestClaimRefreshesTheContributorOfAKnownWorker(t *testing.T) {
+	r := newWorkRig(t)
+	r.engine.answer(fixed(200, `{"leases":[]}`))
+	worker := r.s.workerID(r.userID)
+	r.s.db.Exec(`INSERT INTO work_workers(worker,user_id,cid,first_seen) VALUES(?,?,?,1)`, worker, r.userID, "0000000000000000")
+	if w := r.claim(map[string]any{"max": 1}); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var cid string
+	var first int
+	r.s.db.QueryRow(`SELECT cid,first_seen FROM work_workers WHERE worker=?`, worker).Scan(&cid, &first)
+	if cid != testCID || first != 1 || r.rows(`SELECT count(*) FROM work_workers`) != 1 {
+		t.Fatalf("worker row cid %q first_seen %d", cid, first)
+	}
+}
