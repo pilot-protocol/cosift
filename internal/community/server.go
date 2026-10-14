@@ -162,6 +162,9 @@ func Open(cfg Config) (*Server, error) {
 	}
 	wc := cfg.Wiki
 	wc.PublicURL, wc.GAMeasurementID, wc.GSCVerification, wc.ClientIP = cfg.PublicURL, cfg.GAMeasurementID, cfg.GSCVerification, s.clientIP
+	if src, ok := cfg.Shared.(sharedaccount.HandleSource); ok && wc.Handles == nil {
+		wc.Handles = wikiHandles{src}
+	}
 	if s.wiki, err = wiki.New(wc); err != nil {
 		db.Close()
 		return nil, err

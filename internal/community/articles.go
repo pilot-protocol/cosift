@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"regexp"
 	"time"
+
+	"github.com/pilot-protocol/cosift/internal/community/wiki"
+	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
 var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
@@ -53,4 +56,19 @@ func (e engineArticles) ArticleByID(ctx context.Context, id string) (ArticleReco
 		return ArticleRecord{}, fmt.Errorf("engine returned an unreadable article")
 	}
 	return rec, nil
+}
+
+// wikiHandles lets the wiki resolve contributor ids through the shared account store.
+type wikiHandles struct{ src sharedaccount.HandleSource }
+
+func (h wikiHandles) Handles(ctx context.Context, cids []string) (map[string]wiki.Handle, error) {
+	found, err := h.src.Handles(ctx, cids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]wiki.Handle, len(found))
+	for cid, v := range found {
+		out[cid] = wiki.Handle{Name: v.Handle, Banned: v.Banned}
+	}
+	return out, nil
 }
