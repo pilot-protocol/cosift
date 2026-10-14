@@ -59,7 +59,7 @@ func textOf(n *html.Node) string {
 	return b.String()
 }
 
-var citeID = regexp.MustCompile(`^cite-[1-9][0-9]*$`)
+var citeID = regexp.MustCompile(`^(cite-[1-9][0-9]*|license|originality|credits|worker-fetching|takedown|synth-attribution)$`)
 
 // structure checks a full page: lang, one h1, landmarks, heading order, link
 // rels, scripts, and no style or event-handler attributes.
@@ -121,7 +121,7 @@ func structure(t *testing.T, name, page string) *html.Node {
 				if !strings.HasPrefix(href, "https://cosift.example/") && !licence && attr(n, "rel") != "nofollow noopener" {
 					fail("outbound link %q without rel=nofollow noopener", href)
 				}
-			} else if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "#cite-") && !strings.HasPrefix(href, "mailto:") {
+			} else if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "#") && !strings.HasPrefix(href, "mailto:") {
 				fail("link %q", href)
 			}
 		}

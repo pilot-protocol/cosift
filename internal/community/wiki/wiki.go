@@ -107,7 +107,7 @@ type Wiki struct {
 	logged map[string]time.Time
 
 	notFound, gone, unavailable, tooMany []byte
-	style                                []byte
+	style, terms                         []byte
 }
 
 // New builds the page layer; with Public off it is dark and validates nothing.
@@ -153,6 +153,9 @@ func New(cfg Config) (*Wiki, error) {
 	w.unavailable = w.renderNotice("Articles are temporarily unavailable", "Please try again in a few minutes.", "")
 	w.tooMany = w.renderNotice("Too many requests", "Please wait a minute and try again.", "")
 	w.style = w.renderStyle()
+	if w.terms, err = w.renderTerms(); err != nil {
+		return nil, err
+	}
 	w.logf("wiki: public pages on (engine %s)", base)
 	return w, nil
 }
@@ -240,6 +243,8 @@ func (w *Wiki) serveWiki(rw http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && (parts[0] == "style" || parts[0] == "style.md"):
 		w.serveStyle(rw, r, parts[0] == "style.md")
+	case len(parts) == 1 && parts[0] == "terms":
+		w.serveTerms(rw, r)
 	case len(parts) == 1 && pageSlug(parts[0]):
 		w.serveArticle(rw, r, parts[0], false)
 	case len(parts) == 1 && strings.HasSuffix(parts[0], ".md") && pageSlug(strings.TrimSuffix(parts[0], ".md")):
