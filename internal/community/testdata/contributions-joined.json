@@ -1,0 +1,123 @@
+{
+  "contributions": [
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V8",
+      "kind": "new",
+      "status": "queued",
+      "status_at": "2026-10-14T09:20:31Z",
+      "title": "Queued subject"
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V7",
+      "kind": "new",
+      "status": "won",
+      "status_at": "2026-10-14T09:19:31Z",
+      "title": "Gone article",
+      "article": {
+        "id": "01J9A3Q8B2C3D4E5F6G7H8J9K1",
+        "version": 2
+      },
+      "credits": 0
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V6",
+      "kind": "new",
+      "status": "taken_down",
+      "status_at": "2026-10-14T09:18:31Z"
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V5",
+      "kind": "revision",
+      "status": "failed",
+      "status_at": "2026-10-14T09:17:31Z",
+      "title": "Failed subject"
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V4",
+      "kind": "new",
+      "status": "needs_sources",
+      "status_at": "2026-10-14T09:16:31Z",
+      "title": "Waiting subject",
+      "urls": [
+        "https://docs.example.org/a"
+      ],
+      "recheck_at": "2026-10-14T19:12:31Z",
+      "sources_pushed": false
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V3",
+      "kind": "revision",
+      "status": "lost",
+      "status_at": "2026-10-14T09:15:31Z",
+      "title": "Lost subject",
+      "lost_reason": "not_better"
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V2",
+      "kind": "revision",
+      "status": "refused",
+      "status_at": "2026-10-14T09:14:31Z",
+      "title": "Rust async runtimes",
+      "refusals": [
+        {
+          "code": "promotional",
+          "field": "body_md"
+        }
+      ]
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V1",
+      "kind": "new",
+      "status": "published",
+      "status_at": "2026-10-14T09:12:31Z",
+      "title": "Tidal power",
+      "article": {
+        "id": "01J9A3Q8B2C3D4E5F6G7H8J9K0",
+        "url": "https://cosift.example/wiki/tidal-power",
+        "version": 1
+      },
+      "credits": 1500
+    }
+  ],
+  "earned": [
+    {
+      "reason": "fetch_verified",
+      "delta": 2,
+      "at": "2026-10-14T09:13:10Z"
+    },
+    {
+      "reason": "clawback",
+      "delta": -200,
+      "at": "2026-10-14T09:13:00Z",
+      "award_id": "claw:01J9A3Q8B2C3D4E5F6G7H8J9K1_01J9A3Q8B2C3D4E5F6G7H8J9K0:0f1e2d3c4b5a6978"
+    },
+    {
+      "reason": "royalty",
+      "delta": 3,
+      "at": "2026-10-14T09:12:50Z",
+      "award_id": "roy:2026-10-13:01J9A3Q8B2C3D4E5F6G7H8J9K0:0f1e2d3c4b5a6978"
+    },
+    {
+      "reason": "contribution_award",
+      "delta": 1500,
+      "at": "2026-10-14T09:12:40Z",
+      "award_id": "art:01J9A3Q7W4X9M3K5N6P8R0T2V1"
+    },
+    {
+      "reason": "verified_contribution",
+      "delta": 10,
+      "at": "2026-10-14T09:12:30Z"
+    }
+  ],
+  "fetch": {
+    "claimed": 12,
+    "credits": 16,
+    "mismatch": 0,
+    "rejected": 1,
+    "submitted": 10,
+    "verified": 8
+  },
+  "handle": "tidal-fan",
+  "joined": true,
+  "more": false
+}

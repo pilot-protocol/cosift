@@ -10,6 +10,8 @@ import (
 const (
 	routeLimiterKeys = 50000
 	meterPerMinute   = 60
+
+	contributionsPerMinute = 30
 )
 
 // allowRoute charges a per-user, per-route window; the caller must have authenticated, so anonymous traffic never adds a key.

@@ -19,6 +19,7 @@ var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 const articleTimeout = 15 * time.Second
 
 type ArticleRecord struct {
+	Slug         string   `json:"slug"`
 	Origin       string   `json:"origin"`
 	Contributors []string `json:"contributors"`
 	Version      int64    `json:"version"`

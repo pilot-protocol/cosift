@@ -2,6 +2,7 @@ package community
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/sha256"
@@ -93,6 +94,8 @@ type Server struct {
 	wiki             *wiki.Wiki
 	engine           *engineClient
 	awards           *awardPoller
+	articles         ArticleReader
+	slugs            slugCache
 	index            []byte
 }
 
@@ -160,6 +163,12 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	s.articles = cfg.Articles
+	if s.articles == nil && brokerKeyPattern.MatchString(cfg.Wiki.EngineKey) {
+		if client, err := newEngineClient(cmp.Or(cfg.Wiki.EngineURL, wiki.DefaultEngineURL), cfg.Wiki.EngineKey); err == nil {
+			s.articles = engineArticles{client}
+		}
+	}
 	wc := cfg.Wiki
 	wc.PublicURL, wc.GAMeasurementID, wc.GSCVerification, wc.ClientIP = cfg.PublicURL, cfg.GAMeasurementID, cfg.GSCVerification, s.clientIP
 	if src, ok := cfg.Shared.(sharedaccount.HandleSource); ok && wc.Handles == nil {
@@ -211,6 +220,7 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
 	mux.HandleFunc("POST /api/meter", s.meter)
+	mux.HandleFunc("GET /api/contributions", s.auth(s.contributions))
 	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})
