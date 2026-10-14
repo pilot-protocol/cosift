@@ -43,6 +43,8 @@ type Config struct {
 	GAMeasurementID string
 	GSCVerification string
 	ClientIP        func(*http.Request) string
+	// Handles resolves contributor ids; nil (local auth mode) shows every contributor as a community member.
+	Handles HandleSource
 	// Now is for tests; nil is time.Now.
 	Now  func() time.Time
 	Logf func(format string, args ...any)
@@ -98,6 +100,7 @@ type Wiki struct {
 	swept     time.Time
 
 	ips       ipLimiter
+	handles   handleCache
 	refreshMu sync.Mutex
 
 	logMu  sync.Mutex
@@ -442,16 +445,21 @@ func (w *Wiki) setSnapshot(s *snapshot) {
 }
 
 func (w *Wiki) warn(code string) {
+	w.logOnce(code, "wiki: WARN engine answer unusable ("+code+"); page served as 503")
+}
+
+// logOnce writes line at most once a minute per key.
+func (w *Wiki) logOnce(key, line string) {
 	now := w.now()
 	w.logMu.Lock()
-	last, seen := w.logged[code]
+	last, seen := w.logged[key]
 	quiet := seen && now.Sub(last) < time.Minute
 	if !quiet {
-		w.logged[code] = now
+		w.logged[key] = now
 	}
 	w.logMu.Unlock()
 	if !quiet {
-		w.logf("wiki: WARN engine answer unusable (%s); page served as 503", code)
+		w.logf("%s", line)
 	}
 }
 
