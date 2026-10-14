@@ -68,8 +68,8 @@ func TestWorkerAndNetAreOpaqueSaltedAndKeepTheAddressOut(t *testing.T) {
 	if worker == s.workerID("user-b") || worker != s.workerID("user-a") {
 		t.Fatal("a worker id must be stable per account and differ between accounts")
 	}
-	if strings.Contains(net, "198") || worker == net {
-		t.Fatal("the net id leaks its input")
+	if worker == net {
+		t.Fatal("a worker and a net id of different inputs must differ")
 	}
 	other := workServer(t)
 	if other.workerID("user-a") == worker || mustNet(t, other, "198.51.100.23") == net {
@@ -140,5 +140,48 @@ func TestWorkSchemaAddsTheTablesAndMigratesFailClass(t *testing.T) {
 	s.db.Exec(`INSERT INTO submissions(id,user_id,url,created_at) VALUES('s','u','https://example.com/',0)`)
 	if err := s.db.QueryRow(`SELECT fail_class FROM submissions WHERE id='s'`).Scan(&class); err != nil || class != "" {
 		t.Fatalf("fail_class %q %v", class, err)
+	}
+}
+
+func TestWorkerIdUsesTheWorkerSaltAndNetUsesTheNetSalt(t *testing.T) {
+	s := workServer(t)
+	worker, net := s.workerID("user-a"), mustNet(t, s, "198.51.100.23")
+	salt := strings.Repeat("ab", 32)
+	s.db.Exec(`UPDATE settings SET value=? WHERE key='work_net_salt'`, salt)
+	if err := s.initWork(); err != nil {
+		t.Fatal(err)
+	}
+	if s.workerID("user-a") != worker || mustNet(t, s, "198.51.100.23") == net {
+		t.Fatal("changing the net salt must change the net id and leave the worker id")
+	}
+	s.db.Exec(`UPDATE settings SET value=? WHERE key='work_worker_salt'`, salt)
+	if err := s.initWork(); err != nil {
+		t.Fatal(err)
+	}
+	if s.workerID("user-a") == worker {
+		t.Fatal("changing the worker salt left the worker id")
+	}
+}
+
+func TestWorkerAndNetIdsMatchTheDocumentedDerivation(t *testing.T) {
+	s := workServer(t)
+	for _, key := range []string{"work_worker_salt", "work_net_salt"} {
+		s.db.Exec(`UPDATE settings SET value=? WHERE key=?`, strings.Repeat("ab", 32), key)
+	}
+	if err := s.initWork(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.workerID("user-a"); got != "dbf00474d9a6b070a2d6ea3827fecd72" {
+		t.Errorf("worker %s", got)
+	}
+	for ip, want := range map[string]string{
+		"198.51.100.77":         "8265d0836d8451598929fc2d244d9faa",
+		"::ffff:198.51.100.200": "8265d0836d8451598929fc2d244d9faa",
+		"2001:db8:1:5::9":       "e70a82dc5ad399f2459a689615b25c91",
+		"2001:db8:1:ffff::beef": "e70a82dc5ad399f2459a689615b25c91",
+	} {
+		if got := mustNet(t, s, ip); got != want {
+			t.Errorf("net of %s is %s, want %s", ip, got, want)
+		}
 	}
 }

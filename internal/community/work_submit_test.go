@@ -1,6 +1,7 @@
 package community
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -241,17 +242,43 @@ func TestSubmitBodyCapIsTwoMiBForSubmitAndOneMiBElsewhere(t *testing.T) {
 	if w.Code != 413 || errBody(t, w).Code != "body_too_large" {
 		t.Fatalf("2.1 MiB: %d %.200s", w.Code, w.Body)
 	}
-	meter := meterBody("body-cap-request-01")
-	meter["pad"] = strings.Repeat("a", 1500<<10)
-	if w := meterCall(r.s, sharedTestToken, meter, nil); w.Code == 200 || w.Code == 402 {
+	small, _ := json.Marshal(meterBody("body-cap-request-00"))
+	if w := r.post("/api/meter", sharedTestToken, small, nil); w.Code != 200 {
+		t.Fatalf("small meter body: %d %s", w.Code, w.Body)
+	}
+	padded, _ := json.Marshal(meterBody("body-cap-request-01"))
+	padded = append(padded, bytes.Repeat([]byte(" "), 1500<<10)...)
+	if w := r.post("/api/meter", sharedTestToken, padded, nil); w.Code == 200 || w.Code == 402 {
 		t.Fatalf("1.5 MiB meter body: %d", w.Code)
+	}
+}
+
+func TestSubmitRefusesAnEngineAnswerThatIsNotAVerdictToken(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"a verdict token", `{"verdict":"awaiting_quorum","agreeing":[],"indexed":false}`, 200},
+		{"a deferred reason", `{"verdict":"deferred","reason":"moderation_ceiling","agreeing":[],"indexed":false}`, 200},
+		{"markup as a verdict", `{"verdict":"<b>verified</b>","agreeing":[],"indexed":false}`, 503},
+		{"a sentence as a verdict", `{"verdict":"Verified By Bob","agreeing":[],"indexed":false}`, 503},
+		{"no verdict", `{"agreeing":[],"indexed":false}`, 503},
+		{"markup as a reason", `{"verdict":"deferred","reason":"<i>why</i>","agreeing":[],"indexed":false}`, 503},
+		{"a long reason", `{"verdict":"deferred","reason":"` + strings.Repeat("a", 33) + `","agreeing":[],"indexed":false}`, 503},
+	} {
+		r := newWorkRig(t)
+		r.engine.answer(fixed(200, tc.body))
+		w := r.submit(attestation("x"))
+		if w.Code != tc.want || strings.Contains(w.Body.String(), "Bob") || strings.Contains(w.Body.String(), "why") {
+			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body)
+		}
 	}
 }
 
 func TestSubmitLimitsAUserToSixtyFourAMinute(t *testing.T) {
 	r := newWorkRig(t)
 	r.engine.answer(fixed(200, `{"verdict":"awaiting_quorum","agreeing":[],"indexed":false}`))
-	for i := 0; i < workSubmitPerMinute; i++ {
+	for i := 0; i < 64; i++ {
 		if w := r.submit(attestation("x")); w.Code != 200 {
 			t.Fatalf("submit %d: %d %s", i, w.Code, w.Body)
 		}
@@ -259,6 +286,10 @@ func TestSubmitLimitsAUserToSixtyFourAMinute(t *testing.T) {
 	w := r.submit(attestation("x"))
 	if b := errBody(t, w); w.Code != 429 || b.Code != "rate_limited" || b.Retry < 1 || w.Header().Get("Retry-After") == "" {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	r.f.joins["fedcba9876543210"] = sharedaccount.JoinState{CID: "1111111111111111", TermsVersion: termsVersion}
+	if w := r.post("/api/work/submit", sharedOtherToken, attestation("x"), nil); w.Code != 200 {
+		t.Fatalf("another user: %d %s", w.Code, w.Body)
 	}
 }
 
@@ -316,12 +347,29 @@ func TestSubmitPassesTheEnginesLeaseAndFieldRefusalsThrough(t *testing.T) {
 		if w.Code != tc.want || errBody(t, w).Code != tc.code || (tc.extra != "" && !strings.Contains(w.Body.String(), tc.extra)) {
 			t.Errorf("%d %s: %d %s", tc.status, tc.code, w.Code, w.Body)
 		}
-		if strings.Contains(w.Body.String(), "secret") || strings.Contains(w.Body.String(), "<script>") || strings.Contains(logs.String(), testBrokerKey) {
+		if strings.Contains(w.Body.String(), "secret") || strings.Contains(w.Body.String(), "script") || strings.Contains(logs.String(), testBrokerKey) {
 			t.Errorf("%d: leaked %s %s", tc.status, w.Body, logs)
 		}
 		r.s.flushFetchCounters(t.Context())
 		if r.f.counter(testCID, "fetch_submitted") != 0 {
 			t.Errorf("%d: a refused submit moved fetch_submitted", tc.status)
 		}
+	}
+}
+
+func TestSubmitRegistersTheWorkerSoACreditStillFindsItsAccount(t *testing.T) {
+	r := newWorkRig(t)
+	r.engine.answer(fixed(200, `{"verdict":"awaiting_quorum","agreeing":[],"indexed":false}`))
+	worker := r.s.workerID(r.userID)
+	if r.rows(`SELECT count(*) FROM work_workers WHERE worker=?`, worker) != 0 {
+		t.Fatal("the worker was known before it did anything")
+	}
+	if w := r.submit(attestation("x")); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var userID, cid string
+	r.s.db.QueryRow(`SELECT user_id,cid FROM work_workers WHERE worker=?`, worker).Scan(&userID, &cid)
+	if userID != r.userID || cid != testCID {
+		t.Fatalf("worker row %q %q", userID, cid)
 	}
 }
