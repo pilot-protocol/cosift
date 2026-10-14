@@ -1,6 +1,8 @@
 package wiki
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -51,4 +53,42 @@ func TestLlmsTxtDropsTakenDownArticles(t *testing.T) {
 	if body := h.get("/llms.txt").Body.String(); strings.Contains(body, "beta") {
 		t.Fatalf("a removed article stays listed:\n%s", body)
 	}
+}
+
+func TestInjectionCorpusInTitlesStaysInertInLlmsTxt(t *testing.T) {
+	h := newHarness(t)
+	var items []map[string]any
+	for i, tc := range loadCorpus(t) {
+		items = append(items, item(published(fmt.Sprintf("case-%03d", i), tc.Text)))
+	}
+	h.v1.list(items...)
+	h.refresh()
+	out := h.get("/llms.txt").Body.String()
+	if mdBidi.MatchString(out) {
+		t.Fatal("control or bidi character in llms.txt")
+	}
+	_, list, _ := strings.Cut(out, "## Articles\n\n")
+	lines := strings.Split(strings.TrimSuffix(list, "\n"), "\n")
+	if len(lines) != len(items) {
+		t.Fatalf("%d lines for %d articles", len(lines), len(items))
+	}
+	line := regexp.MustCompile(`^- \[(.*)\]\(https://cosift\.example/wiki/case-\d{3}\.md\)$`)
+	escapes := regexp.MustCompile(`\\.`)
+	for _, l := range lines {
+		m := line.FindStringSubmatch(l)
+		if m == nil {
+			t.Fatalf("not a bare link line: %q", l)
+		}
+		if strings.ContainsAny(escapes.ReplaceAllString(m[1], ""), "\\`*_[]<>|~") {
+			t.Fatalf("unescaped markup in %q", l)
+		}
+	}
+}
+
+func TestGoldenLlmsTxt(t *testing.T) {
+	h := newHarness(t)
+	h.v1.list(item(published("rust-async-runtimes", "Rust async runtimes")), item(published("tidal-power", "Tidal power")),
+		with(item(published("ok-one", "OK one")), "promoted", false, "quality_tier", "ok"))
+	h.refresh()
+	checkGolden(t, "llms.txt", h.get("/llms.txt").Body.String())
 }
