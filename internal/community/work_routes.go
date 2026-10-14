@@ -30,6 +30,7 @@ var workMessages = map[string]string{
 	"invalid_field":            "invalid field",
 	"invalid_body":             "invalid request body",
 	"unknown_field":            "unknown field",
+	"body_too_large":           "request body too large",
 }
 
 // workRoute serves a work route to a bearer-authenticated account, and answers 404 while work is off.

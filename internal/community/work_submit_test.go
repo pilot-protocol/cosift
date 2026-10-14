@@ -253,6 +253,65 @@ func TestSubmitBodyCapIsTwoMiBForSubmitAndOneMiBElsewhere(t *testing.T) {
 	}
 }
 
+func sizedAttestation(t *testing.T, size int) []byte {
+	t.Helper()
+	build := func(n int) []byte {
+		body := attestation("x")
+		body["artifact"] = map[string]any{"chunks": []any{map[string]any{"text": strings.Repeat("a", n)}}}
+		raw, _ := json.Marshal(body)
+		return raw
+	}
+	raw := build(size - len(build(0)))
+	if len(raw) != size {
+		t.Fatalf("built %d bytes, want %d", len(raw), size)
+	}
+	return raw
+}
+
+func TestSubmitRelaysMarkupCharactersAtTheirOwnSize(t *testing.T) {
+	r := newWorkRig(t)
+	r.engine.answer(fixed(200, `{"verdict":"awaiting_quorum","agreeing":[],"indexed":false}`))
+	body := attestation("x")
+	body["artifact"] = map[string]any{"chunks": []any{map[string]any{"text": strings.Repeat("<&>", 130000)}}}
+	var raw bytes.Buffer
+	enc := json.NewEncoder(&raw)
+	enc.SetEscapeHTML(false)
+	enc.Encode(body)
+	client := bytes.TrimSpace(raw.Bytes())
+	if len(client) >= 2<<20 || !bytes.Contains(client, []byte("<&>")) {
+		t.Fatalf("setup: %d bytes", len(client))
+	}
+	if w := r.post("/api/work/submit", sharedTestToken, client, nil); w.Code != 200 {
+		t.Fatalf("%d %.200s", w.Code, w.Body)
+	}
+	sent := r.engine.on("/v1/work/submit")[0].body
+	if len(sent) > len(client)+256 || bytes.Contains(sent, []byte(`\u003c`)) {
+		t.Fatalf("a %d byte body reached the engine as %d bytes", len(client), len(sent))
+	}
+}
+
+func TestSubmitRefusesAnEnvelopeThePathsCapWouldRefuseOnceWorkerAndNetAreAdded(t *testing.T) {
+	r := newWorkRig(t)
+	r.engine.answer(fixed(200, `{"verdict":"awaiting_quorum","agreeing":[],"indexed":false}`))
+	if w := r.post("/api/work/submit", sharedTestToken, sizedAttestation(t, 1000), nil); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	added := len(r.engine.on("/v1/work/submit")[0].body) - 1000
+	if added < 60 || added > 200 {
+		t.Fatalf("worker and net add %d bytes", added)
+	}
+	if w := r.post("/api/work/submit", sharedTestToken, sizedAttestation(t, 2<<20-added), nil); w.Code != 200 {
+		t.Fatalf("an envelope that relays at exactly 2 MiB: %d %.200s", w.Code, w.Body)
+	}
+	if got := len(r.engine.on("/v1/work/submit")[1].body); got != 2<<20 {
+		t.Fatalf("relayed %d bytes, want exactly %d", got, 2<<20)
+	}
+	w := r.post("/api/work/submit", sharedTestToken, sizedAttestation(t, 2<<20-added+1), nil)
+	if w.Code != 413 || errBody(t, w).Code != "body_too_large" || len(r.engine.on("/v1/work/submit")) != 2 {
+		t.Fatalf("one byte over: %d %.200s", w.Code, w.Body)
+	}
+}
+
 func TestSubmitRefusesAnEngineAnswerThatIsNotAVerdictToken(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

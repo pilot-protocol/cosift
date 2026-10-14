@@ -12,7 +12,10 @@ import (
 	"slices"
 )
 
-const submitRoute = "/v1/work/submit"
+const (
+	submitRoute   = "/v1/work/submit"
+	submitBodyMax = 2 << 20
+)
 
 type memberKind int
 
@@ -77,9 +80,15 @@ func buildSubmit(body []byte, worker, net string) ([]byte, *submitRefusal) {
 	}
 	members["worker"], _ = json.Marshal(worker)
 	members["net"], _ = json.Marshal(net)
-	out, err := json.Marshal(members)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(members) != nil {
 		return nil, &submitRefusal{status: http.StatusBadRequest, code: "invalid_body"}
+	}
+	out := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	if len(out) > submitBodyMax {
+		return nil, &submitRefusal{status: http.StatusRequestEntityTooLarge, code: "body_too_large"}
 	}
 	return out, nil
 }

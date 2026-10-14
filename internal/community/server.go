@@ -304,7 +304,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 // bodyLimit is the request body cap in bytes: a worker's attestation may carry a page and its vectors.
 func bodyLimit(path string) int64 {
 	if path == "/api/work/submit" {
-		return 2 << 20
+		return submitBodyMax
 	}
 	return 1 << 20
 }
