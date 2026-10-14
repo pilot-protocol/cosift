@@ -75,3 +75,33 @@ func TestARepeatOfTheCompletingSubmissionRepeatsItsAnswer(t *testing.T) {
 		t.Fatalf("%.80q", doc.Text)
 	}
 }
+
+func TestALateAttestationIsHeldToTheAnchorsLengthNotALaterMembers(t *testing.T) {
+	vs := loadAgreed(t)
+	anchor := vs.byID(t, "agreed-text-one-byte-below-60-percent-of-the-anchor")
+	second := vs.byID(t, "agreed-text-at-exactly-60-percent-of-the-anchor").Anchor
+	h := newHarness(t)
+	h.erroredPage()
+	var ws, ns [3]string
+	var ls [3]LeaseGrant
+	for i := range ls {
+		ws[i], ns[i] = h.nextPair()
+		ls[i], _ = h.claimFor(ws[i], ns[i])
+	}
+	for i, side := range []agreedSide{anchor.Anchor, second} {
+		if _, err := h.s.Submit(requestAs(ls[i], ws[i], ns[i], pageURL, side.Title, side.Lang, side.Text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rec := h.record(pageURL); rec.State == StateAwaiting || len(rec.Groups) != 1 || len(rec.Groups[0].Members) != 2 {
+		t.Fatalf("the two longer texts do not make a quorum: %+v", rec)
+	}
+	att := anchor.Attestation
+	res, err := h.s.Submit(requestAs(ls[2], ws[2], ns[2], pageURL, att.Title, att.Lang, att.Text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := h.record(pageURL); res.Verdict != "mismatch" || len(rec.Groups) != 2 {
+		t.Fatalf("a text one byte under 60 %% of the anchor joined: %+v %+v", res, rec.Groups)
+	}
+}
