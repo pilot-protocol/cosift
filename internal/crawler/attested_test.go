@@ -231,3 +231,24 @@ func TestFetchCopyFailsWhenTheServerRefuses(t *testing.T) {
 		t.Fatalf("a refused copy must not log the URL: %s", logs.String())
 	}
 }
+
+func TestAllowedURLAppliesTheDomainPolicyAndTheAdultFilter(t *testing.T) {
+	c, _ := attestedCrawler(t)
+	c.cfg.ExcludeDomains = []string{"wired.com"}
+	for u, want := range map[string]bool{
+		"https://example.org/page":        true,
+		"https://wired.com/story":         false,
+		"https://www.wired.com/story":     false,
+		"https://notwired.com/story":      true,
+		"https://www.pornhub.com/view":    false,
+		"https://example.org/ads?x=wired": true,
+	} {
+		if got := c.AllowedURL(u); got != want {
+			t.Errorf("%s: %v", u, got)
+		}
+	}
+	c.cfg.IncludeDomains = []string{"example.org"}
+	if c.AllowedURL("https://other.net/x") || !c.AllowedURL("https://docs.example.org/x") {
+		t.Error("the include list is not applied")
+	}
+}

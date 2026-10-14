@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/pilot-protocol/cosift/internal/adultfilter"
 	"github.com/pilot-protocol/cosift/internal/store"
 )
 
@@ -75,4 +76,9 @@ func (c *Crawler) FetchCopy(ctx context.Context, raw string) (*CopyPage, error) 
 		return nil, ErrCopySkipped
 	}
 	return &CopyPage{FinalURL: page.finalURL, Title: page.parsed.Title, Text: page.parsed.Text, Lang: page.parsed.Lang}, nil
+}
+
+// AllowedURL reports whether the crawler's domain policy and the adult filter admit the URL.
+func (c *Crawler) AllowedURL(raw string) bool {
+	return c.allowedDomain(raw) && !adultfilter.IsAdult("", "", raw)
 }
