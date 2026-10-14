@@ -54,11 +54,13 @@ func TestContributionShapeRules(t *testing.T) {
 		{"2 contributor too short", func() map[string]any { return contribBody(title, "0f1e2d3c") }, 422, "contributor", "pattern", false, "invalid_field"},
 		{"2 contributor not a string", func() map[string]any { return with(articleBody(title), "contributor", 7) }, 422, "contributor", "pattern", false, "invalid_field"},
 		{"3 write principal sends contributor", func() map[string]any { return contribBody(title, cid(1)) }, 422, "contributor", "field_not_allowed", true, "invalid_field"},
+		{"3 write principal sends null contributor", func() map[string]any { return with(articleBody(title), "contributor", json_null{}) }, 422, "contributor", "field_not_allowed", true, "invalid_field"},
 		{"4 held", func() map[string]any { return contribBody(title, cid(1), "status", "held") }, 422, "status", "must_be_published", false, "invalid_field"},
 		{"4 status absent", func() map[string]any { return contribBody(title, cid(1), "status", nil) }, 422, "status", "must_be_published", false, "invalid_field"},
 		{"5 sensitive", func() map[string]any {
 			return contribBody(title, cid(1), "sensitivity", map[string]any{"class": "medical_advice", "reason": "x"})
 		}, 422, "sensitivity.class", "must_be_none", false, "invalid_field"},
+		{"5 sensitivity absent", func() map[string]any { return contribBody(title, cid(1), "sensitivity", nil) }, 422, "sensitivity.class", "must_be_none", false, "invalid_field"},
 		{"6 topic_ids", func() map[string]any { return contribBody(title, cid(1), "topic_ids", []string{topic(1)}) }, 422, "topic_ids", "field_not_allowed", false, "invalid_field"},
 		{"6 cluster_ids", func() map[string]any { return contribBody(title, cid(1), "cluster_ids", []string{"c013960"}) }, 422, "cluster_ids", "field_not_allowed", false, "invalid_field"},
 	}
@@ -398,4 +400,24 @@ func TestContributionRestorePendingRecheckedInLock(t *testing.T) {
 	if _, ok := h.raw(recordKey(ulid(1))); ok {
 		t.Error("the contribution landed")
 	}
+}
+
+func TestContributionAcceptsEmptyTopicAndClusterLists(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	empty := []string{}
+	h.contribute(id, contribBody("Rust async runtimes", cid(1), "topic_ids", empty, "cluster_ids", empty), http.StatusCreated)
+	h.contribute(id, contribBody("Rust async runtimes", cid(2), "topic_ids", empty, "cluster_ids", empty, "lead", leadOf("two"), "expected_version", 1), http.StatusOK)
+}
+
+func TestContributionRefusalsKeepTheirOrderOnAFullRecord(t *testing.T) {
+	h := newHarness(t)
+	id := ulid(1)
+	fillContributors(h, id, 64)
+	fresh := cid(200)
+	tier := contribBody("Rust async runtimes", fresh, "quality_tier", "thin", "lead", leadOf("thin"), "expected_version", 64)
+	h.contribError(id, tier, 409, "tier_regression")
+	invalid := contribBody("Rust async runtimes", fresh, "lead", "", "expected_version", 64)
+	h.contribError(id, invalid, 422, "invalid_field")
+	h.contribError(id, contribBody("Rust async runtimes", fresh, "lead", leadOf("full"), "expected_version", 64), 409, "contributors_full")
 }
