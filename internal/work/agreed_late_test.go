@@ -1,0 +1,77 @@
+package work
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestALateAttestationOnAnErroredPageFollowsTheSameRule(t *testing.T) {
+	for _, c := range loadAgreed(t).Cases {
+		t.Run(c.ID, func(t *testing.T) {
+			h := newHarness(t)
+			h.erroredPage()
+			var ws, ns [3]string
+			var ls [3]LeaseGrant
+			for i := range ls {
+				ws[i], ns[i] = h.nextPair()
+				ls[i], _ = h.claimFor(ws[i], ns[i])
+			}
+			anchor := c.Anchor
+			for i, text := range []string{anchor.Text, anchor.Text} {
+				if _, err := h.s.Submit(requestAs(ls[i], ws[i], ns[i], pageURL, anchor.Title, anchor.Lang, text)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			att := c.Attestation
+			res, err := h.s.Submit(requestAs(ls[2], ws[2], ns[2], pageURL, att.Title, att.Lang, att.Text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := h.record(pageURL)
+			if c.Expect.Agree {
+				if res.Verdict != "verified" || len(rec.Groups) != 1 || len(rec.Groups[0].Members) != 3 {
+					t.Fatalf("a late attestation that agrees: %+v %+v", res, rec.Groups)
+				}
+				if last := rec.Groups[0].Members[2]; last.Len != len(att.Text) || last.TitleSha != titleSha(att.Title) {
+					t.Fatalf("a late attestation keeps its length and title_sha: %+v", last)
+				}
+			} else if res.Verdict != "mismatch" || len(rec.Groups) != 2 || fmt.Sprint(rec.Groups[1].Parts) != fmt.Sprint(splitParts(att.Text).hashes) {
+				t.Fatalf("a late attestation that fails %v: %+v", c.Expect.Fails, res)
+			}
+			doc := h.indexedOnce()
+			if want := strings.Join(strings.Fields(anchor.Text), " "); doc.Text != want {
+				t.Errorf("the first quorum's agreed text is indexed once: %.80q", doc.Text)
+			}
+			h.moderate()
+			if len(h.f.indexed) != 1 {
+				t.Fatalf("a late attestation indexed again: %d documents", len(h.f.indexed))
+			}
+		})
+	}
+}
+
+func TestARepeatOfTheCompletingSubmissionRepeatsItsAnswer(t *testing.T) {
+	c := loadAgreed(t).byID(t, "injected-paragraph")
+	h := newHarness(t)
+	h.erroredPage()
+	w1, n1 := h.nextPair()
+	w2, n2 := h.nextPair()
+	l1, _ := h.claimFor(w1, n1)
+	l2, _ := h.claimFor(w2, n2)
+	if _, err := h.s.Submit(requestAs(l1, w1, n1, pageURL, c.Anchor.Title, c.Anchor.Lang, c.Anchor.Text)); err != nil {
+		t.Fatal(err)
+	}
+	completing := requestAs(l2, w2, n2, pageURL, c.Attestation.Title, c.Attestation.Lang, c.Attestation.Text)
+	first, err := h.s.Submit(completing)
+	if err != nil || first.Verdict != "verified" {
+		t.Fatalf("%+v %v", first, err)
+	}
+	again, err := h.s.Submit(completing)
+	if err != nil || again.Verdict != "verified" {
+		t.Fatalf("a repeat of the completing submission: %+v %v", again, err)
+	}
+	if doc := h.indexedOnce(); doc.Text != c.Expect.AgreedText {
+		t.Fatalf("%.80q", doc.Text)
+	}
+}

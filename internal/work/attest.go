@@ -107,7 +107,7 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 		a.TitleSha, a.Lang, a.Len = titleSha(att.text.Title), att.text.Lang, len(att.text.Text)
 	}
 	if rec.State != StateAwaiting {
-		return s.lateLocked(l, rec, a)
+		return s.lateLocked(l, rec, a, sp)
 	}
 	gi := s.place(rec, a, sp)
 	tx := s.begin()
@@ -172,14 +172,14 @@ func (s *Service) verifyLocked(tx *txn, url string, rec *Record, gi int, text *T
 }
 
 // lateLocked answers an attestation on a record that has left awaiting, the same way every time.
-func (s *Service) lateLocked(l *lease, rec *Record, a Attestation) (SubmitResult, error) {
+func (s *Service) lateLocked(l *lease, rec *Record, a Attestation, sp *splitText) (SubmitResult, error) {
 	sha := urlSHA(l.url)
 	tx := s.begin()
 	var res SubmitResult
 	switch rec.State {
 	case StateModerating, StateDeferred, StateDone:
 		g := &rec.Groups[rec.VerifiedGroup]
-		if rec.VerifiedBy != "" && s.matches(*g, a) {
+		if rec.VerifiedBy != "" && s.joins(rec.Class, *g, a, sp) {
 			g.Members = append(g.Members, a)
 			res = verifiedAnswer(rec)
 			if rec.State == StateDone {
@@ -189,11 +189,11 @@ func (s *Service) lateLocked(l *lease, rec *Record, a Attestation) (SubmitResult
 		}
 		fallthrough
 	case StateMismatch:
-		rec.Groups = append(rec.Groups, Group{Anchor: a.Simhash, Members: []Attestation{a}})
+		rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
 		_ = tx.event(sha, "mismatch", []string{a.Worker}, false)
 		res = SubmitResult{Verdict: "mismatch", Agreeing: []string{}}
 	case StateRejected:
-		rec.Groups = append(rec.Groups, Group{Anchor: a.Simhash, Members: []Attestation{a}})
+		rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
 		_ = tx.event(sha, "rejected", []string{a.Worker}, false)
 		res = SubmitResult{Verdict: "rejected", Agreeing: []string{}, Reason: rec.RejectReason}
 	default:
