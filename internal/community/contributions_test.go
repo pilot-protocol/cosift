@@ -33,12 +33,23 @@ type contribProvider struct {
 	recsErr   error
 	limits    []int
 	members   int
+	byUID     map[string]sharedaccount.Member
+	uids      []string
+	cids      []string
 }
 
-func (p *contribProvider) Member(context.Context, string) (sharedaccount.Member, error) {
+func (p *contribProvider) Member(_ context.Context, uid string) (sharedaccount.Member, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.members++
+	p.uids = append(p.uids, uid)
+	if p.byUID != nil {
+		m, ok := p.byUID[uid]
+		if !ok {
+			return sharedaccount.Member{}, sharedaccount.ErrNotFound
+		}
+		return m, p.memberErr
+	}
 	return p.member, p.memberErr
 }
 
@@ -46,6 +57,7 @@ func (p *contribProvider) Contributions(_ context.Context, cid string, limit int
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.limits = append(p.limits, limit)
+	p.cids = append(p.cids, cid)
 	return p.recs, p.recsErr
 }
 

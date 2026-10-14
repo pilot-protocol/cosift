@@ -124,7 +124,7 @@ func (s *Server) articleURL(ctx context.Context, id string) string {
 		case err == nil && articleSlugRe.MatchString(rec.Slug) && len(rec.Slug) <= 80:
 			slug = rec.Slug
 			s.slugs.put(id, slug, slugTTL, now)
-		case errors.Is(err, ErrArticleGone):
+		case err == nil || errors.Is(err, ErrArticleGone):
 			s.slugs.put(id, "", slugGoneTTL, now)
 		}
 	}
@@ -137,7 +137,10 @@ func (s *Server) articleURL(ctx context.Context, id string) string {
 // plain drops control, format and line-break characters and collapses spaces; a contributor's text is data, never markup.
 func plain(s string, max int) string {
 	s = strings.Map(func(r rune) rune {
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp):
 			return -1
 		}
 		return r
