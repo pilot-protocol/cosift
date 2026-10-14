@@ -2,156 +2,121 @@ package wiki
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 var (
-	mdEscape  = regexp.MustCompile(`\\.`)
-	autolink  = regexp.MustCompile(`<https?://[^<>\s]+>`)
-	mdSetext  = regexp.MustCompile(`^ {0,3}(=+|-+) *$`)
-	mdFenceLn = regexp.MustCompile("^ {0,3}(```|~~~)")
-	mdBidi    = regexp.MustCompile("[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+	mdPair     = regexp.MustCompile("\\\\[!-/:-@\\[-`{-~]")
+	mdPunct    = regexp.MustCompile("[!-/:-@\\[-`{-~]")
+	mdItemLink = regexp.MustCompile(`^(.*) <(https?://[^<>\s]+)>$`)
+	mdBidi     = regexp.MustCompile("[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 )
 
-// mdInert fails when a Markdown renderer could find markup that is not plain text.
-func mdInert(t *testing.T, name, out string) {
+// mdProblem says why a generated line could start Markdown syntax: apart from the code's own line prefix and a validated autolink after a list item, every text run must be free of unescaped ASCII punctuation, and the line must not be indented by four spaces.
+func mdProblem(line string, urls map[string]bool) string {
+	if strings.HasPrefix(line, "    ") || strings.ContainsAny(line, "\t\r") {
+		return "indentation or control character"
+	}
+	text := line
+	item := false
+	for _, p := range []string{"### ", "## ", "# ", "  - ", "- "} {
+		if rest, ok := strings.CutPrefix(text, p); ok {
+			text, item = rest, strings.HasSuffix(p, "- ")
+			break
+		}
+	}
+	if m := mdItemLink.FindStringSubmatch(text); item && m != nil && urls[m[2]] {
+		text = m[1]
+	}
+	if bad := mdPunct.FindString(mdPair.ReplaceAllString(text, "x")); bad != "" {
+		return fmt.Sprintf("unescaped %q", bad)
+	}
+	return ""
+}
+
+// mdSafe fails unless every line of a .md page is a construct the code builds (the title, the status line, headings, paragraphs and items made of escaped text, validated autolinks, the licence line) and the page has one h1.
+func mdSafe(t *testing.T, name, out string, urls ...string) {
 	t.Helper()
 	if mdBidi.MatchString(out) {
 		t.Fatalf("%s: control or bidi character in the output", name)
 	}
-	fenced, loose := false, false
-	ours := len(out)
-	if k := strings.LastIndex(out, "\n## Sources\n"); k >= 0 {
-		ours = k
-	} else if k := strings.LastIndex(out, "\n---\n"); k >= 0 {
-		ours = k
+	allowed := map[string]bool{licenceURL: true}
+	for _, u := range urls {
+		allowed[u] = true
 	}
-	offset := 0
-	for i, line := range strings.Split(out, "\n") {
-		generated := offset >= ours
-		offset += len(line) + 1
-		if mdFenceLn.MatchString(line) {
-			if line[0] != '`' && line[0] != '~' {
-				t.Fatalf("%s: indented fence on line %d: %q", name, i, line)
-			}
-			fenced, loose = !fenced, false
-			continue
-		}
-		if fenced {
-			continue
-		}
-		if strings.TrimSpace(line) == "" {
-			loose = false
-			continue
-		}
-		for k := strings.Index(line, "]:"); k >= 0; {
-			if k == 0 || line[k-1] != '\\' {
-				t.Fatalf("%s: reference definition on line %d: %q", name, i, line)
-			}
-			next := strings.Index(line[k+2:], "]:")
-			if next < 0 {
-				break
-			}
-			k += 2 + next
-		}
-		plain := mdEscape.ReplaceAllString(line, "")
-		plain, lone := stripSpans(plain, loose)
-		loose = loose || lone
-		if generated {
-			plain = autolink.ReplaceAllString(plain, "")
-		}
-		switch {
-		case strings.Contains(plain, "<"):
-			t.Fatalf("%s: raw < on line %d: %q", name, i, line)
-		case strings.Contains(plain, "](") && !(generated && strings.Contains(line, licenceURL)):
-			t.Fatalf("%s: inline link on line %d: %q", name, i, line)
-		case mdSetext.MatchString(line) && !(generated && line == "---"):
-			t.Fatalf("%s: setext rule on line %d: %q", name, i, line)
+	canonical := regexp.MustCompile(`^Canonical page: <(https://[^<>\s]+)>$`)
+	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		var problem string
+		switch m := canonical.FindStringSubmatch(line); {
+		case line == "" || line == licenceLine:
 		case i > 0 && strings.HasPrefix(line, "# "):
-			t.Fatalf("%s: second h1 on line %d: %q", name, i, line)
-		}
-	}
-}
-
-// stripSpans removes inline code that opens and closes on this line, unless an earlier line of the paragraph left a backtick run open; it reports whether a run stayed unmatched.
-func stripSpans(s string, loose bool) (string, bool) {
-	var b strings.Builder
-	lone := false
-	for i := 0; i < len(s); {
-		if s[i] != '`' {
-			b.WriteByte(s[i])
-			i++
-			continue
-		}
-		n := 0
-		for i+n < len(s) && s[i+n] == '`' {
-			n++
-		}
-		ticks := strings.Repeat("`", n)
-		end := strings.Index(s[i+n:], ticks)
-		for end >= 0 && i+n+end+n < len(s) && s[i+n+end+n] == '`' {
-			rest := s[i+n+end:]
-			skip := len(rest) - len(strings.TrimLeft(rest, "`"))
-			next := strings.Index(s[i+n+end+skip:], ticks)
-			if next < 0 {
-				end = -1
-				break
+			problem = "second h1"
+		case i == 2 && strings.HasPrefix(line, "Agent submitted"):
+			if bad := mdPunct.FindString(strings.ReplaceAll(mdPair.ReplaceAllString(line, "x"), ", ", " ")); bad != "" {
+				problem = fmt.Sprintf("unescaped %q", bad)
 			}
-			end += skip + next
-		}
-		switch {
-		case end < 0:
-			lone = true
-			b.WriteString(ticks)
-			i += n
-		case loose || strings.Contains(s[i+n:i+n+end], "|"):
-			b.WriteString(ticks)
-			i += n
+		case m != nil:
+			if !allowed[m[1]] {
+				problem = "autolink to " + m[1]
+			}
 		default:
-			i += n + end + n
+			problem = mdProblem(line, allowed)
+		}
+		if problem != "" {
+			t.Fatalf("%s: line %d %q: %s", name, i, line, problem)
 		}
 	}
-	return b.String(), lone
 }
 
 func unescapeMD(s string) string {
-	return mdEscape.ReplaceAllStringFunc(s, func(m string) string {
-		if isPunct(m[1]) {
-			return m[1:]
-		}
-		return m
-	})
+	return mdPair.ReplaceAllStringFunc(s, func(m string) string { return m[1:] })
 }
 
 func TestInjectionCorpusInsideTheMarkdownForm(t *testing.T) {
 	h := newHarness(t)
 	h.refresh()
 	for i, tc := range loadCorpus(t) {
-		slug := fmt.Sprintf("case-%d", i)
-		cites := []any{
-			map[string]any{"n": 1, "url": corpusCites[0], "title": "One", "host": "docs.example.org", "quote": "q"},
-			map[string]any{"n": 2, "url": corpusCites[1], "title": "Two", "host": "docs.example.org", "quote": "q"},
-		}
-		t.Run(tc.Name, func(t *testing.T) {
-			h.v1.set(slug, jsonReply(200, with(published(slug, "Case"), "body_md", tc.Text, "citations", cites)))
-			h.clock.Add(time.Second)
-			rec := h.get("/wiki/"+slug+".md", "RemoteAddr", fmt.Sprintf("192.0.2.%d:1", i%200+1))
-			if rec.Code != 200 {
-				t.Fatalf("%d", rec.Code)
+		for _, field := range []string{"body", "title", "citation"} {
+			slug := fmt.Sprintf("case-%d-%s", i, field)
+			cites := []any{
+				map[string]any{"n": 1, "url": corpusCites[0], "title": "One", "host": "docs.example.org", "quote": "q"},
+				map[string]any{"n": 2, "url": corpusCites[1], "title": "Two", "host": "docs.example.org", "quote": "q"},
 			}
-			out := rec.Body.String()
-			mdInert(t, tc.Name, out)
-			plain := unescapeMD(out)
-			for _, v := range tc.Visible {
-				if !strings.Contains(plain, v) {
-					t.Fatalf("lost visible text %q", v)
+			rec := published(slug, "Case")
+			switch field {
+			case "body":
+				rec = with(rec, "body_md", tc.Text, "citations", cites)
+			case "title":
+				rec = with(rec, "title", tc.Text, "citations", cites)
+			case "citation":
+				rec = with(rec, "citations", []any{map[string]any{"n": 1, "url": corpusCites[0], "title": tc.Text, "host": tc.Text, "quote": tc.Text}})
+			}
+			t.Run(tc.Name+"/"+field, func(t *testing.T) {
+				h.v1.set(slug, jsonReply(200, rec))
+				h.clock.Add(time.Second)
+				got := h.get("/wiki/"+slug+".md", "RemoteAddr", fmt.Sprintf("192.0.2.%d:1", i%200+1))
+				if got.Code != 200 {
+					t.Fatalf("%d", got.Code)
 				}
-			}
-		})
+				out := got.Body.String()
+				mdSafe(t, tc.Name, out, corpusCites[0], "https://cosift.example/wiki/"+slug)
+				if field != "body" {
+					return
+				}
+				plain := unescapeMD(out)
+				for _, v := range tc.Visible {
+					if !strings.Contains(plain, v) {
+						t.Fatalf("lost visible text %q", v)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -160,26 +125,29 @@ func TestHandlesInTheMarkdownFormAreEscaped(t *testing.T) {
 	h := withHandles(t, src)
 	h.v1.set("tidal-power", jsonReply(200, communityArticle("tidal-power", cidA, cidB, cidC)))
 	out := h.get("/wiki/tidal-power.md").Body.String()
-	want := `Agent submitted · Contributed by @\_a\_, @x\_y-z, a community member`
+	want := `Agent submitted · Contributed by \@\_a\_, \@x\_y\-z, a community member`
 	if !strings.Contains(out, "\n"+want+"\n") {
 		t.Fatalf("attribution line missing in\n%s", out)
 	}
-	mdInert(t, "handles", out)
+	mdSafe(t, "handles", out, "https://docs.example.org/guide", "https://news.example.com/item?id=7", "https://cosift.example/wiki/tidal-power")
 }
 
-func TestMarkdownFormCarriesTheLicenceAndNoLinksButTheCitedOnes(t *testing.T) {
+func TestMarkdownFormCarriesTheLicenceAndLinksOnlyWhatTheCodeBuilds(t *testing.T) {
 	h := newHarness(t)
 	h.v1.set("tidal-power", jsonReply(200, published("tidal-power", "Tidal power")))
 	out := h.get("/wiki/tidal-power.md").Body.String()
-	if !strings.Contains(out, "Creative Commons Attribution-ShareAlike 4.0 International licence (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/)") {
-		t.Fatal("no licence line")
-	}
-	for _, want := range []string{"# Tidal power\n\nAgent submitted\n\n", "## Sources\n", "- Guide (docs.example.org) <https://docs.example.org/guide>\n  - [1] A verbatim quote.\n", "Canonical page: <https://cosift.example/wiki/tidal-power>"} {
+	for _, want := range []string{
+		"# Tidal power\n\nAgent submitted\n\n",
+		"## Sources\n",
+		"- Guide \\(docs\\.example\\.org\\) <https://docs.example.org/guide>\n  - \\[1\\] A verbatim quote\\.\n",
+		"\nThis article's text is available under the Creative Commons Attribution-ShareAlike 4.0 International licence (CC BY-SA 4.0): <https://creativecommons.org/licenses/by-sa/4.0/>\n",
+		"\nCanonical page: <https://cosift.example/wiki/tidal-power>\n",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
 	}
-	mdInert(t, "plain", out)
+	mdSafe(t, "plain", out, "https://docs.example.org/guide", "https://news.example.com/item?id=7", "https://cosift.example/wiki/tidal-power")
 }
 
 func TestMarkdownSourcesOmitAnUnsafeURLAndKeepGrouping(t *testing.T) {
@@ -194,9 +162,9 @@ func TestMarkdownSourcesOmitAnUnsafeURLAndKeepGrouping(t *testing.T) {
 	h.v1.set("grouped", jsonReply(200, rec))
 	out := h.get("/wiki/grouped.md").Body.String()
 	for _, want := range []string{
-		"- T\\*1 (a.example) <https://a.example/page>\n  - [1] First \\<b\\>quote\\</b\\>.\n  - [3] Third.\n",
-		"- T\\*2 (a.example)\n  - [2] Second.\n",
-		"- T\\*4 (a.example)\n  - [4] Fourth.\n",
+		"- T\\*1 \\(a\\.example\\) <https://a.example/page>\n  - \\[1\\] First \\<b\\>quote\\<\\/b\\>\\.\n  - \\[3\\] Third\\.\n",
+		"- T\\*2 \\(a\\.example\\)\n  - \\[2\\] Second\\.\n",
+		"- T\\*4 \\(a\\.example\\)\n  - \\[4\\] Fourth\\.\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in\n%s", want, out)
@@ -290,80 +258,184 @@ func TestGoldenMarkdown(t *testing.T) {
 	checkGolden(t, "article.md", plain.get("/wiki/rust-async-runtimes.md").Body.String())
 }
 
-func TestEscapeInline(t *testing.T) {
-	for in, want := range map[string]string{"plain": "plain", "_a_": `\_a\_`, "a*b": `a\*b`, "[x](y)": `\[x\](y)`, "<b>": `\<b\>`, "a\\b": `a\\b`, "`c`": "\\`c\\`", "x|y~z": `x\|y\~z`} {
-		if got := escapeInline(in); got != want {
-			t.Errorf("%q -> %q, want %q", in, got, want)
+func TestMdTextEscapesEveryASCIIPunctuationCharacter(t *testing.T) {
+	for c := '!'; c <= '~'; c++ {
+		want := "a" + string(c) + "b"
+		if c < '0' || c > '9' && c < 'A' || c > 'Z' && c < 'a' || c > 'z' {
+			want = `a\` + string(c) + "b"
+		}
+		if got := mdText("a" + string(c) + "b"); got != want {
+			t.Errorf("%q -> %q, want %q", c, got, want)
 		}
 	}
-}
-
-func TestMarkdownBodyNormalisesHeadingsLikeThePage(t *testing.T) {
-	in := "### Early\n\n# Top\n\n###### Deep\n\n## Real\n\n### Sub\n\n#\n\nText\n=====\n\n---\n"
-	want := "## Early\n\n## Top\n\n### Deep\n\n## Real\n\n### Sub\n\n\nText\n\\=====\n\n\\---\n"
-	if got := mdBody(in); got != want {
-		t.Fatalf("got\n%q\nwant\n%q", got, want)
+	if got, want := mdText("é · — “q” 100%"), `é · — “q” 100\%`; got != want {
+		t.Errorf("non-ASCII text: %q, want %q", got, want)
 	}
 }
 
-func TestMarkdownBodyKeepsFencesAndCodeSpans(t *testing.T) {
-	in := "Use `Vec<T>` and ``a<b``.\n\n```rust\nlet v: Vec<u8> = <x>;\n[a](b)\n```\n\nAfter <i>fence</i> [l](http://x)\n[1]: http://x\n"
-	want := "Use `Vec<T>` and ``a<b``.\n\n```rust\nlet v: Vec<u8> = <x>;\n[a](b)\n```\n\nAfter \\<i>fence\\</i> [l]\\(http://x)\n[1]\\: http://x\n"
-	if got := mdBody(in); got != want {
-		t.Fatalf("got\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestMarkdownBodyClosesAnOpenFence(t *testing.T) {
-	if got, want := mdBody("Text [1].\n\n```\n<b>open"), "Text [1].\n\n```\n<b>open\n```"; got != want {
-		t.Fatalf("got %q want %q", got, want)
-	}
-	h := newHarness(t)
-	h.v1.set("open", jsonReply(200, with(published("open", "Open"), "body_md", "Text [1].\n\n~~~\n<b>open", "citations", []any{
-		map[string]any{"n": 1, "url": "https://a.example/p", "title": "T", "host": "a.example", "quote": "q"},
-	})))
-	out := h.get("/wiki/open.md").Body.String()
-	if !strings.Contains(out, "<b>open\n~~~\n\n## Sources\n") {
-		t.Fatalf("the fence runs into the sources:\n%s", out)
-	}
-}
-
-func TestMarkdownBodyMovesFencesToColumnZero(t *testing.T) {
-	in := "- item\n  ```go\n  a<b\n    c\n  ```\nafter <i>\n   ~~~\nx\n   ~~~\n"
-	want := "- item\n```go\na<b\n  c\n```\nafter \\<i>\n~~~\nx\n~~~\n"
-	if got := mdBody(in); got != want {
-		t.Fatalf("got\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestMarkdownBodyKeepsASpanOnlyWhenNoRunIsOpen(t *testing.T) {
+func TestMdTextFoldsBreaksAndDropsControls(t *testing.T) {
 	for in, want := range map[string]string{
-		"x `a\nb` <i> `c`":         "x `a\nb` \\<i> `c`",
-		"x `a\nb\nc` <i> `d<e>`":   "x `a\nb\nc` \\<i> `d\\<e>`",
-		"x `a\n\nb `c<d>`":         "x `a\n\nb `c<d>`",
-		"`ok<` x `a\nb` <i>":       "`ok<` x `a\nb` \\<i>",
-		"| `x | <i>`":              "| `x | \\<i>`",
-		"[x`]: u`":                 "[x`]\\: u`",
-		"```\na\n```\n`b\n`c<d>`":  "```\na\n```\n`b\n`c\\<d>`",
-		"`b\n```\na\n```\n`c<d>`":  "`b\n```\na\n```\n`c<d>`",
-		"`b\n- `c` <d>":            "`b\n- `c` \\<d>",
-		"a `b` `c\nd` `e` <f>":     "a `b` `c\nd` `e` \\<f>",
-		"\\`a` <i>":                "\\`a` \\<i>",
-		"x `a\n# h `b<c>`\n`d<e>`": "x `a\n## h `b\\<c>`\n`d\\<e>`",
+		"a\rb":              "a b",
+		"a\r\nb":            "a b",
+		"a\nb":              "a b",
+		"a\u2028b\u2029c":   "a b c",
+		"a\t b   c":         "a b c",
+		"  a  ":             "a",
+		"\u00a0\u3000a":     "a",
+		"a\x00b\x1bc\x7fd":  "abcd",
+		"a\u202etxet\u2066": "atxet",
+		"a\u200bb\ufeffc":   "abc",
+		"\r\n\t ":           "",
 	} {
-		got := mdBody(in)
-		if got != want {
+		if got := mdText(in); got != want {
 			t.Errorf("%q -> %q, want %q", in, got, want)
 		}
 	}
 }
 
-func TestMarkdownBodyEscapesAnIndentedSetextRule(t *testing.T) {
-	for in, want := range map[string]string{"T\n ===": "T\n \\===", "T\n   ---": "T\n   \\---", "T\n    ===": "T\n    ==="} {
-		if got := mdBody(in); got != want {
+func TestMdLineKeepsAtMostThreeSpacesOfIndentation(t *testing.T) {
+	for n := 0; n <= 8; n++ {
+		if got, want := mdLine(strings.Repeat(" ", n)+"x"), strings.Repeat(" ", min(n, 3))+"x"; got != want {
+			t.Errorf("%d spaces -> %q, want %q", n, got, want)
+		}
+	}
+	for in, want := range map[string]string{"\tx": "   x", " \tx": "   x", "\t\t x": "   x", "  \u00a0 x": "  x", "   ": "", "": ""} {
+		if got := mdLine(in); got != want {
 			t.Errorf("%q -> %q, want %q", in, got, want)
 		}
 	}
+}
+
+func TestMdBodyBuildsOnlyHeadingsItemsAndParagraphs(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"headings are normalised like the page", "### Early\n\n# Top\n\n###### Deep\n\n## Real\n\n### Sub\n\n#\n\nText\n=====\n\n---\n",
+			"## Early\n\n## Top\n\n### Deep\n\n## Real\n\n### Sub\n\nText\n\\=\\=\\=\\=\\=\n\n\\-\\-\\-"},
+		{"heading text is escaped", "## A *b* `c` [d](e)", "## A \\*b\\* \\`c\\` \\[d\\]\\(e\\)"},
+		{"items and paragraphs", "Intro:\n- a <b>\n* b\n+ c\n1. d\n2) e\n  - nested\nTail line\n\nNext",
+			"Intro\\:\n\n- a \\<b\\>\n- b\n- c\n- d\n- e\n- nested\nTail line\n\nNext"},
+		{"an ordered marker other than 1 does not interrupt a paragraph", "Born in\n1990. A year\n1. one\n2. two", "Born in\n1990\\. A year\n\n- one\n- two"},
+		{"lookalike markers stay text", "-x\n--\n1.x\n10 apples\n1234567890. y", "\\-x\n\\-\\-\n1\\.x\n10 apples\n1234567890\\. y"},
+		{"a bare marker is dropped", "-\ntext", "text"},
+		{"a same-line code span with a pipe", "`a|b` <i> `c`", "\\`a\\|b\\` \\<i\\> \\`c\\`"},
+		{"a fence at indent three with a de-indented closer", "   ```\n    ```\n<img src=x onerror=alert(7)>\n```\nafter",
+			"   \\`\\`\\`\n\\<img src\\=x onerror\\=alert\\(7\\)\\>\n\nafter"},
+		{"a fence is plain text", "Use `Vec<T>`:\n\n```rust\nlet v: Vec<u8> = <x>;\n[a](b)\n```\n\nAfter",
+			"Use \\`Vec\\<T\\>\\`\\:\n\nlet v\\: Vec\\<u8\\> \\= \\<x\\>\\;\n\\[a\\]\\(b\\)\n\nAfter"},
+		{"an unclosed fence", "Text [1].\n\n```\n<b>open", "Text \\[1\\]\\.\n\n\\<b\\>open"},
+		{"a heading inside a fence is text", "~~~\n# not a heading\n- not an item\n~~~", "\\# not a heading\n\\- not an item"},
+		{"indentation is capped", "a\n    b\n\tc\n  d", "a\n   b\n   c\n  d"},
+		{"quotes, tables, definitions, setext rules and html", "> q\n| a | b |\n|---|---|\n[x]: u\nT\n==\n<div>",
+			"\\> q\n\\| a \\| b \\|\n\\|\\-\\-\\-\\|\\-\\-\\-\\|\n\\[x\\]\\: u\nT\n\\=\\=\n\\<div\\>"},
+		{"escapes in the source stand for their characters", `\<b\> \\ \a`, `\<b\> \\ \\a`},
+		{"entities", "&lt;b&gt; &#60;", "\\&lt\\;b\\&gt\\; \\&\\#60\\;"},
+		{"CR and CRLF end lines", "a\r\nb\rc", "a\nb\nc"},
+		{"an empty text", " \n\t\n", ""},
+	} {
+		if got := mdBody(tc.in); got != tc.want {
+			t.Errorf("%s: %q\n got %q\nwant %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+var mdTokens = []string{
+	"```", "~~~", "`", "``", "<script>", "</", "<https://e.example/>", "](", "]:", "[1]", "![", "# ", "## ", "###### ", "#", "- ", "* ", "+ ", "1. ", "2) ", "10. ", "> ", "|", "---", "===", "***", "___",
+	"    ", "  ", " ", "\t", "\r", "\n", "\r\n", "\n\n", "\u2028", "\u00a0", "\u200b", "\u202e", "\x00", "\x1b", "&lt;", "&#60;", "\\", "\\\\", "word", "Word9", "é", "http://x.example/a_b", "$", "~", "^", "{", "}", "@",
+}
+
+func randomMarkdown(rng *rand.Rand) string {
+	var b strings.Builder
+	for range 1 + rng.IntN(24) {
+		b.WriteString(mdTokens[rng.IntN(len(mdTokens))])
+		if rng.IntN(3) == 0 {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func TestMdTextAndBodyAreSafeForRandomInput(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	fold := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			switch {
+			case unicode.IsSpace(r) || r == '\u2028' || r == '\u2029':
+				b.WriteByte(' ')
+			case unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r):
+			default:
+				b.WriteRune(r)
+			}
+		}
+		return strings.Join(strings.Fields(b.String()), " ")
+	}
+	for range 4000 {
+		in := randomMarkdown(rng)
+		text := mdText(in)
+		if p := mdProblem("- "+text, nil); p != "" || strings.ContainsAny(text, "\r\n") {
+			t.Fatalf("mdText(%q) = %q: %s", in, text, p)
+		}
+		if got, want := unescapeMD(text), fold(in); got != want {
+			t.Fatalf("mdText(%q) = %q reads back as %q, want %q", in, text, got, want)
+		}
+		for j, line := range strings.Split(mdBody(in), "\n") {
+			if p := mdProblem(line, nil); p != "" || strings.HasPrefix(line, "# ") {
+				t.Fatalf("mdBody(%q) line %d %q: %s", in, j, line, p)
+			}
+		}
+	}
+}
+
+func TestAutolinkAcceptsOnlyStrictURLs(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://a.example/p":              true,
+		"http://a.example":                 true,
+		"https://a.example/a%20b?q=1#f":    true,
+		"HTTPS://A.EXAMPLE/":               true,
+		"https://a_b.example/p":            true,
+		"https://user:pw@a.example/x":      true,
+		"javascript:alert(1)":              false,
+		"data:text/html,x":                 false,
+		"ftp://a.example/":                 false,
+		"//a.example/":                     false,
+		"https://":                         false,
+		"https:///x":                       false,
+		"https://:80/x":                    false,
+		"https://a.example/<x>":            false,
+		"https://a.example/a b":            false,
+		"https://a.example/a\tb":           false,
+		"https://a.example/a\"b":           false,
+		"https://a.example/a\\b":           false,
+		"https://a.example/a|b":            false,
+		"https://a.example/a^b":            false,
+		"https://a.example/a`b":            false,
+		"https://a.example/{x}":            false,
+		"https://a.example/\u00e9":         false,
+		"https://a.example/\u202e":         false,
+		"mailto:a@a.example":               false,
+		"https://a.example/>":              false,
+		"https://a.example/a>b<c":          false,
+		"https://a.example/\x00":           false,
+		"https://a.example/path?x=<script": false,
+	} {
+		got, ok := autolink(raw)
+		if ok != want || (ok && got != "<"+raw+">") {
+			t.Errorf("%q -> %q, %v; want ok=%v", raw, got, ok, want)
+		}
+	}
+}
+
+func TestMarkdownFormFoldsLineBreaksInTitleAndCitation(t *testing.T) {
+	h := newHarness(t)
+	h.v1.set("breaks", jsonReply(200, with(published("breaks", "Two\r\nlines\rand\nmore"), "citations", []any{
+		map[string]any{"n": 1, "url": "https://a.example/p", "title": "T\r\n# x", "host": "a.example", "quote": "q\r- y\n1. z"},
+	})))
+	out := h.get("/wiki/breaks.md").Body.String()
+	for _, want := range []string{"# Two lines and more\n", "- T \\# x \\(a\\.example\\) <https://a.example/p>\n  - \\[1\\] q \\- y 1\\. z\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in\n%s", want, out)
+		}
+	}
+	mdSafe(t, "breaks", out, "https://a.example/p", "https://cosift.example/wiki/breaks")
 }
 
 func TestMarkdownFormEscapesTheCitationHost(t *testing.T) {
@@ -371,7 +443,7 @@ func TestMarkdownFormEscapesTheCitationHost(t *testing.T) {
 	h.v1.set("host", jsonReply(200, with(published("host", "Host"), "citations", []any{
 		map[string]any{"n": 1, "url": "https://a_b.example/p", "title": "T", "host": "a_b*c.example", "quote": "q"},
 	})))
-	if out := h.get("/wiki/host.md").Body.String(); !strings.Contains(out, "- T (a\\_b\\*c.example) <https://a_b.example/p>\n") {
+	if out := h.get("/wiki/host.md").Body.String(); !strings.Contains(out, "- T \\(a\\_b\\*c\\.example\\) <https://a_b.example/p>\n") {
 		t.Fatalf("host not escaped:\n%s", out)
 	}
 }

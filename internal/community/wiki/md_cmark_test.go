@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os/exec"
 	"strings"
 	"testing"
@@ -172,5 +173,16 @@ func TestCmarkRendersLlmsTxtAsPlainText(t *testing.T) {
 	}
 	for _, f := range cmarkFlavours {
 		cmarkInspect(t, f.bin+"/llms.txt", cmarkRender(t, f, out), cmarkLlmsTags, urls, nil)
+	}
+}
+
+func TestCmarkRendersRandomTextAsPlainText(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 5))
+	for range 1500 {
+		in := randomMarkdown(rng)
+		doc := "# " + mdText(in) + "\n\n" + mdBody(in) + "\n"
+		for _, f := range cmarkFlavours {
+			cmarkInspect(t, fmt.Sprintf("%s %q", f.bin, in), cmarkRender(t, f, doc), cmarkArticleTags, nil, nil)
+		}
 	}
 }

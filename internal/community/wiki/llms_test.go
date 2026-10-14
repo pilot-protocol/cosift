@@ -73,14 +73,13 @@ func TestInjectionCorpusInTitlesStaysInertInLlmsTxt(t *testing.T) {
 		t.Fatalf("%d lines for %d articles", len(lines), len(items))
 	}
 	line := regexp.MustCompile(`^- \[(.*)\]\(https://cosift\.example/wiki/case-\d{3}\.md\)$`)
-	escapes := regexp.MustCompile(`\\.`)
 	for _, l := range lines {
 		m := line.FindStringSubmatch(l)
 		if m == nil {
 			t.Fatalf("not a bare link line: %q", l)
 		}
-		if strings.ContainsAny(escapes.ReplaceAllString(m[1], ""), "\\`*_[]<>|~") {
-			t.Fatalf("unescaped markup in %q", l)
+		if bad := mdPunct.FindString(mdPair.ReplaceAllString(m[1], "x")); bad != "" {
+			t.Fatalf("unescaped %q in %q", bad, l)
 		}
 	}
 }
