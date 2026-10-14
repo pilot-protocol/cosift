@@ -392,3 +392,132 @@ test('the #agents link opens the Agents view', async () => {
  assert.equal(plain.get('auth').hidden,false);
  assert.equal(plain.get('app').hidden,true);
 });
+const textOf = n => (n.textContent || '') + (n.children || []).map(textOf).join(' ');
+const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, '../testdata/contribution-vectors-v1.json'), 'utf8'));
+const mineData = {
+ joined: true, handle: 'tidal-fan', more: false,
+ fetch: {claimed: 12, submitted: 10, verified: 8, mismatch: 0, rejected: 1, credits: 16},
+ contributions: [
+  {contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V1', kind: 'new', status: 'published', status_at: '2026-10-14T09:12:31Z', title: 'Tidal power',
+   article: {id: '01J9A3Q8B2C3D4E5F6G7H8J9K0', url: 'https://cosift.pilotprotocol.network/wiki/tidal-power', version: 1}, credits: 1500},
+  {contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V2', kind: 'revision', status: 'refused', status_at: '2026-10-14T09:13:31Z', title: 'Rust async runtimes',
+   refusals: [{code: 'promotional', field: 'body_md'}, {code: 'a_code_this_app_does_not_know'}]},
+  {contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V3', kind: 'revision', status: 'lost', status_at: '2026-10-14T09:14:31Z', title: 'Lost one', lost_reason: 'not_better'},
+  {contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V4', kind: 'new', status: 'needs_sources', status_at: '2026-10-14T09:15:31Z', title: 'Waiting', urls: ['https://docs.example.org/a'], sources_pushed: false},
+  {contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V5', kind: 'new', status: 'taken_down', status_at: '2026-10-14T09:16:31Z'},
+ ],
+ earned: [
+  {reason: 'contribution_award', delta: 1500, at: '2026-10-14T09:12:40Z', award_id: 'art:01J9A3Q7W4X9M3K5N6P8R0T2V1'},
+  {reason: 'clawback', delta: -200, at: '2026-10-14T09:12:50Z', award_id: 'claw:01J9A3Q8B2C3D4E5F6G7H8J9K1_01J9A3Q8B2C3D4E5F6G7H8J9K0:0f1e2d3c4b5a6978'},
+  {reason: 'fetch_verified', delta: 2, at: '2026-10-14T09:12:55Z'},
+ ],
+};
+async function openMine(data, pages = []) {
+ const a = await app();
+ const shown = a.run('view("mine")'); await tick();
+ a.respond('contributions', data); a.respond('submissions', pages); await shown;
+ return a;
+}
+test('the hint tables equal the shared vectors', async () => {
+ const a = await app();
+ const refusals = Object.fromEntries(Object.entries(vectors.refusals).map(([code, v]) => [code, v.hint]));
+ assert.deepEqual(JSON.parse(a.run('JSON.stringify(REFUSAL_HINTS)')), refusals);
+ assert.deepEqual(JSON.parse(a.run('JSON.stringify(LOST_HINTS)')), vectors.lost_hints);
+ assert.deepEqual(JSON.parse(a.run('JSON.stringify(OUTCOME_HINTS)')), vectors.outcome_hints);
+});
+test('My contributions shows each outcome with its hint, link and credits', async () => {
+ const a = await openMine(mineData);
+ assert.equal(a.get('view-mine').hidden, false);
+ const rows = a.get('mine-list').children;
+ assert.equal(rows.length, 5);
+ assert.match(textOf(rows[0]), /Tidal power/);
+ assert.match(textOf(rows[0]), /Published/);
+ assert.ok(textOf(rows[0]).includes('+' + (1500).toLocaleString() + ' credits'));
+ assert.equal(rows[0].children[0].children[0].href, 'https://cosift.pilotprotocol.network/wiki/tidal-power');
+ assert.ok(textOf(rows[1]).includes(vectors.refusals.promotional.hint));
+ assert.match(textOf(rows[1]), /could not be accepted/);
+ assert.ok(textOf(rows[2]).includes(vectors.lost_hints.not_better));
+ assert.ok(textOf(rows[3]).includes(vectors.outcome_hints.needs_sources_unsent));
+ assert.ok(textOf(rows[4]).includes(vectors.outcome_hints.taken_down));
+ assert.doesNotMatch(textOf(rows[4]), /undefined/);
+ assert.match(textOf(a.get('mine-summary')), /@tidal-fan/);
+ assert.match(textOf(a.get('mine-summary')), /8 verified/);
+});
+test('My contributions never assumes an amount', async () => {
+ const data = {...mineData, contributions: [0, 7, 1500].map((credits, i) => ({contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V' + (i + 1), kind: 'new', status: 'won', status_at: '2026-10-14T09:12:31Z', title: 'T' + i, credits}))};
+ const rows = (await openMine(data)).get('mine-list').children.map(textOf);
+ assert.doesNotMatch(rows[0], /credits/);
+ assert.ok(rows[1].includes('+7 credits'));
+ assert.ok(rows[2].includes('+' + (1500).toLocaleString() + ' credits'));
+});
+test('My contributions lists earned credits and names the contribution an award belongs to', async () => {
+ const a = await openMine(mineData);
+ const rows = a.get('mine-earned').children.map(textOf);
+ assert.equal(rows.length, 3);
+ assert.ok(rows[0].includes('Article award') && rows[0].includes('+' + (1500).toLocaleString()) && rows[0].includes('Tidal power'));
+ assert.ok(rows[1].includes('Award reclaimed') && rows[1].includes('-200'));
+ assert.ok(rows[2].includes('Page fetch') && rows[2].includes('+2'));
+});
+test('My contributions names the contribution of a revision award and of nothing else', async () => {
+ const earned = [
+  {reason: 'contribution_award', delta: 300, at: '2026-10-14T09:12:40Z', award_id: 'rev:01J9A3Q7W4X9M3K5N6P8R0T2V2'},
+  {reason: 'royalty', delta: 3, at: '2026-10-14T09:12:41Z', award_id: 'roy:01J9A3Q7W4X9M3K5N6P8R0T2V1'},
+ ];
+ const rows = (await openMine({...mineData, earned})).get('mine-earned').children.map(textOf);
+ assert.ok(rows[0].includes('Rust async runtimes'));
+ assert.doesNotMatch(rows[1], /Tidal power/);
+});
+test('My contributions for someone who has not joined explains how, and lists nothing', async () => {
+ const a = await openMine({joined: false}, [{id: 's1', url: 'https://example.com/a', status: 'config_error', reason: 'Delivery is waiting for the operator.', created_at: 1}]);
+ assert.match(textOf(a.get('mine-summary')), /not joined/i);
+ assert.equal(a.get('mine-list').children.length, 0);
+ assert.equal(a.get('mine-earned').children.length, 0);
+});
+test('a config_error submission is labelled as delayed, not as checking', async () => {
+ const a = await openMine({joined: false}, [{id: 's1', url: 'https://example.com/a', status: 'config_error', reason: 'Delivery is waiting for the operator.', created_at: 1}, {id: 's2', url: 'https://example.com/b', status: 'mystery', created_at: 2}]);
+ const rows = a.get('mine-pages').children.map(textOf);
+ assert.ok(rows[0].includes('Delayed') && rows[0].includes('Delivery is waiting for the operator.') && !rows[0].includes('Checking'));
+ assert.ok(rows[1].includes('Checking'));
+});
+test('My contributions renders handles, titles and URLs as text and leaves unsafe links inert', async () => {
+ const evil = '<img src=x onerror=alert(1)>';
+ const a = await openMine({...mineData, handle: evil, contributions: [{contribution_id: '01J9A3Q7W4X9M3K5N6P8R0T2V1', kind: 'new', status: 'published', status_at: '2026-10-14T09:12:31Z', title: evil,
+  article: {id: '01J9A3Q8B2C3D4E5F6G7H8J9K0', url: 'javascript:alert(1)', version: 1}, credits: 0}], earned: []});
+ const row = a.get('mine-list').children[0];
+ assert.equal(row.children[0].children[0].href, undefined);
+ assert.equal(row.children[0].children[0].textContent, evil);
+ assert.ok(textOf(a.get('mine-summary')).includes(evil));
+ assert.doesNotMatch(source, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/);
+});
+test('a late My contributions answer cannot repopulate a logged-out account', async () => {
+ const a = await app();
+ const shown = a.run('view("mine")').catch(() => {}); await tick();
+ const logout = a.get('logout').onclick(); await tick(); a.respond('logout', {}); await logout;
+ a.respond('contributions', mineData); a.respond('submissions', []); await shown;
+ assert.equal(a.get('mine-list').children.length, 0);
+ assert.equal(a.get('mine-earned').children.length, 0);
+});
+test('My contributions asks for sign-in when signed out and has a refresh button', async () => {
+ const a = await app(true, '', false);
+ await a.run('view("mine")');
+ assert.equal(a.get('auth').hidden, false);
+ assert.equal(a.pending.length, 0);
+ const b = await app();
+ const refreshed = b.get('refresh-mine').onclick(); await tick();
+ b.respond('contributions', {joined: false}); b.respond('submissions', []); await refreshed;
+ assert.match(textOf(b.get('mine-summary')), /not joined/i);
+});
+test('My contributions notes when only the newest are shown', async () => {
+ const a = await openMine({...mineData, more: true});
+ assert.match(textOf(a.get('mine-list')), /newest 50/);
+});
+test('logging out clears every My contributions list', async () => {
+ const a = await openMine(mineData, [{id: 's1', url: 'https://example.com/a', status: 'queued', created_at: 1}]);
+ for (const id of ['mine-summary', 'mine-list', 'mine-earned', 'mine-pages']) assert.ok(a.get(id).children.length > 0, id);
+ const logout = a.get('logout').onclick(); await tick(); a.respond('logout', {}); await logout;
+ for (const id of ['mine-summary', 'mine-list', 'mine-earned', 'mine-pages']) assert.equal(a.get(id).children.length, 0, id);
+});
+test('a reclaimed award is marked as a deduction and an award as a gain', async () => {
+ const rows = (await openMine(mineData)).get('mine-earned').children;
+ assert.deepEqual(rows.map(r => r.children[1].className), ['status queued', 'status rejected', 'status queued']);
+});
