@@ -129,6 +129,10 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	workSource, err := workSourceFor(cfg)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Backend = strings.TrimRight(cfg.Backend, "/")
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 	db, err := openDB(cfg.DataDir)
@@ -175,6 +179,13 @@ func Open(cfg Config) (*Server, error) {
 	if s.articles == nil && brokerKeyPattern.MatchString(cfg.Wiki.EngineKey) {
 		if client, err := newEngineClient(cmp.Or(cfg.Wiki.EngineURL, wiki.DefaultEngineURL), cfg.Wiki.EngineKey); err == nil {
 			s.articles = engineArticles{client}
+		}
+	}
+	if cfg.Work {
+		s.work.source = workSource
+		if err := s.initWork(); err != nil {
+			db.Close()
+			return nil, err
 		}
 	}
 	wc := cfg.Wiki
@@ -829,6 +840,11 @@ func (s *Server) Run(ctx context.Context) {
 		awards := make(chan struct{})
 		go func() { defer close(awards); s.runAwards(ctx) }()
 		defer func() { <-awards }()
+	}
+	if s.cfg.Work {
+		work := make(chan struct{})
+		go func() { defer close(work); s.runWork(ctx) }()
+		defer func() { <-work }()
 	}
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()

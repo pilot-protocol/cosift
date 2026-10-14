@@ -16,7 +16,6 @@ import (
 
 const (
 	pushRoute  = "/v1/work/push"
-	pushEvery  = 5 * time.Minute
 	pushBatch  = 100
 	pushScan   = 2000
 	pushMemory = 24 * time.Hour

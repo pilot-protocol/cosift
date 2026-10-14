@@ -11,14 +11,12 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"time"
 )
 
 const (
 	settledRoute        = "/v1/work/settled"
 	settledPage         = 200
 	settledPagesPerTick = 5
-	settledEvery        = 10 * time.Second
 	settledCursorKey    = "work_settled_seq"
 	fetchReward         = 2
 )

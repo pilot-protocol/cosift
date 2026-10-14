@@ -29,6 +29,12 @@ func (c *Config) defaultLimits() error {
 	if c.ContributionRewardDailyCap < 1 || c.ContributionRewardDailyCap > 10000 {
 		return fmt.Errorf("contribution reward daily cap must be between 1 and 10000")
 	}
+	if c.FetchDailyCap == 0 {
+		c.FetchDailyCap = defaultFetchDailyCap
+	}
+	if c.FetchDailyCap < 1 || c.FetchDailyCap > 10000 {
+		return fmt.Errorf("fetch daily cap must be between 1 and 10000")
+	}
 	if c.GuestInterval < time.Second || c.GuestInterval > 24*time.Hour || c.GuestInterval%time.Second != 0 {
 		return fmt.Errorf("guest interval must be whole seconds between 1s and 24h")
 	}

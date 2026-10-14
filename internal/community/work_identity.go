@@ -79,3 +79,20 @@ type workRuntime struct {
 	counters fetchCounters
 	alerts   alertQueue
 }
+
+// workSourceFor checks what the work routes and loops stand on: shared accounts, the broker key and a known environment.
+func workSourceFor(cfg Config) (sharedaccount.WorkSource, error) {
+	if !cfg.Work {
+		return nil, nil
+	}
+	src, ok := cfg.Shared.(sharedaccount.WorkSource)
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("COSIFT_COMMUNITY_WORK requires COSIFT_AUTH_MODE=shared")
+	case cfg.BrokerKey == "":
+		return nil, fmt.Errorf("COSIFT_COMMUNITY_WORK requires COSIFT_COMMUNITY_BROKER_KEY")
+	case cfg.Environment != "prod" && cfg.Environment != "staging":
+		return nil, fmt.Errorf("COSIFT_ENV must be staging or prod")
+	}
+	return src, nil
+}
