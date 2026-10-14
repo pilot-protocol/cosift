@@ -204,21 +204,27 @@ func TestIndexAttestedRefusesAnUnknownVerifier(t *testing.T) {
 
 func TestIndexAttestedReusesVerifiedVectorsAndDropsBadOnes(t *testing.T) {
 	ctx := context.Background()
+	const inside = "T\n\n" + attestedText
 	for _, tc := range []struct {
 		name      string
 		model     string
 		embedding []float32
+		chunks    []string
 		reused    bool
 	}{
-		{"verified vectors are reused", "model", []float32{1, 2.005}, true},
-		{"a model mismatch drops them", "other", []float32{1, 2.005}, false},
-		{"a poisoned vector drops them", "model", []float32{2, 1}, false},
+		{"verified vectors are reused", "model", []float32{1, 2.005}, []string{inside}, true},
+		{"a model mismatch drops them", "other", []float32{1, 2.005}, []string{inside}, false},
+		{"a poisoned vector drops them", "model", []float32{2, 1}, []string{inside}, false},
+		{"a chunk outside the indexed text drops them", "model", []float32{1, 2.005}, []string{inside, inside + " A line only one worker saw."}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, ps := attestedCrawler(t)
 			pw := &capturePassages{}
 			c = c.WithEmbedder(&artifactReference{}).WithPassageWriter(pw)
-			art := &LocalArtifact{Model: tc.model, Chunks: []IndexedChunk{{Text: "T\n\n" + attestedText, Embedding: tc.embedding}}}
+			art := &LocalArtifact{Model: tc.model}
+			for _, text := range tc.chunks {
+				art.Chunks = append(art.Chunks, IndexedChunk{Text: text, Embedding: tc.embedding})
+			}
 			indexed, _, err := c.IndexAttested(ctx, AttestedDoc{URL: "https://example.org/v", Title: "T", Text: attestedText, Artifact: art, VerifiedBy: "quorum"})
 			if err != nil || !indexed {
 				t.Fatalf("a bad vector must never fail the page: %v %v", indexed, err)
