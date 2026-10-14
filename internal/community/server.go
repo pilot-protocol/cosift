@@ -877,7 +877,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if down {
-			if err := s.record(ctx, j, statusBackendDown, backendDownReason); err != nil {
+			if err := s.record(ctx, j, statusBackendDown, backendDownReason, ""); err != nil {
 				return err
 			}
 			continue
@@ -887,7 +887,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				log.Printf("community: COSIFT_COMMUNITY_BROKER_KEY is not set; submissions wait as a configuration error")
 				warned = true
 			}
-			if err := s.record(ctx, j, statusConfigError, configErrorReason); err != nil {
+			if err := s.record(ctx, j, statusConfigError, configErrorReason, ""); err != nil {
 				return err
 			}
 			continue
@@ -898,14 +898,14 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			continue
 		}
-		status, reason, approvedContentHash := s.prevalidate(ctx, j.id, j.url)
+		status, reason, approvedContentHash, failClass := s.prevalidate(ctx, j.id, j.url)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
 		down = status == statusBackendDown
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
-			if err := s.record(ctx, j, status, reason); err != nil {
+			if err := s.record(ctx, j, status, reason, failClass); err != nil {
 				return err
 			}
 			continue
@@ -989,7 +989,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				reason = "Content checks passed and webpage indexed."
 			}
 		}
-		if err := s.record(ctx, j, status, reason); err != nil {
+		if err := s.record(ctx, j, status, reason, ""); err != nil {
 			return err
 		}
 	}
@@ -1013,7 +1013,7 @@ type job struct {
 }
 
 // record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
-func (s *Server) record(ctx context.Context, j job, status, reason string) error {
+func (s *Server) record(ctx context.Context, j job, status, reason, failClass string) error {
 	attempts := j.attempts + 1
 	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
 	switch status {
@@ -1025,6 +1025,6 @@ func (s *Server) record(ctx context.Context, j job, status, reason string) error
 	if status == "pending" && attempts >= maxSubmissionAttempts {
 		status, reason = "unverified", "The webpage could not be checked or delivered after repeated attempts."
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=? WHERE id=?`, status, reason, attempts, next.Unix(), j.id)
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=?,fail_class=? WHERE id=?`, status, reason, attempts, next.Unix(), failClass, j.id)
 	return err
 }
