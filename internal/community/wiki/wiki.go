@@ -211,13 +211,13 @@ func (w *Wiki) unavailableNow(rw http.ResponseWriter) {
 }
 
 // charge applies the per-IP limit to a request that missed the cache.
-func (w *Wiki) charge(rw http.ResponseWriter, r *http.Request) bool {
+func (w *Wiki) charge(rw http.ResponseWriter, r *http.Request, md bool) bool {
 	ok, retry := w.ips.allow(clientKey(w.cfg.ClientIP(r)), w.now())
 	if ok {
 		return true
 	}
 	rw.Header().Set("Retry-After", strconv.Itoa(max(1, int((retry+time.Second-1)/time.Second))))
-	w.write(rw, http.StatusTooManyRequests, htmlType, w.tooMany, -1)
+	w.refuse(rw, http.StatusTooManyRequests, md)
 	return false
 }
 
@@ -234,7 +234,9 @@ func (w *Wiki) serveWiki(rw http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(parts) == 1 && pageSlug(parts[0]):
-		w.serveArticle(rw, r, parts[0])
+		w.serveArticle(rw, r, parts[0], false)
+	case len(parts) == 1 && strings.HasSuffix(parts[0], ".md") && pageSlug(strings.TrimSuffix(parts[0], ".md")):
+		w.serveArticle(rw, r, strings.TrimSuffix(parts[0], ".md"), true)
 	case len(parts) == 2 && parts[0] == "index" && page(parts[1]) >= 2:
 		w.serveHub(rw, r, "", page(parts[1]))
 	case len(parts) == 2 && parts[0] == "v" && verticals[parts[1]] != "":
@@ -258,7 +260,7 @@ func (w *Wiki) fromSnapshot(rw http.ResponseWriter, r *http.Request, kind string
 		return
 	}
 	if body == nil {
-		if !w.charge(rw, r) {
+		if !w.charge(rw, r, false) {
 			return
 		}
 		if body = render(snap); body == nil {
@@ -301,35 +303,48 @@ func (w *Wiki) serveRobots(rw http.ResponseWriter, r *http.Request) {
 	w.write(rw, http.StatusOK, "text/plain; charset=utf-8", w.renderRobots(), 3600)
 }
 
-func (w *Wiki) serveEntry(rw http.ResponseWriter, e *entry, now time.Time) {
-	if e.location != "" {
-		rw.Header().Set("Location", e.location)
+func (w *Wiki) serveEntry(rw http.ResponseWriter, e *entry, now time.Time, md bool) {
+	age := maxAge(e.bound, now.Sub(e.fetched))
+	switch {
+	case !md:
+		if e.location != "" {
+			rw.Header().Set("Location", e.location)
+		}
+		w.write(rw, e.status, htmlType, e.body, age)
+	case e.kind == outArticle:
+		w.write(rw, e.status, mdType, e.md, age)
+	case e.kind == outRedirect:
+		rw.Header().Set("Location", e.location+".md")
+		w.write(rw, e.status, textType, []byte("Moved\n"), age)
+	case e.status == http.StatusGone:
+		w.refuse(rw, http.StatusGone, true)
+	default:
+		w.refuse(rw, http.StatusNotFound, true)
 	}
-	w.write(rw, e.status, htmlType, e.body, maxAge(e.bound, now.Sub(e.fetched)))
 }
 
-func (w *Wiki) serveArticle(rw http.ResponseWriter, r *http.Request, slug string) {
+func (w *Wiki) serveArticle(rw http.ResponseWriter, r *http.Request, slug string, md bool) {
 	now := w.now()
 	w.mu.Lock()
 	e := w.pages[slug]
 	w.mu.Unlock()
 	if e != nil {
 		if _, live := e.remaining(now); live {
-			w.serveEntry(rw, e, now)
+			w.serveEntry(rw, e, now, md)
 			return
 		}
 	}
-	if !w.charge(rw, r) {
+	if !w.charge(rw, r, md) {
 		return
 	}
 	e, status := w.load(slug, now)
 	switch {
 	case e != nil:
-		w.serveEntry(rw, e, w.now())
+		w.serveEntry(rw, e, w.now(), md)
 	case status == http.StatusNotFound:
-		w.write(rw, http.StatusNotFound, htmlType, w.notFound, -1)
+		w.refuse(rw, http.StatusNotFound, md)
 	default:
-		w.unavailableNow(rw)
+		w.refuse(rw, http.StatusServiceUnavailable, md)
 	}
 }
 
@@ -374,17 +389,17 @@ func (w *Wiki) load(slug string, now time.Time) (*entry, int) {
 				bound = max(0, bound-w.handles.oldest(cids, w.now()))
 			}
 		}
-		e = &entry{kind: outArticle, status: http.StatusOK, body: w.renderArticle(res.rec, contributors), bound: bound}
+		e = &entry{kind: outArticle, status: http.StatusOK, body: w.renderArticle(res.rec, contributors), md: w.renderMarkdown(res.rec, contributors), bound: bound}
 	case outStub:
-		e = &entry{status: http.StatusOK, body: w.renderStub(res.rec), bound: articleBound}
+		e = &entry{kind: outStub, status: http.StatusOK, body: w.renderStub(res.rec), bound: articleBound}
 	case outRedirect:
 		loc := w.canonical("/wiki/" + res.target)
-		e = &entry{status: http.StatusMovedPermanently, location: loc, bound: articleBound,
+		e = &entry{kind: outRedirect, status: http.StatusMovedPermanently, location: loc, bound: articleBound,
 			body: w.renderNotice("This article has moved", "It now lives at a new address.", "/wiki/"+res.target)}
 	case outGone:
-		e = &entry{status: http.StatusGone, body: w.gone, bound: articleBound}
+		e = &entry{kind: outGone, status: http.StatusGone, body: w.gone, bound: articleBound}
 	case outNotFound:
-		e = &entry{status: http.StatusNotFound, body: w.notFound, bound: notFoundBound}
+		e = &entry{kind: outNotFound, status: http.StatusNotFound, body: w.notFound, bound: notFoundBound}
 	default:
 		w.warn(res.code)
 	}

@@ -36,6 +36,8 @@ type entry struct {
 	kind     outcome
 	status   int
 	body     []byte
+	md       []byte
+	target   string
 	location string
 	fetched  time.Time
 	bound    time.Duration
