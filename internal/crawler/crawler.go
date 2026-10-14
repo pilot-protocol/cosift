@@ -38,6 +38,8 @@ type Crawler struct {
 	contributionOnce    sync.Once
 	contributionCrawler *Crawler
 	contributionSlots   chan struct{}
+	copyGateOnce        sync.Once
+	copyGate            *hostGate
 	cfg                 config.Crawler
 	store               CrawlerStore
 	idx                 LexicalIndexer
