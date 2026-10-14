@@ -38,7 +38,7 @@ func TestEmbeddedStyleIsCanonicalAndPinned(t *testing.T) {
 func TestStyleBytesServedEqualThePinnedHash(t *testing.T) {
 	h := newHarness(t)
 	rec := h.get("/wiki/style.md")
-	wantPage(t, rec, 200, public(docMaxAge))
+	wantPage(t, rec, 200, public(300))
 	if rec.Header().Get("Content-Type") != "text/markdown; charset=utf-8" {
 		t.Fatalf("content type %q", rec.Header().Get("Content-Type"))
 	}
@@ -64,7 +64,7 @@ var mdMarkup = regexp.MustCompile("`|\\*\\*|^#+ |^- |^[0-9]+\\. ")
 func TestStylePageShowsEveryLineOfTheGuide(t *testing.T) {
 	h := newHarness(t)
 	rec := h.get("/wiki/style")
-	wantPage(t, rec, 200, public(docMaxAge))
+	wantPage(t, rec, 200, public(300))
 	doc := structure(t, "style", rec.Body.String())
 	title, _, _ := strings.Cut(string(styleMD), "\n")
 	if got := textOf(find(doc, tag("h1"))[0]); got != strings.TrimPrefix(title, "# ") {

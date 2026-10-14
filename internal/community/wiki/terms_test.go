@@ -40,7 +40,7 @@ func sectionByID(doc *html.Node, id string) *html.Node {
 func TestTermsPageCarriesTheSixSectionsWithTheirPinnedIDs(t *testing.T) {
 	h := newHarness(t)
 	rec := h.get("/wiki/terms")
-	wantPage(t, rec, 200, public(docMaxAge))
+	wantPage(t, rec, 200, public(300))
 	doc := structure(t, "terms", rec.Body.String())
 	if !slices.Equal(TermsSectionIDs, pinnedTermsIDs) || TermsVersion != 1 {
 		t.Fatalf("exported ids %v, version %d", TermsSectionIDs, TermsVersion)

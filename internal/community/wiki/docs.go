@@ -19,7 +19,7 @@ const (
 
 	TermsVersion = 1
 
-	docMaxAge = 3600
+	docMaxAge = 300
 )
 
 // TermsSectionIDs are the required sections of the contributor terms, in page order.
