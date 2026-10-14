@@ -410,6 +410,7 @@ func (s *pebbleHTTP) buildStatsBody(ctx context.Context) ([]byte, error) {
 			webDenom = n
 		}
 	}
+	s.addWorkStats(out)
 	out["web_pct"] = 100.0 * float64(indexedDocs) / float64(webDenom)
 	out["web_denominator"] = webDenom
 	out["has_vectors"] = s.hasVectors
@@ -655,6 +656,7 @@ func (s *pebbleHTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.v1svc != nil {
 		s.v1svc.Metrics.WritePrometheus(w)
 	}
+	s.writeWorkMetrics(w)
 	writeCommunityModerationMetrics(w, s)
 }
 
