@@ -185,7 +185,12 @@ func hasPair(r *Record) bool {
 }
 
 // regroup drops the worker's attestations and groups the rest again in time order; it returns how many it dropped.
+// An errored record keeps no parts but its anchors', so its groups are not formed again: a group whose anchor
+// was the worker's goes whole and the others lose the worker's attestations.
 func (s *Service) regroup(r *Record, worker string) int {
+	if r.Class == ClassErrored {
+		return dropFromGroups(r, worker)
+	}
 	var keep []Attestation
 	dropped := 0
 	for _, g := range r.Groups {
@@ -202,6 +207,27 @@ func (s *Service) regroup(r *Record, worker string) int {
 	for _, a := range keep {
 		s.place(r, a, nil)
 	}
+	return dropped
+}
+
+func dropFromGroups(r *Record, worker string) int {
+	dropped := 0
+	var kept []Group
+	for _, g := range r.Groups {
+		var members []Attestation
+		for _, m := range g.Members {
+			if m.Worker == worker {
+				dropped++
+			} else {
+				members = append(members, m)
+			}
+		}
+		if len(members) > 0 && g.Members[0].Worker != worker {
+			g.Members = members
+			kept = append(kept, g)
+		}
+	}
+	r.Groups = kept
 	return dropped
 }
 
