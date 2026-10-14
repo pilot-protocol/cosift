@@ -18,7 +18,7 @@ var (
 	slugPattern   = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	idPattern     = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 	cursorPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,1000}$`)
-	reserved      = map[string]bool{"v": true, "index": true, "sitemap": true, "search": true, "api": true, "admin": true, "random": true, "new": true}
+	reserved      = map[string]bool{"v": true, "index": true, "sitemap": true, "search": true, "api": true, "admin": true, "random": true, "new": true, "style": true, "terms": true, "wanted": true}
 	verticals     = map[string]string{"dev-docs": "Developer docs", "technology-news": "Technology news", "research": "Research", "other": "Other"}
 	verticalOrder = []string{"dev-docs", "technology-news", "research", "other"}
 	tiers         = map[string]string{"strong": "High", "ok": "Medium", "thin": "Low"}

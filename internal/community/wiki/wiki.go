@@ -107,6 +107,7 @@ type Wiki struct {
 	logged map[string]time.Time
 
 	notFound, gone, unavailable, tooMany []byte
+	style                                []byte
 }
 
 // New builds the page layer; with Public off it is dark and validates nothing.
@@ -130,6 +131,9 @@ func New(cfg Config) (*Wiki, error) {
 	if err := CheckGSC(cfg.GSCVerification); err != nil {
 		return nil, err
 	}
+	if !styleBytesOK() {
+		return nil, errors.New("wiki: the embedded style guide does not match its pinned hash")
+	}
 	if cfg.PublicURL == "" || cfg.ClientIP == nil {
 		return nil, errors.New("wiki: public URL and client IP are required")
 	}
@@ -148,6 +152,7 @@ func New(cfg Config) (*Wiki, error) {
 	w.gone = w.renderNotice("This article was removed", "It is no longer available on Cosift.", "")
 	w.unavailable = w.renderNotice("Articles are temporarily unavailable", "Please try again in a few minutes.", "")
 	w.tooMany = w.renderNotice("Too many requests", "Please wait a minute and try again.", "")
+	w.style = w.renderStyle()
 	w.logf("wiki: public pages on (engine %s)", base)
 	return w, nil
 }
@@ -233,6 +238,8 @@ func (w *Wiki) serveWiki(rw http.ResponseWriter, r *http.Request) {
 		return n
 	}
 	switch {
+	case len(parts) == 1 && (parts[0] == "style" || parts[0] == "style.md"):
+		w.serveStyle(rw, r, parts[0] == "style.md")
 	case len(parts) == 1 && pageSlug(parts[0]):
 		w.serveArticle(rw, r, parts[0], false)
 	case len(parts) == 1 && strings.HasSuffix(parts[0], ".md") && pageSlug(strings.TrimSuffix(parts[0], ".md")):

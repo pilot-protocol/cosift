@@ -1,0 +1,9 @@
+{{define "main"}}<article class="wiki-article wiki-doc">
+<header class="wiki-article-head">
+<h1>{{.Title}}</h1>
+{{with .Meta}}<p class="wiki-meta"><span>{{.}}</span></p>
+{{end}}</header>
+<div class="wiki-body">
+{{.Body}}</div>
+</article>
+{{end}}
