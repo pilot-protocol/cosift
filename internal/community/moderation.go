@@ -72,6 +72,28 @@ const (
 	backendDownReason = "Waiting for content safety checks."
 )
 
+const (
+	// statusModerationCeiling is the dispatch loop's own outcome, never a stored status: the daily ceiling on content checks is reached.
+	statusModerationCeiling = "moderation_ceiling"
+	ceilingReason           = "Waiting for the daily content-check allowance to renew."
+)
+
+// moderationCeiling reports the engine's ceiling answer: the same 503 a failing model gives, plus "ceiling": true.
+func moderationCeiling(body []byte) bool {
+	var reply struct {
+		Code    string `json:"code"`
+		Ceiling bool   `json:"ceiling"`
+	}
+	return json.Unmarshal(body, &reply) == nil && reply.Code == "moderation_unavailable" && reply.Ceiling
+}
+
+// holdModeration stops every content check until 00:00 UTC, because the ceiling is shared by all submissions.
+func (s *Server) holdModeration() {
+	s.moderateHold.Store(utcDayStart(s.now()).Add(24 * time.Hour).Unix())
+}
+
+func (s *Server) moderationHold() time.Time { return time.Unix(s.moderateHold.Load(), 0) }
+
 // failFetch marks a submission whose page the app could not fetch for a reason a worker's own network may not share.
 const failFetch = "fetch"
 
@@ -229,6 +251,9 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 	if s.approvalRecorded(ctx, submissionID, approved) {
 		return "allowed", "Content checks passed.", approved, ""
 	}
+	if s.now().Before(s.moderationHold()) {
+		return statusModerationCeiling, ceilingReason, "", ""
+	}
 	b, _ := json.Marshal(doc)
 	checkRes, err := s.engine.post(ctx, moderateRoute, b, moderateTimeout)
 	if err != nil {
@@ -247,8 +272,14 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 			return statusConfigError, configErrorReason, "", ""
 		}
 	}
+	reply, _ := io.ReadAll(io.LimitReader(checkRes.Body, 4096))
+	if checkRes.StatusCode == http.StatusServiceUnavailable && moderationCeiling(reply) {
+		s.holdModeration()
+		s.noteCeiling(ceilingModerate)
+		return statusModerationCeiling, ceilingReason, "", ""
+	}
 	var verdict ModerationVerdict
-	decision := json.NewDecoder(io.LimitReader(checkRes.Body, 4096))
+	decision := json.NewDecoder(bytes.NewReader(reply))
 	decision.DisallowUnknownFields()
 	if checkRes.StatusCode != 200 || decision.Decode(&verdict) != nil || decision.Decode(new(any)) != io.EOF || !ValidVerdict(verdict) {
 		return "pending", "Waiting for a valid content safety decision.", "", ""

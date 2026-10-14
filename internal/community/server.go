@@ -94,7 +94,8 @@ type Server struct {
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
 	hostGaps         hostGaps
-	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
+	backendDown      atomic.Bool  // Set when a round found the backend unreachable; the next round probes it before fetching any page.
+	moderateHold     atomic.Int64 // Unix time before which no content check is sent: the engine's daily ceiling answered.
 	wiki             *wiki.Wiki
 	engine           *engineClient
 	awards           *awardPoller
@@ -898,6 +899,12 @@ func (s *Server) dispatch(ctx context.Context) error {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
 		down = status == statusBackendDown
+		if status == statusModerationCeiling {
+			if err := s.requeueUntil(ctx, j, s.moderationHold(), reason); err != nil {
+				return err
+			}
+			continue
+		}
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
 			if err := s.record(ctx, j, status, reason, failClass); err != nil {
@@ -993,12 +1000,15 @@ func (s *Server) dispatch(ctx context.Context) error {
 
 // requeue schedules a job for later without counting an attempt.
 func (s *Server) requeue(ctx context.Context, j job, wait time.Duration) error {
-	at := time.Now().Add(wait)
+	return s.requeueUntil(ctx, j, s.now().Add(wait), "Waiting to check the webpage.")
+}
+
+func (s *Server) requeueUntil(ctx context.Context, j job, at time.Time, reason string) error {
 	next := at.Unix()
 	if at.Nanosecond() > 0 {
 		next++
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, "Waiting to check the webpage.", next, j.id)
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, reason, next, j.id)
 	return err
 }
 
@@ -1011,12 +1021,13 @@ type job struct {
 // record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
 func (s *Server) record(ctx context.Context, j job, status, reason, failClass string) error {
 	attempts := j.attempts + 1
-	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
+	now := s.now()
+	next := now.Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
 	switch status {
 	case statusConfigError:
-		attempts, next = j.attempts, time.Now().Add(configErrorRetry)
+		attempts, next = j.attempts, now.Add(configErrorRetry)
 	case statusBackendDown:
-		status, attempts, next = "pending", j.attempts, time.Now().Add(backendDownRetry)
+		status, attempts, next = "pending", j.attempts, now.Add(backendDownRetry)
 	}
 	if status == "pending" && attempts >= maxSubmissionAttempts {
 		status, reason = "unverified", "The webpage could not be checked or delivered after repeated attempts."
