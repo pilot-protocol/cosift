@@ -194,3 +194,21 @@ func TestEveryVectorCaseAgreesOrNotThroughTheService(t *testing.T) {
 		})
 	}
 }
+
+func TestAnErroredQuorumIndexesTheTextAgreedWithTheQuorateGroupsOwnAnchor(t *testing.T) {
+	c := loadAgreed(t).byID(t, "injected-paragraph")
+	h := newHarness(t)
+	h.erroredPage()
+	if res, _, _, err := h.attestAs("Other title", c.Attestation.Lang, c.Attestation.Text); err != nil || res.Verdict != "awaiting_quorum" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if res := h.submitPair(c.Anchor, c.Attestation); res.Verdict != "verified" {
+		t.Fatalf("%+v", res)
+	}
+	if rec := h.record(pageURL); rec.VerifiedGroup != 1 || len(rec.Groups) != 2 {
+		t.Fatalf("the quorum is not the second group: %+v", rec.Groups)
+	}
+	if doc := h.indexedOnce(); doc.Text != c.Expect.AgreedText {
+		t.Fatalf("not cut against the quorate group's anchor: %.80q", doc.Text)
+	}
+}
