@@ -240,6 +240,19 @@ func (c *handleCache) get(cid string, now time.Time) (string, bool) {
 	return e.name, true
 }
 
+// oldest is the age of the oldest unexpired entry among cids.
+func (c *handleCache) oldest(cids []string, now time.Time) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var age time.Duration
+	for _, cid := range cids {
+		if e, ok := c.m[cid]; ok && now.Before(e.until) {
+			age = max(age, now.Sub(e.until.Add(-handleTTL)))
+		}
+	}
+	return age
+}
+
 func (c *handleCache) put(names map[string]string, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

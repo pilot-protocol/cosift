@@ -56,19 +56,21 @@ type engineCitation struct {
 // engineRecord holds only public and stub projection fields, plus prelive
 // to detect an over-scoped key.
 type engineRecord struct {
-	ID          string           `json:"id"`
-	Slug        string           `json:"slug"`
-	Title       string           `json:"title"`
-	Lead        string           `json:"lead"`
-	BodyMD      string           `json:"body_md"`
-	Citations   []engineCitation `json:"citations"`
-	QualityTier string           `json:"quality_tier"`
-	Vertical    string           `json:"vertical"`
-	Status      string           `json:"status"`
-	AIGenerated bool             `json:"ai_generated"`
-	CreatedAt   string           `json:"created_at"`
-	UpdatedAt   string           `json:"updated_at"`
-	Prelive     json.RawMessage  `json:"prelive"`
+	ID           string           `json:"id"`
+	Slug         string           `json:"slug"`
+	Title        string           `json:"title"`
+	Lead         string           `json:"lead"`
+	BodyMD       string           `json:"body_md"`
+	Citations    []engineCitation `json:"citations"`
+	QualityTier  string           `json:"quality_tier"`
+	Vertical     string           `json:"vertical"`
+	Status       string           `json:"status"`
+	AIGenerated  bool             `json:"ai_generated"`
+	Origin       json.RawMessage  `json:"origin"`
+	Contributors json.RawMessage  `json:"contributors"`
+	CreatedAt    string           `json:"created_at"`
+	UpdatedAt    string           `json:"updated_at"`
+	Prelive      json.RawMessage  `json:"prelive"`
 }
 
 type engineItem struct {

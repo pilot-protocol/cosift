@@ -2,6 +2,7 @@ package wiki
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 )
 
@@ -26,6 +27,19 @@ func contributorCIDs(raw []any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// attributed is the contributor list of a community-origin record; any other origin, or a malformed list, has none.
+func (r *engineRecord) attributed() []string {
+	var origin string
+	if json.Unmarshal(r.Origin, &origin) != nil || origin != "community" {
+		return nil
+	}
+	var raw []any
+	if json.Unmarshal(r.Contributors, &raw) != nil {
+		return nil
+	}
+	return contributorCIDs(raw)
 }
 
 // displayName is "@handle" for a live contributor with a well-formed handle, else the anonymous label.

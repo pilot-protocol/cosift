@@ -364,7 +364,17 @@ func (w *Wiki) load(slug string, now time.Time) (*entry, int) {
 	var e *entry
 	switch res.kind {
 	case outArticle:
-		e = &entry{kind: outArticle, status: http.StatusOK, body: w.renderArticle(res.rec), bound: articleBound}
+		bound := articleBound
+		var contributors []string
+		if cids := res.rec.attributed(); len(cids) > 0 {
+			var degraded bool
+			if contributors, degraded = w.names(cids); degraded {
+				bound = retryEvery
+			} else {
+				bound = max(0, bound-w.handles.oldest(cids, w.now()))
+			}
+		}
+		e = &entry{kind: outArticle, status: http.StatusOK, body: w.renderArticle(res.rec, contributors), bound: bound}
 	case outStub:
 		e = &entry{status: http.StatusOK, body: w.renderStub(res.rec), bound: articleBound}
 	case outRedirect:
