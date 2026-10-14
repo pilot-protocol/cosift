@@ -381,6 +381,53 @@ func TestAWorkPageIsLeasedVerifiedModeratedIndexedAndSettled(t *testing.T) {
 	}
 }
 
+func TestAFrontierOrPushedQuorumIndexesNothingAndLeavesTheRowQueued(t *testing.T) {
+	for _, class := range []string{"frontier", "pushed"} {
+		t.Run(class, func(t *testing.T) {
+			j, _ := workJoint(t)
+			ctx := context.Background()
+			const pageURL = "https://queued.example.org/page"
+			if class == "frontier" {
+				if err := j.ps.PushFrontier(ctx, pageURL, 0, 1); err != nil {
+					t.Fatal(err)
+				}
+				j.srv.work.svc.Feed(ctx)
+			} else {
+				j.want(j.do("community-broker", "POST", "/v1/work/push", map[string]any{"urls": []string{pageURL}}), 200, "")
+			}
+			before, _ := j.ps.GetFrontierStats(ctx)
+			text := strings.Repeat("Tidal turbines convert the kinetic energy of moving water into electricity, turning slowly on the seabed with each tide. ", 3)
+			var last resp
+			for _, p := range [][2]string{{strings.Repeat("a", 32), strings.Repeat("1", 32)}, {strings.Repeat("b", 32), strings.Repeat("2", 32)}} {
+				c := j.do("community-broker", "POST", "/v1/work/claim", map[string]any{"worker": p[0], "net": p[1]})
+				j.want(c, 200, "")
+				l := c.body["leases"].([]any)[0].(map[string]any)
+				if l["source"] != class || l["url"] != pageURL {
+					t.Fatalf("%v", l)
+				}
+				last = j.do("community-broker", "POST", "/v1/work/submit", submitBodyFor(l["lease_id"].(string), p[0], p[1], pageURL, text))
+				j.want(last, 200, "")
+			}
+			if last.body["verdict"] != "awaiting_quorum" || last.body["indexed"] != false || len(last.body["agreeing"].([]any)) != 0 {
+				t.Fatalf("a quorum on a %s page is not a verification: %s", class, last.raw)
+			}
+			if after, _ := j.ps.GetFrontierStats(ctx); after != before {
+				t.Fatalf("the frontier row moved without a server fetch: %+v -> %+v", before, after)
+			}
+			item := j.do("synth-prod", "POST", "/v1/contents", map[string]any{"urls": []string{pageURL}}).body["results"].([]any)[0].(map[string]any)
+			if item["found"] == true {
+				t.Fatalf("the quorum's text was indexed: %v", item)
+			}
+			if evs := j.do("community-broker", "GET", "/v1/work/settled", nil).body["events"].([]any); len(evs) != 0 {
+				t.Fatalf("a settled event before the server fetch: %v", evs)
+			}
+			if st := j.srv.work.svc.Stats(); st.Awaiting != 1 || st.Verified != 0 {
+				t.Fatalf("%+v", st)
+			}
+		})
+	}
+}
+
 func TestTheWorkBlockIsAbsentWhileWorkIsOff(t *testing.T) {
 	j, _ := workJoint(t)
 	j.srv.work.enabled = false
