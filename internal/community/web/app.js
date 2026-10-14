@@ -1045,7 +1045,18 @@ $("shared-form").onsubmit = event => {
     $("shared-result").replaceChildren();
     if (action === "add") $("shared-result").append(el("p","Topic followed."));
     else if (action === "cosift_request") $("shared-result").append(el("p",data.detail || "Article request recorded."));
-    else if (data.coverage === "covered" && data.kind === "article") {
+    else if (data.coverage === "covered" && data.kind === "article" && data.withheld) {
+      const heading = el("h3");
+      heading.append(link(data.url, data.title || data.url || "Article"));
+      $("shared-result").append(heading);
+      if (typeof data.detail === "string" && data.detail) $("shared-result").append(el("p", data.detail));
+      const topup = safeLink(data.topup_url);
+      if (topup) {
+        const note = el("p");
+        note.append(link(topup, "Add credits"));
+        $("shared-result").append(note);
+      }
+    } else if (data.coverage === "covered" && data.kind === "article") {
       $("shared-result").append(el("p","Cosift has an article on this topic."));
       const heading = el("h3");
       heading.append(link(data.url, data.title || data.url || "Article"));
@@ -1057,6 +1068,9 @@ $("shared-form").onsubmit = event => {
         sources.append(item);
       }
       if (sources.children.length) $("shared-result").append(sources);
+      const paid = data.credits;
+      if (paid && Number.isInteger(paid.charged) && paid.charged >= 0 && Number.isInteger(paid.balance) && paid.balance >= 0)
+        $("shared-result").append(el("p", `This read cost ${paid.charged.toLocaleString()} credits · ${paid.balance.toLocaleString()} left`, "fine"));
     } else {
       $("shared-result").append(el("p","No complete article is available yet. You can still search the webpage index."));
       const related = data.related_article;
