@@ -424,3 +424,23 @@ func TestMatchingNeedsADistinctWorkerAndNetworkWithinTheBound(t *testing.T) {
 		t.Error("a bound of 0 needs equal hashes")
 	}
 }
+
+func TestTheHammingBoundIsInclusive(t *testing.T) {
+	h := newHarness(t)
+	max := h.cfg.SimhashMax
+	anchor := uint64(0x2d1a482a4439cff0)
+	at := func(bits int) Attestation {
+		return Attestation{Worker: "w2", Net: "n2", Simhash: crawler.SimhashHex(anchor ^ (1<<uint(bits) - 1))}
+	}
+	g := Group{Anchor: crawler.SimhashHex(anchor), Members: []Attestation{{Worker: "w1", Net: "n1"}}}
+	if !h.s.matches(g, at(max)) || h.s.matches(g, at(max+1)) {
+		t.Fatalf("an attestation %d bits away joins, %d bits away does not", max, max+1)
+	}
+	rec := &Record{Groups: []Group{g}}
+	if gi := h.s.closestGroup(rec, anchor^(1<<uint(max)-1)); gi != 0 {
+		t.Fatalf("a copy %d bits away verifies the group: %d", max, gi)
+	}
+	if gi := h.s.closestGroup(rec, anchor^(1<<uint(max+1)-1)); gi != -1 {
+		t.Fatalf("a copy %d bits away does not: %d", max+1, gi)
+	}
+}

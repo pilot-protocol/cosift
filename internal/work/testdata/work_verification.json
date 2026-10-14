@@ -1,0 +1,192 @@
+{
+ "about": "Events are attest (an agreeing attestation from a pair distinct from every earlier one), window_end, refetch_ok (the server fetched a copy within the simhash bound of a group) and refetch_fail. verified_by is whose text is indexed; frontier_row is the state of the pool entry's frontier row, null for a pushed entry. The expectations describe the end of the path on the assumption that moderation allows the page and indexing succeeds.",
+ "cases": [
+  {
+   "id": "frontier-one-attestation-waits-for-the-window",
+   "class": "frontier",
+   "events": [
+    "attest"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": "queued",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "frontier-quorum-waits-for-the-server",
+   "class": "frontier",
+   "events": [
+    "attest",
+    "attest"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": "queued",
+    "refetch_due": true
+   }
+  },
+  {
+   "id": "frontier-quorum-then-the-server-copy",
+   "class": "frontier",
+   "events": [
+    "attest",
+    "attest",
+    "refetch_ok"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "server",
+    "indexed_text": "server",
+    "frontier_row": "done",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "frontier-quorum-and-the-server-fetch-fails",
+   "class": "frontier",
+   "events": [
+    "attest",
+    "attest",
+    "refetch_fail"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": "queued",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "frontier-a-second-attestation-does-not-skip-a-back-off",
+   "class": "frontier",
+   "events": [
+    "attest",
+    "window_end",
+    "refetch_fail",
+    "attest"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": "queued",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "frontier-one-attestation-then-the-window-and-the-server",
+   "class": "frontier",
+   "events": [
+    "attest",
+    "window_end",
+    "refetch_ok"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "server",
+    "indexed_text": "server",
+    "frontier_row": "done",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "pushed-quorum-waits-for-the-server",
+   "class": "pushed",
+   "events": [
+    "attest",
+    "attest"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": null,
+    "refetch_due": true
+   }
+  },
+  {
+   "id": "pushed-quorum-then-the-server-copy",
+   "class": "pushed",
+   "events": [
+    "attest",
+    "attest",
+    "refetch_ok"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "server",
+    "indexed_text": "server",
+    "frontier_row": null,
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "errored-one-attestation-waits",
+   "class": "errored",
+   "events": [
+    "attest"
+   ],
+   "expect": {
+    "state": "awaiting",
+    "verified_by": null,
+    "indexed_text": null,
+    "frontier_row": "errored",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "errored-quorum-verifies-at-once",
+   "class": "errored",
+   "events": [
+    "attest",
+    "attest"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "quorum",
+    "indexed_text": "quorum",
+    "frontier_row": "done",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "errored-the-window-and-the-server-copy",
+   "class": "errored",
+   "events": [
+    "attest",
+    "window_end",
+    "refetch_ok"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "server",
+    "indexed_text": "server",
+    "frontier_row": "done",
+    "refetch_due": false
+   }
+  },
+  {
+   "id": "errored-a-failed-fetch-then-a-quorum",
+   "class": "errored",
+   "events": [
+    "attest",
+    "window_end",
+    "refetch_fail",
+    "attest"
+   ],
+   "expect": {
+    "state": "verified",
+    "verified_by": "quorum",
+    "indexed_text": "quorum",
+    "frontier_row": "done",
+    "refetch_due": false
+   }
+  }
+ ]
+}
