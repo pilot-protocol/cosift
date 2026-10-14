@@ -28,6 +28,8 @@ var workMessages = map[string]string{
 	"lease_not_owner":          "the lease belongs to another worker",
 	"extract_version_mismatch": "the extract version is out of date",
 	"invalid_field":            "invalid field",
+	"invalid_body":             "invalid request body",
+	"unknown_field":            "unknown field",
 }
 
 // workRoute serves a work route to a bearer-authenticated account, and answers 404 while work is off.
@@ -105,8 +107,8 @@ func (s *Server) claimWork(w http.ResponseWriter, r *http.Request, u User) {
 	if !s.underFetchCap(w, ctx, u.ID) {
 		return
 	}
-	worker, net, ok := s.workIdentity(w, r, u.ID, member)
-	if !ok {
+	worker, net, ok := s.mintIdentity(w, r, u.ID)
+	if !ok || !s.registerWorker(w, ctx, u.ID, worker, member) {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{"worker": worker, "net": net, "max": max})
@@ -163,19 +165,23 @@ func (s *Server) underFetchCap(w http.ResponseWriter, ctx context.Context, userI
 	return false
 }
 
-// workIdentity mints the caller's worker and net ids and records which account the worker is.
-func (s *Server) workIdentity(w http.ResponseWriter, r *http.Request, userID string, member workMember) (worker, net string, ok bool) {
+// mintIdentity derives the caller's worker and net ids; it refuses a request whose client address does not parse.
+func (s *Server) mintIdentity(w http.ResponseWriter, r *http.Request, userID string) (worker, net string, ok bool) {
 	net, valid := s.netID(s.clientIP(r))
 	if !valid {
 		problemCode(w, http.StatusBadRequest, "the client address could not be read", "invalid_client_address", nil)
 		return "", "", false
 	}
-	worker = s.workerID(userID)
-	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO work_workers(worker,user_id,cid,first_seen) VALUES(?,?,?,?) ON CONFLICT(worker) DO UPDATE SET cid=excluded.cid`, worker, userID, member.cid, s.now().Unix()); err != nil {
+	return s.workerID(userID), net, true
+}
+
+// registerWorker records which account a worker id is, so a settled outcome can be credited.
+func (s *Server) registerWorker(w http.ResponseWriter, ctx context.Context, userID, worker string, member workMember) bool {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO work_workers(worker,user_id,cid,first_seen) VALUES(?,?,?,?) ON CONFLICT(worker) DO UPDATE SET cid=excluded.cid`, worker, userID, member.cid, s.now().Unix()); err != nil {
 		problemCode(w, http.StatusInternalServerError, "work unavailable", "work_unavailable", nil)
-		return "", "", false
+		return false
 	}
-	return worker, net, true
+	return true
 }
 
 // relayWorkError passes through the engine's lease and field refusals, and turns anything else into one fixed answer.

@@ -228,6 +228,7 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /api/meter", s.meter)
 	mux.HandleFunc("GET /api/contributions", s.auth(s.contributions))
 	mux.HandleFunc("POST /api/work/claim", s.workRoute(s.claimWork))
+	mux.HandleFunc("POST /api/work/submit", s.workRoute(s.submitWork))
 	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})
@@ -282,9 +283,17 @@ func (s *Server) protect(next http.Handler) http.Handler {
 				return
 			}
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, bodyLimit(r.URL.Path))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyLimit is the request body cap in bytes: a worker's attestation may carry a page and its vectors.
+func bodyLimit(path string) int64 {
+	if path == "/api/work/submit" {
+		return 2 << 20
+	}
+	return 1 << 20
 }
 
 func (s *Server) sameOriginClient(r *http.Request) bool {
