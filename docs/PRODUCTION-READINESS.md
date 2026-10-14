@@ -108,9 +108,11 @@ a second full-corpus instance on the current production host.
    shared account quotas, restart recovery and cloud backup/restore operations.
 3. Keep engine and portal versions matched. Enable guarded contribution fetches
    and the crawler requirements in the runbook, retain durable receipt metadata
-   with Pebble backups, and confirm the shared admin credential before activating
-   the portal. The inspected portal admin token matched the engine's peer token;
-   no secret value is recorded here.
+   with Pebble backups, and confirm the portal has its own broker key
+   (`COSIFT_COMMUNITY_BROKER_KEY`, scoped to community intake) and no admin token
+   before activating it; the engine's peer token is never given to the portal.
+   See [the community setup](COMMUNITY.md#start-the-services). No secret value is
+   recorded here.
 
 Read-only inspection found the original engine active and the community service
 and self-updater inactive. The configuration and on-disk rollback artifacts
@@ -123,7 +125,7 @@ The recorded free-per-minute member allowance is historical. Current policy
 charges every successful authenticated Search/Answer/Research request 1/2/3
 credits, including the first request, and grants each account 1,000 free credits
 per UTC month. Guest limits also changed after the original validation: a
-successful Search/Answer/Research starts one shared IP cooldown of 30/60/90
+successful Search/Answer/Research starts one shared IP cooldown (per /64 for IPv6) of 30/60/90
 minutes, respectively; mode changes cannot bypass it. Prior tests that count
 free member requests establish behavior before this change; they do not verify
 current deductions. New rollout acceptance must check actual ledger debits from
