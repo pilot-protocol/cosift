@@ -40,6 +40,7 @@ func TestEmulatorJoinStateReadsTheAccountAndItsContributor(t *testing.T) {
 	account("a000000000000006", map[string]any{"contributor_cid": "c000000000000006"})
 	contributor("c000000000000006", map[string]any{"uid": "a0000000000000ff", "terms_version": int64(1)})
 	account("a000000000000007", map[string]any{"contributor_cid": "nothex"})
+	contributor("nothex", map[string]any{"uid": "a000000000000007", "terms_version": int64(1)})
 	account("a000000000000008", map[string]any{"contributor_cid": "c000000000000008"})
 	contributor("c000000000000008", map[string]any{"uid": "a000000000000008", "terms_version": "1"})
 

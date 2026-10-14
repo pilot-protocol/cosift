@@ -34,6 +34,8 @@ func TestLeakDetectorsAreBoundedAndSeeThroughObfuscation(t *testing.T) {
 		{"63 hex", tid[:63], false},
 		{"64 hex", tid, true},
 		{"65 hex", tid + "c", true},
+		{"64 digits", strings.Repeat("1", 64), true},
+		{"63 digits", strings.Repeat("1", 63), false},
 		{"5 digits", "code 12345", false},
 		{"6 digits bare", "123456", true},
 		{"7 digits", "1234567", false},
