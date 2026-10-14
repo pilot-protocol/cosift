@@ -107,3 +107,79 @@ func TestALateAttestationIsHeldToTheAnchorsLengthNotALaterMembers(t *testing.T) 
 		t.Fatalf("a text one byte under 60 %% of the anchor joined: %+v %+v", res, rec.Groups)
 	}
 }
+
+func TestALateAttestationIsAlignedWithTheVerifiedGroupsAnchorWhateverItsIndex(t *testing.T) {
+	c := loadAgreed(t).byID(t, "completer-rotates-the-page")
+	honest, rotated := c.Anchor, c.Attestation
+	for _, moderated := range []bool{false, true} {
+		name := "before moderation"
+		if moderated {
+			name = "after moderation"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.erroredPage()
+			var ws, ns [5]string
+			var ls [5]LeaseGrant
+			claim := func(i int) {
+				t.Helper()
+				var ok bool
+				ws[i], ns[i] = h.nextPair()
+				if ls[i], ok = h.claimFor(ws[i], ns[i]); !ok {
+					t.Fatalf("no lease %d", i)
+				}
+			}
+			submit := func(i int, s agreedSide) SubmitResult {
+				t.Helper()
+				res, err := h.s.Submit(requestAs(ls[i], ws[i], ns[i], pageURL, s.Title, s.Lang, s.Text))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return res
+			}
+			claim(0)
+			claim(1)
+			claim(2)
+			submit(0, rotated)
+			claim(3)
+			submit(1, honest)
+			claim(4)
+			if res := submit(2, honest); res.Verdict != "verified" {
+				t.Fatalf("%+v", res)
+			}
+			if rec := h.record(pageURL); rec.VerifiedGroup != 1 || len(rec.Groups) != 2 {
+				t.Fatalf("setup: the verified group is not the second: %+v", rec.Groups)
+			}
+			if moderated {
+				h.indexedOnce()
+			}
+			if res := submit(3, rotated); res.Verdict != "mismatch" {
+				t.Errorf("a late copy of the first group's text, the verified group's title, language and length: %+v", res)
+			}
+			if rec := h.record(pageURL); len(rec.Groups) != 3 || len(rec.Groups[1].Members) != 2 {
+				t.Fatalf("the late dissenter is not a group of its own after the verified one: %+v", rec.Groups)
+			}
+			res := submit(4, honest)
+			if res.Verdict != "verified" || res.Indexed != moderated {
+				t.Errorf("a late copy of the verified group's text: %+v", res)
+			}
+			if rec := h.record(pageURL); len(rec.Groups) != 3 || len(rec.Groups[1].Members) != 3 || rec.Groups[1].Members[2].Worker != ws[4] {
+				t.Fatalf("the late honest copy is not in the verified group: %+v", rec.Groups)
+			}
+			if !moderated {
+				h.indexedOnce()
+			}
+			verdicts := map[string][]string{}
+			for _, e := range h.settled() {
+				for _, w := range e.Workers {
+					verdicts[w] = append(verdicts[w], e.Verdict)
+				}
+			}
+			for i, want := range []string{"mismatch", "verified", "verified", "mismatch", "verified"} {
+				if got := verdicts[ws[i]]; len(got) != 1 || got[0] != want {
+					t.Errorf("worker %d settled %v, want %s alone", i, got, want)
+				}
+			}
+		})
+	}
+}
