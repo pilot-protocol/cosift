@@ -200,7 +200,7 @@ func (s *Service) regroup(r *Record, worker string) int {
 	sort.SliceStable(keep, func(i, j int) bool { return keep[i].At.Before(keep[j].At) })
 	r.Groups = nil
 	for _, a := range keep {
-		s.place(r, a)
+		s.place(r, a, nil)
 	}
 	return dropped
 }

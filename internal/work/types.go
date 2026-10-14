@@ -44,18 +44,24 @@ const (
 	CopyRejected   CopyState = "rejected"
 )
 
-// Attestation is one worker's claim about a page; it keeps hashes, never text.
+// Attestation is one worker's claim about a page; it keeps hashes, never text. TitleSha, Lang and Len
+// are kept for an errored record only (WORK 6.5).
 type Attestation struct {
-	Worker  string    `json:"worker"`
-	Net     string    `json:"net"`
-	Hash    string    `json:"hash"`
-	Simhash string    `json:"simhash"`
-	At      time.Time `json:"at"`
+	Worker   string    `json:"worker"`
+	Net      string    `json:"net"`
+	Hash     string    `json:"hash"`
+	Simhash  string    `json:"simhash"`
+	At       time.Time `json:"at"`
+	TitleSha string    `json:"title_sha,omitempty"`
+	Lang     string    `json:"lang,omitempty"`
+	Len      int       `json:"len,omitempty"`
 }
 
 // Group holds attestations that agree with its anchor, each from a distinct worker and network.
+// Parts are the anchor's part hashes, kept for an errored record only.
 type Group struct {
 	Anchor  string        `json:"anchor"`
+	Parts   []string      `json:"parts,omitempty"`
 	Members []Attestation `json:"members"`
 }
 

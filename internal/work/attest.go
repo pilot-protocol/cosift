@@ -22,15 +22,47 @@ func (s *Service) matches(g Group, a Attestation) bool {
 	return true
 }
 
+// joins reports whether a joins g on a record of the class. An errored record also holds a to the
+// anchor's title and language and to the agreed text of WORK 6.5, which must be 60 % of both texts.
+func (s *Service) joins(class Class, g Group, a Attestation, sp *splitText) bool {
+	if !s.matches(g, a) {
+		return false
+	}
+	if class != ClassErrored {
+		return true
+	}
+	if sp == nil || len(g.Members) == 0 {
+		return false
+	}
+	anchor := g.Members[0]
+	if a.TitleSha != anchor.TitleSha || a.Lang != anchor.Lang {
+		return false
+	}
+	size := len(agreedAgainst(g, sp))
+	return size*100 >= floorPercent*a.Len && size*100 >= floorPercent*anchor.Len
+}
+
+// agreedAgainst is the text sp has in common with the anchor of g.
+func agreedAgainst(g Group, sp *splitText) string { return sp.agreed(partSet(g.Parts)) }
+
+// newGroup starts a group with a as its anchor; an errored anchor keeps its part hashes.
+func newGroup(class Class, a Attestation, sp *splitText) Group {
+	g := Group{Anchor: a.Simhash, Members: []Attestation{a}}
+	if class == ClassErrored && sp != nil {
+		g.Parts = sp.hashes
+	}
+	return g
+}
+
 // place adds a to the first group it joins, or starts one, and returns the group's index.
-func (s *Service) place(rec *Record, a Attestation) int {
+func (s *Service) place(rec *Record, a Attestation, sp *splitText) int {
 	for i := range rec.Groups {
-		if s.matches(rec.Groups[i], a) {
+		if s.joins(rec.Class, rec.Groups[i], a, sp) {
 			rec.Groups[i].Members = append(rec.Groups[i].Members, a)
 			return i
 		}
 	}
-	rec.Groups = append(rec.Groups, Group{Anchor: a.Simhash, Members: []Attestation{a}})
+	rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
 	return len(rec.Groups) - 1
 }
 
@@ -69,10 +101,15 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 		window := now.Add(time.Duration(s.cfg.QuorumWindowS) * time.Second).UTC()
 		rec = &Record{V: 1, State: StateAwaiting, Copy: CopyNone, Class: l.class, FirstAt: now.UTC(), WindowUntil: window, RefetchAt: window}
 	}
+	var sp *splitText
+	if rec.Class == ClassErrored {
+		sp = att.parts()
+		a.TitleSha, a.Lang, a.Len = titleSha(att.text.Title), att.text.Lang, len(att.text.Text)
+	}
 	if rec.State != StateAwaiting {
 		return s.lateLocked(l, rec, a)
 	}
-	gi := s.place(rec, a)
+	gi := s.place(rec, a, sp)
 	tx := s.begin()
 	res := awaiting(rec)
 	quorate := len(rec.Groups[gi].Members) >= 2
@@ -80,7 +117,9 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 	if quorate {
 		if rec.Class == ClassErrored {
 			if len(s.texts) < s.cfg.ModerationQueueMax {
-				res = s.verifyLocked(tx, l.url, rec, gi, &att.text, "quorum", att.hash, now)
+				text := att.text
+				text.Text = agreedAgainst(rec.Groups[gi], sp)
+				res = s.verifyLocked(tx, l.url, rec, gi, &text, "quorum", sha256Hex(text.Text), now)
 				verified = true
 			}
 		} else if rec.RefetchFailures == 0 && rec.RefetchAt.After(now) {

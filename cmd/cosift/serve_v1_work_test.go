@@ -353,7 +353,7 @@ func TestAWorkPageIsLeasedVerifiedModeratedIndexedAndSettled(t *testing.T) {
 	contents := j.do("synth-prod", "POST", "/v1/contents", map[string]any{"urls": []string{pageURL}})
 	j.want(contents, 200, "")
 	item := contents.body["results"].([]any)[0].(map[string]any)
-	if item["found"] != true || item["source"] != "attested" || item["verified_by"] != "quorum" || item["text"] != text {
+	if item["found"] != true || item["source"] != "attested" || item["verified_by"] != "quorum" || item["text"] != strings.Join(strings.Fields(text), " ") {
 		t.Fatalf("%s", contents.raw)
 	}
 	if after, _ := j.ps.GetFrontierStats(ctx); after.Errored != 0 || after.Done != 1 || after.Queued != before.Queued {

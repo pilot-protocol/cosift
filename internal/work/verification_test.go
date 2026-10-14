@@ -93,6 +93,7 @@ func TestWorkVerificationVectors(t *testing.T) {
 		t.Run(c.ID, func(t *testing.T) {
 			h := newHarness(t)
 			first, second, _ := fixture(t, "rotated-ad-and-timestamp")
+			agreed := agreedOf(first, second)
 			server := serverCopy(t, first)
 			sa, _ := crawler.Simhash(first)
 			sb, _ := crawler.Simhash(second)
@@ -145,7 +146,7 @@ func TestWorkVerificationVectors(t *testing.T) {
 			}
 			if len(h.f.indexed) == 1 {
 				d := h.f.indexed[0]
-				by := map[string]string{first: "first", second: "quorum", server: "server"}[d.Text]
+				by := map[string]string{first: "first", agreed: "quorum", server: "server"}[d.Text]
 				if by == "first" || by != d.VerifiedBy {
 					t.Errorf("indexed text is %q but verified by %q", by, d.VerifiedBy)
 				}

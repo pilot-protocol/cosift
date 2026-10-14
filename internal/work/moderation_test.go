@@ -61,7 +61,7 @@ func TestAllowedPageIsIndexedAndTheGroupIsSettledVerified(t *testing.T) {
 		t.Fatalf("indexed %d", len(h.f.indexed))
 	}
 	d := h.f.indexed[0]
-	if d.Text != b || d.URL != pageURL || d.LeaseURL != pageURL || d.VerifiedBy != "quorum" || d.Title != "A page" || d.Lang != "en" {
+	if d.Text != agreedOf(a, b) || d.URL != pageURL || d.LeaseURL != pageURL || d.VerifiedBy != "quorum" || d.Title != "A page" || d.Lang != "en" {
 		t.Fatalf("%+v", d)
 	}
 	rec := h.record(pageURL)

@@ -50,6 +50,15 @@ type attestation struct {
 	text     Text
 	hash     string
 	simhash  string
+	split    *splitText
+}
+
+// parts cuts the text into parts once; only an errored record needs them.
+func (a *attestation) parts() *splitText {
+	if a.split == nil {
+		a.split = splitParts(a.text.Text)
+	}
+	return a.split
 }
 
 // Submit takes the attestation or failure report for a lease.
@@ -79,6 +88,9 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 		var err error
 		if att, err = s.checkAttestation(req); err != nil {
 			return SubmitResult{}, err
+		}
+		if s.leaseClass(req.LeaseID) == ClassErrored {
+			att.parts()
 		}
 	}
 	s.mu.Lock()
@@ -112,6 +124,16 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	}
 	s.metrics.submissions.add(res.Verdict)
 	return res, nil
+}
+
+// leaseClass is the class of a live lease, so the parts of an errored text are cut outside the lock.
+func (s *Service) leaseClass(id string) Class {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l := s.leases[id]; l != nil {
+		return l.class
+	}
+	return ""
 }
 
 func reportShape(req SubmitRequest) error {

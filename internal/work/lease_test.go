@@ -282,13 +282,17 @@ func TestAnErroredQuorumVerifiesAtOnce(t *testing.T) {
 	if err != nil || res.Verdict != "verified" || res.Indexed || fmt.Sprint(res.Agreeing) != fmt.Sprint([]string{w1, w2}) {
 		t.Fatalf("%+v %v", res, err)
 	}
+	agreed := agreedOf(a, b)
+	if agreed == b {
+		t.Fatal("the fixture pair must differ in text the two did not both see")
+	}
 	rec := h.record(pageURL)
-	if rec.State != StateModerating || rec.VerifiedBy != "quorum" || rec.ContentHash != sha(b) || rec.FinalURL != pageURL {
+	if rec.State != StateModerating || rec.VerifiedBy != "quorum" || rec.ContentHash != sha(agreed) || rec.FinalURL != pageURL {
 		t.Fatalf("%+v", rec)
 	}
 	text, _ := h.s.getText(urlSHA(pageURL))
-	if text == nil || text.Text != b {
-		t.Fatalf("the quorum-completing text is the one to index: %+v", text)
+	if text == nil || text.Text != agreed {
+		t.Fatalf("the text both saw is the one to index: %+v", text)
 	}
 	if len(h.f.indexed) != 0 || len(h.settled()) != 0 {
 		t.Fatal("verification is not indexing or settling")
