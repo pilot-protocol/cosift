@@ -98,6 +98,82 @@ func TestPushSendsAtMostOneHundredAndTheRestFollow(t *testing.T) {
 	}
 }
 
+func TestPushReachesAPageBehindAHugeAlreadyPushedBacklog(t *testing.T) {
+	r := newWorkRig(t)
+	ctx := context.Background()
+	r.engine.answer(fixed(200, `{"accepted":1,"duplicates":0,"rejected":[]}`))
+	r.s.db.Exec(`INSERT INTO users(id,email,name,salt,password_hash,created_at) VALUES('alice','alice@example.com','alice','s','',0)`)
+	tx, err := r.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const backlog = 25000
+	for i := 0; i < backlog; i++ {
+		u := fmt.Sprintf("https://example.org/b/%06d", i)
+		tx.Exec(`INSERT INTO submissions(id,user_id,url,status,fail_class,created_at) VALUES(?,?,?,'unverified',?,?)`, fmt.Sprintf("s%06d", i), "alice", u, failFetch, r.clk.now().Add(-48*time.Hour).Add(time.Duration(i)*time.Second).Unix())
+		tx.Exec(`INSERT INTO work_pushed(url_sha,pushed_at) VALUES(?,?)`, urlDigest(u), r.clk.now().Unix())
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	newest := "https://example.org/newest"
+	r.submission("alice", newest, "pending", failFetch, r.clk.now())
+	if err := r.s.pushBlocked(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pushed := r.pushedURLs(); len(pushed) != 1 || strings.Join(pushed[0], " ") != newest {
+		t.Fatalf("pushed %v", pushed)
+	}
+}
+
+func TestPushKeepsEachBatchUnderTheEnginesBodyCap(t *testing.T) {
+	const engineCap = 64 << 10
+	for _, tc := range []struct {
+		name string
+		url  func(i int) string
+	}{
+		{"long paths", func(i int) string { return fmt.Sprintf("https://example.org/%s%02d", strings.Repeat("p", 2010), i) }},
+		{"escaped characters", func(i int) string { return fmt.Sprintf("https://example.org/?%s%02d", strings.Repeat("&", 2000), i) }},
+	} {
+		r := newWorkRig(t)
+		ctx := context.Background()
+		r.engine.answer(func(call engineRequest) (int, string) {
+			if len(call.body) > engineCap {
+				return 413, `{"code":"body_too_large"}`
+			}
+			return 200, `{"accepted":1,"duplicates":0,"rejected":[]}`
+		})
+		r.submission("alice", "https://example.org/older", "unverified", failFetch, r.clk.now().Add(-time.Hour))
+		for i := 0; i < 33; i++ {
+			r.submission("alice", tc.url(i), "unverified", failFetch, r.clk.now().Add(time.Duration(i)*time.Second))
+		}
+		for tick := 0; tick < 40; tick++ {
+			if err := r.s.pushBlocked(ctx); err != nil {
+				t.Fatalf("%s: tick %d: %v", tc.name, tick, err)
+			}
+		}
+		seen := map[string]int{}
+		for _, c := range r.engine.on("/v1/work/push") {
+			var in struct{ URLs []string }
+			json.Unmarshal(c.body, &in)
+			if len(c.body) > engineCap {
+				t.Errorf("%s: a %d byte push", tc.name, len(c.body))
+			}
+			for _, u := range in.URLs {
+				seen[u]++
+			}
+		}
+		if len(seen) != 34 {
+			t.Errorf("%s: %d of 34 URLs pushed", tc.name, len(seen))
+		}
+		for u, n := range seen {
+			if n != 1 {
+				t.Errorf("%s: %.40s pushed %d times", tc.name, u, n)
+			}
+		}
+	}
+}
+
 func TestPushRemembersWhatWasSentButNotWhatThePoolRefusedAsFull(t *testing.T) {
 	r := newWorkRig(t)
 	ctx := context.Background()

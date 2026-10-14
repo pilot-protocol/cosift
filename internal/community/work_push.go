@@ -3,10 +3,8 @@ package community
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,8 +15,9 @@ import (
 const (
 	pushRoute  = "/v1/work/push"
 	pushBatch  = 100
-	pushScan   = 2000
 	pushMemory = 24 * time.Hour
+	// pushBodyMax keeps a batch under the engine's 64 KiB body cap.
+	pushBodyMax = 60 << 10
 )
 
 // pushBlocked offers the pages Teo's check could not fetch for a blocking reason to the work pool, at most pushBatch not offered in the last day.
@@ -70,38 +69,49 @@ func urlDigest(u string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// pushCandidates streams the blocked pages oldest first and keeps the first pushBatch not offered in the last day; the offered digests are read first, so the one connection is never queried inside the loop.
 func (s *Server) pushCandidates(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT url FROM submissions WHERE fail_class=? AND status IN ('pending','unverified') GROUP BY url ORDER BY min(created_at),url LIMIT ?`, failFetch, pushScan)
+	offered, err := s.offeredDigests(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var all []string
-	for rows.Next() {
+	rows, err := s.db.QueryContext(ctx, `SELECT url FROM submissions WHERE fail_class=? AND status IN ('pending','unverified') GROUP BY url ORDER BY min(created_at),url`, failFetch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var urls []string
+	size := len(`{"urls":[]}`)
+	for len(urls) < pushBatch && rows.Next() {
 		var u string
 		if err := rows.Scan(&u); err != nil {
-			rows.Close()
 			return nil, err
 		}
-		all = append(all, u)
+		if offered[urlDigest(u)] {
+			continue
+		}
+		quoted, _ := json.Marshal(u)
+		if size += len(quoted) + 1; size > pushBodyMax {
+			break
+		}
+		urls = append(urls, u)
 	}
-	err = rows.Err()
-	rows.Close()
+	return urls, rows.Err()
+}
+
+func (s *Server) offeredDigests(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT url_sha FROM work_pushed`)
 	if err != nil {
 		return nil, err
 	}
-	var urls []string
-	for _, u := range all {
-		if len(urls) == pushBatch {
-			break
-		}
-		var found int
-		switch err := s.db.QueryRowContext(ctx, `SELECT 1 FROM work_pushed WHERE url_sha=?`, urlDigest(u)).Scan(&found); {
-		case err == nil:
-		case errors.Is(err, sql.ErrNoRows):
-			urls = append(urls, u)
-		default:
+	defer rows.Close()
+	offered := map[string]bool{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
 			return nil, err
 		}
+		offered[d] = true
 	}
-	return urls, nil
+	return offered, rows.Err()
 }
