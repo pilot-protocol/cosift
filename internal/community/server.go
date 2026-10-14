@@ -88,6 +88,7 @@ type Server struct {
 	failLimits       *limiter
 	failLogs         *limiter
 	hashSlots        chan struct{}
+	turns            turnOrder
 	trustedProxies   []netip.Prefix
 	guestSalt        string
 	pageClient       *http.Client
@@ -846,33 +847,27 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status IN ('pending','config_error') AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
-	if err != nil {
-		return err
-	}
-	jobs := []job{}
-	for rows.Next() {
-		var j job
-		if err := rows.Scan(&j.id, &j.url, &j.attempts); err != nil {
-			rows.Close()
+	down, probed := false, false
+	defer func() {
+		if probed {
+			s.backendDown.Store(down)
+		}
+	}()
+	warned := false
+	for processed := 0; processed < dispatchBatch; processed++ {
+		j, found, err := s.nextJob(ctx)
+		if err != nil {
 			return err
 		}
-		jobs = append(jobs, j)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	down := len(jobs) > 0 && s.backendDown.Load() && !s.backendReachable(ctx)
-	if down {
-		log.Printf("community: backend still unreachable; %d submissions wait without fetching their pages", len(jobs))
-	}
-	if len(jobs) > 0 {
-		defer func() { s.backendDown.Store(down) }()
-	}
-	warned := false
-	for _, j := range jobs {
+		if !found {
+			break
+		}
+		if !probed {
+			probed = true
+			if down = s.backendDown.Load() && !s.backendReachable(ctx); down {
+				log.Printf("community: backend still unreachable; submissions wait without fetching their pages")
+			}
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1010,6 +1005,7 @@ func (s *Server) requeue(ctx context.Context, j job, wait time.Duration) error {
 type job struct {
 	id, url  string
 	attempts int
+	userID   string
 }
 
 // record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
