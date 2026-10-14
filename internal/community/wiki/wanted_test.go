@@ -71,12 +71,13 @@ func TestWantedBoardDropsItemsThatFailTheirListsTest(t *testing.T) {
 	published := with(thinItem("not-a-stub", "Published in the stub list"), "status", "published")
 	badSlug := with(stubItem("Bad_Slug", "Bad slug"), "slug", "Bad_Slug")
 	noTitle := with(stubItem("no-title", "   "), "title", "  ‮ ")
-	h.v1.setQuery(stubQuery, boardReply(nil, published, badSlug, noTitle, stubItem("kept-stub", "Kept stub")))
+	badID := with(stubItem("bad-id", "Bad id"), "id", "not-a-ulid")
+	h.v1.setQuery(stubQuery, boardReply(nil, published, badSlug, noTitle, badID, stubItem("kept-stub", "Kept stub")))
 	strong := with(thinItem("strong-one", "Strong in the thin list"), "quality_tier", "strong")
 	pending := with(stubItem("pending-one", "Pending in the thin list"), "quality_tier", "thin")
 	h.v1.setQuery(thinQuery, boardReply(nil, strong, pending, thinItem("kept-thin", "Kept thin")))
 	body := h.get("/wiki/wanted").Body.String()
-	for _, gone := range []string{"Published in the stub list", "Bad slug", "Strong in the thin list", "Pending in the thin list"} {
+	for _, gone := range []string{"Published in the stub list", "Bad slug", "Bad id", "Strong in the thin list", "Pending in the thin list"} {
 		if strings.Contains(body, gone) {
 			t.Fatalf("%q was shown", gone)
 		}
