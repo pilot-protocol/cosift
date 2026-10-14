@@ -312,6 +312,45 @@ func TestTheAlignmentOfTwoTextsAtTheCapFitsItsTable(t *testing.T) {
 	}
 }
 
+func TestTheWalkOfLongTextsWithMoreThan255MatchesKeepsEveryLength(t *testing.T) {
+	const n, moved = 700, 50
+	a, c := make([]int, n), make([]int, n)
+	for i := range a {
+		a[i], c[i] = i, (i+n-moved)%n
+	}
+	got := align(a, c)
+	if len(got) != n-moved {
+		t.Fatalf("%d matches, want the %d parts that stay in order", len(got), n-moved)
+	}
+	for k, m := range got {
+		if m != (match{k, k + moved}) {
+			t.Fatalf("match %d is %v, want %v", k, m, match{k, k + moved})
+		}
+	}
+}
+
+func TestTheAgreedTextOfALongTextWithItsTailMovedFirstIsTheOrderedPartsBetweenTwoGaps(t *testing.T) {
+	const n, moved = 700, 50
+	ws := strings.Fields(capText(n, 0))
+	parts := make([]string, n)
+	for k := range parts {
+		parts[k] = strings.Join(ws[8*k:8*k+8], " ")
+	}
+	anchor := splitParts(strings.Join(parts, " "))
+	text := strings.Join(append(append([]string{}, parts[n-moved:]...), parts[:n-moved]...), " ")
+	if anchor.total != n || splitParts(text).total != n {
+		t.Fatalf("setup: %d and %d parts, want %d", anchor.total, splitParts(text).total, n)
+	}
+	ag := splitParts(text).agreeWith(anchor.hashes, anchor.total)
+	kept := strings.Join(parts[:n-moved], " ")
+	if want := gap + " " + kept + " " + gap; ag.text != want {
+		t.Errorf("agreed %d bytes with %d gaps, want the first %d parts between two gaps", len(ag.text), strings.Count(ag.text, gap), n-moved)
+	}
+	if want := len(strings.Join(parts[:n-moved], "")); ag.matched != want {
+		t.Errorf("M %d, want the %d bytes of the matched parts", ag.matched, want)
+	}
+}
+
 // refWalk is the walk of WORK 6.5 written from its recursive definition of L.
 func refWalk(a, c []int) []match {
 	memo := map[[2]int]int{}
