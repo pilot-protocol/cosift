@@ -545,6 +545,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Creates a hard-linked, consistent
 	// snapshot dir that's safe to tar without racing background compactions.
 	mux.HandleFunc("POST /admin/checkpoint", awrap(srv.handleCheckpoint))
+	srv.registerWorkAdmin(mux, awrap)
 	mux.HandleFunc("GET /search", qwrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", qwrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
