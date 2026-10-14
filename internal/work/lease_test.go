@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -388,6 +389,28 @@ func TestAQuorumNeedsRoomInTheModerationQueue(t *testing.T) {
 	}
 	if rec := h.record(pageURL); rec.State != StateAwaiting || len(rec.Groups[0].Members) != 2 {
 		t.Fatalf("the attestation is kept, the record stays awaiting: %+v", rec)
+	}
+}
+
+func TestAnErroredQuorumHeldByAFullQueueIsLeasedAgainAfterARestart(t *testing.T) {
+	h := newHarness(t, func(c *config.WorkSettings) { c.ModerationQueueMax = 1 })
+	h.s.texts["taken"] = struct{}{}
+	h.add(ClassErrored, pageURL)
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	h.attest(a)
+	if res, _, _, err := h.attest(b); err != nil || res.Verdict != "awaiting_quorum" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if _, ok := h.claimFor(h.nextPair()); !ok {
+		t.Fatal("the held errored quorum should be leasable for a third attestation")
+	}
+	h.db.Close()
+	h.open()
+	h.f.errored = []FrontierRow{{URL: pageURL, LastError: "http 403"}}
+	h.s.Feed(context.Background())
+	res, _, _, err := h.attest(a)
+	if err != nil || res.Verdict != "verified" {
+		t.Fatalf("after a restart: %+v %v", res, err)
 	}
 }
 
