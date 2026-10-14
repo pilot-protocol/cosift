@@ -63,7 +63,7 @@ func (h *harness) rawRecord() string {
 	return string(raw)
 }
 
-func TestOnlyAnAnchorStoresItsPartsAndEveryMemberItsTitleLanguageAndLength(t *testing.T) {
+func TestEveryMemberStoresItsTitleLanguageAndLengthAndAnAnchorItsParts(t *testing.T) {
 	v := loadAgreed(t)
 	c := v.byID(t, "different-title")
 	h := newHarness(t, func(c *config.WorkSettings) { c.ModerationQueueMax = 1 })
@@ -80,9 +80,7 @@ func TestOnlyAnAnchorStoresItsPartsAndEveryMemberItsTitleLanguageAndLength(t *te
 		t.Fatalf("setup: %+v", rec.Groups)
 	}
 	for i, g := range rec.Groups {
-		if fmt.Sprint(g.Parts) != fmt.Sprint(splitParts(map[int]string{0: c.Anchor.Text, 1: c.Attestation.Text}[i]).hashes) {
-			t.Errorf("group %d: the anchor's parts are not stored", i)
-		}
+		h.wantParts(i, map[int]string{0: c.Anchor.Text, 1: c.Attestation.Text}[i])
 		for _, m := range g.Members {
 			text := c.Anchor.Text
 			title := c.Anchor.Title
@@ -95,8 +93,8 @@ func TestOnlyAnAnchorStoresItsPartsAndEveryMemberItsTitleLanguageAndLength(t *te
 		}
 	}
 	raw := h.rawRecord()
-	if n := strings.Count(raw, `"parts"`); n != 2 {
-		t.Errorf("%d part lists in the record, want one for each of the 2 anchors", n)
+	if strings.Contains(raw, `"parts"`) {
+		t.Error("the record names its parts: they are in W p")
 	}
 	if n := strings.Count(raw, `"title_sha"`); n != 3 {
 		t.Errorf("%d title_sha in the record, want one for each of the 3 attestations", n)
@@ -146,12 +144,8 @@ func TestAnAnchorKeepsAtMost8192PartHashes(t *testing.T) {
 			if res, _, _, err := h.attestAs("Parts", "en", capText(c.Parts, 0)); err != nil || res.Verdict != "awaiting_quorum" {
 				t.Fatalf("%+v %v", res, err)
 			}
-			rec := h.record(pageURL)
-			if n := len(rec.Groups[0].Parts); n != c.Considered {
-				t.Fatalf("%d part hashes stored, want %d", n, c.Considered)
-			}
-			if raw := h.rawRecord(); len(raw) > c.Considered*20+4096 {
-				t.Fatalf("the record is %d bytes", len(raw))
+			if n := len(h.storedParts(0)); n != 8*c.Considered {
+				t.Fatalf("%d bytes of part hashes stored, want %d", n, 8*c.Considered)
 			}
 			res, _, _, err := h.attestAs("Parts", "en", tc.completing)
 			if err != nil || res.Verdict != "verified" {

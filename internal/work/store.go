@@ -6,16 +6,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/pebble"
 )
 
-// The 'W' family: W a <url> attestation record, W t <url sha> pending text, W s <seq> settled
-// event, W k <url sha> park, W m <name> counters and cursors.
+// The 'W' family: W a <url> attestation record, W t <url sha> pending text, W p <url sha><group>
+// an errored anchor's part hashes, W s <seq> settled event, W k <url sha> park, W m <name> counters
+// and cursors.
 var (
 	prefixRecord = []byte("Wa")
 	prefixText   = []byte("Wt")
+	prefixParts  = []byte("Wp")
 	prefixEvent  = []byte("Ws")
 	prefixPark   = []byte("Wk")
 	keyPoolCur   = []byte("Wmpool_cursor")
@@ -64,6 +67,19 @@ func (s *Service) getRecord(url string) (*Record, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+func keyParts(sha string, group int) []byte {
+	return keyOf(prefixParts, fmt.Sprintf("%s%02x", sha, group))
+}
+
+// getParts reads the part hashes of group's anchor; a group with none reads as empty.
+func (s *Service) getParts(sha string, group int) ([]uint64, error) {
+	v, err := s.get(keyParts(sha, group))
+	if err != nil {
+		return nil, err
+	}
+	return unpackParts(v)
 }
 
 func (s *Service) getText(sha string) (*Text, error) {
@@ -130,6 +146,10 @@ func (t *txn) putRecord(url string, r *Record) error {
 }
 
 func (t *txn) delRecord(url string) error { return t.b.Delete(keyOf(prefixRecord, url), nil) }
+
+func (t *txn) putParts(sha string, group int, hashes []uint64) error {
+	return t.b.Set(keyParts(sha, group), packParts(hashes), nil)
+}
 
 func (t *txn) putText(sha string, x *Text) error {
 	v, err := json.Marshal(x)

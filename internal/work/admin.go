@@ -129,7 +129,12 @@ func (s *Service) Void(ctx context.Context, worker string, apply bool) (VoidResu
 	var parks []string
 	for _, c := range changes {
 		res.RecordsChanged++
-		res.AttestationsDropped += s.regroup(c.rec, worker)
+		dropped, err := s.regroup(c.rec, worker)
+		if err != nil {
+			tx.discard()
+			return VoidResult{}, err
+		}
+		res.AttestationsDropped += dropped
 		sha := urlSHA(c.url)
 		switch {
 		case len(c.rec.Groups) == 0:
@@ -187,12 +192,11 @@ func hasPair(r *Record) bool {
 // regroup drops the worker's attestations and groups the rest again in time order; it returns how many it dropped.
 // An errored record keeps no parts but its anchors', so its groups are not formed again: a group whose anchor
 // was the worker's goes whole and the others lose the worker's attestations.
-func (s *Service) regroup(r *Record, worker string) int {
+func (s *Service) regroup(r *Record, worker string) (dropped int, err error) {
 	if r.Class == ClassErrored {
-		return dropFromGroups(r, worker)
+		return dropFromGroups(r, worker), nil
 	}
 	var keep []Attestation
-	dropped := 0
 	for _, g := range r.Groups {
 		for _, m := range g.Members {
 			if m.Worker == worker {
@@ -205,9 +209,11 @@ func (s *Service) regroup(r *Record, worker string) int {
 	sort.SliceStable(keep, func(i, j int) bool { return keep[i].At.Before(keep[j].At) })
 	r.Groups = nil
 	for _, a := range keep {
-		s.place(r, a, nil)
+		if _, _, err := s.place("", r, a, nil); err != nil {
+			return 0, err
+		}
 	}
-	return dropped
+	return dropped, nil
 }
 
 func dropFromGroups(r *Record, worker string) int {

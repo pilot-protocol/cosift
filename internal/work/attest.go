@@ -22,48 +22,65 @@ func (s *Service) matches(g Group, a Attestation) bool {
 	return true
 }
 
-// joins reports whether a joins g on a record of the class. An errored record also holds a to the
-// anchor's title and language and to the agreed text of WORK 6.5, which must be 60 % of both texts.
-func (s *Service) joins(class Class, g Group, a Attestation, sp *splitText) bool {
+// joins reports whether a joins group gi on a record of the class. An errored record also holds a to
+// the anchor's title and language and to the agreed text of WORK 6.5, which must be 60 % of both texts.
+func (s *Service) joins(url string, class Class, gi int, g Group, a Attestation, sp *splitText) (bool, error) {
 	if !s.matches(g, a) {
-		return false
+		return false, nil
 	}
 	if class != ClassErrored {
-		return true
+		return true, nil
 	}
 	if sp == nil || len(g.Members) == 0 {
-		return false
+		return false, nil
 	}
 	anchor := g.Members[0]
 	if a.TitleSha != anchor.TitleSha || a.Lang != anchor.Lang {
-		return false
+		return false, nil
 	}
-	size := len(agreedAgainst(g, sp))
-	return size*100 >= floorPercent*a.Len && size*100 >= floorPercent*anchor.Len
+	agreed, err := s.agreedAgainst(url, gi, sp)
+	if err != nil {
+		return false, err
+	}
+	size := len(agreed)
+	return size*100 >= floorPercent*a.Len && size*100 >= floorPercent*anchor.Len, nil
 }
 
-// agreedAgainst is the text sp has in common with the anchor of g.
-func agreedAgainst(g Group, sp *splitText) string { return sp.agreed(partSet(g.Parts)) }
-
-// newGroup starts a group with a as its anchor; an errored anchor keeps its part hashes.
-func newGroup(class Class, a Attestation, sp *splitText) Group {
-	g := Group{Anchor: a.Simhash, Members: []Attestation{a}}
-	if class == ClassErrored && sp != nil {
-		g.Parts = sp.hashes
+// agreedAgainst is the text sp has in common with the anchor of group gi.
+func (s *Service) agreedAgainst(url string, gi int, sp *splitText) (string, error) {
+	parts, err := s.getParts(urlSHA(url), gi)
+	if err != nil {
+		s.logf("work: store read failed")
+		return "", errUnavailable
 	}
-	return g
+	return sp.agreed(partSet(parts)), nil
 }
 
-// place adds a to the first group it joins, or starts one, and returns the group's index.
-func (s *Service) place(rec *Record, a Attestation, sp *splitText) int {
+func newGroup(a Attestation) Group { return Group{Anchor: a.Simhash, Members: []Attestation{a}} }
+
+// startGroup appends a group anchored by a and stages the anchor's parts in the same batch.
+func startGroup(tx *txn, url string, rec *Record, a Attestation, sp *splitText) {
+	rec.Groups = append(rec.Groups, newGroup(a))
+	if sp != nil {
+		_ = tx.putParts(urlSHA(url), len(rec.Groups)-1, sp.hashes)
+	}
+}
+
+// place adds a to the first group it joins, or starts one, and returns the group's index and whether
+// it started the group; the caller stages the new anchor's parts.
+func (s *Service) place(url string, rec *Record, a Attestation, sp *splitText) (int, bool, error) {
 	for i := range rec.Groups {
-		if s.joins(rec.Class, rec.Groups[i], a, sp) {
+		ok, err := s.joins(url, rec.Class, i, rec.Groups[i], a, sp)
+		if err != nil {
+			return 0, false, err
+		}
+		if ok {
 			rec.Groups[i].Members = append(rec.Groups[i].Members, a)
-			return i
+			return i, false, nil
 		}
 	}
-	rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
-	return len(rec.Groups) - 1
+	rec.Groups = append(rec.Groups, newGroup(a))
+	return len(rec.Groups) - 1, true, nil
 }
 
 func workersOf(g Group) []string {
@@ -109,8 +126,14 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 	if rec.State != StateAwaiting {
 		return s.lateLocked(l, rec, a, sp)
 	}
-	gi := s.place(rec, a, sp)
+	gi, started, err := s.place(l.url, rec, a, sp)
+	if err != nil {
+		return SubmitResult{}, err
+	}
 	tx := s.begin()
+	if started && sp != nil {
+		_ = tx.putParts(urlSHA(l.url), gi, sp.hashes)
+	}
 	res := awaiting(rec)
 	quorate := len(rec.Groups[gi].Members) >= 2
 	verified := false
@@ -119,7 +142,12 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 			if len(s.texts) < s.cfg.ModerationQueueMax {
 				text := att.text
 				text.Title = normaliseTitle(text.Title)
-				text.Text = agreedAgainst(rec.Groups[gi], sp)
+				agreed, err := s.agreedAgainst(l.url, gi, sp)
+				if err != nil {
+					tx.discard()
+					return SubmitResult{}, err
+				}
+				text.Text = agreed
 				res = s.verifyLocked(tx, l.url, rec, gi, &text, "quorum", sha256Hex(text.Text), now)
 				verified = true
 			}
@@ -180,7 +208,15 @@ func (s *Service) lateLocked(l *lease, rec *Record, a Attestation, sp *splitText
 	switch rec.State {
 	case StateModerating, StateDeferred, StateDone:
 		g := &rec.Groups[rec.VerifiedGroup]
-		if rec.VerifiedBy != "" && s.joins(rec.Class, *g, a, sp) {
+		joined := false
+		if rec.VerifiedBy != "" {
+			var err error
+			if joined, err = s.joins(l.url, rec.Class, rec.VerifiedGroup, *g, a, sp); err != nil {
+				tx.discard()
+				return SubmitResult{}, err
+			}
+		}
+		if joined {
 			g.Members = append(g.Members, a)
 			res = verifiedAnswer(rec)
 			if rec.State == StateDone {
@@ -190,11 +226,11 @@ func (s *Service) lateLocked(l *lease, rec *Record, a Attestation, sp *splitText
 		}
 		fallthrough
 	case StateMismatch:
-		rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
+		startGroup(tx, l.url, rec, a, sp)
 		_ = tx.event(sha, "mismatch", []string{a.Worker}, false)
 		res = SubmitResult{Verdict: "mismatch", Agreeing: []string{}}
 	case StateRejected:
-		rec.Groups = append(rec.Groups, newGroup(rec.Class, a, sp))
+		startGroup(tx, l.url, rec, a, sp)
 		_ = tx.event(sha, "rejected", []string{a.Worker}, false)
 		res = SubmitResult{Verdict: "rejected", Agreeing: []string{}, Reason: rec.RejectReason}
 	default:

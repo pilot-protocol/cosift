@@ -1,7 +1,6 @@
 package work
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -36,8 +35,11 @@ func TestALateAttestationOnAnErroredPageFollowsTheSameRule(t *testing.T) {
 				if last := rec.Groups[0].Members[2]; last.Len != len(att.Text) || last.TitleSha != titleSha(att.Title) {
 					t.Fatalf("a late attestation keeps its length and title_sha: %+v", last)
 				}
-			} else if res.Verdict != "mismatch" || len(rec.Groups) != 2 || fmt.Sprint(rec.Groups[1].Parts) != fmt.Sprint(splitParts(att.Text).hashes) {
-				t.Fatalf("a late attestation that fails %v: %+v", c.Expect.Fails, res)
+			} else {
+				if res.Verdict != "mismatch" || len(rec.Groups) != 2 {
+					t.Fatalf("a late attestation that fails %v: %+v", c.Expect.Fails, res)
+				}
+				h.wantParts(1, att.Text)
 			}
 			doc := h.indexedOnce()
 			if want := strings.Join(strings.Fields(anchor.Text), " "); doc.Text != want {

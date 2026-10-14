@@ -2,7 +2,9 @@ package work
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/binary"
+	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -23,7 +25,7 @@ const (
 type splitText struct {
 	words  []string
 	ends   []int
-	hashes []string
+	hashes []uint64
 	beyond bool
 }
 
@@ -70,18 +72,41 @@ func boundary(prev, cur string) bool {
 	return h%boundaryModulus == 0
 }
 
-func hashWords(words []string) string {
+// hashWords is the first 8 bytes of SHA-256 over the words joined by single spaces.
+func hashWords(words []string) uint64 {
 	sum := sha256.Sum256([]byte(strings.Join(words, " ")))
-	return hex.EncodeToString(sum[:8])
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
+func hexOf(h uint64) string { return fmt.Sprintf("%016x", h) }
+
+// packParts is the W p value of an anchor: its part hashes as 8-byte big-endian values.
+func packParts(hashes []uint64) []byte {
+	out := make([]byte, 0, 8*len(hashes))
+	for _, h := range hashes {
+		out = binary.BigEndian.AppendUint64(out, h)
+	}
+	return out
+}
+
+func unpackParts(b []byte) ([]uint64, error) {
+	if len(b)%8 != 0 {
+		return nil, errors.New("work: malformed W p")
+	}
+	out := make([]uint64, len(b)/8)
+	for i := range out {
+		out[i] = binary.BigEndian.Uint64(b[8*i:])
+	}
+	return out, nil
 }
 
 // normaliseTitle is the title's words joined by single spaces, the only form that is compared or indexed.
 func normaliseTitle(title string) string { return strings.Join(strings.Fields(title), " ") }
 
-func titleSha(title string) string { return hashWords(strings.Fields(title)) }
+func titleSha(title string) string { return hexOf(hashWords(strings.Fields(title))) }
 
-func partSet(hashes []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(hashes))
+func partSet(hashes []uint64) map[uint64]struct{} {
+	set := make(map[uint64]struct{}, len(hashes))
 	for _, h := range hashes {
 		set[h] = struct{}{}
 	}
@@ -89,7 +114,7 @@ func partSet(hashes []string) map[string]struct{} {
 }
 
 // agreed is the text of the parts whose hash is in keep, one gap for each run of the others.
-func (p *splitText) agreed(keep map[string]struct{}) string {
+func (p *splitText) agreed(keep map[uint64]struct{}) string {
 	var b strings.Builder
 	start, gapped := 0, false
 	for i, end := range p.ends {

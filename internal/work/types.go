@@ -58,10 +58,9 @@ type Attestation struct {
 }
 
 // Group holds attestations that agree with its anchor, each from a distinct worker and network.
-// Parts are the anchor's part hashes, kept for an errored record only.
+// The part hashes of an errored record's anchor are in W p (WORK 5).
 type Group struct {
 	Anchor  string        `json:"anchor"`
-	Parts   []string      `json:"parts,omitempty"`
 	Members []Attestation `json:"members"`
 }
 

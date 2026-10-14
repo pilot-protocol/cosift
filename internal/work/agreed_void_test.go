@@ -52,8 +52,8 @@ func TestVoidOnAnErroredRecordDiscardsTheGroupItAnchorsAndKeepsTheOthers(t *test
 			if got := members(h); got != tc.wantSizes {
 				t.Fatalf("groups of %s, want %s", got, tc.wantSizes)
 			}
-			for _, g := range h.record(pageURL).Groups {
-				if len(g.Parts) == 0 || g.Members[0].Worker == ws[tc.voided] {
+			for i, g := range h.record(pageURL).Groups {
+				if len(h.storedParts(i)) == 0 || g.Members[0].Worker == ws[tc.voided] {
 					t.Errorf("a remaining group must keep its anchor and its parts: %+v", g.Anchor)
 				}
 			}

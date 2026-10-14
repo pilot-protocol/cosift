@@ -99,6 +99,14 @@ func hexSum(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func hexes(hashes []uint64) []string {
+	out := make([]string, len(hashes))
+	for i, h := range hashes {
+		out[i] = hexOf(h)
+	}
+	return out
+}
+
 func (p *splitText) partWords() []int {
 	var out []int
 	start := 0
@@ -129,8 +137,8 @@ func TestTheSplitterAndThePartHashMatchTheVectors(t *testing.T) {
 			if fmt.Sprint(p.partWords()) != fmt.Sprint(c.PartWords) {
 				t.Errorf("part words %v, want %v", p.partWords(), c.PartWords)
 			}
-			if fmt.Sprint(p.hashes) != fmt.Sprint(c.Parts) {
-				t.Errorf("part hashes %v, want %v", p.hashes, c.Parts)
+			if got := hexes(p.hashes); fmt.Sprint(got) != fmt.Sprint(c.Parts) {
+				t.Errorf("part hashes %v, want %v", got, c.Parts)
 			}
 			if p.beyond {
 				t.Error("a short text has no parts beyond the cap")
@@ -180,8 +188,8 @@ func TestOnlyTheFirst8192PartsCanBeAgreed(t *testing.T) {
 	if len(p.hashes) != c.Considered || len(p.ends) != c.Considered || !p.beyond {
 		t.Fatalf("%d hashes, %d ends, beyond %v", len(p.hashes), len(p.ends), p.beyond)
 	}
-	if p.hashes[0] != c.First || p.hashes[c.Considered-1] != c.LastConsidered {
-		t.Errorf("first %s last %s", p.hashes[0], p.hashes[c.Considered-1])
+	if hexOf(p.hashes[0]) != c.First || hexOf(p.hashes[c.Considered-1]) != c.LastConsidered {
+		t.Errorf("first %s last %s", hexOf(p.hashes[0]), hexOf(p.hashes[c.Considered-1]))
 	}
 	words := strings.Fields(text)
 	beyond := words[c.Considered*8 : (c.Considered+1)*8]
