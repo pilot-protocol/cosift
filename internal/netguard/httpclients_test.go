@@ -33,6 +33,7 @@ var unguardedByDesign = map[string]string{
 	"cmd/cosift/serve_helpers.go":       "operator-configured gateway",
 	"cmd/cosift/find.go":                "CLI talking to its own server",
 	"cmd/cosift/cmd_admin.go":           "CLI talking to its own server",
+	"cmd/cosift/cmd_work.go":            "CLI talking to its own server",
 	"cmd/cosift/cmd_query.go":           "CLI talking to its own server",
 	"cmd/cosift/cmd_maintenance.go":     "CLI talking to its own server",
 	"cmd/cosift/cmd_eval.go":            "CLI talking to its own server and the judge model",

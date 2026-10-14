@@ -63,6 +63,7 @@ usage:
   cosift version            print version
   cosift svc-key new --id ID --scopes S[,S] --env prod|staging   mint a /v1 scoped key (printed once)
   cosift svc-auth check [--file F]   validate the /v1 service-auth file as the engine would
+  cosift work purge --url U | void --worker ID [-y]   remove a forged page, or a worker's pending attestations (dry run without -y)
 
 eval flags:
   -corpus <path>          path to corpus.json   (default: testdata/eval/corpus.json)
@@ -185,6 +186,8 @@ func run(cfgPath string) error {
 		return runSvcKey(flag.Args()[1:], os.Stdout, os.Stderr, time.Now())
 	case "svc-auth":
 		return runSvcAuth(cfg, cfgPath, flag.Args()[1:], os.Stdout, os.Stderr)
+	case "work":
+		return runWork(ctx, cfg, flag.Args()[1:], os.Stdout, os.Stderr)
 	case "init":
 		if err := runInit(cfgPath, flag.Args()[1:]); err != nil {
 			return fmt.Errorf("init: %w", err)
