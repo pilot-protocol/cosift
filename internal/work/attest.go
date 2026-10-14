@@ -118,6 +118,7 @@ func (s *Service) attestLocked(l *lease, a Attestation, att *attestation, now ti
 		if rec.Class == ClassErrored {
 			if len(s.texts) < s.cfg.ModerationQueueMax {
 				text := att.text
+				text.Title = normaliseTitle(text.Title)
 				text.Text = agreedAgainst(rec.Groups[gi], sp)
 				res = s.verifyLocked(tx, l.url, rec, gi, &text, "quorum", sha256Hex(text.Text), now)
 				verified = true

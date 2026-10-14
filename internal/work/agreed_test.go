@@ -121,17 +121,24 @@ func TestTheCompletingSubmissionCannotChooseTheTitle(t *testing.T) {
 			t.Fatalf("title %q text %q", doc.Title, doc.Text)
 		}
 	})
-	t.Run("white space in the title is not a difference, and the completing title is the one indexed", func(t *testing.T) {
-		same := loadAgreed(t).byID(t, "same-words-different-white-space")
-		h := newHarness(t)
-		h.erroredPage()
-		if res := h.submitPair(same.Anchor, same.Attestation); res.Verdict != "verified" {
-			t.Fatalf("%+v", res)
-		}
-		if doc := h.indexedOnce(); doc.Title != same.Attestation.Title {
-			t.Fatalf("title %q, want the completing submission's %q", doc.Title, same.Attestation.Title)
-		}
-	})
+}
+
+func TestTheIndexedTitleIsTheNormalisedTitleNotTheRawOne(t *testing.T) {
+	c := loadAgreed(t).byID(t, "identical-texts")
+	for _, raw := range []string{"Tidal\u00a0power ", "  Tidal \t power\n", "Tidal\u00a0\u00a0power\u3000", "Tidal power"} {
+		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
+			h := newHarness(t)
+			h.erroredPage()
+			completing := c.Attestation
+			completing.Title = raw
+			if res := h.submitPair(c.Anchor, completing); res.Verdict != "verified" {
+				t.Fatalf("%+v", res)
+			}
+			if doc := h.indexedOnce(); doc.Title != "Tidal power" {
+				t.Fatalf("indexed title %q, want the words joined by single spaces", doc.Title)
+			}
+		})
+	}
 }
 
 func TestAnEntitySwappedInsideOnePartOfALongPageIsDropped(t *testing.T) {
@@ -185,8 +192,8 @@ func TestEveryVectorCaseAgreesOrNotThroughTheService(t *testing.T) {
 				t.Fatalf("the vectors agree but the engine answered %+v", res)
 			}
 			doc := h.indexedOnce()
-			if doc.Text != c.Expect.AgreedText || doc.Title != c.Attestation.Title || doc.Lang != c.Attestation.Lang || doc.VerifiedBy != "quorum" {
-				t.Errorf("indexed %q %q %q by %q, want the agreed text and the completing title and lang", doc.Title, doc.Lang, doc.Text, doc.VerifiedBy)
+			if doc.Text != c.Expect.AgreedText || doc.Title != normaliseTitle(c.Attestation.Title) || doc.Lang != c.Attestation.Lang || doc.VerifiedBy != "quorum" {
+				t.Errorf("indexed %q %q %q by %q, want the agreed text and the completing normalised title and lang", doc.Title, doc.Lang, doc.Text, doc.VerifiedBy)
 			}
 			if rec := h.record(pageURL); rec.ContentHash != c.Expect.ContentHash {
 				t.Errorf("content_hash %s, want %s", rec.ContentHash, c.Expect.ContentHash)

@@ -75,6 +75,9 @@ func hashWords(words []string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// normaliseTitle is the title's words joined by single spaces, the only form that is compared or indexed.
+func normaliseTitle(title string) string { return strings.Join(strings.Fields(title), " ") }
+
 func titleSha(title string) string { return hashWords(strings.Fields(title)) }
 
 func partSet(hashes []string) map[string]struct{} {
