@@ -70,15 +70,20 @@ reuse the withdrawn v0.2.6 artifacts.
    artifacts; use the existing corpus snapshot/checkpoint procedure.
 2. Verify the signed artifact's checksum, signature and version. Validate the
    proposed Caddyfile before installing it. Confirm that the backend has a
-   configured chat model, the matching embedding model/dimension, and the admin
-   token. Keep tokens out of logs, command arguments and the repository.
+   configured chat model, the matching embedding model/dimension, and a key
+   principal with the `community:intake` scope whose `csk_` key is supplied to the
+   portal as `COSIFT_COMMUNITY_BROKER_KEY`. The portal must not have
+   `COSIFT_COMMUNITY_ADMIN_TOKEN` set, and never receives the peer token. Keep
+   tokens and keys out of logs, command arguments and the repository.
 3. Install the approved engine binary and restart only the existing engine
    process. Do not run a second full corpus instance on the production host.
    Wait for `/healthz` and inspect loopback `/stats` until HNSW loading is ready.
    Compare representative lexical, dense, Answer and Research queries to the
    retained v0.2.5 baseline before routing users to the candidate.
-4. Verify the authenticated `/admin/community-moderate` and
-   `/admin/community-enqueue` routes exist. A safe fixture must pass moderation;
+4. Verify that `POST /v1/community/moderate` and `POST /v1/community/enqueue`
+   on the engine's loopback `/v1` listener answer the broker key, and refuse a
+   missing key or one without the `community:intake` scope. The old
+   `/admin/community-*` routes no longer exist. A safe fixture must pass moderation;
    a blocked/uncertain fixture must never reach indexing or earn credits. Do not
    route failed moderation to the old unguarded crawl endpoint. v0.2.5 lacks
    these guarded routes, so deploying only a portal cannot activate ingestion.
@@ -97,6 +102,10 @@ reuse the withdrawn v0.2.6 artifacts.
 7. Verify a controlled safe URL contribution and a local artifact submission
    using matching text, metadata and embeddings. Credit only newly indexed
    content; repeat the same contribution and confirm no duplicate reward.
+   Rewards stay off until `COSIFT_COMMUNITY_CONTRIBUTION_REWARD=on` and the
+   engine's content-hash index is complete (`cosift backfill-content-sha`, see
+   [COMMUNITY.md](COMMUNITY.md)); with both in place, confirm that new content
+   pays once and that an account stops earning at its daily cap.
    Retry a completed submission with its original ID and confirm that the engine
    replays its durable receipt. Include Pebble receipt metadata in backups;
    upgrade the engine before the portal to preserve rewards on delivery retries.
@@ -126,7 +135,7 @@ Every successful authenticated retrieval spends credits from its first request.
 Each account receives 1,000 free credits per UTC calendar month; there is no
 free per-minute member bypass. Unused credits carry over. The old
 `-member-free-rpm` option is deprecated and ignored. Guests share one persistent
-IP cooldown across all retrieval modes. The command's `-guest-interval` defaults
+IP cooldown (per /64 for IPv6) across all retrieval modes. The command's `-guest-interval` defaults
 to `30m`; Search/Answer/Research multiply it by 1/2/3 after success. For example,
 a guest Answer also blocks Search for 60 minutes. Changing modes does not bypass
 the outstanding cooldown. Backend failures release guest reservations. Web and
@@ -173,8 +182,8 @@ Safety and quality checks are text-based and can make mistakes. Images/video
 are not classified. Unreadable, oversized or uncertain pages remain unverified.
 Obvious junk is screened before the model; the model handles broader spam and
 content judgments. Local embeddings are checked against server computation,
-so this first version does not promise server-compute savings. New content earns
-10 credits, globally deduplicated by content hash. Stripe subscriptions and
+so this first version does not promise server-compute savings. Where contribution rewards
+are enabled, new content earns 10 credits, globally deduplicated by content hash. Stripe subscriptions and
 subscriber-only top-ups require live billing configuration, verified webhooks,
 and the dedicated restricted portal configuration. See [Stripe activation and
 test-mode checks](STRIPE.md). Shared mode verifies email codes through
