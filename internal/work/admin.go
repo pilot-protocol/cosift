@@ -129,7 +129,7 @@ func (s *Service) Void(ctx context.Context, worker string, apply bool) (VoidResu
 	var parks []string
 	for _, c := range changes {
 		res.RecordsChanged++
-		dropped, err := s.regroup(c.rec, worker)
+		dropped, kept, err := s.regroup(c.rec, worker)
 		if err != nil {
 			tx.discard()
 			return VoidResult{}, err
@@ -141,6 +141,12 @@ func (s *Service) Void(ctx context.Context, worker string, apply bool) (VoidResu
 			res.RecordsDeleted++
 			_ = tx.delRecord(c.url)
 		default:
+			if c.rec.Class == ClassErrored {
+				if err := s.rekeyParts(tx, sha, kept); err != nil {
+					tx.discard()
+					return VoidResult{}, err
+				}
+			}
 			if !hasPair(c.rec) {
 				res.URLsParked++
 				parks = append(parks, c.url)
@@ -191,10 +197,12 @@ func hasPair(r *Record) bool {
 
 // regroup drops the worker's attestations and groups the rest again in time order; it returns how many it dropped.
 // An errored record keeps no parts but its anchors', so its groups are not formed again: a group whose anchor
-// was the worker's goes whole and the others lose the worker's attestations.
-func (s *Service) regroup(r *Record, worker string) (dropped int, err error) {
+// was the worker's goes whole and the others lose the worker's attestations; kept lists the groups left, by
+// their index before the void.
+func (s *Service) regroup(r *Record, worker string) (dropped int, kept []int, err error) {
 	if r.Class == ClassErrored {
-		return dropFromGroups(r, worker), nil
+		dropped, kept = dropFromGroups(r, worker)
+		return dropped, kept, nil
 	}
 	var keep []Attestation
 	for _, g := range r.Groups {
@@ -210,16 +218,15 @@ func (s *Service) regroup(r *Record, worker string) (dropped int, err error) {
 	r.Groups = nil
 	for _, a := range keep {
 		if _, _, err := s.place("", r, a, nil); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
-	return dropped, nil
+	return dropped, nil, nil
 }
 
-func dropFromGroups(r *Record, worker string) int {
-	dropped := 0
-	var kept []Group
-	for _, g := range r.Groups {
+func dropFromGroups(r *Record, worker string) (dropped int, kept []int) {
+	var groups []Group
+	for i, g := range r.Groups {
 		var members []Attestation
 		for _, m := range g.Members {
 			if m.Worker == worker {
@@ -230,11 +237,30 @@ func dropFromGroups(r *Record, worker string) int {
 		}
 		if len(members) > 0 && g.Members[0].Worker != worker {
 			g.Members = members
-			kept = append(kept, g)
+			groups = append(groups, g)
+			kept = append(kept, i)
 		}
 	}
-	r.Groups = kept
-	return dropped
+	r.Groups = groups
+	return dropped, kept
+}
+
+// rekeyParts leaves in W p the parts of the groups a void kept, each under its new index.
+func (s *Service) rekeyParts(tx *txn, sha string, kept []int) error {
+	moved := make([][]uint64, len(kept))
+	for i, old := range kept {
+		parts, err := s.getParts(sha, old)
+		if err != nil {
+			s.logf("work: store read failed")
+			return errUnavailable
+		}
+		moved[i] = parts
+	}
+	_ = tx.delParts(sha)
+	for i, parts := range moved {
+		_ = tx.putParts(sha, i, parts)
+	}
+	return nil
 }
 
 // resync brings a pool entry in line with a record that changed under it.

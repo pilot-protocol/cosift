@@ -104,6 +104,7 @@ func (s *Service) expire(now time.Time) {
 			it.rec.State, it.rec.Copy = StateExpired, CopyNone
 			_ = tx.event(sha, "expired", otherWorkers(it.rec, -1), false)
 			_ = tx.delText(sha)
+			_ = tx.delParts(sha)
 			_ = tx.putRecord(it.url, it.rec)
 			delete(s.pool, it.url)
 		default:

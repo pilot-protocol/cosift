@@ -145,10 +145,19 @@ func (t *txn) putRecord(url string, r *Record) error {
 	return t.b.Set(keyOf(prefixRecord, url), v, nil)
 }
 
-func (t *txn) delRecord(url string) error { return t.b.Delete(keyOf(prefixRecord, url), nil) }
+// delRecord deletes the record and the parts of its anchors.
+func (t *txn) delRecord(url string) error {
+	return errors.Join(t.b.Delete(keyOf(prefixRecord, url), nil), t.delParts(urlSHA(url)))
+}
 
 func (t *txn) putParts(sha string, group int, hashes []uint64) error {
 	return t.b.Set(keyParts(sha, group), packParts(hashes), nil)
+}
+
+// delParts deletes the parts of every group of the URL.
+func (t *txn) delParts(sha string) error {
+	from := keyOf(prefixParts, sha)
+	return t.b.DeleteRange(from, upperBound(from), nil)
 }
 
 func (t *txn) putText(sha string, x *Text) error {
