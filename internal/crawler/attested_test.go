@@ -84,8 +84,13 @@ func TestIndexAttestedStoresAnAttestedDocument(t *testing.T) {
 
 func TestIndexedPagesSeedLinksOnlyWhenCrawled(t *testing.T) {
 	ctx := context.Background()
-	for _, attested := range []bool{false, true} {
+	for _, tc := range []struct{ attested, embedQueue bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		attested := tc.attested
 		c, ps := attestedCrawler(t)
+		if tc.embedQueue {
+			c = c.WithEmbedder(&artifactReference{})
+			c.embedQ = make(chan *embedJob, 8)
+		}
 		c.cfg.MaxDepth = 3
 		parsed := &ParsedDoc{Title: "T", Text: attestedText, Links: []string{"https://example.org/linked"}}
 		item := store.FrontierItem{URL: "https://example.org/x"}
@@ -94,7 +99,7 @@ func TestIndexedPagesSeedLinksOnlyWhenCrawled(t *testing.T) {
 		}
 		fs, _ := ps.GetFrontierStats(ctx)
 		if seeded := fs.Queued > 0; seeded == attested {
-			t.Errorf("attested=%v: frontier %+v", attested, fs)
+			t.Errorf("%+v: frontier %+v", tc, fs)
 		}
 	}
 }
