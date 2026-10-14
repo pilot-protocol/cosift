@@ -117,6 +117,9 @@ func (s *Service) stage(tx *txn, url string, rec *Record) error {
 // verifyLocked marks group gi verified with the text to index and queues it for moderation,
 // deferring it at the ceiling. The workers of every other group are settled as mismatches.
 func (s *Service) verifyLocked(tx *txn, url string, rec *Record, gi int, text *Text, by, hash string, now time.Time) SubmitResult {
+	if by == "quorum" { // a worker's final_url is its own claim: the pool URL is what two accounts vouched for
+		text.FinalURL = url
+	}
 	rec.VerifiedGroup, rec.VerifiedBy, rec.FinalURL, rec.ContentHash = gi, by, text.FinalURL, hash
 	_ = tx.putText(urlSHA(url), text)
 	_ = tx.event(urlSHA(url), "mismatch", otherWorkers(rec, gi), false)

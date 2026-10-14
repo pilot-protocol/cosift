@@ -117,6 +117,9 @@ func TestSubmitValidatesEveryMember(t *testing.T) {
 		{"final url off host", func(r *SubmitRequest) { r.FinalURL = str("https://elsewhere.example.net/x") }, 422, "invalid_field", "final_url", "off_host"},
 		{"final url suffix host", func(r *SubmitRequest) { r.FinalURL = str("https://notexample.org/x") }, 422, "invalid_field", "final_url", "off_host"},
 		{"artifact", func(r *SubmitRequest) { r.Artifact = &Artifact{Model: "m"} }, 422, "invalid_field", "artifact", "artifact_invalid"},
+		{"artifact chunks without a model", func(r *SubmitRequest) {
+			r.Artifact = &Artifact{Chunks: []crawler.IndexedChunk{{Text: "Tidal", Embedding: []float32{1}}}}
+		}, 422, "invalid_field", "artifact", "artifact_invalid"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -131,6 +134,20 @@ func TestSubmitValidatesEveryMember(t *testing.T) {
 			}
 			if c.code == "extract_version_mismatch" && e.ExtractVersion != crawler.ExtractVersion {
 				t.Fatalf("the engine's version is missing: %+v", e)
+			}
+		})
+	}
+}
+
+func TestAnArtifactWithNeitherModelNorChunksIsValid(t *testing.T) {
+	for name, a := range map[string]*Artifact{"empty": {}, "empty chunks": {Chunks: []crawler.IndexedChunk{}}} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.push(pageURL)
+			req, _ := leased(t, h)
+			req.Artifact = a
+			if res, err := h.s.Submit(req); err != nil || res.Verdict != "awaiting_quorum" {
+				t.Fatalf("%+v %v", res, err)
 			}
 		})
 	}
@@ -274,6 +291,31 @@ func TestAnErroredQuorumVerifiesAtOnce(t *testing.T) {
 	}
 	if len(h.f.indexed) != 0 || len(h.settled()) != 0 {
 		t.Fatal("verification is not indexing or settling")
+	}
+}
+
+func TestAnErroredQuorumIsIndexedUnderTheLeaseURL(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	var res SubmitResult
+	for _, text := range []string{a, b} {
+		w, n := h.nextPair()
+		l, _ := h.claimFor(w, n)
+		var err error
+		if res, err = h.s.Submit(request(l, w, n, "https://example.org/another-page", text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if res.Verdict != "verified" {
+		t.Fatalf("%+v", res)
+	}
+	text, _ := h.s.getText(urlSHA(pageURL))
+	if text == nil {
+		t.Fatal("no text to index")
+	}
+	if rec := h.record(pageURL); rec.FinalURL != pageURL || text.FinalURL != pageURL {
+		t.Fatalf("a quorum names no URL of its own: record %q, text %q", rec.FinalURL, text.FinalURL)
 	}
 }
 
@@ -442,5 +484,24 @@ func TestTheHammingBoundIsInclusive(t *testing.T) {
 	}
 	if gi := h.s.closestGroup(rec, anchor^(1<<uint(max+1)-1)); gi != -1 {
 		t.Fatalf("a copy %d bits away does not: %d", max+1, gi)
+	}
+}
+
+func TestTheFirstGroupToReachTwoIsTheVerifiedOne(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	honest, forged, _ := fixture(t, "injected-paragraph-short-page")
+	_, forger, _, _ := h.attest(forged)
+	h.attest(honest)
+	res, _, _, err := h.attest(honest)
+	if err != nil || res.Verdict != "verified" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	rec := h.record(pageURL)
+	if rec.VerifiedGroup != 1 || rec.Groups[rec.VerifiedGroup].Anchor != rec.Groups[1].Anchor || len(rec.Groups[0].Members) != 1 {
+		t.Fatalf("the later group reached two first: %+v", rec.Groups)
+	}
+	if evs := h.settled(); len(evs) != 1 || fmt.Sprint(evs[0].Workers) != fmt.Sprint([]string{forger}) {
+		t.Fatalf("%+v", evs)
 	}
 }

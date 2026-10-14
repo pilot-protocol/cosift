@@ -180,7 +180,7 @@ func (s *Service) checkAttestation(req SubmitRequest) (*attestation, error) {
 		return nil, invalidField("simhash", "mismatch")
 	}
 	doc := Text{Title: title, Text: text, Lang: lang}
-	if a := req.Artifact; a != nil {
+	if a := req.Artifact; a != nil && (a.Model != "" || len(a.Chunks) > 0) {
 		la := crawler.LocalArtifact{Title: title, Text: text, Model: a.Model, Chunks: a.Chunks}
 		if la.ValidateVectors() != nil {
 			return nil, invalidField("artifact", "artifact_invalid")
