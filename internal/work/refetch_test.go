@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -363,4 +364,35 @@ func (h *harness) grant(u, w, n string) LeaseGrant {
 	e.leases[l.id] = l
 	h.s.byWorker[w]++
 	return LeaseGrant{ID: l.id, URL: u, Source: e.class}
+}
+
+func TestAFullTextQueueMakesNoServerFetch(t *testing.T) {
+	h := newHarness(t, func(c *config.WorkSettings) { c.ModerationQueueMax = 8 })
+	h.f.modErr = errNoModel
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	for i := 0; i < 8; i++ {
+		u := fmt.Sprintf("https://h%d.example.org/p", i)
+		h.add(ClassErrored, u)
+		for _, text := range []string{a, b} {
+			w, n := h.nextPair()
+			if _, err := h.s.Submit(request(h.grant(u, w, n), w, n, u, text)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if h.textCount() != 8 {
+		t.Fatalf("queue %d", h.textCount())
+	}
+	const waiting = "https://waiting.example.org/p"
+	h.add(ClassPushed, waiting)
+	w, n := h.nextPair()
+	if _, err := h.s.Submit(request(h.grant(waiting, w, n), w, n, waiting, a)); err != nil {
+		t.Fatal(err)
+	}
+	h.page(waiting, a)
+	h.advance(time.Duration(h.cfg.QuorumWindowS)*time.Second + time.Minute)
+	h.s.runRefetches(context.Background())
+	if h.f.fetches[waiting] != 0 {
+		t.Fatalf("the server fetched %d times with no room for the text", h.f.fetches[waiting])
+	}
 }

@@ -505,3 +505,18 @@ func TestTheFirstGroupToReachTwoIsTheVerifiedOne(t *testing.T) {
 		t.Fatalf("%+v", evs)
 	}
 }
+
+func TestOnePairCountsOnceWhateverTheNumberOfFailures(t *testing.T) {
+	h := newHarness(t)
+	h.push(pageURL)
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	e := h.s.pool[pageURL]
+	p := pair{hexID(1), hexID(101)}
+	for i := 0; i < 10; i++ {
+		h.s.noteFailure(e, p, true, h.now())
+	}
+	if len(e.failed) != 1 || len(e.reported) != 1 || h.s.pool[pageURL] == nil {
+		t.Fatalf("failed %d reported %d in pool %v", len(e.failed), len(e.reported), h.s.pool[pageURL] != nil)
+	}
+}

@@ -373,3 +373,29 @@ func TestAfterARejectionALateWorkerIsToldRejected(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+func TestADissenterIsSettledMismatchAndNeverPaidAsVerified(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	honest, forged, _ := fixture(t, "injected-paragraph-short-page")
+	_, first, _, err := h.attest(honest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, forger, _, err := h.attest(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, _, err := h.attest(honest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.moderate()
+	verified, mismatch := h.events("verified"), h.events("mismatch")
+	if len(verified) != 1 || fmt.Sprint(verified[0].Workers) != fmt.Sprint([]string{first, second}) || !verified[0].ContentNovel {
+		t.Fatalf("verified %+v", verified)
+	}
+	if len(mismatch) != 1 || fmt.Sprint(mismatch[0].Workers) != fmt.Sprint([]string{forger}) {
+		t.Fatalf("mismatch %+v", mismatch)
+	}
+}
