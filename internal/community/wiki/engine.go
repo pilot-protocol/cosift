@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -253,6 +254,15 @@ func (e *engine) list(ctx context.Context, cursor string) (engineList, string) {
 		}
 		path += "&cursor=" + url.QueryEscape(cursor)
 	}
+	return e.getList(ctx, path)
+}
+
+// board fetches the newest wantedLimit items of one wanted-board query: pending stubs, or published Low articles.
+func (e *engine) board(ctx context.Context, query string) (engineList, string) {
+	return e.getList(ctx, "/v1/articles?"+query+"&order=updated_at&limit="+strconv.Itoa(wantedLimit))
+}
+
+func (e *engine) getList(ctx context.Context, path string) (engineList, string) {
 	ctx, cancel := context.WithTimeout(ctx, e.listTimeout)
 	defer cancel()
 	status, body, code := e.get(ctx, path, listLimit)

@@ -1,0 +1,17 @@
+{{define "main"}}<section class="wiki-hub wiki-wanted" aria-label="Wanted articles">
+<h1>Wanted articles</h1>
+<p>Cosift has no article on these subjects yet, or only a Low-quality one. Contributors write them with an AI agent, following the <a href="/wiki/style">style guide</a> and the <a href="/wiki/terms">contributor terms</a>.</p>
+<h2>Subjects with no article yet</h2>
+<ul class="wiki-list">
+{{range .Stubs}}<li>{{.Title}}{{with .Vertical}} <span class="wiki-cite-host">{{.}}</span>{{end}}</li>
+{{else}}<li>None right now.</li>
+{{end}}</ul>
+{{if .MoreStubs}}<p class="fine">Showing the newest {{.Limit}}.</p>
+{{end}}<h2>Low-quality articles that can be improved</h2>
+<ul class="wiki-list">
+{{range .Thin}}<li><a href="/wiki/{{.Slug}}">{{.Title}}</a>{{with .Vertical}} <span class="wiki-cite-host">{{.}}</span>{{end}}</li>
+{{else}}<li>None right now.</li>
+{{end}}</ul>
+{{if .MoreLow}}<p class="fine">Showing the newest {{.Limit}}.</p>
+{{end}}</section>
+{{end}}

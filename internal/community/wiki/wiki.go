@@ -101,6 +101,7 @@ type Wiki struct {
 
 	ips       ipLimiter
 	handles   handleCache
+	board     board
 	refreshMu sync.Mutex
 
 	logMu  sync.Mutex
@@ -243,6 +244,8 @@ func (w *Wiki) serveWiki(rw http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && (parts[0] == "style" || parts[0] == "style.md"):
 		w.serveStyle(rw, r, parts[0] == "style.md")
+	case len(parts) == 1 && parts[0] == "wanted":
+		w.serveWanted(rw, r)
 	case len(parts) == 1 && parts[0] == "terms":
 		w.serveTerms(rw, r)
 	case len(parts) == 1 && pageSlug(parts[0]):
