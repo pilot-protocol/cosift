@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -282,8 +283,12 @@ func hexSHA(s string) string {
 
 // submitBodyFor is the attestation a correct CLI sends.
 func submitBodyFor(leaseID, worker, net, finalURL, text string) map[string]any {
+	return submitBodyAs(leaseID, worker, net, finalURL, "Tidal power", text)
+}
+
+func submitBodyAs(leaseID, worker, net, finalURL, title, text string) map[string]any {
 	sum, _ := crawler.Simhash(text)
-	return map[string]any{"lease_id": leaseID, "worker": worker, "net": net, "final_url": finalURL, "http_status": 200, "title": "Tidal power", "text": text,
+	return map[string]any{"lease_id": leaseID, "worker": worker, "net": net, "final_url": finalURL, "http_status": 200, "title": title, "text": text,
 		"lang": "en", "content_hash": hexSHA(text), "simhash": crawler.SimhashHex(sum), "extract_version": crawler.ExtractVersion}
 }
 
@@ -378,6 +383,74 @@ func TestAWorkPageIsLeasedVerifiedModeratedIndexedAndSettled(t *testing.T) {
 	j.srv.writeWorkMetrics(&metrics)
 	if !strings.Contains(metrics.String(), `cosift_work_settled_total{verdict="verified"} 1`) {
 		t.Fatalf("%s", metrics.String())
+	}
+}
+
+type tamperSide struct{ Title, Text string }
+
+type tamperCase struct {
+	ID                  string
+	Anchor, Attestation tamperSide
+	Expect              struct {
+		Agree      bool   `json:"agree"`
+		AgreedText string `json:"agreed_text"`
+	}
+}
+
+// tamperedPairs are the work_agreed_text cases, by id.
+func tamperedPairs(t *testing.T) map[string]tamperCase {
+	t.Helper()
+	raw, err := os.ReadFile("../../internal/work/testdata/work_agreed_text.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct{ Cases []tamperCase }
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]tamperCase{}
+	for _, c := range v.Cases {
+		out[c.ID] = c
+	}
+	return out
+}
+
+func TestTamperedTextOnAnErroredPageNeverReachesTheIndex(t *testing.T) {
+	cases := tamperedPairs(t)
+	for _, id := range []string{"injected-paragraph", "entity-swapped-inside-one-part", "long-page-entity-swap", "different-title"} {
+		t.Run(id, func(t *testing.T) {
+			c := cases[id]
+			j, _ := workJoint(t)
+			ctx := context.Background()
+			const pageURL = "https://blocked.example.org/page"
+			if err := j.ps.PushFrontier(ctx, pageURL, 0, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.ps.FailFrontier(ctx, pageURL, "http 403"); err != nil {
+				t.Fatal(err)
+			}
+			j.srv.work.svc.Feed(ctx)
+			var last resp
+			for i, side := range []tamperSide{c.Anchor, c.Attestation} {
+				worker, net := strings.Repeat(string(rune('a'+i)), 32), strings.Repeat(string(rune('1'+i)), 32)
+				cl := j.do("community-broker", "POST", "/v1/work/claim", map[string]any{"worker": worker, "net": net, "max": 1})
+				j.want(cl, 200, "")
+				l := cl.body["leases"].([]any)[0].(map[string]any)
+				last = j.do("community-broker", "POST", "/v1/work/submit", submitBodyAs(l["lease_id"].(string), worker, net, pageURL, side.Title, side.Text))
+				j.want(last, 200, "")
+			}
+			j.srv.work.svc.Sweep(ctx)
+			item := j.do("synth-prod", "POST", "/v1/contents", map[string]any{"urls": []string{pageURL}}).body["results"].([]any)[0].(map[string]any)
+			if !c.Expect.Agree {
+				if last.body["verdict"] != "awaiting_quorum" || item["found"] == true {
+					t.Fatalf("the title decides: %s %v", last.raw, item)
+				}
+				return
+			}
+			if last.body["verdict"] != "verified" || item["found"] != true || item["text"] != c.Expect.AgreedText || item["title"] != c.Attestation.Title {
+				t.Fatalf("%s\n%v", last.raw, item)
+			}
+		})
 	}
 }
 
