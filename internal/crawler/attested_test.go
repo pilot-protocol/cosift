@@ -138,6 +138,53 @@ func TestIndexAttestedSameURLAndContentWritesNothing(t *testing.T) {
 	}
 }
 
+func TestAQuorumNeverReplacesAStoredDocument(t *testing.T) {
+	ctx := context.Background()
+	const stored, other = "https://example.org/stored", "https://example.org/other"
+	const forged = "A forged page about something else entirely, long enough to be a document of its own."
+	seed := func(c *Crawler, ps *store.PebbleStore, source, by string) {
+		t.Helper()
+		switch source {
+		case "crawl":
+			sum := sha256.Sum256([]byte(attestedText))
+			if _, err := ps.UpsertDocument(ctx, &store.Document{URL: stored, Title: "Crawled", Text: attestedText, Source: "crawl", ContentSHA: sum[:], FetchedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			if _, _, err := c.IndexAttested(ctx, AttestedDoc{URL: stored, Title: "Crawled", Text: attestedText, VerifiedBy: by}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name, source, by, lease, vouched string
+		replaced                         bool
+	}{
+		{"a crawled document under another lease", "crawl", "", other, "quorum", false},
+		{"a crawled document under its own lease", "crawl", "", stored, "quorum", false},
+		{"a server-vouched document", "attested", "server", stored, "quorum", false},
+		{"a quorum document under another lease", "attested", "quorum", other, "quorum", false},
+		{"a quorum document under its own lease", "attested", "quorum", stored, "quorum", true},
+		{"a crawled document, a server copy", "crawl", "", stored, "server", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ps := attestedCrawler(t)
+			seed(c, ps, tc.source, tc.by)
+			indexed, novel, err := c.IndexAttested(ctx, AttestedDoc{URL: stored, LeaseURL: tc.lease, Title: "Forged", Text: forged, VerifiedBy: tc.vouched})
+			if err != nil || indexed != tc.replaced || novel {
+				t.Fatalf("indexed %v novel %v %v", indexed, novel, err)
+			}
+			doc, err := ps.GetDocByURL(ctx, stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replaced := doc.Title == "Forged"; replaced != tc.replaced {
+				t.Fatalf("replaced %v, want %v: %+v", replaced, tc.replaced, doc)
+			}
+		})
+	}
+}
+
 func TestIndexAttestedRefusesAnUnknownVerifier(t *testing.T) {
 	c, ps := attestedCrawler(t)
 	for _, by := range []string{"", "worker", "Server"} {
@@ -250,5 +297,41 @@ func TestAllowedURLAppliesTheDomainPolicyAndTheAdultFilter(t *testing.T) {
 	c.cfg.IncludeDomains = []string{"example.org"}
 	if c.AllowedURL("https://other.net/x") || !c.AllowedURL("https://docs.example.org/x") {
 		t.Error("the include list is not applied")
+	}
+}
+
+func TestACrawledAndAnAttestedPageOfTheSameTextDifferOnlyInSourceAndVerifier(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(sampleHTML))
+	}))
+	defer srv.Close()
+	c, ps := attestedCrawler(t)
+	if err := c.FetchAndIndexNow(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	crawled, err := ps.GetDocByURL(ctx, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := "https://attested.example.org/page"
+	if indexed, _, err := c.IndexAttested(ctx, AttestedDoc{URL: other, Title: crawled.Title, Text: crawled.Text, Lang: crawled.Lang, VerifiedBy: "server"}); err != nil || !indexed {
+		t.Fatalf("%v %v", indexed, err)
+	}
+	attested, err := ps.GetDocByURL(ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attested.Title != crawled.Title || attested.Text != crawled.Text || attested.Lang != crawled.Lang || attested.Quality != crawled.Quality ||
+		string(attested.ContentSHA) != string(crawled.ContentSHA) || attested.ChangeCount != crawled.ChangeCount {
+		t.Fatalf("crawled %+v attested %+v", crawled, attested)
+	}
+	if crawled.Source != "crawl" || attested.Source != "attested" || attested.VerifiedBy != "server" || crawled.VerifiedBy != "" {
+		t.Fatalf("%q %q %q", crawled.Source, attested.Source, attested.VerifiedBy)
+	}
+	hits, err := index.NewPebbleBM25(ps).Search(ctx, "concurrent programming", 5)
+	if err != nil || len(hits) != 2 || hits[0].Score != hits[1].Score {
+		t.Fatalf("the two documents are indexed alike: %+v %v", hits, err)
 	}
 }

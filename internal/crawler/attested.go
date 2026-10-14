@@ -25,7 +25,8 @@ type AttestedDoc struct {
 
 // IndexAttested stores and indexes an attested page, and completes its frontier row. indexed is
 // false when the same URL already holds the same content; contentNovel is true only when no live
-// document has the content and the content index is complete.
+// document has the content and the content index is complete. A quorum's page replaces only an
+// earlier quorum page of its own lease URL, never a crawled or server-vouched document.
 func (c *Crawler) IndexAttested(ctx context.Context, d AttestedDoc) (indexed, contentNovel bool, err error) {
 	if d.VerifiedBy != "server" && d.VerifiedBy != "quorum" {
 		return false, false, fmt.Errorf("attested page needs a verifier")
@@ -41,6 +42,9 @@ func (c *Crawler) IndexAttested(ctx context.Context, d AttestedDoc) (indexed, co
 			return false, false, err
 		}
 		prior = nil
+	}
+	if d.VerifiedBy == "quorum" && prior != nil && !(prior.Source == "attested" && prior.VerifiedBy == "quorum" && d.URL == lease) {
+		return false, false, nil
 	}
 	emb := c.embedder
 	if d.Artifact != nil && c.embedder != nil {
