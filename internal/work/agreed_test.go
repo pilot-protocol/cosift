@@ -9,9 +9,10 @@ import (
 	"github.com/pilot-protocol/cosift/internal/crawler"
 )
 
-// agreedOf is what a quorum of the two texts, a first, indexes: the second's parts that are in the first's.
+// agreedOf is what a quorum of the two texts, a first, indexes: the agreed text of the second against the first.
 func agreedOf(first, second string) string {
-	return splitParts(second).agreed(partSet(splitParts(first).hashes))
+	a := splitParts(first)
+	return splitParts(second).agreeWith(a.hashes, a.total).text
 }
 
 func (h *harness) erroredPage() {
@@ -192,7 +193,7 @@ func TestEveryVectorCaseAgreesOrNotThroughTheService(t *testing.T) {
 				t.Fatalf("the vectors agree but the engine answered %+v", res)
 			}
 			doc := h.indexedOnce()
-			if doc.Text != c.Expect.AgreedText || doc.Title != normaliseTitle(c.Attestation.Title) || doc.Lang != c.Attestation.Lang || doc.VerifiedBy != "quorum" {
+			if doc.Text != c.Expect.AgreedText || doc.Title != c.Expect.Title || doc.Lang != c.Attestation.Lang || doc.VerifiedBy != "quorum" {
 				t.Errorf("indexed %q %q %q by %q, want the agreed text and the completing normalised title and lang", doc.Title, doc.Lang, doc.Text, doc.VerifiedBy)
 			}
 			if rec := h.record(pageURL); rec.ContentHash != c.Expect.ContentHash {

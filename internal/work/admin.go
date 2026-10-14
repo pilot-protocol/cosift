@@ -217,7 +217,7 @@ func (s *Service) regroup(r *Record, worker string) (dropped int, kept []int, er
 	sort.SliceStable(keep, func(i, j int) bool { return keep[i].At.Before(keep[j].At) })
 	r.Groups = nil
 	for _, a := range keep {
-		if _, _, err := s.place("", r, a, nil); err != nil {
+		if _, _, _, err := s.place("", r, a, nil); err != nil {
 			return 0, nil, err
 		}
 	}

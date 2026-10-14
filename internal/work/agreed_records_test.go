@@ -128,7 +128,7 @@ func TestAPushedOrFrontierRecordStoresNoPartsTitleOrLength(t *testing.T) {
 	}
 }
 
-func TestAnAnchorKeepsAtMost8192PartHashes(t *testing.T) {
+func TestAnAnchorKeepsAtMost2048PartHashesAndHowManyPartsItHad(t *testing.T) {
 	c := loadAgreed(t).Cap
 	for _, tc := range []struct {
 		name       string
@@ -146,6 +146,9 @@ func TestAnAnchorKeepsAtMost8192PartHashes(t *testing.T) {
 			}
 			if n := len(h.storedParts(0)); n != 8*c.Considered {
 				t.Fatalf("%d bytes of part hashes stored, want %d", n, 8*c.Considered)
+			}
+			if n := h.record(pageURL).Groups[0].PartsN; n != c.Parts {
+				t.Fatalf("parts_n %d, want the %d parts the text had before the cap", n, c.Parts)
 			}
 			res, _, _, err := h.attestAs("Parts", "en", tc.completing)
 			if err != nil || res.Verdict != "verified" {

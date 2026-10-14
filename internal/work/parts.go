@@ -10,23 +10,25 @@ import (
 )
 
 const (
-	maxParts         = 8192
+	maxParts         = 2048
 	boundaryMinWords = 8
 	partMaxWords     = 96
 	boundaryModulus  = 32
 	floorPercent     = 60
+	minAgreedBytes   = 80
 	gap              = "…"
 
 	fnvOffset64 = 14695981039346656037
 	fnvPrime64  = 1099511628211
 )
 
-// splitText is a text cut into content-defined parts (WORK 6.5). Only the first maxParts parts are hashed.
+// splitText is a text cut into content-defined parts (WORK 6.5). Only the first maxParts parts are
+// hashed; total counts them all.
 type splitText struct {
 	words  []string
 	ends   []int
 	hashes []uint64
-	beyond bool
+	total  int
 }
 
 func splitParts(text string) *splitText {
@@ -36,28 +38,32 @@ func splitParts(text string) *splitText {
 		low := strings.Map(unicode.ToLower, w)
 		n := i - start + 1
 		if n == partMaxWords || (n >= boundaryMinWords && boundary(prev, low)) {
-			p.add(i + 1)
+			p.cut(start, i+1)
 			start = i + 1
-			if len(p.ends) == maxParts {
-				p.beyond = start < len(p.words)
-				return p
-			}
 		}
 		prev = low
 	}
 	if start < len(p.words) {
-		p.add(len(p.words))
+		p.cut(start, len(p.words))
 	}
 	return p
 }
 
-func (p *splitText) add(end int) {
-	start := 0
-	if n := len(p.ends); n > 0 {
-		start = p.ends[n-1]
+func (p *splitText) cut(start, end int) {
+	p.total++
+	if len(p.ends) < maxParts {
+		p.ends = append(p.ends, end)
+		p.hashes = append(p.hashes, hashWords(p.words[start:end]))
 	}
-	p.ends = append(p.ends, end)
-	p.hashes = append(p.hashes, hashWords(p.words[start:end]))
+}
+
+// part is the text of the j-th hashed part: its words joined by single spaces.
+func (p *splitText) part(j int) string {
+	start := 0
+	if j > 0 {
+		start = p.ends[j-1]
+	}
+	return strings.Join(p.words[start:p.ends[j]], " ")
 }
 
 // boundary is FNV-1a-64 of the two lower-cased words joined by a space, as the simhash hashes its shingles.
@@ -105,37 +111,82 @@ func normaliseTitle(title string) string { return strings.Join(strings.Fields(ti
 
 func titleSha(title string) string { return hexOf(hashWords(strings.Fields(title))) }
 
-func partSet(hashes []uint64) map[uint64]struct{} {
-	set := make(map[uint64]struct{}, len(hashes))
-	for _, h := range hashes {
-		set[h] = struct{}{}
+type match struct{ i, j int }
+
+// align is the in-order walk of WORK 6.5 over the part hashes of an anchor a and a completing submission c.
+func align[T comparable](a, c []T) []match {
+	n, m := len(a), len(c)
+	w := m + 1
+	l := make([]uint16, (n+1)*w)
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if a[i] == c[j] {
+				l[i*w+j] = l[(i+1)*w+j+1] + 1
+			} else {
+				l[i*w+j] = max(l[(i+1)*w+j], l[i*w+j+1])
+			}
+		}
 	}
-	return set
+	var out []match
+	for i, j := 0, 0; i < n && j < m; {
+		switch {
+		case a[i] == c[j]:
+			out = append(out, match{i, j})
+			i, j = i+1, j+1
+		case l[(i+1)*w+j] >= l[i*w+j+1]:
+			i++
+		default:
+			j++
+		}
+	}
+	return out
 }
 
-// agreed is the text of the parts whose hash is in keep, one gap for each run of the others.
-func (p *splitText) agreed(keep map[uint64]struct{}) string {
-	var b strings.Builder
-	start, gapped := 0, false
-	for i, end := range p.ends {
-		if _, ok := keep[p.hashes[i]]; ok {
-			if b.Len() > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteString(strings.Join(p.words[start:end], " "))
-			gapped = false
-		} else if !gapped {
-			if b.Len() > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteString(gap)
-			gapped = true
+const gapMark = -1
+
+// layout lists the completer's matched parts in order, with gapMark wherever either side has unmatched parts;
+// aTotal and cTotal count the parts of each text before the cap.
+func layout(ms []match, aTotal, cTotal int) []int {
+	var out []int
+	lastI, lastJ := -1, -1
+	for _, m := range ms {
+		if m.i-lastI > 1 || m.j-lastJ > 1 {
+			out = append(out, gapMark)
 		}
-		start = end
+		out = append(out, m.j)
+		lastI, lastJ = m.i, m.j
 	}
-	if p.beyond && !gapped {
-		b.WriteByte(' ')
-		b.WriteString(gap)
+	if len(ms) > 0 && (lastI+1 < aTotal || lastJ+1 < cTotal) {
+		out = append(out, gapMark)
 	}
-	return b.String()
+	return out
 }
+
+// agreement is what a completing submission shares, in order, with an anchor.
+type agreement struct {
+	text    string // the matched parts in order, a gap for every unmatched span; empty when nothing matched
+	matched int    // the bytes of the matched parts, M
+}
+
+// agreeWith aligns the text with an anchor's part hashes; anchorTotal is the anchor's part count before the cap.
+func (p *splitText) agreeWith(anchor []uint64, anchorTotal int) agreement {
+	var b strings.Builder
+	ag := agreement{}
+	for _, k := range layout(align(anchor, p.hashes), anchorTotal, p.total) {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		if k == gapMark {
+			b.WriteString(gap)
+			continue
+		}
+		part := p.part(k)
+		ag.matched += len(part)
+		b.WriteString(part)
+	}
+	ag.text = b.String()
+	return ag
+}
+
+// floorMet reports whether matched bytes are at least floorPercent of length.
+func floorMet(matched, length int) bool { return matched*100 >= floorPercent*length }
