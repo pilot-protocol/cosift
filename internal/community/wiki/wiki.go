@@ -171,6 +171,7 @@ func (w *Wiki) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sitemap.xml", w.guard(w.serveSitemapIndex))
 	mux.HandleFunc("GET /sitemaps/{name}", w.guard(w.serveSitemap))
 	mux.HandleFunc("GET /robots.txt", w.guard(w.serveRobots))
+	mux.HandleFunc("GET /llms.txt", w.guard(w.serveLlms))
 	mux.HandleFunc("GET /wiki.css", w.asset("wiki.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /wiki.js", w.asset("wiki.js", "text/javascript; charset=utf-8"))
 }
