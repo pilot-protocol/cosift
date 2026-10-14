@@ -16,12 +16,13 @@ People can:
 - Follow topics across the web and MCP, check article coverage, and record requests for missing articles.
 - View monthly credits and manage an optional paid subscription or subscriber top-up when live payments are configured.
 
-Guests share one persistent cooldown per public IP. A successful **Search holds
+Guests share one persistent cooldown per public IP address (per /64 for IPv6). A successful **Search holds
 it for 30 minutes, Answer for 60 minutes, or Research for 90 minutes**. The
 cooldown applies across all three modes: after Answer, even Search must wait
 60 minutes. Changing modes does not create another allowance. People sharing a
 public IP also share this cooldown. Invalid input and failed backend requests
-do not consume it; reading the app or checking the allowance is free. HTTP 429
+do not consume it, but a request the caller cancels after it reaches the backend
+keeps its cooldown; reading the app or checking the allowance is free. HTTP 429
 includes `Retry-After`, `retry_at`, and `retry_after_seconds`.
 **Contributions require login.**
 
@@ -43,8 +44,9 @@ GOWORK=off go build -o cosift ./cmd/cosift
 
 Use an existing Pebble backend with its in-process crawler enabled, an embedding
 provider, and a nonempty seeds file. Configure `chat.model` and its provider for
-Answer, Research and semantic content checks. Without a chat model, submissions
-remain pending.
+Answer, Research and semantic content checks. Without a chat model the moderation
+route answers 503, and a submission that needs the model check ends as
+`unverified` after 12 attempts.
 
 The backend creates a separate contribution crawler sharing the corpus and
 embedding budget. It always uses direct public-only HTTP, robots checks, adult
@@ -57,9 +59,16 @@ required for the community service.
   -dir /srv/cosift/pebble -crawl-seeds-file /etc/cosift/seeds.txt
 ```
 
-Set `COSIFT_COMMUNITY_ADMIN_TOKEN` in the community service environment to the
-backend's `cluster.peer_auth_token`. The community service uses it only for
-contribution checks and delivery; it never sends it to the browser or with searches.
+The community service reaches the backend's loopback `/v1` listener (default
+`http://127.0.0.1:7779`) with its own scoped key, not the peer token. Create a
+key principal in the backend's service-auth file with the `community:intake`
+scope alone (community scopes combine only with `work:broker`, and require `"env": "prod"`),
+then set `COSIFT_COMMUNITY_BROKER_KEY` to its `csk_` key in the community service
+environment. Set `COSIFT_COMMUNITY_ENGINE_URL` only when the listener is elsewhere;
+it must be a loopback `http` origin. The service uses the key only for contribution
+checks and delivery; it never sends it to the browser or with searches. It refuses
+to start while `COSIFT_COMMUNITY_ADMIN_TOKEN` is set, and the backend's
+`cluster.peer_auth_token` must never be given to the community service.
 
 ```sh
 ./cosift community \
@@ -83,11 +92,27 @@ not proxy arbitrary backend paths or expose backend administration.
 
 ## Contribution delivery
 
-The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the authenticated `/admin/community-moderate` endpoint. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `/admin/community-enqueue`.
+The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the engine's `POST /v1/community/moderate`, authenticated with the broker key. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `POST /v1/community/enqueue`.
 
-The receiving backend performs guarded direct indexing through a separate crawler. Bulk crawling retains its remote fetcher. Contributions never trigger link or sitemap discovery; existing domain inclusion/exclusion policy still applies. At most two contributions index concurrently, sharing the bulk crawler's embedding throttle. The delivery call is bounded to two minutes, with durable retries on transient failures.
+The engine caps the model calls of the moderation route per UTC day. Set
+`work.community_moderations_per_day` in `cosift.json` (default and maximum 1000;
+`0` halts the route):
 
-`pending` appears as **Checking**; `rejected` and `unverified` stay outside indexing. `indexed` means the backend acknowledged an indexable document. Older queue acknowledgements remain `queued`. An acknowledgement does not guarantee successful embedding of every passage; standard crawler embedding errors still apply.
+```json
+{ "work": { "community_moderations_per_day": 500 } }
+```
+
+Past the ceiling the route answers 503 `moderation_unavailable` with `Retry-After`
+set to the next 00:00 UTC. A page decided before the model (adult, obvious junk)
+takes nothing from the allowance. The community app does not wait for the reset: a refused check counts as an attempt, so while the route is halted or past its ceiling, submissions that need the model end as `unverified` after 12 attempts, about two hours. `/metrics` counts the answers as
+`cosift_community_moderations_total{result="ok|ceiling|error"}`. Each community
+route also accepts at most 30 calls a minute per principal; lower them with
+`COSIFT_V1_ENQUEUE_PER_MIN` and `COSIFT_V1_MODERATE_PER_MIN` on the engine (an
+integer from 1 to 30; anything else stops the engine at startup).
+
+The receiving backend performs guarded direct indexing through a separate crawler. Bulk crawling retains its remote fetcher. Contributions never trigger link or sitemap discovery; the crawler's domain inclusion/exclusion policy still applies to the submitted URL and to every redirect hop. An entry matches a host exactly or as a dot-boundary suffix (`example.com` covers `blog.example.com`, not `evilexample.com`); a port on an entry is ignored. At most two contributions index concurrently, sharing the bulk crawler's embedding throttle. The delivery call is bounded to two minutes, with durable retries on transient failures.
+
+`pending` appears as **Checking**; `rejected` and `unverified` stay outside indexing. `indexed` means the backend acknowledged an indexable document. Older queue acknowledgements remain `queued`. A submission waits as `config_error`, retried hourly, while the broker key is missing or the engine refuses it. While the engine's listener is unreachable, submissions stay pending, are retried every five minutes and their pages are not fetched. A submission that cannot be checked or delivered after 12 attempts ends as `unverified`. An acknowledgement does not guarantee successful embedding of every passage; standard crawler embedding errors still apply.
 
 Checks reject adult material, malware/phishing, graphic violent abuse, extremist promotion and serious illegal harm while allowing neutral education, medicine, news and defensive security research. Malformed decisions cannot authorize indexing. Production combines URL/network/content checks with semantic review using `qwen3.5:9b-fp8`. These automated text and metadata checks do not guarantee image/video moderation or act as an antivirus scan. Unreadable, unsupported, or inconclusive pages remain unverified; unavailable services retry. The backend binds approval to the checked content and rejects a contribution when the fetched content no longer matches its approval. No indexing or credits occur before approval.
 
@@ -112,11 +137,28 @@ before reuse. Failed verification cannot inject vectors. This first version
 spends server compute on full verification; it does not claim compute savings.
 If chunk boundaries differ, the backend computes the missing vectors normally.
 
-A newly indexed member contribution earns **10 credits**. Rewards are globally
-idempotent by content hash, so retrying or mirroring the same content cannot earn
-multiple rewards. Existing corpus URLs and rejected/unverified submissions do
-not earn credits. A submission acknowledgement is not a reward: the backend must
-confirm approved new content was indexed.
+A newly indexed member contribution earns **10 credits** when contribution
+rewards are enabled. They are off by default; set
+`COSIFT_COMMUNITY_CONTRIBUTION_REWARD=on` in the community service environment
+(`GET /api/credits` then reports `verified_contribution_reward` and
+`verified_contribution_daily_cap`). A reward is paid for new content only: no
+document is stored at the submitted or final URL, and none carries the same
+content hash. The check reads the backend's content-hash index, and the reward
+is not paid while that index is incomplete. Every store, including a new one,
+needs it built once, with the backend stopped:
+
+```sh
+./cosift backfill-content-sha -dir /srv/cosift/pebble
+```
+
+The run is resumable and marks the index complete when it finishes (`-rescan`
+walks the corpus again); documents written afterwards are indexed as they are
+stored. Each account earns at most `COSIFT_COMMUNITY_CONTRIBUTION_REWARD_DAILY_CAP`
+rewards per rolling 24 hours (default 10; an integer from 1 to 10000). Rewards are
+globally idempotent by content hash, so retrying or mirroring the same content
+cannot earn multiple rewards. Existing corpus URLs and rejected/unverified
+submissions do not earn credits. A submission acknowledgement is not a reward:
+the backend must confirm approved new content was indexed.
 
 Every successful authenticated retrieval spends credits:
 
@@ -133,11 +175,30 @@ shared by sessions and public endpoint aliases. Failed backend requests release
 reservations and refund debits. `GET /api/credits` returns the balance, current UTC
 month's free/earned/purchased/spent activity, and policy. MCP search uses this same
 gateway ledger; the MCP service also has a separate daily tool-call cap. Credits
-are reserved atomically before retrieval and retained only for a successful
-backend response. Insufficient credit rejects the request before backend work;
-contribute approved new content, add credits when billing is available, or wait
-for the next monthly grant. Reading a balance or managing saved requests does
-not itself spend retrieval credits.
+are reserved atomically before retrieval and retained for a successful
+backend response, and also when the caller cancels a request after it reaches the
+backend. Insufficient credit rejects the request before backend work with HTTP 429 and
+`code: "insufficient_credits"`, `credits_required`, `balance` and `topup_url`;
+add credits when billing is available, contribute approved new content when
+rewards are enabled, or wait for the next monthly grant. Reading a balance or
+managing saved requests does not itself spend retrieval credits. In the monthly
+activity, `earned` counts contribution rewards, awards and royalties, and
+`spent` counts retrieval debits, article reads and clawbacks.
+
+In shared mode, `POST /api/meter` charges a covered article read to the bearer
+token's account: 2 credits, reported as `article` in `request_credit_costs`. A
+`request_id` is charged once; repeating it answers `replayed:true` without a
+second charge, and a charge is never refunded. Without an `Authorization: Bearer`
+token it answers 401 `bearer_required`, outside shared mode 404, and with too
+little credit 402 `insufficient_credits`; like every other POST it answers 403 without the `X-Cosift-Client: community` header. It is limited to 60 calls a minute per
+account.
+
+`COSIFT_COMMUNITY_AWARDS=1` (default `0`) starts a poller that every 30 seconds
+applies pending credit awards (contribution awards, royalties and clawbacks)
+from the shared account store to the ledger, once per award. It needs shared
+mode and `COSIFT_WIKI_ENGINE_KEY`, which it uses to confirm each article with
+the engine, and the service refuses to start when that key equals
+`COSIFT_COMMUNITY_BROKER_KEY`.
 
 ## Plans and payments
 
@@ -239,10 +300,10 @@ batch without saving partial input. Duplicates do not consume the new-URL allowa
 
 ## API
 
-Browser and CLI mutation requests carry `X-Cosift-Client: community`. JSON mutations use
+Browser and CLI mutation requests carry `X-Cosift-Client: community`, as do Search, Answer and Research requests authenticated by the session cookie, because they debit credits. Bearer-token and guest Search, Answer and Research (GET) requests do not need it; every other mutation does, including bearer POSTs such as `/api/meter` and `/api/submissions`, which answer 403 without it. JSON mutations use
 `Content-Type: application/json`; CSV uses multipart field `file`. Browser
 requests must originate from `-public-url`. No cross-origin CORS access is
-enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. The exact Stripe webhook path is exempt from browser CSRF headers and instead requires a valid signature over the raw body.
+enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie named `__Host-cosift_session` when `-public-url` is HTTPS, and `cosift_session` otherwise; requests may still present the legacy name, and login expires it. The CLI reads whichever cookie the login response sets and sends both names to HTTPS origins. The exact Stripe webhook path is exempt from browser CSRF headers and instead requires a valid signature over the raw body.
 
 | Method and path | Access | Body / behavior |
 | --- | --- | --- |
@@ -254,7 +315,7 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. 
 | `POST /api/logout` | Member | Revokes current session |
 | `GET /api/me` | Member | Profile and interests |
 | `PUT /api/interests` | Member | `{interests:[...]}`; completes onboarding, including an empty list |
-| `GET /api/guest` | Public | Current IP's shared cooldown and next available time |
+| `GET /api/guest` | Public | Current IP's (per /64 for IPv6) shared cooldown and next available time |
 | `GET /api/search?q=...` | Guest or member | Cosift `/search`, preserving backend defaults |
 | `GET /api/research?q=...` | Guest or member | Cosift `/research`; plan, synthesized answer and cited sources |
 | `GET /api/answer?q=...` | Guest or member | Cosift `/answer`; direct answer and cited sources |
@@ -265,6 +326,7 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie. 
 | `POST /api/payments/checkout` | Member | `{kind:"subscription"\|"topup",idempotency_key}`; returns a hosted Stripe Checkout URL |
 | `POST /api/payments/portal` | Member | `{}`; returns an existing subscriber's restricted billing portal URL |
 | `POST /api/payments/webhook` | Stripe signature | Paid invoice/top-up fulfillment, subscription state, and refund reconciliation |
+| `POST /api/meter` | Bearer token, shared mode | `{kind:"article",ref,request_id}`; charges one covered article read, once per `request_id` |
 | `POST /api/shared` | Member, shared mode | Allowlisted topic, article lookup, or article request tool; search uses the gateway retrieval routes |
 | `GET /api/submissions` | Member | Own recent contributions |
 | `POST /api/submissions` | Member | `{urls:[...]}`, authenticated `{artifacts:[...]}`, or multipart CSV; returns HTTP 202 |
@@ -286,7 +348,13 @@ and 600,000 iterations; local sessions store only token hashes and expire after
 30 days. Shared token lifetimes and revocation are controlled by the auth service.
 
 Account queries scope saved searches and submissions to their owner. Guest
-allowance records use a salted IP hash rather than a raw IP. Interests provide
+allowance records use a salted hash of the client network (the IP address, or the /64
+for IPv6) rather than a raw IP. Unauthenticated limits are counted per client
+network; limits on submissions, checkout, the billing portal, shared tools and
+metering are counted per account, in a bounded store that evicts its oldest
+entry instead of refusing new ones. Failed bearer tokens are throttled per /24
+(IPv4) or /64 (IPv6) network after 30 a minute; a token that authenticates is
+never throttled. Interests provide
 clickable search suggestions and shared topic follows; they do not alter retrieval
 ranking. Queries go to the configured backend, whose logging policy applies.
 Shared production verifies email with a code; standalone mode has no email
@@ -304,9 +372,10 @@ See [the operator rollout and rollback record](COMMUNITY-ROLLOUT.md) for the con
 
 `deploy/systemd/cosift-community.service` runs the portal on loopback port 7780.
 Create its private data directory before starting it and supply
-`COSIFT_COMMUNITY_ADMIN_TOKEN` through root-owned `/etc/cosift/community.env`.
+`COSIFT_COMMUNITY_BROKER_KEY` through root-owned `/etc/cosift/community.env`;
+`deploy/community.env.example` lists the variables.
 `deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
-portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. It trusts only loopback and
+portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. `/v1/*` goes to the engine's service listener, but a `csk_` bearer is answered 403 at the edge, so the broker key works only over loopback. It trusts only loopback and
 Cloudflare networks, then overwrites the forwarded client IP.
 
 The community backup timer snapshots SQLite consistently into the existing GCS
