@@ -9,6 +9,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/pilot-protocol/cosift/internal/config"
+	"github.com/pilot-protocol/cosift/internal/crawler"
 )
 
 // quorum puts two agreeing attestations on the entry at pageURL and returns the two workers.
@@ -74,6 +75,85 @@ func TestAllowedPageIsIndexedAndTheGroupIsSettledVerified(t *testing.T) {
 	h.moderate()
 	if len(h.f.indexed) != 1 || len(h.events("verified")) != 1 {
 		t.Fatal("a finished record was moderated again")
+	}
+}
+
+// blockOn replaces a dependency so that its call signals entered and waits for release before it runs.
+func blockOn(entered, release chan struct{}) func() {
+	return func() {
+		close(entered)
+		<-release
+	}
+}
+
+func TestAPurgeDuringTheModelCallIndexesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	h.quorum(a, b)
+	entered, release := make(chan struct{}), make(chan struct{})
+	wait, model := blockOn(entered, release), h.s.deps.Moderate
+	h.s.deps.Moderate = func(ctx context.Context, doc ModerationDoc, reserve func() error) (Verdict, error) {
+		wait()
+		return model(ctx, doc, reserve)
+	}
+	done := make(chan struct{})
+	go func() { h.moderate(); close(done) }()
+	<-entered
+	if _, err := h.s.Purge(context.Background(), pageURL, true); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+	if len(h.f.indexed) != 0 || h.record(pageURL) != nil {
+		t.Fatalf("a purged page was indexed (%d) or its record came back (%v)", len(h.f.indexed), h.record(pageURL))
+	}
+}
+
+func TestAPurgeDuringIndexingTakesTheNewDocumentOut(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	h.quorum(a, b)
+	entered, release := make(chan struct{}), make(chan struct{})
+	wait, index := blockOn(entered, release), h.s.deps.Index
+	h.s.deps.Index = func(ctx context.Context, d crawler.AttestedDoc) (bool, bool, error) {
+		wait()
+		indexed, novel, err := index(ctx, d)
+		h.f.mu.Lock()
+		h.f.attested[d.URL] = true
+		h.f.mu.Unlock()
+		return indexed, novel, err
+	}
+	done := make(chan struct{})
+	go func() { h.moderate(); close(done) }()
+	<-entered
+	res, err := h.s.Purge(context.Background(), pageURL, true)
+	if err != nil || res.DocumentsDeleted != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	close(release)
+	<-done
+	h.f.mu.Lock()
+	defer h.f.mu.Unlock()
+	if !h.f.purged[pageURL] || h.f.attested[pageURL] {
+		t.Fatalf("the page that finished indexing after the purge is still live: purged %v attested %v", h.f.purged[pageURL], h.f.attested[pageURL])
+	}
+}
+
+func TestAPageIndexedWithoutAPurgeIsLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	h.add(ClassErrored, pageURL)
+	a, b, _ := fixture(t, "rotated-ad-and-timestamp")
+	h.quorum(a, b)
+	purges, purge := 0, h.s.deps.Purge
+	h.s.deps.Purge = func(ctx context.Context, u string, apply bool) (int, int, error) {
+		purges++
+		return purge(ctx, u, apply)
+	}
+	h.moderate()
+	if len(h.f.indexed) != 1 || purges != 0 {
+		t.Fatalf("indexed %d, purged %d", len(h.f.indexed), purges)
 	}
 }
 
