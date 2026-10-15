@@ -23,6 +23,12 @@ func (c *Config) defaultLimits() error {
 	if c.ResearchPer10Min == 0 {
 		c.ResearchPer10Min = 3
 	}
+	if c.ContributionRewardDailyCap == 0 {
+		c.ContributionRewardDailyCap = defaultContributionRewardDailyCap
+	}
+	if c.ContributionRewardDailyCap < 1 || c.ContributionRewardDailyCap > 10000 {
+		return fmt.Errorf("contribution reward daily cap must be between 1 and 10000")
+	}
 	if c.GuestInterval < time.Second || c.GuestInterval > 24*time.Hour || c.GuestInterval%time.Second != 0 {
 		return fmt.Errorf("guest interval must be whole seconds between 1s and 24h")
 	}
@@ -42,7 +48,7 @@ func (s *Server) limitPolicy() map[string]any {
 		"member":                             map[string]any{"search": modeLimit{s.cfg.SearchRPM, 60}, "answer": modeLimit{s.cfg.AnswerRPM, 60}, "research": modeLimit{s.cfg.ResearchPer10Min, 600}},
 		"member_free_requests_per_minute":    0,
 		"all_authenticated_requests_metered": true,
-		"request_credit_costs":               requestCreditCosts(),
+		"request_credit_costs":               reportedCreditCosts(),
 		"credits_bypass_caps":                false,
 	}
 }
@@ -105,7 +111,7 @@ func (s *Server) allowRetrieval(w http.ResponseWriter, r *http.Request, u User, 
 	}
 	seconds := max(int64(1), until-now)
 	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-	respond(w, 429, map[string]any{"error": fmt.Sprintf("%s limit reached (%d per %d seconds). Credits cannot exceed this limit.", mode, limit, window), "mode": mode, "retry_at": until, "retry_after_seconds": seconds})
+	respond(w, 429, map[string]any{"error": fmt.Sprintf("%s limit reached (%d per %d seconds). Credits cannot exceed this limit.", mode, limit, window), "code": "rate_limited", "mode": mode, "retry_at": until, "retry_after_seconds": seconds})
 	return nil, false
 }
 

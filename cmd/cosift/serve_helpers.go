@@ -24,7 +24,11 @@ import (
 // request header. Returns "" when the header is absent or carries a different
 // scheme.
 func bearerToken(r *http.Request) string {
-	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return ""
+	}
+	return tok
 }
 
 // peerTokenOK reports whether the request presents the expected peer/admin

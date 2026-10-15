@@ -222,8 +222,8 @@
         </section>
         <section id="view-contribute" class="view" hidden>
           <h1>Contribute pages</h1>
-          <p class="muted">
-            Submit public articles or documentation. Sign in to contribute and earn credits for new content.
+          <p id="contribute-intro" class="muted">
+            Submit public articles or documentation to the shared index.
           </p>
           <div class="contribute-grid">
             <form id="contribution-form" class="panel">
@@ -275,8 +275,8 @@
               </div>
               <div class="status-example">
                 <span class="status queued">Indexed</span>
-                <p>
-                  New content earns 10 credits. Duplicates earn no additional credits.
+                <p id="reward-indexed">
+                  Verified pages join the shared index. Duplicates are not added again.
                 </p>
               </div>
               <div class="status-example">
@@ -313,7 +313,7 @@
               <div class="purchase-heading"><h2>Free</h2><span class="billing-tag">Every account</span></div>
               <p class="purchase-price"><strong>$0</strong><span>per month</span></p>
               <p class="plan-allowance"><strong id="billing-free">1,000</strong> credits each month</p>
-              <p class="muted">No subscription required. Earn more by contributing useful public pages.</p>
+              <p class="muted">No subscription required. <span id="free-reward"></span></p>
               <p class="fine">Search costs 1 credit, Answer 2, and Research 3.</p>
             </article>
             <article class="panel purchase-card plan-card">
@@ -331,7 +331,7 @@
             <button id="buy-credits" class="secondary" type="button" hidden>Top up 50,000 credits · $5 ↗</button>
           </article>
           <div class="billing-footnote">
-            <p>New content that passes validation earns 10 credits. Duplicates earn no more. <button data-view="contribute" class="text-button" type="button">Contribute pages ↗</button></p>
+            <p><span id="billing-reward">Contribute public webpages to grow the shared index.</span> <button data-view="contribute" class="text-button" type="button">Contribute pages ↗</button></p>
             <p>Canceling your subscription keeps your remaining credits.</p>
           </div>
           <section id="monthly-credits" class="panel monthly-credits billing-activity" hidden aria-label="Monthly credit activity">
@@ -345,7 +345,7 @@
           <div class="setup-grid">
             <article class="panel"><h2>Set up your agent</h2><p>Run the installer to verify the same email and connect Claude Code, Codex, or OpenCode. It saves a private agent token and offers optional onboarding.</p><pre><code>curl -fsSL https://raw.githubusercontent.com/pilot-protocol/cosift-install/v1/install.sh | sh</code></pre><p class="fine">Review the script before running it. The interview uses local session history only when you choose it.</p><a class="text-button" href="https://github.com/pilot-protocol/cosift-install#readme" target="_blank" rel="noopener noreferrer">Read installation details ↗</a></article>
             <article class="panel"><h2>MCP endpoint</h2><p>Search indexed pages, follow topics, look up article coverage, and request missing articles.</p><p class="fine">Streamable HTTP endpoint</p><pre><code>https://cosift-mcp-udik5erlkq-uw.a.run.app/v1/mcp</code></pre><p class="fine">For authentication, start at cosift.pilotprotocol.network and follow these Agents steps. The installer supplies your agent token; website login alone does not configure an MCP client. Published articles: <a href="/wiki">cosift.pilotprotocol.network/wiki</a>.</p></article>
-            <article class="panel"><h2>Install the CLI</h2><p>Search, answer, research, and submit URLs or local text and embeddings. Verified new content earns credits.</p><pre><code>cosift request -query 'Rust ownership'
+            <article class="panel"><h2>Install the CLI</h2><p>Search, answer, research, and submit URLs or local text and embeddings. <span id="cli-reward"></span></p><pre><code>cosift request -query 'Rust ownership'
 cosift contribute -credits</code></pre><div class="setup-links"><a class="text-button" href="https://github.com/pilot-protocol/cosift/releases/latest" target="_blank" rel="noopener noreferrer">Download signed CLI ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/skills/cosift/SKILL.md" target="_blank" rel="noopener noreferrer">Cosift agent skill ↗</a><a class="text-button" href="https://github.com/pilot-protocol/cosift/blob/main/docs/AGENT-SETUP.md" target="_blank" rel="noopener noreferrer">Setup and usage guide ↗</a></div></article>
           </div>
         </section>

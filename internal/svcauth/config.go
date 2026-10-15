@@ -380,8 +380,10 @@ func samePort(listen, main string) bool {
 
 var (
 	oidcScopes = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeRetrieveRead}
-	keyScopes  = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesReadAll, v1.ScopeArticlesModerate, v1.ScopeArticlesAdmin}
+	keyScopes  = []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesReadAll, v1.ScopeArticlesModerate, v1.ScopeArticlesAdmin, v1.ScopeCommunityIntake, v1.ScopeWorkBroker}
 )
+
+func communityScope(s v1.Scope) bool { return s == v1.ScopeCommunityIntake || s == v1.ScopeWorkBroker }
 
 func (rp rawPrincipal) validate() (PrincipalConfig, error) {
 	var p PrincipalConfig
@@ -510,7 +512,7 @@ func (rp rawPrincipal) validate() (PrincipalConfig, error) {
 	return p, nil
 }
 
-// checkScopes applies the kind and articles:admin rules.
+// checkScopes applies the kind, articles:admin and community scope rules.
 func checkScopes(kind v1.Kind, env v1.Env, scopes []v1.Scope) error {
 	allowed := oidcScopes
 	if kind == v1.KindKey {
@@ -523,6 +525,14 @@ func checkScopes(kind v1.Kind, env v1.Env, scopes []v1.Scope) error {
 	}
 	if slices.Contains(scopes, v1.ScopeArticlesAdmin) && (len(scopes) != 1 || kind != v1.KindKey || env != v1.EnvProd) {
 		return errors.New("scopes: articles:admin must be the only scope of a prod key principal")
+	}
+	if slices.ContainsFunc(scopes, communityScope) {
+		if slices.ContainsFunc(scopes, func(s v1.Scope) bool { return !communityScope(s) }) {
+			return errors.New("scopes: community:intake and work:broker may not be combined with other scopes")
+		}
+		if env != v1.EnvProd {
+			return errors.New("scopes: community:intake and work:broker require env prod")
+		}
 	}
 	return nil
 }

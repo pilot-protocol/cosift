@@ -662,6 +662,22 @@ func TestForwardURLToPeerHappy(t *testing.T) {
 	}
 }
 
+func TestForwardURLToPeerPostsToCrawlEnqueue(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	s := &pebbleHTTP{}
+	if err := s.forwardURLToPeer(context.Background(), "https://example.com", strings.TrimPrefix(srv.URL, "http://")); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/admin/crawl-enqueue" {
+		t.Fatalf("forwarded to %q", gotPath)
+	}
+}
+
 func TestForwardURLToPeerNon2xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

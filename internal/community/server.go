@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/community/wiki"
@@ -37,13 +38,22 @@ const cookieName = "cosift_session"
 const sessionAge = 30 * 24 * time.Hour
 const dailyContributionLimit = 1000
 
+// maxSubmissionAttempts bounds retries of transient failures; with the backoff the last one runs about two hours in.
+const maxSubmissionAttempts = 12
+
+// maxReceiptBytes leaves room for a final URL whose characters the JSON encoder escapes to six bytes each.
+const maxReceiptBytes = 64 << 10
+
 type Config struct {
 	Shared                      sharedaccount.Provider
 	SharedPasswordEnabled       bool // Enable only after the upstream password service is deployed.
 	DataDir                     string
 	Backend                     string
 	PublicURL                   string
-	AdminToken                  string // Only used for crawl-enqueue, never forwarded with searches.
+	BrokerKey                   string // The engine's csk_ key for community delivery and moderation; sent to EngineURL only.
+	EngineURL                   string // The engine's loopback /v1 origin; empty means the default.
+	Awards                      bool   // Apply pending credit awards; needs shared accounts and the article cross-check.
+	Articles                    ArticleReader
 	TrustedProxies              []string
 	GuestInterval               time.Duration
 	MemberFreeRPM               int // Deprecated and ignored: all authenticated retrievals cost credits.
@@ -53,31 +63,36 @@ type Config struct {
 	StripeSecretKey             string
 	StripeWebhookSecret         string
 	AllowTestPayments           bool // Explicit opt-in for an isolated QA ledger only.
+	ContributionReward          bool // Mint the contribution reward; off until the backend's content index is built.
+	ContributionRewardDailyCap  int  // Rewards per account per rolling 24 hours; 0 means the default.
 	StripePortalConfigurationID string
 	GAMeasurementID             string
 	GSCVerification             string
 	Wiki                        wiki.Config
 }
 
-type bucket struct {
-	count int
-	until time.Time
-}
 type Server struct {
 	db               *sql.DB
 	cfg              Config
 	client           *http.Client
 	paymentClient    *http.Client
 	handler          http.Handler
-	mu               sync.Mutex
 	billingMu        sync.Mutex // Serializes provider-state refreshes in this single gateway.
-	limits           map[string]bucket
+	anonLimits       *limiter
+	userLimits       *limiter
+	routeLimits      *limiter
+	failLimits       *limiter
+	failLogs         *limiter
 	hashSlots        chan struct{}
 	trustedProxies   []netip.Prefix
 	guestSalt        string
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
+	hostGaps         hostGaps
+	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
 	wiki             *wiki.Wiki
+	engine           *engineClient
+	awards           *awardPoller
 	index            []byte
 }
 
@@ -100,8 +115,9 @@ func Open(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("public URL must use HTTPS except on localhost")
 		}
 	}
-	if cfg.AdminToken == "" {
-		return nil, fmt.Errorf("COSIFT_COMMUNITY_ADMIN_TOKEN is required for contribution delivery")
+	engine, err := newEngineClient(cfg.EngineURL, cfg.BrokerKey)
+	if err != nil {
+		return nil, err
 	}
 	cfg.Backend = strings.TrimRight(cfg.Backend, "/")
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
@@ -109,7 +125,7 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, limits: map[string]bucket{}, hashSlots: make(chan struct{}, 4), client: &http.Client{
+	s := &Server{db: db, cfg: cfg, engine: engine, anonLimits: newLimiter(limiterKeys), userLimits: newLimiter(limiterKeys), routeLimits: newLimiter(routeLimiterKeys), failLimits: newLimiter(limiterKeys), failLogs: newLimiter(limiterKeys), hashSlots: make(chan struct{}, 4), client: &http.Client{
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -137,6 +153,10 @@ func Open(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	if err := s.bindSharedNamespace(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if s.awards, err = newConfiguredPoller(cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -187,6 +207,7 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/guest", s.guestStatus)
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
+	mux.HandleFunc("POST /api/meter", s.meter)
 	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})
@@ -236,7 +257,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		if r.Method != "GET" && r.Method != "HEAD" && !(r.Method == "POST" && r.URL.Path == "/api/payments/webhook") {
 			// The custom header prevents cross-site form posts, including login
 			// CSRF. No CORS permissions are granted. CLI requests omit Origin.
-			if r.Header.Get("X-Cosift-Client") != "community" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.cfg.PublicURL) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			if !s.sameOriginClient(r) {
 				problem(w, 403, "request must originate from this community app")
 				return
 			}
@@ -244,6 +265,11 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) sameOriginClient(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	return r.Header.Get("X-Cosift-Client") == "community" && (origin == "" || origin == s.cfg.PublicURL) && r.Header.Get("Sec-Fetch-Site") != "cross-site"
 }
 
 func respond(w http.ResponseWriter, status int, v any) {
@@ -269,30 +295,6 @@ func decode(r *http.Request, v any) error {
 	return nil
 }
 
-func (s *Server) allow(key string, n int, window time.Duration) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	for k, b := range s.limits {
-		if now.After(b.until) {
-			delete(s.limits, k)
-		}
-	}
-	b := s.limits[key]
-	if b.until.IsZero() {
-		if len(s.limits) >= 10000 {
-			return false
-		}
-		b.until = now.Add(window)
-	}
-	if b.count >= n {
-		return false
-	}
-	b.count++
-	s.limits[key] = b
-	return true
-}
-
 func passwordHash(password, salt string) string {
 	b, err := pbkdf2.Key(sha256.New, password, []byte(salt), 600000, 32)
 	if err != nil {
@@ -307,8 +309,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 			problem(w, 409, "use shared email-code login")
 			return
 		}
-		ip := s.clientIP(r)
-		if !s.allow("auth:"+ip, 30, time.Minute) {
+		if !s.allow("auth:"+s.clientNet(r), 30, time.Minute) {
 			problem(w, 429, "too many attempts; try again in a minute")
 			return
 		}
@@ -371,7 +372,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 		}
 		token := randomID()
 		expires := time.Now().Add(sessionAge)
-		if old, err := r.Cookie(cookieName); err == nil {
+		for _, old := range sessionCookies(r) {
 			_, _ = s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(old.Value))
 		}
 		_, err = s.db.ExecContext(r.Context(), `INSERT INTO sessions(hash,user_id,expires_at) VALUES(?,?,?)`, tokenHash(token), id, expires.Unix())
@@ -379,7 +380,7 @@ func (s *Server) credentials(register bool) http.HandlerFunc {
 			problem(w, 500, "could not create session")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: int(sessionAge.Seconds())})
+		s.setSession(w, token)
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT id,email,name,interests,onboarded FROM users WHERE id=?`, id))
 		if err != nil {
 			problem(w, 500, "could not load account")
@@ -397,14 +398,14 @@ func (s *Server) auth(next userHandler) http.HandlerFunc {
 			s.sharedAuth(w, r, next, false)
 			return
 		}
-		cookie, err := r.Cookie(cookieName)
+		cookie, err := requestSessionCookie(r)
 		if err != nil {
 			problem(w, 401, "sign in to continue")
 			return
 		}
 		u, err := scanUser(s.db.QueryRowContext(r.Context(), `SELECT u.id,u.email,u.name,u.interests,u.onboarded FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.hash=? AND s.expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
-			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+			s.clearSession(w, r)
 			problem(w, 401, "session expired; sign in again")
 			return
 		}
@@ -422,16 +423,17 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, u User) {
 			sharedProblem(w, err)
 			return
 		}
-		http.SetCookie(w, s.sharedCookie("", -1))
+		s.clearSession(w, r)
 		respond(w, 200, map[string]bool{"ok": true})
 		return
 	}
-	c, _ := r.Cookie(cookieName)
-	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
-		problem(w, 500, "could not sign out")
-		return
+	for _, c := range sessionCookies(r) {
+		if _, err := s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE hash=?`, tokenHash(c.Value)); err != nil {
+			problem(w, 500, "could not sign out")
+			return
+		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+	s.clearSession(w, r)
 	respond(w, 200, map[string]bool{"ok": true})
 }
 
@@ -476,9 +478,17 @@ func (s *Server) interests(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, u)
 }
 
+// retrievalTimeout bounds an answer or research call to the backend; the browser's timeout must be longer.
+const retrievalTimeout = 3 * time.Minute
+
 func validQuery(q string) bool   { return strings.TrimSpace(q) != "" && len(q) <= 500 }
 func validMode(mode string) bool { return mode == "search" || mode == "answer" || mode == "research" }
 func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode string) {
+	// A debit on an ambient cookie needs the same-origin check that protect applies to writes.
+	if u.ID != "" && r.Header.Get("Authorization") == "" && !s.sameOriginClient(r) {
+		problem(w, 403, "request must originate from this community app")
+		return
+	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if !validQuery(q) {
 		problem(w, 400, "enter a search of 1–500 characters")
@@ -529,10 +539,11 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", s.cfg.Backend+"/"+mode+"?"+params.Encode(), nil)
 	client := *s.client
 	if mode != "search" {
-		client.Timeout = 3 * time.Minute
+		client.Timeout = retrievalTimeout
 	}
 	res, err := client.Do(req)
 	if err != nil {
+		completed = r.Context().Err() != nil // a hung-up caller keeps the charge: the backend may have done the work
 		problem(w, 502, mode+" is temporarily unavailable; please try again")
 		return
 	}
@@ -543,6 +554,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request, u User, mode s
 		return
 	}
 	if err != nil || res.StatusCode != 200 || len(body) > 4<<20 || !json.Valid(body) {
+		completed = err != nil && r.Context().Err() != nil
 		problem(w, 502, mode+" is temporarily unavailable; please try again")
 		return
 	}
@@ -664,7 +676,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, http.StatusUnauthorized, "contributions require login")
 		return
 	}
-	if !s.allow("submit:"+u.ID+":"+s.clientIP(r), 20, time.Minute) {
+	if !s.allowUser("submit:"+u.ID+":"+s.clientNet(r), 20, time.Minute) {
 		problem(w, 429, "too many submissions; try again in a minute")
 		return
 	}
@@ -782,6 +794,11 @@ func (s *Server) Run(ctx context.Context) {
 	pages := make(chan struct{})
 	go func() { defer close(pages); s.wiki.Run(ctx) }()
 	defer func() { <-pages }()
+	if s.awards != nil {
+		awards := make(chan struct{})
+		go func() { defer close(awards); s.runAwards(ctx) }()
+		defer func() { <-awards }()
+	}
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -800,13 +817,9 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status='pending' AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
+	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status IN ('pending','config_error') AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
 	if err != nil {
 		return err
-	}
-	type job struct {
-		id, url  string
-		attempts int
 	}
 	jobs := []job{}
 	for rows.Next() {
@@ -822,18 +835,48 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	down := len(jobs) > 0 && s.backendDown.Load() && !s.backendReachable(ctx)
+	if down {
+		log.Printf("community: backend still unreachable; %d submissions wait without fetching their pages", len(jobs))
+	}
+	if len(jobs) > 0 {
+		defer func() { s.backendDown.Store(down) }()
+	}
+	warned := false
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		status, reason, approvedContentHash := s.prevalidate(ctx, j.url)
+		if down {
+			if err := s.record(ctx, j, statusBackendDown, backendDownReason); err != nil {
+				return err
+			}
+			continue
+		}
+		if !s.engine.configured() {
+			if !warned {
+				log.Printf("community: COSIFT_COMMUNITY_BROKER_KEY is not set; submissions wait as a configuration error")
+				warned = true
+			}
+			if err := s.record(ctx, j, statusConfigError, configErrorReason); err != nil {
+				return err
+			}
+			continue
+		}
+		if wait := s.crawlWait(ctx, j.url); wait > 0 {
+			if err := s.requeue(ctx, j, wait); err != nil {
+				return err
+			}
+			continue
+		}
+		status, reason, approvedContentHash := s.prevalidate(ctx, j.id, j.url)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
+		down = status == statusBackendDown
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
-			delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
-			if _, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=attempts+1,next_attempt=? WHERE id=?`, status, reason, time.Now().Add(delay).Unix(), j.id); err != nil {
+			if err := s.record(ctx, j, status, reason); err != nil {
 				return err
 			}
 			continue
@@ -850,30 +893,30 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 		}
 		body, _ := json.Marshal(map[string]any{"submission_id": j.id, "url": j.url, "artifact": artifact, "approved_content_hash": approvedContentHash})
-		req, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-enqueue", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
-		delivery := *s.client
-		delivery.Timeout = 150 * time.Second
-		res, sendErr := delivery.Do(req)
+		res, sendErr := s.engine.post(ctx, enqueueRoute, body, enqueueTimeout)
 		ok := false
 		indexed := false
 		permanent := false
+		refused := false
+		unreachable := false
 		if sendErr == nil {
 			permanent = res.StatusCode == http.StatusUnprocessableEntity || res.StatusCode == http.StatusConflict
 			ok = res.StatusCode >= 200 && res.StatusCode < 300
+			refused = backendRefusedCredentials(res.StatusCode)
 			if !ok {
-				log.Printf("community: contribution delivery returned HTTP %d", res.StatusCode)
+				log.Printf("community: POST %s returned HTTP %d", enqueueRoute, res.StatusCode)
 			}
 			var receipt struct {
 				Indexed     bool   `json:"indexed"`
 				Novel       bool   `json:"novel"`
 				ContentHash string `json:"content_hash"`
 				Queued      string `json:"queued"` // explicit acknowledgement from older guarded backends
+				// Absent from older backends, so their receipts never mint.
+				ContentIndexComplete bool `json:"content_index_complete"`
 			}
 			if ok {
-				data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
-				ok = readErr == nil && len(data) <= 4096 && json.Unmarshal(data, &receipt) == nil
+				data, readErr := io.ReadAll(io.LimitReader(res.Body, maxReceiptBytes+1))
+				ok = readErr == nil && len(data) <= maxReceiptBytes && json.Unmarshal(data, &receipt) == nil
 				if ok {
 					hash, hashErr := hex.DecodeString(receipt.ContentHash)
 					if receipt.Indexed {
@@ -886,7 +929,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 			if ok {
 				indexed = receipt.Indexed
 				if receipt.Indexed && receipt.Novel && len(receipt.ContentHash) == 64 {
-					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash); err != nil {
+					if err := s.rewardContribution(ctx, j.id, receipt.ContentHash, receipt.ContentIndexComplete); err != nil {
 						res.Body.Close()
 						return err
 					}
@@ -894,10 +937,17 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			res.Body.Close()
 		} else if ctx.Err() == nil {
-			log.Printf("community: contribution backend unavailable; retained for retry")
+			log.Printf("community: POST %s failed: backend unreachable; retained for retry", enqueueRoute)
+			unreachable = backendUnreachable(sendErr)
 		}
 		status = "pending"
 		reason = "Content checks passed; waiting for crawler delivery."
+		if refused {
+			status, reason = statusConfigError, configErrorReason
+		}
+		if unreachable {
+			status, down = statusBackendDown, true
+		}
 		if permanent {
 			status = "unverified"
 			reason = "The webpage or local artifact does not meet index validation policy. Check the allowed domain, current page content, and embedding model."
@@ -910,11 +960,42 @@ func (s *Server) dispatch(ctx context.Context) error {
 				reason = "Content checks passed and webpage indexed."
 			}
 		}
-		delay := time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second
-		_, err = s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=attempts+1,next_attempt=? WHERE id=?`, status, reason, time.Now().Add(delay).Unix(), j.id)
-		if err != nil {
+		if err := s.record(ctx, j, status, reason); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// requeue schedules a job for later without counting an attempt.
+func (s *Server) requeue(ctx context.Context, j job, wait time.Duration) error {
+	at := time.Now().Add(wait)
+	next := at.Unix()
+	if at.Nanosecond() > 0 {
+		next++
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, "Waiting to check the webpage.", next, j.id)
+	return err
+}
+
+type job struct {
+	id, url  string
+	attempts int
+}
+
+// record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
+func (s *Server) record(ctx context.Context, j job, status, reason string) error {
+	attempts := j.attempts + 1
+	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
+	switch status {
+	case statusConfigError:
+		attempts, next = j.attempts, time.Now().Add(configErrorRetry)
+	case statusBackendDown:
+		status, attempts, next = "pending", j.attempts, time.Now().Add(backendDownRetry)
+	}
+	if status == "pending" && attempts >= maxSubmissionAttempts {
+		status, reason = "unverified", "The webpage could not be checked or delivered after repeated attempts."
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=? WHERE id=?`, status, reason, attempts, next.Unix(), j.id)
+	return err
 }

@@ -155,6 +155,21 @@ test('monthly credits render actual totals and clear on account reset', async ()
  assert.match(a.get('credit-month').textContent,/2026-09/);
  a.run('resetAccount()'); assert.equal(a.get('monthly-credits').hidden,true);
 });
+test('contribution copy promises credits only while the server reports a reward', async () => {
+ const a=await app(); const ids=['contribute-intro','reward-indexed','billing-reward','cli-reward','free-reward'];
+ for (const id of ids) a.get(id).textContent='plain '+id;
+ const credits=async data=>{ const refresh=a.run('refreshCredits()'); await tick(); a.respond('credits',data); await refresh; };
+ await credits({balance:5});
+ for (const id of ids) assert.equal(a.get(id).textContent,'plain '+id);
+ await credits({balance:5,verified_contribution_reward:10,verified_contribution_daily_cap:7});
+ assert.match(a.get('reward-indexed').textContent,/earns 10 credits.*up to 7 pages a day/);
+ assert.match(a.get('billing-reward').textContent,/earns 10 credits.*up to 7 pages a day/);
+ assert.match(a.get('contribute-intro').textContent,/earn credits/);
+ assert.match(a.get('cli-reward').textContent,/earns credits/);
+ assert.match(a.get('free-reward').textContent,/Earn more/);
+ await credits({balance:5});
+ for (const id of ids) assert.equal(a.get(id).textContent,'plain '+id);
+});
 test('analytics emits a pageview without query strings or account fields', async () => {
  const a=await app(); a.context.window={}; a.context.document.head=node();
  Object.assign(a.context.location,{origin:'https://cosift.example',pathname:'/login',search:'?email=private@example.com&token=secret'});
@@ -306,6 +321,46 @@ test('coverage view renders a covered article as text with its canonical link an
  assert.equal(out[2].innerHTML,undefined);
  const sources=out[3].children.map(li=>li.children[0]);
  assert.deepEqual(sources.map(s=>[s.textContent,s.href,s.rel]),[['Tutorial','https://tokio.example/tutorial','noopener noreferrer'],['http://docs.example.org/x','http://docs.example.org/x','noopener noreferrer']]);
+});
+const identity={coverage:'covered',kind:'article',article_id:'01J8ZC2Q7W4X9M3K5N6P8R0T2V',title:'Rust async runtimes',url:'https://cosift.pilotprotocol.network/wiki/rust-async-runtimes',quality:'high',updated_at:'2026-10-06T10:00:00Z',ai_generated:true};
+test('coverage view shows a withheld article by identity, detail and top-up link only', async () => {
+ const a=await app();
+ const detail='This account does not have enough credits to read the article through the tool.';
+ const out=await lookup(a,{...identity,withheld:'insufficient_credits',credits_required:2,balance:0,topup_url:'https://cosift.pilotprotocol.network/',detail});
+ assert.deepEqual(out.map(n=>n.tagName),['H3','P','P']);
+ assert.equal(out[0].children[0].href,identity.url);
+ assert.equal(out[1].textContent,detail);
+ assert.equal(out[2].children[0].href,'https://cosift.pilotprotocol.network/');
+ assert.equal(out.some(n=>n.tagName==='PRE'||n.tagName==='OL'),false);
+ assert.doesNotMatch(out.map(n=>n.textContent).join(' '),/Cosift has an article on this topic/);
+});
+test('coverage view shows a rate-limited withheld article without a top-up link', async () => {
+ const a=await app();
+ const out=await lookup(a,{...identity,withheld:'rate_limited',retry_after_seconds:30,detail:'Too many article reads right now.'});
+ assert.deepEqual(out.map(n=>n.tagName),['H3','P']);
+ assert.equal(out[1].textContent,'Too many article reads right now.');
+});
+test('coverage view leaves a withheld top-up javascript: URL inert and survives a missing detail', async () => {
+ const a=await app();
+ const out=await lookup(a,{...identity,withheld:'insufficient_credits',topup_url:'javascript:alert(1)'});
+ assert.deepEqual(out.map(n=>n.tagName),['H3']);
+});
+test('coverage view reports the charge and balance of a served read, whatever the charge', async () => {
+ const a=await app();
+ const out=await lookup(a,{...identity,text:'Lead.',citations:[],credits:{charged:3,balance:997}});
+ const note=out[out.length-1].textContent;
+ assert.match(note,/3 credits/); assert.match(note,/997/);
+ const free=await lookup(a,{...identity,text:'Lead.',citations:[],credits:{charged:0,balance:12}});
+ assert.match(free[free.length-1].textContent,/0 credits/); assert.match(free[free.length-1].textContent,/12/);
+});
+test('coverage view shows no charge line when the read carries no credits or malformed ones', async () => {
+ const a=await app();
+ const plain=await lookup(a,{...identity,text:'Lead.',citations:[]});
+ assert.deepEqual(plain.map(n=>n.tagName),['P','H3','PRE']);
+ for (const credits of [{charged:'2',balance:5},{charged:-1,balance:5},{charged:2,balance:'5'},{charged:2,balance:-1},{charged:2.5,balance:5},{charged:2}]) {
+  const bad=await lookup(a,{...identity,text:'Lead.',citations:[],credits});
+  assert.deepEqual(bad.map(n=>n.tagName),['P','H3','PRE'],JSON.stringify(credits));
+ }
 });
 test('coverage view links a related article by title only', async () => {
  const a=await app();

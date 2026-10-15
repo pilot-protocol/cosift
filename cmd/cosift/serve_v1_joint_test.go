@@ -67,6 +67,7 @@ func jointConfig(listen string, keys map[string]string) map[string]any {
 		oidc("resolver-prod", "prod", []string{"articles:read", "articles:stub", "retrieve:read"}),
 		oidc("resolver-staging", "staging", []string{"articles:read", "articles:stub", "retrieve:read"}),
 		key("community-wiki", "prod", []string{"articles:read"}),
+		key("community-broker", "prod", []string{"community:intake", "work:broker"}),
 		key("dash-prod", "prod", []string{"articles:read_all", "articles:moderate"}),
 		key("dash-staging", "staging", []string{"articles:read_all", "articles:moderate"}),
 		key("golive-admin", "prod", []string{"articles:admin"}),
@@ -75,7 +76,7 @@ func jointConfig(listen string, keys map[string]string) map[string]any {
 
 func jointKeys(t *testing.T) map[string]string {
 	keys := map[string]string{}
-	for _, id := range []string{"community-wiki", "dash-prod", "dash-staging", "golive-admin"} {
+	for _, id := range []string{"community-wiki", "community-broker", "dash-prod", "dash-staging", "golive-admin"} {
 		k, _, err := svcauth.NewKey()
 		if err != nil {
 			t.Fatal(err)

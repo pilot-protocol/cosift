@@ -56,6 +56,15 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		*addr = "127.0.0.1:7777"
 	}
 
+	caps, err := communityCapsFromEnv()
+	if err != nil {
+		return err
+	}
+	moderationLimit, err := cfg.Work.CommunityModerationLimit()
+	if err != nil {
+		return err
+	}
+
 	ps, err := store.OpenPebble(*dir)
 	if err != nil {
 		return fmt.Errorf("open pebble: %w", err)
@@ -193,6 +202,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 		// per-minute crawl rate without long-term counters.
 		startupDocs: vectorNodes, // placeholder; overwritten below
 	}
+	srv.communityCaps = caps
+	srv.communityModerationsPerDay = &moderationLimit
 	// Read actual doc count at startup for crawl-rate baseline. Uses
 	// CorpusStats (the atomic-mirror indexed_docs counter) — NOT
 	// Stats.Documents which scans the raw 'd' family. The two diverge
@@ -464,8 +475,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// peer-token gate is enforced at the mux level (belt-and-suspenders with any
 	// per-handler check), closing gaps where a handler forgets to inline it.
 	awrap := func(h http.HandlerFunc) http.HandlerFunc { return srv.count(srv.rateLimit(srv.requireAdmin(h))) }
-	// alwrap = awrap + the LLM tier. peer_auth_token is empty in production, so
-	// an LLM-spending admin route is reachable unauthenticated.
+	// alwrap = awrap + the LLM tier. With peer_auth_token empty (production
+	// sets it) an LLM-spending admin route is reachable unauthenticated.
 	alwrap := func(h http.HandlerFunc) http.HandlerFunc {
 		return srv.count(srv.llmRateLimit(srv.rateLimit(srv.requireAdmin(h))))
 	}
@@ -493,8 +504,8 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// this; it's just unused. Authenticated by cfg.Cluster.PeerAuthToken
 	// (Bearer); when token is empty, requests from any source are accepted.
 	mux.HandleFunc("POST /admin/crawl-enqueue", awrap(srv.handleCrawlEnqueue))
-	mux.HandleFunc("POST /admin/community-enqueue", awrap(srv.handleCommunityEnqueue))
-	mux.HandleFunc("POST /admin/community-moderate", awrap(srv.handleCommunityModerate))
+	// An unrouted /admin POST is a 404; the landing page's GET / would otherwise make it a 405.
+	mux.HandleFunc("POST /admin/", func(w http.ResponseWriter, r *http.Request) { writeProblem(w, http.StatusNotFound, "not found") })
 	mux.HandleFunc("POST /admin/allow-domain", awrap(srv.handleAllowDomain))
 	mux.HandleFunc("POST /admin/frontier-purge-host", awrap(srv.handleFrontierPurgeHost))
 	mux.HandleFunc("POST /admin/frontier-clear", awrap(srv.handleFrontierClear))
@@ -1101,7 +1112,6 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	s.crawlAllowDomain = c.AddAllowedDomain
 	// Publish only after all crawler hooks are initialized. The listener is
 	// already accepting requests while HNSW/crawler initialization runs.
-	s.crawlPublicOnly.Store(cfg.Crawler.PublicOnly)
 	s.crawlCommunityFetch = c.FetchContribution
 	s.crawlCommunityReady.Store(true)
 	for _, u := range seeds {
@@ -1277,9 +1287,16 @@ type pebbleHTTP struct {
 	// can hand off forwarded URLs into the in-process frontier. Nil when no
 	// in-serve crawler is wired.
 	crawlSeed           func(url string) error
-	crawlPublicOnly     atomic.Bool
 	crawlCommunityReady atomic.Bool
+	communityCaps       communityCaps
 	crawlCommunityFetch func(context.Context, string, *crawler.LocalArtifact, string) (crawler.ContributionReceipt, error)
+
+	// communityModerationsPerDay is the daily ceiling of the moderate route; nil is the default.
+	communityModerationsPerDay *int
+	communityModerationMu      sync.Mutex
+	communityModerations       communityModerationCounts
+	communityNow               func() time.Time
+
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.
 	crawlSeedSitemap func(ctx context.Context, url string) (int, error)

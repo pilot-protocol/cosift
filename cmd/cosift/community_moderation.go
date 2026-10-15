@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -22,58 +22,50 @@ Allow neutral news reporting, historical discussion, health/medical education, a
 If there is insufficient context, an apparent bot/login wall, or the content cannot be classified confidently, use {"decision":"uncertain","category":"unverified"}.
 For allowed pages return {"decision":"allow","category":"safe"}. For rejected pages return {"decision":"reject","category":"adult|malware|phishing|graphic_violence|extremist_promotion|illegal_harm|spam|low_quality"}, selecting exactly one category. Output no prose, code fences, or extra keys.`
 
-func (s *pebbleHTTP) handleCommunityModerate(w http.ResponseWriter, r *http.Request) {
-	if !peerTokenOK(r, s.cluster.PeerAuthToken) {
-		writeProblem(w, 401, "missing or invalid admin token")
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<10)
-	var doc community.ModerationDocument
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&doc) != nil || decoder.Decode(new(any)) != io.EOF || len(doc.Text) < 80 || len(doc.Text) > 32000 || len(doc.Title) > 1000 || len(doc.Signals) > 4000 {
-		writeProblem(w, 400, "expected a bounded webpage document")
-		return
-	}
+var (
+	errModerationInvalidURL  = errors.New("invalid webpage URL")
+	errModerationUnavailable = errors.New("content safety service unavailable")
+)
+
+// moderateDocument returns the content-safety verdict for doc. reserve, when set, runs once just
+// before the model is asked, so a document decided without the model takes nothing from it.
+func (s *pebbleHTTP) moderateDocument(ctx context.Context, doc community.ModerationDocument, reserve func() error) (community.ModerationVerdict, error) {
 	if adultfilter.IsAdult("", "", doc.URL) {
-		writeJSON(w, 200, community.ModerationVerdict{Decision: "reject", Category: "adult"})
-		return
+		return community.ModerationVerdict{Decision: "reject", Category: "adult"}, nil
 	}
 	if _, err := community.NormalizeURL(doc.URL); err != nil {
-		writeProblem(w, 400, "invalid webpage URL")
-		return
+		return community.ModerationVerdict{}, errModerationInvalidURL
 	}
 	if adultfilter.IsAdult(doc.Title, doc.Text+" "+doc.Signals, doc.URL) {
-		writeJSON(w, 200, community.ModerationVerdict{Decision: "reject", Category: "adult"})
-		return
+		return community.ModerationVerdict{Decision: "reject", Category: "adult"}, nil
 	}
 	if status, _ := community.ObviousQualityProblem(doc); status != "" {
-		verdict := community.ModerationVerdict{Decision: "reject", Category: "low_quality"}
 		if status == "unverified" {
-			verdict = community.ModerationVerdict{Decision: "uncertain", Category: "unverified"}
+			return community.ModerationVerdict{Decision: "uncertain", Category: "unverified"}, nil
 		}
-		writeJSON(w, 200, verdict)
-		return
+		return community.ModerationVerdict{Decision: "reject", Category: "low_quality"}, nil
 	}
 	if s.chat == nil {
-		writeProblem(w, 503, "community content validation requires a configured chat model")
-		return
+		return community.ModerationVerdict{}, errModerationUnavailable
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 50*time.Second)
+	if reserve != nil {
+		if err := reserve(); err != nil {
+			return community.ModerationVerdict{}, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
 	defer cancel()
 	data, _ := json.Marshal(doc)
 	envelope := promptsafe.New()
 	response, err := s.chat.Chat(ctx, []embed.ChatMsg{{Role: "system", Content: envelope.System(communityModerationPrompt)}, {Role: "user", Content: "Classify the webpage below using the system policy.\n" + envelope.Wrap(promptsafe.LabelSources, string(data))}})
 	if err != nil {
-		writeProblem(w, 503, "content safety service unavailable")
-		return
+		return community.ModerationVerdict{}, errModerationUnavailable
 	}
 	var verdict community.ModerationVerdict
 	out := json.NewDecoder(strings.NewReader(strings.TrimSpace(response)))
 	out.DisallowUnknownFields()
 	if out.Decode(&verdict) != nil || out.Decode(new(any)) != io.EOF || !community.ValidVerdict(verdict) {
-		writeProblem(w, 503, "content safety service returned no valid decision")
-		return
+		return community.ModerationVerdict{}, errModerationUnavailable
 	}
-	writeJSON(w, 200, verdict)
+	return verdict, nil
 }

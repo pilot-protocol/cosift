@@ -56,7 +56,7 @@ Three ownership classes:
 | Secret | Owner | Location | Rotation |
 |---|---|---|---|
 | **OpenAI API key** | principal-only **+** runtime-on-box | **MUST be rotated at handover.** Currently sits in `cosift/.env` (`OPENAI=sk-proj-…`) — that value is compromised by being in the working tree and must be revoked. Move the new key to a systemd `EnvironmentFile` at `/etc/cosift/cosift.env`, owner `root:cosift`, mode `0640`, referenced from `cosift-serve.service`. **Never** in CI, **never** in any handover/git tree, **never** in `.env`. | Rotate now (at handover). Rotate again on any suspected exposure. Principal issues the key; the box reads it. |
-| **`cluster.peer_auth_token`** | runtime-on-box | `/home/ubuntu/cosift.json` (`cluster.peer_auth_token`). Gates **all** `/admin/*` and `/admin/query-log` etc. on the production `pebble-serve` path. **Currently EMPTY → admin gate is skipped.** See §3. | Set at handover; rotate on operator turnover. Same value must be provisioned to the harvesters (§3). |
+| **`cluster.peer_auth_token`** | runtime-on-box | `/home/ubuntu/cosift.json` (`cluster.peer_auth_token`). Gates **all** `/admin/*` and `/admin/query-log` etc. on the production `pebble-serve` path. **Currently set; an empty value would skip the admin gate.** See §3. Requests must send it as `Authorization: Bearer <token>`; any other scheme is refused. The community app does **not** use it: it reaches the engine with its own scoped key (see `docs/COMMUNITY.md`). | Set at handover; rotate on operator turnover. Same value must be provisioned to the harvesters (§3). |
 | **`server.admin_token`** | runtime-on-box | `/home/ubuntu/cosift.json` (`server.admin_token`). **Note:** this gates only the legacy `serve` path (`internal/server/http.go`). It does **NOT** gate the production `pebble-serve` path — that path uses `cluster.peer_auth_token`. Don't rely on `admin_token` for prod auth. | Low priority; keep set for the legacy path but treat `peer_auth_token` as the real prod gate. |
 | **`crawler.remote_fetcher_token`** | runtime-on-box | `/home/ubuntu/cosift.json` (`crawler.remote_fetcher_token`). Shared Bearer between cosift and any remote fetcher. | On operator turnover. |
 | **`rerank.api_key` / `COHERE_API_KEY` / `VOYAGE_API_KEY`** | runtime-on-box | `rerank.api_key` in `/home/ubuntu/cosift.json`, **or** env `COHERE_API_KEY` / `VOYAGE_API_KEY` (config falls back to env — see `internal/config/config.go` `APIKey`). Put env values in `/etc/cosift/cosift.env` alongside the OpenAI key. | On provider rotation or operator turnover. |
@@ -181,10 +181,11 @@ curl -s -o /dev/null -w '%{http_code}\n' https://cosift.pilotprotocol.network/de
 
 ## 3. Admin auth SOP
 
-**Current state:** `cluster.peer_auth_token` is **EMPTY** in `/home/ubuntu/cosift.json`. Every admin
+**Current state:** `cluster.peer_auth_token` is **set**. Every admin
 handler on the `pebble-serve` path guards with `if want := s.cluster.PeerAuthToken; want != ""` —
-**empty means the gate is skipped.** Public exposure is blocked by Caddy (§2.6), but locally
-everything is open. Set the token so admin actions require a Bearer even from localhost.
+**empty means the gate is skipped**, so keep it set. The gate takes only the `Bearer` scheme
+(`Authorization: Bearer <token>`); any other scheme is refused. Admin actions require it even from
+localhost; public exposure is blocked by Caddy (§2.6). Use the procedure below to set or rotate it.
 
 ### Procedure
 
@@ -344,7 +345,9 @@ All under `/admin/*` on `pebble-serve`, e.g.:
 `site-pack`, `site-submit`, `embed-backfill`, `host-backfill`, `eval-quick`, `hnsw-compact`,
 `sitemap-import`, `recrawl-sitemap`, `pq-train`, `pq-encode`, `checkpoint`, `query-log`, `feedback`,
 `domains-audit`. Plus `/debug/pprof/*`. **Public access to all of these is 404'd by Caddy** (§2.6);
-local access is gated by `peer_auth_token` once §3 is done.
+local access is gated by `peer_auth_token` (§3). The community app's two intake routes are not
+admin endpoints: they are `POST /v1/community/{enqueue,moderate}` on the loopback `/v1` listener,
+gated by a scoped service key (`community:intake`), and a `POST` to any other `/admin/` path is a 404.
 
 ### Offline subcommands bypass HTTP auth entirely
 
@@ -403,8 +406,8 @@ to feed `purge-domain` / blocklist decisions.
 - [ ] Decide + apply the embed-cache choice (§2.4).
 - [ ] Confirm **no `log` directive** in the prod Caddyfile (§2.5).
 - [ ] Verify `/admin/*` and `/debug/*` still **404 publicly** (§2.6).
-- [ ] **Set `cluster.peer_auth_token`** in `cosift.json`; provision the same token to harvesters via
-      `EnvironmentFile`; **patch `cosift-compact.sh`** to send the Bearer (§3).
+- [ ] **Confirm `cluster.peer_auth_token`** is set in `cosift.json` (rotate it per §3); provision the
+      same token to harvesters via `EnvironmentFile`; **patch `cosift-compact.sh`** to send the Bearer (§3).
 - [ ] Stand up the **principal passthrough** on the chosen host; point it at the GH200; confirm it
       logs `{query, ts, latency, endpoint}` to principal-owned storage (§5).
 - [ ] Replace `CANARY_DISPATCH_TOKEN` (personal PAT → scoped app token) **before** repo handover (§1).

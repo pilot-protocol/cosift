@@ -218,7 +218,7 @@ func (s *Server) portal(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 400, "expected an empty billing request")
 		return
 	}
-	if !s.allow("portal:"+u.ID, 10, time.Minute) {
+	if !s.allowUser("portal:"+u.ID, 10, time.Minute) {
 		problem(w, 429, "too many billing requests")
 		return
 	}

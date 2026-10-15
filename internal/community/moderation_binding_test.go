@@ -22,14 +22,14 @@ func TestDispatchBindsFreshModerationToEachDelivery(t *testing.T) {
 			deliveries := 0
 			s := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/admin/community-moderate":
+				case "/v1/community/moderate":
 					var doc ModerationDocument
 					if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
 						t.Error(err)
 					}
 					approved = append(approved, crawler.ApprovedContentHash(doc.Title, doc.Text))
 					io.WriteString(w, `{"decision":"allow","category":"safe"}`)
-				case "/admin/community-enqueue":
+				case "/v1/community/enqueue":
 					deliveries++
 					var payload struct {
 						ApprovedContentHash string                 `json:"approved_content_hash"`
@@ -109,7 +109,7 @@ func TestPlainTextContributionIsUnverified(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})}
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
-	status, reason, hash := s.prevalidate(context.Background(), "https://example.com/readme")
+	status, reason, hash := s.prevalidate(context.Background(), "", "https://example.com/readme")
 	if status != "unverified" || !strings.Contains(reason, "HTML") || hash != "" {
 		t.Fatalf("unsupported plaintext approved: %s %s %s", status, reason, hash)
 	}

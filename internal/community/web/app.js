@@ -73,11 +73,12 @@ function notify(message, error = false) {
     error ? 10000 : 5500,
   );
 }
+const REQUEST_TIMEOUT_MS = { research: 200000, answer: 200000, search: 30000 };
 async function api(path, method = "GET", body, controller = new AbortController()) {
   const generation = accountGeneration;
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); },
-    path.startsWith("research") ? 180000 : path.startsWith("answer") ? 90000 : 30000);
+    REQUEST_TIMEOUT_MS[path.split(/[?/]/)[0]] ?? 30000);
   pendingRequests.add(controller);
   try {
     const headers = { "X-Cosift-Client": "community" };
@@ -327,6 +328,23 @@ $("skip-interests").onclick = async () => {
     notify(e.message, true);
   }
 };
+function renderReward(c) {
+  const credits = Number(c.verified_contribution_reward) || 0;
+  const cap = Number(c.verified_contribution_daily_cap) || 0;
+  const paid = `New content earns ${credits.toLocaleString()} credits${cap ? `, for up to ${cap.toLocaleString()} pages a day` : ""}. Duplicates earn no additional credits.`;
+  const copy = {
+    "contribute-intro": "Submit public articles or documentation and earn credits for new content.",
+    "reward-indexed": paid,
+    "billing-reward": paid,
+    "cli-reward": "Verified new content earns credits.",
+    "free-reward": "Earn more by contributing useful public pages.",
+  };
+  for (const [id, text] of Object.entries(copy)) {
+    const node = $(id);
+    if (node.dataset.plain === undefined) node.dataset.plain = node.textContent;
+    node.textContent = credits > 0 ? text : node.dataset.plain;
+  }
+}
 async function refreshCredits() {
   $("credit-balance").hidden = !user;
   $("monthly-credits").hidden = true;
@@ -336,6 +354,7 @@ async function refreshCredits() {
   $("payment-info").hidden = true;
   if (user) {
     const c = await api("credits");
+    renderReward(c);
     $("credit-balance").textContent =
       `${Number(c.balance).toLocaleString()} credits available`;
     $("billing-balance").textContent = Number(c.balance).toLocaleString();
@@ -480,7 +499,7 @@ function suggestions() {
   }
 }
 async function view(name) {
-  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
+  if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages."); return; }
   if (name === "billing" && !user) { showScreen("auth"); notify("Sign in to manage your credits."); return; }
   if (name === "shared" && (!sharedAuth || !user)) return;
   for (const value of ["search", "saved", "contribute", "shared", "connect", "billing"])
@@ -740,7 +759,7 @@ async function refreshSaved() {
 }
 $("contribution-form").onsubmit = (event) => {
   event.preventDefault();
-  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages and earn credits."); return; }
+  if (!user) { showScreen("auth"); notify("Sign in to contribute webpages."); return; }
   busy(event.target, async () => {
     const text = $("urls").value.trim(),
       file = $("csv").files[0];
@@ -1026,7 +1045,18 @@ $("shared-form").onsubmit = event => {
     $("shared-result").replaceChildren();
     if (action === "add") $("shared-result").append(el("p","Topic followed."));
     else if (action === "cosift_request") $("shared-result").append(el("p",data.detail || "Article request recorded."));
-    else if (data.coverage === "covered" && data.kind === "article") {
+    else if (data.coverage === "covered" && data.kind === "article" && data.withheld) {
+      const heading = el("h3");
+      heading.append(link(data.url, data.title || data.url || "Article"));
+      $("shared-result").append(heading);
+      if (typeof data.detail === "string" && data.detail) $("shared-result").append(el("p", data.detail));
+      const topup = safeLink(data.topup_url);
+      if (topup) {
+        const note = el("p");
+        note.append(link(topup, "Add credits"));
+        $("shared-result").append(note);
+      }
+    } else if (data.coverage === "covered" && data.kind === "article") {
       $("shared-result").append(el("p","Cosift has an article on this topic."));
       const heading = el("h3");
       heading.append(link(data.url, data.title || data.url || "Article"));
@@ -1038,6 +1068,9 @@ $("shared-form").onsubmit = event => {
         sources.append(item);
       }
       if (sources.children.length) $("shared-result").append(sources);
+      const paid = data.credits;
+      if (paid && Number.isInteger(paid.charged) && paid.charged >= 0 && Number.isInteger(paid.balance) && paid.balance >= 0)
+        $("shared-result").append(el("p", `This read cost ${paid.charged.toLocaleString()} credits · ${paid.balance.toLocaleString()} left`, "fine"));
     } else {
       $("shared-result").append(el("p","No complete article is available yet. You can still search the webpage index."));
       const related = data.related_article;

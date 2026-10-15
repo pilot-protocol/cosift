@@ -55,7 +55,7 @@ func (s *Server) clientIP(r *http.Request) string {
 }
 
 func (s *Server) guestKey(r *http.Request) string {
-	return tokenHash(s.guestSalt + ":" + s.clientIP(r))
+	return tokenHash(s.guestSalt + ":" + netKey(s.clientIP(r)))
 }
 
 func (s *Server) guestStatus(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 			s.sharedAuth(w, r, next, true)
 			return
 		}
-		cookie, err := r.Cookie(cookieName)
+		cookie, err := requestSessionCookie(r)
 		if err != nil {
 			next(w, r, User{})
 			return
@@ -132,7 +132,7 @@ func (s *Server) optionalAuth(next userHandler) http.HandlerFunc {
 		if errors.Is(err, sql.ErrNoRows) {
 			// A caller presenting a revoked/expired session intended authenticated
 			// work. Never silently enqueue it as an uncredited guest submission.
-			http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode})
+			s.clearSession(w, r)
 			problem(w, 401, "session expired; sign in again")
 			return
 		}

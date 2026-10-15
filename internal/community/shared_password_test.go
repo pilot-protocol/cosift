@@ -92,8 +92,8 @@ func TestSharedPasswordUsesExistingIdentityAndNeverStoresPassword(t *testing.T) 
 	if strings.Contains(w.Body.String(), sharedTestToken) || strings.Contains(w.Body.String(), "password-valid") {
 		t.Fatal("secret exposed")
 	}
-	cookies := w.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Value != sharedTestToken || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+	cookie := cookieNamed(w, hostName)
+	if len(w.Result().Cookies()) != 2 || cookie == nil || cookie.Value != sharedTestToken || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatal("invalid shared cookie")
 	}
 	var users, sessions, balance int

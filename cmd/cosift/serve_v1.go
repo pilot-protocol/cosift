@@ -27,6 +27,9 @@ var (
 // v1CertSource replaces the Google certificate fetch in tests; nil is Google.
 var v1CertSource svcauth.CertSource
 
+// v1WriteTimeout shortens the listener's write timeout in tests; zero is the default.
+var v1WriteTimeout time.Duration
+
 // articleLayer is the article store as the /v1 listener mounts it.
 type articleLayer interface {
 	Routes() []v1.Route
@@ -75,7 +78,7 @@ type v1Listener struct {
 func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Reloaders, mainAddr string) *v1Listener {
 	l := &v1Listener{}
 	pol := svcauth.NewPolicy(nil, nil)
-	routes := s.v1RetrievalRoutes()
+	routes := append(s.v1RetrievalRoutes(), s.v1CommunityRoutes()...)
 	rd := &v1.Readiness{}
 	if openArticles != nil {
 		a, err := openArticles(articleDeps{db: s.store, embedder: s.v1Embedder, policy: pol, thresholdsPath: articlesConfigPath})
@@ -97,6 +100,7 @@ func (s *pebbleHTTP) startV1(ctx context.Context, cfg *config.Config, rs *v1.Rel
 		Readiness:      rd,
 		Policy:         pol,
 		CertSource:     v1CertSource,
+		WriteTimeout:   v1WriteTimeout,
 	})
 	if err == nil {
 		err = svc.Mount(routes)

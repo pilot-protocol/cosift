@@ -22,6 +22,7 @@ type Error struct {
 	OtherEnv       bool     `json:"other_env,omitempty"`
 	Principals     []string `json:"principals,omitempty"`
 	Records        *int     `json:"records,omitempty"`
+	Ceiling        bool     `json:"ceiling,omitempty"`
 	// RetryAfter, when positive, is sent as Retry-After in whole seconds, rounded up.
 	RetryAfter time.Duration `json:"-"`
 }

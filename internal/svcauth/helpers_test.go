@@ -79,7 +79,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 // testKeys are csk_ keys for the key principals, minted once per process.
 var testKeys = func() map[string]string {
 	m := map[string]string{}
-	for _, id := range []string{"community-wiki", "dash-prod", "dash-staging", "golive-admin", "dash-prod-2"} {
+	for _, id := range []string{"community-wiki", "community-broker", "dash-prod", "dash-staging", "golive-admin", "dash-prod-2"} {
 		k, _, err := NewKey()
 		if err != nil {
 			panic(err)
@@ -110,6 +110,7 @@ func baseConfig() map[string]any {
 			map[string]any{"id": "community-wiki", "kind": "key", "keys": []any{keyEntry(testKeys["community-wiki"])}, "env": "prod", "scopes": []string{"articles:read"}, "rpm": 1200},
 			map[string]any{"id": "dash-prod", "kind": "key", "keys": []any{keyEntry(testKeys["dash-prod"])}, "env": "prod", "scopes": []string{"articles:read_all", "articles:moderate"}, "rpm": 120},
 			map[string]any{"id": "dash-staging", "kind": "key", "keys": []any{keyEntry(testKeys["dash-staging"])}, "env": "staging", "scopes": []string{"articles:read_all", "articles:moderate"}, "rpm": 120},
+			map[string]any{"id": "community-broker", "kind": "key", "keys": []any{keyEntry(testKeys["community-broker"])}, "env": "prod", "scopes": []string{"community:intake", "work:broker"}, "rpm": 3000},
 		},
 	}
 }
@@ -234,6 +235,10 @@ func withPepper(p string) harnessOpt { return func(c *harnessCfg) { c.opts.Peppe
 
 func withClientIPHeader(h string) harnessOpt {
 	return func(c *harnessCfg) { c.opts.ClientIPHeader = h }
+}
+
+func withWriteTimeout(d time.Duration) harnessOpt {
+	return func(c *harnessCfg) { c.opts.WriteTimeout = d }
 }
 
 func withoutCerts() harnessOpt { return func(c *harnessCfg) { c.noFill = true } }

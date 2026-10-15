@@ -129,8 +129,10 @@ subscription required. The monthly grant is
 applied once on authenticated use in the current month; inactive past months are
 not backfilled. Unused credits carry over.
 
-A verified new contribution earns **10 credits** once per unique content.
-Rejected, unverified, duplicate, or already-indexed pages earn none. Every
+When contribution rewards are enabled (the credits view then shows the reward and
+its daily cap), a verified new contribution earns **10 credits** once per unique
+content, up to a per-account daily cap. Rejected, unverified, duplicate, or
+already-indexed pages earn none. Every
 successful authenticated retrieval spends credits, starting with the first request:
 
 | Mode | Credits per successful request | Hard cap per account |
@@ -141,11 +143,13 @@ successful authenticated retrieval spends credits, starting with the first reque
 
 There is no free per-minute member bypass. Credits are reserved before backend
 work; insufficient credit stops the request. Failed backend requests release
-reservations and refund credits. The monthly free grant, earned credits, and
+reservations and refund credits; a request the caller cancels after it reaches the
+backend keeps its charge. The monthly free grant, earned credits, and
 purchases all fund the same balance. Guest retrieval has one shared cooldown per
-public IP: successful Search waits 30 minutes, Answer 60, and Research 90. The
+public IP (per /64 for IPv6): successful Search waits 30 minutes, Answer 60, and Research 90. The
 cooldown blocks every mode, so changing modes does not bypass it; failed backend
-requests do not consume it. Web and CLI use the same guest policy. Credits do not
+requests do not consume it, but a request the caller cancels after it reaches the
+backend does. Web and CLI use the same guest policy. Credits do not
 bypass mode limits or MCP's separate daily call cap. Check
 [`/api/limits`](https://cosift.pilotprotocol.network/api/limits) and the authenticated
 credits view for current policy. Respect retry guidance after a rate limit.

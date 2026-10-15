@@ -18,6 +18,8 @@ func TestNames(t *testing.T) {
 		ScopeArticlesModerate: "articles:moderate",
 		ScopeArticlesAdmin:    "articles:admin",
 		ScopeRetrieveRead:     "retrieve:read",
+		ScopeCommunityIntake:  "community:intake",
+		ScopeWorkBroker:       "work:broker",
 	}
 	for s, name := range scopes {
 		if string(s) != name {
@@ -27,7 +29,7 @@ func TestNames(t *testing.T) {
 			t.Errorf("%q not valid", s)
 		}
 	}
-	for _, s := range []Scope{"", "articles:readall", "Articles:read", "articles:*", "articles:read ", "retrieve:write", "articles"} {
+	for _, s := range []Scope{"", "articles:readall", "Articles:read", "articles:*", "articles:read ", "retrieve:write", "articles", "community:intakes", "community", "work:broker ", "work:"} {
 		if s.Valid() {
 			t.Errorf("%q valid", s)
 		}

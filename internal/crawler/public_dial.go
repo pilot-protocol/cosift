@@ -2,12 +2,17 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"time"
 )
+
+// errNonPublicTarget marks a dial refused because the destination is not a
+// public web endpoint.
+var errNonPublicTarget = errors.New("public-only crawler")
 
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -70,7 +75,7 @@ func (d publicDialer) DialContext(ctx context.Context, network, address string) 
 		return nil, err
 	}
 	if port != "80" && port != "443" {
-		return nil, fmt.Errorf("public-only crawler: non-web port denied")
+		return nil, fmt.Errorf("%w: non-web port denied", errNonPublicTarget)
 	}
 	ips, err := d.lookup(ctx, "ip", host)
 	if err != nil {
@@ -81,7 +86,7 @@ func (d publicDialer) DialContext(ctx context.Context, network, address string) 
 	}
 	for _, ip := range ips {
 		if !publicIP(ip) {
-			return nil, fmt.Errorf("public-only crawler: non-public address denied")
+			return nil, fmt.Errorf("%w: non-public address denied", errNonPublicTarget)
 		}
 	}
 	for _, ip := range ips {

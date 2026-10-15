@@ -387,6 +387,18 @@ func TestSvcKeyNew(t *testing.T) {
 		t.Fatalf("key-only element %s (%v): the environment pepper must win", lines[1], err)
 	}
 
+	out.Reset()
+	if err := runSvcKey([]string{"new", "--id", "community-broker", "--scopes", "community:intake,work:broker", "--env", "prod", "--rpm", "3000", "--pepper-file", pepperFile}, &out, &errOut, now); err != nil {
+		t.Fatalf("the broker key: %v", err)
+	}
+	lines = strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"scopes":["community:intake","work:broker"]`) || !strings.Contains(lines[1], `"rpm":3000`) {
+		t.Fatalf("broker entry %q", out.String())
+	}
+	if _, err := svcauth.Parse([]byte(`{"schema_version":1,"principals":[`+lines[1]+`]}`), svcauth.Checks{Pepper: []byte(v1TestPepper)}); err != nil {
+		t.Fatalf("the broker entry does not load: %v", err)
+	}
+
 	var ue *usageError
 	var ee *exitError
 	for _, args := range [][]string{
@@ -399,6 +411,9 @@ func TestSvcKeyNew(t *testing.T) {
 		{"new", "--id", "X", "--scopes", "articles:read", "--env", "prod"},
 		{"new", "--id", "x", "--scopes", "articles:admin,articles:read", "--env", "prod"},
 		{"new", "--id", "x", "--scopes", "articles:read", "--env", "staging", "--counts-reads"},
+		{"new", "--id", "x", "--scopes", "community:intake,work:broker", "--env", "staging"},
+		{"new", "--id", "x", "--scopes", "work:broker,articles:read", "--env", "prod"},
+		{"new", "--id", "x", "--scopes", "community:intake,articles:moderate", "--env", "prod"},
 		{"new", "--id", "x", "--scopes", "articles:read", "--env", "prod", "--rpm", "4", "--burst", "5"},
 		{"new", "--id", "x", "--scopes", "articles:read", "--env", "prod", "extra"},
 		{"new", "--id", "x", "--scopes", "articles:read", "--env", "prod", "--bogus"},

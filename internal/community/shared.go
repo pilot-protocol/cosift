@@ -53,27 +53,8 @@ func (s *Server) sharedUser(ctx context.Context, identity sharedaccount.Identity
 		return User{}, err
 	}
 	defer tx.Rollback()
-	var id string
-	err = tx.QueryRowContext(ctx, `SELECT user_id FROM shared_identities WHERE uid=?`, identity.UID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, identity.Email).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			id = randomID()
-			_, err = tx.ExecContext(ctx, `INSERT INTO users(id,email,name,salt,password_hash,created_at) VALUES(?,?,?,?,?,?)`, id, identity.Email, strings.Split(identity.Email, "@")[0], randomID(), "", time.Now().Unix())
-		}
-		if err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO shared_identities(uid,user_id) VALUES(?,?)`, identity.UID, id); err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
-			return User{}, err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash='' WHERE id=?`, id); err != nil {
-			return User{}, err
-		}
-	} else if err != nil {
+	id, err := linkSharedUser(ctx, tx, identity.UID, identity.Email)
+	if err != nil {
 		return User{}, err
 	}
 	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT id,email,name,interests,onboarded FROM users WHERE id=?`, id))
@@ -89,6 +70,36 @@ func (s *Server) sharedUser(ctx context.Context, identity sharedaccount.Identity
 	return u, nil
 }
 
+// linkSharedUser returns the user linked to uid; with no link it links the user of the verified email, or creates one.
+func linkSharedUser(ctx context.Context, tx *sql.Tx, uid, email string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT user_id FROM shared_identities WHERE uid=?`, uid).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE email=?`, email).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		id = randomID()
+		_, err = tx.ExecContext(ctx, `INSERT INTO users(id,email,name,salt,password_hash,created_at) VALUES(?,?,?,?,?,?)`, id, email, strings.Split(email, "@")[0], randomID(), "", time.Now().Unix())
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO shared_identities(uid,user_id) VALUES(?,?)`, uid, id); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET password_hash='' WHERE id=?`, id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 func sharedToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); h != "" {
 		parts := strings.Fields(h)
@@ -97,32 +108,33 @@ func sharedToken(r *http.Request) string {
 		}
 		return ""
 	}
-	if c, e := r.Cookie(cookieName); e == nil {
+	if c, e := requestSessionCookie(r); e == nil {
 		return c.Value
 	}
 	return ""
 }
 func sharedProblem(w http.ResponseWriter, err error) {
 	status := 503
+	code := "unavailable"
 	message := "shared Cosift services are unavailable; please retry"
 	switch {
 	case errors.Is(err, sharedaccount.ErrUnauthorized):
-		status = 401
+		status, code = 401, "unauthorized"
 		message = "session invalid or revoked; sign in again"
 	case errors.Is(err, sharedaccount.ErrBanned):
-		status = 403
+		status, code = 403, "banned"
 		message = "account suspended"
 	case errors.Is(err, sharedaccount.ErrInvalid):
-		status = 400
+		status, code = 400, "invalid"
 		message = "invalid shared account request"
 	case errors.Is(err, sharedaccount.ErrLimited):
-		status = 429
+		status, code = 429, "rate_limited"
 		message = "shared service limit reached; retry later"
 	}
-	problem(w, status, message)
+	problemCode(w, status, message, code, nil)
 }
 func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHandler, optional bool) {
-	_, cookieErr := r.Cookie(cookieName)
+	_, cookieErr := requestSessionCookie(r)
 	if optional && cookieErr != nil && r.Header.Get("Authorization") == "" {
 		next(w, r, User{})
 		return
@@ -133,7 +145,7 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 	}
 	token := sharedToken(r)
 	if _, err := sharedaccount.Parse(token); err != nil {
-		sharedProblem(w, err)
+		s.authFailed(w, r, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -141,9 +153,9 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 	identity, err := s.cfg.Shared.Verify(ctx, token)
 	if err != nil {
 		if errors.Is(err, sharedaccount.ErrUnauthorized) && r.Header.Get("Authorization") == "" {
-			http.SetCookie(w, s.sharedCookie("", -1))
+			s.clearSession(w, r)
 		}
-		sharedProblem(w, err)
+		s.authFailed(w, r, err)
 		return
 	}
 	u, err := s.sharedUser(ctx, identity)
@@ -153,15 +165,12 @@ func (s *Server) sharedAuth(w http.ResponseWriter, r *http.Request, next userHan
 	}
 	next(w, r, u)
 }
-func (s *Server) sharedCookie(token string, age int) *http.Cookie {
-	return &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.cfg.PublicURL, "https:"), SameSite: http.SameSiteLaxMode, MaxAge: age, Expires: time.Now().Add(time.Duration(age) * time.Second)}
-}
 func (s *Server) sharedStart(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Shared == nil {
 		problem(w, 404, "shared login is not enabled")
 		return
 	}
-	if !s.allow("shared-auth:"+s.clientIP(r), 10, time.Minute) {
+	if !s.allow("shared-auth:"+s.clientNet(r), 10, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -190,7 +199,7 @@ func (s *Server) sharedFinish(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "shared login is not enabled")
 		return
 	}
-	if !s.allow("shared-verify:"+s.clientIP(r), 20, time.Minute) {
+	if !s.allow("shared-verify:"+s.clientNet(r), 20, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -249,7 +258,7 @@ func (s *Server) sharedPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "shared password login is not enabled")
 		return
 	}
-	if !s.allow("shared-password:"+s.clientIP(r), 10, time.Minute) {
+	if !s.allow("shared-password:"+s.clientNet(r), 10, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}
@@ -301,7 +310,7 @@ func (s *Server) sharedIssued(w http.ResponseWriter, r *http.Request, issued sha
 		}
 		return
 	}
-	http.SetCookie(w, s.sharedCookie(issued.Token, int(sessionAge.Seconds())))
+	s.setSession(w, issued.Token)
 	respond(w, 200, u)
 }
 func (s *Server) sharedTool(w http.ResponseWriter, r *http.Request, u User) {
@@ -309,7 +318,7 @@ func (s *Server) sharedTool(w http.ResponseWriter, r *http.Request, u User) {
 		problem(w, 404, "shared topics are not enabled")
 		return
 	}
-	if !s.allow("shared-tools:"+u.ID, 30, time.Minute) {
+	if !s.allowUser("shared-tools:"+u.ID, 30, time.Minute) {
 		sharedProblem(w, sharedaccount.ErrLimited)
 		return
 	}

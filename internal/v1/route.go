@@ -12,6 +12,9 @@ type Route struct {
 	// Scopes that may reach Handler: the principal needs one of them, and the
 	// handler authorises the exact operation after decoding the body.
 	Scopes []Scope
+	// PerMinute caps one principal's calls to this route a minute, on top of
+	// the principal's rpm; 0 is no cap of its own.
+	PerMinute int
 	// BodyLimit caps the request body in bytes; 0 means the route takes no body.
 	BodyLimit int64
 	// Ungated routes are served before the article index is ready.

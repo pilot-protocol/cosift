@@ -27,7 +27,6 @@ func TestCommunityRefusesAPublicWikiWithoutKeyOrMailto(t *testing.T) {
 		{"bad gsc", wikiTestKey, "reports@example.org", "not valid!", "COSIFT_GSC_VERIFICATION"},
 	}
 	for _, tc := range cases {
-		t.Setenv("COSIFT_COMMUNITY_ADMIN_TOKEN", "admin")
 		t.Setenv("COSIFT_WIKI_PUBLIC", "1")
 		t.Setenv("COSIFT_WIKI_ENGINE_KEY", tc.key)
 		t.Setenv("COSIFT_REPORT_MAILTO", tc.mailto)
@@ -43,7 +42,6 @@ func TestCommunityRefusesAPublicWikiWithoutKeyOrMailto(t *testing.T) {
 }
 
 func TestCommunityStartsDarkWithoutWikiConfig(t *testing.T) {
-	t.Setenv("COSIFT_COMMUNITY_ADMIN_TOKEN", "admin")
 	t.Setenv("COSIFT_WIKI_PUBLIC", "0")
 	t.Setenv("COSIFT_WIKI_ENGINE_KEY", "")
 	t.Setenv("COSIFT_REPORT_MAILTO", "")

@@ -67,12 +67,15 @@ type Policy struct {
 
 	reqMu sync.Mutex
 	req   map[string]*bucket
+	route map[routeKey]*bucket
 
 	wrMu sync.Mutex
 	wr   map[string]*writeBudget
 }
 
 var _ v1.Policy = (*Policy)(nil)
+
+type routeKey struct{ id, pattern string }
 
 type writeBudget struct {
 	hour bucket
@@ -87,7 +90,7 @@ func NewPolicy(m *Metrics, now func() time.Time) *Policy {
 	if m == nil {
 		m = NewMetrics()
 	}
-	return &Policy{now: now, metrics: m, req: map[string]*bucket{}, wr: map[string]*writeBudget{}}
+	return &Policy{now: now, metrics: m, req: map[string]*bucket{}, route: map[routeKey]*bucket{}, wr: map[string]*writeBudget{}}
 }
 
 // SetSwapLocker sets the lock held around every config swap: the article
@@ -119,6 +122,11 @@ func (p *Policy) prune(st *state) {
 	for id := range p.req {
 		if st.byID[id] == nil {
 			delete(p.req, id)
+		}
+	}
+	for k := range p.route {
+		if st.byID[k.id] == nil {
+			delete(p.route, k)
 		}
 	}
 	p.reqMu.Unlock()
@@ -180,6 +188,26 @@ func (p *Policy) allowRequest(ps *principalState) (time.Duration, bool) {
 		p.req[ps.cfg.ID] = b
 	}
 	b.refill(now, rate, float64(ps.cfg.Burst))
+	if b.tokens < 1 {
+		return b.wait(rate), false
+	}
+	b.tokens--
+	return 0, true
+}
+
+// allowRoute draws one unit from the principal's bucket for a route capped at perMin a minute.
+func (p *Policy) allowRoute(id, pattern string, perMin int) (time.Duration, bool) {
+	rate := float64(perMin) / 60
+	now := p.now()
+	p.reqMu.Lock()
+	defer p.reqMu.Unlock()
+	k := routeKey{id, pattern}
+	b := p.route[k]
+	if b == nil {
+		b = &bucket{}
+		p.route[k] = b
+	}
+	b.refill(now, rate, float64(perMin))
 	if b.tokens < 1 {
 		return b.wait(rate), false
 	}

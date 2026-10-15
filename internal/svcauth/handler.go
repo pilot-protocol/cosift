@@ -55,11 +55,12 @@ func (s *Service) buildMux(routes []v1.Route) (mux *http.ServeMux, err error) {
 }
 
 // chain is authenticate → principal limit → readiness → any-of scope →
-// body cap → handler, which authorises the exact operation after decoding.
+// route cap → body cap → handler, which authorises the exact operation after decoding.
 func (s *Service) chain(rt v1.Route) http.Handler {
 	pattern := rt.Pattern()
 	var h http.Handler = rt.Handler
 	h = bodyCap(rt.BodyLimit, h)
+	h = s.routeCap(pattern, rt.PerMinute, h)
 	h = scopeCheck(rt.Scopes, h)
 	if !rt.Ungated {
 		h = s.ready.Gate(h)
@@ -103,6 +104,22 @@ func (s *Service) refuse(w http.ResponseWriter, r *http.Request, ri *reqInfo, st
 		return
 	}
 	v1.WriteError(w, v1.Unauthenticated())
+}
+
+// routeCap answers 429 once a principal has used the route's PerMinute.
+func (s *Service) routeCap(pattern string, perMin int, next http.Handler) http.Handler {
+	if perMin <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, _ := v1.PrincipalFrom(r.Context())
+		if retry, ok := s.Policy.allowRoute(p.ID, pattern, perMin); !ok {
+			s.Metrics.limited(p.ID, "principal")
+			v1.WriteError(w, v1.RateLimited(retry))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func scopeCheck(scopes []v1.Scope, next http.Handler) http.Handler {

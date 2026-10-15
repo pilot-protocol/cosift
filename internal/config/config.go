@@ -48,6 +48,9 @@ type Config struct {
 	// owning shard (forwarding to peers via POST /admin/crawl-enqueue), and
 	// /search fans out to peers and RRF-merges.
 	Cluster Cluster `json:"cluster"`
+
+	// Work: community moderation and fetch-work settings.
+	Work Work `json:"work"`
 }
 
 // Cluster controls the horizontal-scaling shape. All fields are

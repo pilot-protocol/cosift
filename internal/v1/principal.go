@@ -35,12 +35,14 @@ const (
 	ScopeArticlesModerate Scope = "articles:moderate"
 	ScopeArticlesAdmin    Scope = "articles:admin"
 	ScopeRetrieveRead     Scope = "retrieve:read"
+	ScopeCommunityIntake  Scope = "community:intake"
+	ScopeWorkBroker       Scope = "work:broker"
 )
 
 func (s Scope) Valid() bool {
 	switch s {
 	case ScopeArticlesRead, ScopeArticlesReadAll, ScopeArticlesWrite, ScopeArticlesStub,
-		ScopeArticlesModerate, ScopeArticlesAdmin, ScopeRetrieveRead:
+		ScopeArticlesModerate, ScopeArticlesAdmin, ScopeRetrieveRead, ScopeCommunityIntake, ScopeWorkBroker:
 		return true
 	}
 	return false

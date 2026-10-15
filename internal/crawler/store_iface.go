@@ -57,6 +57,14 @@ type CrawlResultWriter interface {
 	) (int64, error)
 }
 
+// ContentIndexer is the optional content-hash surface of a store; without it no
+// contribution is novel.
+type ContentIndexer interface {
+	HasLiveContent(ctx context.Context, sha []byte, excludeDocID int64) (bool, error)
+	ContentIndexComplete(ctx context.Context) (bool, error)
+	HasUncomparableVariant(ctx context.Context, rawURL string, excludeDocID int64) (bool, error)
+}
+
 // LexicalIndexer abstracts the BM25 writer. Both *index.BM25 (SQLite) and
 // *index.PebbleBM25 satisfy the single-method signature.
 type LexicalIndexer interface {
@@ -132,7 +140,8 @@ type URLInvalidator interface {
 // Compile-time interface satisfaction checks. Build fails fast if either
 // backend drifts.
 var (
-	_ CrawlerStore  = (*store.Store)(nil)
-	_ CrawlerStore  = (*store.PebbleStore)(nil)
-	_ PassageWriter = (*store.Store)(nil)
+	_ CrawlerStore   = (*store.Store)(nil)
+	_ CrawlerStore   = (*store.PebbleStore)(nil)
+	_ PassageWriter  = (*store.Store)(nil)
+	_ ContentIndexer = (*store.PebbleStore)(nil)
 )

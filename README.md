@@ -183,7 +183,7 @@ Per-request query params always override the defaults. A caller can pass `?expan
 }
 ```
 
-The same override map applies to `crawler.max_depth`, `crawler.max_body_bytes`, `crawler.chunk_size`, and `crawler.chunk_overlap` via parallel `<knob>_overrides` maps. Crawl-time `include_domains` keeps unwanted hosts out of the index entirely; search-time `?include_domains=` / `?exclude_domains=` filters an indexed mixed-domain corpus per-query.
+The same override map applies to `crawler.max_depth`, `crawler.max_body_bytes`, `crawler.chunk_size`, and `crawler.chunk_overlap` via parallel `<knob>_overrides` maps. Crawl-time `include_domains` / `exclude_domains` keep unwanted hosts out of the index entirely (an entry matches a host exactly or as a dot-boundary suffix, so `example.com` covers `blog.example.com` but not `evilexample.com`); search-time `?include_domains=` / `?exclude_domains=` filters an indexed mixed-domain corpus per-query.
 
 ## CLI reference
 

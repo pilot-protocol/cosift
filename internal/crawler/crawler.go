@@ -30,6 +30,7 @@ import (
 	"github.com/pilot-protocol/cosift/internal/index"
 	"github.com/pilot-protocol/cosift/internal/netguard"
 	"github.com/pilot-protocol/cosift/internal/store"
+	"golang.org/x/net/idna"
 )
 
 // Crawler orchestrates fetch → parse → index over a persistent frontier.
@@ -373,9 +374,12 @@ func newBare(cfg config.Crawler) *Crawler {
 	return c
 }
 
-func checkRedirect(_ *http.Request, via []*http.Request) error {
+func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 5 {
 		return errors.New("too many redirects")
+	}
+	if policy, ok := req.Context().Value(redirectPolicyKey{}).(func(string) error); ok {
+		return policy(req.URL.String())
 	}
 	return nil
 }
@@ -1228,6 +1232,7 @@ func (c *Crawler) FetchAndIndexNow(ctx context.Context, url string) error {
 
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
 	approvedHash, _ := ctx.Value(approvedContentKey{}).(string)
+	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
 	u, _ := url.Parse(item.URL)
 	// Prior enqueueLinks already
 	// filters via allowedDomain, but stale frontier entries from before
@@ -1282,7 +1287,10 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 
 	// Look up prior doc once: needed for both conditional GET (validators) and
 	// content-hash dedup later. Missing is fine — empty prior means full fetch.
-	prior, _ := c.store.GetDocByURL(ctx, item.URL)
+	prior, priorErr := c.store.GetDocByURL(ctx, item.URL)
+	if st != nil && priorErr != nil && !docNotFound(priorErr) {
+		return priorErr
+	}
 
 	// If we already have a
 	// healthy copy of this URL fetched within COSIFT_REFETCH_AFTER_HOURS,
@@ -1381,10 +1389,20 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	finalU, _ := url.Parse(finalURL)
 	sha := sha256.Sum256([]byte(parsed.Text))
 
+	// A contribution that redirected is stored under its final URL, so that is
+	// the copy to compare against.
+	existing := prior
+	if st != nil && existing == nil && finalURL != item.URL {
+		var gerr error
+		if existing, gerr = c.store.GetDocByURL(ctx, finalURL); gerr != nil && !docNotFound(gerr) {
+			return gerr
+		}
+	}
+
 	// Content-hash dedup: if the server gave us a 200 but the content_hash matches,
 	// the index work is already done. Update validators + fetched_at and exit.
 	// Catches servers that don't send ETag/Last-Modified (so 304 isn't available).
-	if existing := prior; existing != nil {
+	if existing != nil {
 		if bytes.Equal(existing.ContentSHA, sha[:]) && (approvedHash == "" || existing.Title == parsed.Title) {
 			existing.FetchedAt = time.Now()
 			if res.etag != "" {
@@ -1396,6 +1414,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			if _, e := c.store.UpsertDocument(ctx, existing); e != nil {
 				return e
 			}
+			if st != nil {
+				st.docURL = existing.URL
+			}
 			return nil
 		}
 	}
@@ -1403,8 +1424,14 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// Content is new-or-changed at this point (the unchanged paths above
 	// returned early). Propagate prior change history; bookkeeping bumps after upsert.
 	var changeCount int64
-	if prior != nil {
-		changeCount = prior.ChangeCount
+	if existing != nil {
+		changeCount = existing.ChangeCount
+	}
+	if st != nil {
+		st.docURL = finalURL
+		if err := c.decideNovelty(ctx, st, existing, finalURL, sha[:]); err != nil {
+			return err
+		}
 	}
 	doc := &store.Document{
 		URL:           finalURL,
@@ -1741,9 +1768,12 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 			return false
 		}
 	}
-	h := u.Host
+	h, ok := dialHost(u.Hostname())
+	if !ok {
+		return false
+	}
 	for _, d := range c.cfg.ExcludeDomains {
-		if strings.HasSuffix(h, d) {
+		if hostInDomain(h, d) {
 			return false
 		}
 	}
@@ -1751,7 +1781,7 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 		return true
 	}
 	for _, d := range c.cfg.IncludeDomains {
-		if strings.HasSuffix(h, d) {
+		if hostInDomain(h, d) {
 			return true
 		}
 	}
@@ -1760,6 +1790,36 @@ func (c *Crawler) allowedDomain(rawURL string) bool {
 		return true
 	}
 	return false
+}
+
+// hostInDomain matches a host from dialHost against a list entry, exactly or as
+// a dot-boundary suffix. A port on the entry is ignored.
+func hostInDomain(host, entry string) bool {
+	d := strings.ToLower(strings.TrimSpace(entry))
+	if strings.Count(d, ":") == 1 {
+		d, _, _ = strings.Cut(d, ":")
+	}
+	d, ok := dialHost(d)
+	if d = strings.Trim(d, "."); !ok || d == "" {
+		return false
+	}
+	return host == d || strings.HasSuffix(host, "."+d)
+}
+
+// dialHost returns a hostname as the transport will dial it: lowercase ASCII,
+// IDNA-mapped when it is not ASCII. It reports false for a name the transport
+// would refuse.
+func dialHost(h string) (string, bool) {
+	for i := 0; i < len(h); i++ {
+		if h[i] >= 0x80 {
+			var err error
+			if h, err = idna.Lookup.ToASCII(h); err != nil {
+				return "", false
+			}
+			break
+		}
+	}
+	return strings.TrimSuffix(strings.ToLower(h), "."), true
 }
 
 func (c *Crawler) maxCrawlDelay() time.Duration {

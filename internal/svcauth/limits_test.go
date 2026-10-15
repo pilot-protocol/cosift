@@ -42,6 +42,79 @@ func TestPrincipalRateLimit(t *testing.T) {
 	}
 }
 
+// A route with PerMinute draws from a bucket per principal and route, after
+// the scope check, on top of the principal's rpm.
+func TestRouteCap(t *testing.T) {
+	var calls int
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		v1.WriteJSON(w, http.StatusOK, map[string]any{})
+	})
+	h := newHarness(t, baseConfig(), withRoutes(func(func(string, v1.Principal, *http.Request)) []v1.Route {
+		both := []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesReadAll}
+		return []v1.Route{
+			{Method: "GET", Path: "/v1/articles", Scopes: both, PerMinute: 3, Handler: ok},
+			{Method: "GET", Path: "/v1/articles/stats", Scopes: both, PerMinute: 5, Handler: ok},
+			{Method: "GET", Path: "/v1/article-versions/{id}", Scopes: []v1.Scope{v1.ScopeArticlesModerate}, PerMinute: 1, Handler: ok},
+		}
+	}))
+	wiki, dash := testKeys["community-wiki"], testKeys["dash-prod"]
+	get := func(path, key string) *httptest.ResponseRecorder { return h.do("GET", path, "", bearerAuth(key)) }
+	for i := range 3 {
+		if w := get("/v1/articles", wiki); w.Code != http.StatusOK {
+			t.Fatalf("call %d: %d", i, w.Code)
+		}
+	}
+	w := get("/v1/articles", wiki)
+	if e := decodeErr(t, w); w.Code != http.StatusTooManyRequests || e.Code != "rate_limited" || w.Header().Get("Retry-After") != "20" {
+		t.Fatalf("4th call: %d %+v %v", w.Code, e, w.Header())
+	}
+	if calls != 3 {
+		t.Fatalf("the handler ran %d times", calls)
+	}
+	if w := get("/v1/articles/stats", wiki); w.Code != http.StatusOK {
+		t.Fatalf("another route of the same principal: %d", w.Code)
+	}
+	if w := get("/v1/articles", dash); w.Code != http.StatusOK {
+		t.Fatalf("another principal on the capped route: %d", w.Code)
+	}
+	for range 5 {
+		if w := get("/v1/article-versions/x", wiki); w.Code != http.StatusForbidden {
+			t.Fatalf("a call without the scope drew from the cap: %d", w.Code)
+		}
+	}
+	h.clock.Advance(20 * time.Second)
+	if w := get("/v1/articles", wiki); w.Code != http.StatusOK {
+		t.Fatalf("after the refill: %d", w.Code)
+	}
+	if w := get("/v1/articles", wiki); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("only one call refilled: %d", w.Code)
+	}
+	if !strings.Contains(h.metrics(), `cosift_v1_rate_limited_total{principal="community-wiki",kind="principal"} 2`) {
+		t.Fatal(h.metrics())
+	}
+}
+
+func TestRouteCapBucketsFollowThePrincipals(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	if _, ok := h.svc.Policy.allowRoute("community-wiki", "GET /v1/articles", 3); !ok {
+		t.Fatal("first draw refused")
+	}
+	if n := len(h.svc.Policy.route); n != 1 {
+		t.Fatalf("%d buckets", n)
+	}
+	cfg := baseConfig()
+	cfg["principals"] = []any{principalByID(cfg, "dash-prod")}
+	c, err := Parse(mustJSON(cfg), testChecks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.svc.Policy.Install(c)
+	if n := len(h.svc.Policy.route); n != 0 {
+		t.Fatalf("a removed principal keeps %d buckets", n)
+	}
+}
+
 // Failures from one client turn into 429 auth_throttled after the burst,
 // logged once a minute, and never block a request that authenticates.
 func TestFailedAuthLimiter(t *testing.T) {

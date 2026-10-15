@@ -82,8 +82,8 @@ quality and all vectors. Uncertain or unsupported content remains unverified,
 and text/metadata checks do not guarantee image or video moderation. Do not
 modify content or vectors to evade a rejection.
 
-Verified new content earns 10 credits once; existing, duplicate, rejected and
-unverified pages earn none. Every account gets 1,000 free credits per UTC calendar
+When contribution rewards are on, verified new content earns 10 credits once, up
+to a daily cap; existing, duplicate, rejected and unverified pages earn none. Every account gets 1,000 free credits per UTC calendar
 month, without a subscription. The
 current month's grant is applied once on authenticated use; inactive past months
 are not backfilled. Unused credits carry over. Every successful authenticated

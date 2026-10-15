@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,15 +113,29 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	c := &Client{cfg: cfg, db: db, secrets: secrets, auth: auth, mcp: mcp}
 	c.verifier = &verifier{store: googleStore{db: db}, pepper: func(ctx context.Context, id string) ([]byte, error) {
 		res, err := secrets.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: fmt.Sprintf("projects/%s/secrets/cosift-token-pepper/versions/%s", cfg.Project, id)})
-		if status.Code(err) == codes.NotFound {
+		if code := status.Code(err); code == codes.NotFound || code == codes.FailedPrecondition {
 			return nil, ErrUnauthorized
 		}
 		if err != nil || res.Payload == nil {
 			return nil, ErrUnavailable
 		}
 		return res.Payload.Data, nil
+	}, latest: func(ctx context.Context) (int, error) {
+		res, err := secrets.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: fmt.Sprintf("projects/%s/secrets/cosift-token-pepper/versions/latest", cfg.Project)})
+		if err != nil || res == nil {
+			return 0, ErrUnavailable
+		}
+		return resolvedVersion(res.Name)
 	}}
 	return c, nil
+}
+
+func resolvedVersion(name string) (int, error) {
+	i := strings.LastIndex(name, "/versions/")
+	if i < 0 || !versionPattern.MatchString(name[i+len("/versions/"):]) {
+		return 0, ErrUnavailable
+	}
+	return strconv.Atoi(name[i+len("/versions/"):])
 }
 func (c *Client) Namespace() string { return c.cfg.Project + "/" + c.cfg.Database }
 func (c *Client) Close() error      { return errors.Join(c.db.Close(), c.secrets.Close()) }

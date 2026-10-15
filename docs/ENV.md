@@ -46,8 +46,11 @@ about what each "token/key" var actually does:
 gate is `cluster.peer_auth_token` in `cosift.json` (and the legacy `serve`
 path uses `server.admin_token`). See the **secret-ownership matrix in
 [docs/HANDOVER.md §1](HANDOVER.md)** for the authoritative ownership classes,
-rotation policy, and the current-state caveats (e.g. `peer_auth_token` empty in
-prod = admin gate skipped).
+rotation policy, and the current-state caveats (an empty `peer_auth_token`
+skips the admin gate; production sets it). The gate accepts only the `Bearer`
+scheme (`Authorization: Bearer <token>`). The community service does not use
+this token: it reaches the engine's `/v1` routes with `COSIFT_COMMUNITY_BROKER_KEY`
+(see [Community intake](#community-intake)).
 
 **Production uses LOCAL models.** In prod, the embeddings and chat URLs in
 `cosift.json` point at `127.0.0.1` (self-hosted vLLM / Ollama / TEI). Local
@@ -98,7 +101,7 @@ not re-enable them without the confidentiality decision in that section.
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
 | `COSIFT_QUERY_LOG` | string (path) | unset → query logging disabled (no-op) | Path to JSONL file; when set, every query-endpoint request is appended. Also gates the feedback log default location and the `/admin/query-log` tail endpoint. **Disabled in prod — see HANDOVER §2.** | `serve_setup.go:308`; `querylog.go:96`; `feedback.go:37,147` |
-| `COSIFT_QLOG_NOLOG_TOKEN` | string (SECRET) | unset → header ignored (all requests logged) | When set, a query request whose `X-Cosift-No-Log` header exactly equals this value is served normally but **not** written to the query log — lets demand-loop replay traffic be excluded. Only effective when `COSIFT_QUERY_LOG` is set. | `serve_setup.go:316`; `querylog.go:52` |
+| `COSIFT_QLOG_NOLOG_TOKEN` | string (SECRET) | unset → header ignored (all requests logged) | When set, a query request whose `X-Cosift-No-Log` header exactly equals this value is served normally but **not** written to the query log. Only effective when `COSIFT_QUERY_LOG` is set. **Retired:** demand-loop replay now goes through `POST /v1/search`, which writes no query log, so nothing sends this header; leave it unset. | `serve_setup.go:316`; `querylog.go:52` |
 | `COSIFT_FEEDBACK_LOG` | string (path) | unset → falls back to `feedback-log.jsonl` beside `COSIFT_QUERY_LOG`; if that's also unset → disabled | Path for the feedback JSONL log. **Disabled in prod — see HANDOVER §2.** | `feedback.go:34`; `serve_setup.go` (via `feedbackLogPath()`) |
 | `COSIFT_SLA_LOG_PATH` | string (path) | unset → `<DataDir>/sla-violations.jsonl` (if DataDir set) | Where SLA-violation records are written. | `serve_setup.go:348` |
 | `COSIFT_SLA_SEARCH_P95_MS` | duration (ms) | `1500` (1.5s) | P95 SLA target for `/search`. | `serve_setup.go:353` |
@@ -249,6 +252,32 @@ not re-enable them without the confidentiality decision in that section.
 | `COSIFT_PEBBLE_L0_COMPACTION_FILES` | int | unset → Pebble default (`500`) | Pebble `L0CompactionFileThreshold`: L0 file count that triggers an L0→Lbase compaction. Only applied when set. | `internal/store/pebble.go` (`applyLevelOptsFromEnv`) |
 | `COSIFT_PEBBLE_L0_STOP_WRITES` | int | unset → Pebble default (`12`) | Pebble `L0StopWritesThreshold`: L0 sublevel count at which writes stall until compaction catches up. Must be ≥ Pebble's `L0CompactionThreshold` (`4`). Only applied when set. | `internal/store/pebble.go` (`applyLevelOptsFromEnv`) |
 | `COSIFT_PEBBLE_SYNC` | bool (`"false"` disables) | unset → `Sync` (fsync each commit) | Set to `"false"` to use `NoSync` writes (skips per-commit fsync — faster crawls, drops durability vs OS crash; WAL still written so process-crash durability holds). | `internal/store/pebble.go:176` |
+
+---
+
+## Community intake
+
+The engine serves the community service's two routes, `POST /v1/community/enqueue`
+and `POST /v1/community/moderate`, on its `/v1` listener, for a key principal with
+the `community:intake` scope. The moderation ceiling is the `work` block of
+`cosift.json`, not an env var (see [docs/COMMUNITY.md](COMMUNITY.md)).
+
+| Variable | Type | Default | Effect | Where read |
+|---|---|---|---|---|
+| `COSIFT_V1_ENQUEUE_PER_MIN` | int | `30` | Calls a minute per principal to `POST /v1/community/enqueue`. An integer from 1 to 30; anything else stops `pebble-serve` at startup. | `cmd/cosift/serve_v1_community.go:32` |
+| `COSIFT_V1_MODERATE_PER_MIN` | int | `30` | Same cap for `POST /v1/community/moderate`. | `cmd/cosift/serve_v1_community.go:32` |
+
+The `cosift community` service reads these (set them in its environment file;
+`deploy/community.env.example` lists the full set):
+
+| Variable | Type | Default | Effect | Where read |
+|---|---|---|---|---|
+| `COSIFT_COMMUNITY_BROKER_KEY` | string (SECRET) | unset → submissions wait as a configuration error | The community principal's `csk_` key for the engine's `/v1` routes. Sent only to `COSIFT_COMMUNITY_ENGINE_URL`. Must differ from `COSIFT_WIKI_ENGINE_KEY`. | `cmd/cosift/community.go:72`; `internal/community/engine.go:37` |
+| `COSIFT_COMMUNITY_ENGINE_URL` | string (URL) | `http://127.0.0.1:7779` | The engine's `/v1` listener; must be a loopback `http` origin. | `cmd/cosift/community.go:72`; `internal/community/engine.go:37` |
+| `COSIFT_COMMUNITY_ADMIN_TOKEN` | — | must be unset | No longer used: the service refuses to start while it is set. | `cmd/cosift/community.go:44` |
+| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD` | `on` / `off` | `off` | Pays the contribution reward for new content. Anything else stops startup. | `cmd/cosift/community.go:113` |
+| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD_DAILY_CAP` | int | `10` | Rewards per account per rolling 24 hours; an integer from 1 to 10000. | `cmd/cosift/community.go:121` |
+| `COSIFT_COMMUNITY_AWARDS` | `0` / `1` | `0` | `1` starts the poller that applies pending credit awards every 30 s. Needs shared mode and `COSIFT_WIKI_ENGINE_KEY`. Anything else stops startup. | `cmd/cosift/community.go:102`; `internal/community/awards.go:403` |
 
 ---
 

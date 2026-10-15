@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pilot-protocol/cosift/internal/adultfilter"
@@ -58,10 +63,70 @@ func newModerationClient() *http.Client {
 	return client
 }
 
+const (
+	statusConfigError = "config_error"
+	configErrorReason = "Content checks are unavailable while the service is being configured. This will be retried automatically."
+	configErrorRetry  = time.Hour
+	statusBackendDown = "backend_down"
+	backendDownRetry  = 5 * time.Minute
+	backendDownReason = "Waiting for content safety checks."
+)
+
+// backendUnreachable is a failure to connect at all, which no page or model reply can cause; it must not use up delivery attempts.
+func backendUnreachable(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+
+// backendReachable is false only when the engine listener cannot be connected to; any HTTP reply counts as reachable.
+func (s *Server) backendReachable(ctx context.Context) bool { return s.engine.reachable(ctx) }
+
+// A 401 or 403 means the backend rejected the app's credentials, which retrying cannot fix.
+func backendRefusedCredentials(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+const maxCrawlDelay = 15 * time.Second
+
+// crawlWait is how long the site's robots crawl delay still holds back the next page check; the caller requeues instead of sleeping.
+func (s *Server) crawlWait(ctx context.Context, raw string) time.Duration {
+	allowed, delay, err := s.moderationRobots.Allowed(ctx, raw)
+	u, parseErr := url.Parse(raw)
+	if err != nil || !allowed || delay <= 0 || delay > maxCrawlDelay || parseErr != nil {
+		return 0
+	}
+	return s.hostGaps.reserve(u.Host, delay, time.Now())
+}
+
+// hostGaps spaces page checks to one host by its crawl delay.
+type hostGaps struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+// reserve returns how much longer to wait, or zero after recording a check at now.
+func (g *hostGaps) reserve(host string, gap time.Duration, now time.Time) time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for h, t := range g.last {
+		if now.Sub(t) >= maxCrawlDelay {
+			delete(g.last, h)
+		}
+	}
+	if t, ok := g.last[host]; ok && now.Sub(t) < gap {
+		return gap - now.Sub(t)
+	}
+	if g.last == nil {
+		g.last = map[string]time.Time{}
+	}
+	g.last[host] = now
+	return 0
+}
+
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
-func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, approvedContentHash string) {
+func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (status, reason, approvedContentHash string) {
 	if _, err := NormalizeURL(raw); err != nil {
 		return "rejected", "URL is not an eligible public webpage.", ""
 	}
@@ -72,17 +137,8 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	if !allowed {
 		return "unverified", "The website does not permit automated page checks.", ""
 	}
-	if delay > 0 {
-		if delay > 15*time.Second {
-			return "unverified", "The website requires a longer crawl delay than validation supports.", ""
-		}
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return "pending", "Validation interrupted.", ""
-		case <-timer.C:
-		}
+	if delay > maxCrawlDelay {
+		return "unverified", "The website requires a longer crawl delay than validation supports.", ""
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
@@ -141,17 +197,28 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	if status, reason := ObviousQualityProblem(doc); status != "" {
 		return status, reason, ""
 	}
+	approved := crawler.ApprovedContentHash(doc.Title, doc.Text)
+	if s.approvalRecorded(ctx, submissionID, approved) {
+		return "allowed", "Content checks passed.", approved
+	}
 	b, _ := json.Marshal(doc)
-	checkReq, _ := http.NewRequestWithContext(ctx, "POST", s.cfg.Backend+"/admin/community-moderate", bytes.NewReader(b))
-	checkReq.Header.Set("Content-Type", "application/json")
-	checkReq.Header.Set("Authorization", "Bearer "+s.cfg.AdminToken)
-	client := *s.client
-	client.Timeout = 60 * time.Second
-	checkRes, err := client.Do(checkReq)
+	checkRes, err := s.engine.post(ctx, moderateRoute, b, moderateTimeout)
 	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)
+			if backendUnreachable(err) {
+				return statusBackendDown, backendDownReason, ""
+			}
+		}
 		return "pending", "Waiting for content safety checks.", ""
 	}
 	defer checkRes.Body.Close()
+	if checkRes.StatusCode != 200 {
+		log.Printf("community: POST %s returned HTTP %d", moderateRoute, checkRes.StatusCode)
+		if backendRefusedCredentials(checkRes.StatusCode) {
+			return statusConfigError, configErrorReason, ""
+		}
+	}
 	var verdict ModerationVerdict
 	decision := json.NewDecoder(io.LimitReader(checkRes.Body, 4096))
 	decision.DisallowUnknownFields()
@@ -160,12 +227,29 @@ func (s *Server) prevalidate(ctx context.Context, raw string) (status, reason, a
 	}
 	switch verdict.Decision {
 	case "allow":
-		return "allowed", "Content checks passed.", crawler.ApprovedContentHash(doc.Title, doc.Text)
+		s.recordApproval(ctx, submissionID, approved)
+		return "allowed", "Content checks passed.", approved
 	case "uncertain":
 		return "unverified", "This webpage could not be confidently validated.", ""
 	default:
 		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm", "spam": "Spam or search manipulation", "low_quality": "Garbage or content without useful information"}
 		return "rejected", labels[verdict.Category] + " is not accepted.", ""
+	}
+}
+
+// An allow verdict is kept per submission and approved hash, so delivery retries of unchanged content skip the LLM.
+func (s *Server) approvalRecorded(ctx context.Context, submissionID, hash string) bool {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM submission_approvals WHERE submission_id=? AND content_hash=?`, submissionID, hash).Scan(&found)
+	return err == nil
+}
+
+func (s *Server) recordApproval(ctx context.Context, submissionID, hash string) {
+	if submissionID == "" {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO submission_approvals(submission_id,content_hash) VALUES(?,?) ON CONFLICT DO NOTHING`, submissionID, hash); err != nil {
+		log.Printf("community: could not record a content approval: %v", err)
 	}
 }
 

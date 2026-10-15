@@ -29,11 +29,13 @@ type Options struct {
 	// Readiness gates every route not marked Ungated; the article store owns it.
 	Readiness *v1.Readiness
 	// Policy is built before the article store, which takes it; nil makes one.
-	Policy     *Policy
-	Logger     *log.Logger
-	Now        func() time.Time
-	CertSource CertSource
-	Validator  TokenValidator
+	Policy *Policy
+	Logger *log.Logger
+	Now    func() time.Time
+	// WriteTimeout is the http.Server's; zero is 30 s. Tests shorten it.
+	WriteTimeout time.Duration
+	CertSource   CertSource
+	Validator    TokenValidator
 }
 
 // Service is the /v1 listener: config, credentials, limits, audit and the
@@ -71,6 +73,9 @@ func New(opts Options) (*Service, error) {
 	opts.ClientIPHeader = strings.TrimSpace(opts.ClientIPHeader)
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 30 * time.Second
 	}
 	if opts.Readiness == nil {
 		opts.Readiness = &v1.Readiness{}
@@ -219,7 +224,7 @@ func (s *Service) listenLocked(ctx context.Context, cfg *Config) {
 		Handler:                      s,
 		ReadHeaderTimeout:            5 * time.Second,
 		ReadTimeout:                  15 * time.Second,
-		WriteTimeout:                 30 * time.Second,
+		WriteTimeout:                 s.opts.WriteTimeout,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               16 << 10,
 		ErrorLog:                     log.New(serverErrorWriter{s.Metrics}, "", 0),

@@ -49,7 +49,7 @@ func TestCommunityBinaryEndToEnd(t *testing.T) {
 		}
 	}))
 	defer backend.Close()
-	app, err := community.Open(community.Config{DataDir: filepath.Join(dir, "accounts"), Backend: backend.URL, PublicURL: "http://localhost:7780", AdminToken: "local-e2e-token"})
+	app, err := community.Open(community.Config{DataDir: filepath.Join(dir, "accounts"), Backend: backend.URL, PublicURL: "http://localhost:7780"})
 	if err != nil {
 		t.Fatal(err)
 	}
