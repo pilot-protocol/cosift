@@ -21,6 +21,7 @@ var (
 var unguardedByDesign = map[string]string{
 	"internal/sharedaccount/remote.go":  "operator-configured auth/MCP origins only; HTTPS except loopback; redirects disabled; never accepts URLs from user input",
 	"cmd/cosift/community.go":           "CLI talks only to its explicitly configured server; redirects disabled",
+	"cmd/cosift/worker_api.go":          "worker CLI talks only to its explicitly configured server; HTTPS or loopback; redirects disabled",
 	"internal/community/server.go":      "operator-configured backend origin only; redirects disabled; contributed URLs use crawler.PublicHTTPClient",
 	"internal/community/engine.go":      "the engine /v1 listener on a loopback origin validated at start; the broker key goes nowhere else; redirects disabled; never dials a URL from a request",
 	"internal/community/wiki/engine.go": "the engine /v1 listener on a loopback IP literal validated at start; no proxy; redirects disabled; never dials a URL from a request",
