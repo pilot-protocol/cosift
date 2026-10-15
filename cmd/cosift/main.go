@@ -27,6 +27,7 @@ usage:
   cosift serve              run the HTTP API (port from config)
   cosift community          run the contributor web app (login, interests, saved searches, URL/CSV submissions)
   cosift contribute [-server URL] [-guest] [-email EMAIL] [-csv FILE] <url...>   submit URLs as a guest or member
+  cosift contribute -worker [-max-pages N] [-duration D] [-concurrency C]   fetch leased pages for the network (bearer token required)
   cosift crawl <url...>     one-shot crawl of seed URLs
   cosift check-robots <url...>   report whether each URL is crawlable per the site's robots.txt
   cosift crawl-errors [-limit N] list recently-errored frontier URLs with their failure reason

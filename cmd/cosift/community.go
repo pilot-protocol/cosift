@@ -169,14 +169,25 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	login := fs.Bool("login", false, "save an authenticated CLI session")
 	logout := fs.Bool("logout", false, "revoke and delete the saved CLI session")
 	guest := fs.Bool("guest", false, "perform Search, Answer or Research without login; contributions require login")
+	workerMode := fs.Bool("worker", false, "fetch blocked pages leased by the network and submit them (needs your bearer token)")
+	maxPages := fs.Int("max-pages", 100, "worker: stop after claiming this many pages (0 = no page limit)")
+	duration := fs.Duration("duration", 30*time.Minute, "worker: stop claiming after this long (0 = no time limit)")
+	concurrency := fs.Int("concurrency", 4, "worker: leases in flight at once, 1 to 32")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	var explicitServer, explicitSession bool
+	var explicitServer, explicitSession, workerFlag bool
 	fs.Visit(func(f *flag.Flag) {
 		explicitServer = explicitServer || f.Name == "server"
 		explicitSession = explicitSession || f.Name == "session-file"
+		workerFlag = workerFlag || f.Name == "max-pages" || f.Name == "duration" || f.Name == "concurrency"
 	})
+	if workerFlag && !*workerMode {
+		return fmt.Errorf("-max-pages, -duration and -concurrency require -worker")
+	}
+	if *workerMode && (*login || *logout || *guest || *requestMode || *local || *credits || *file != "" || *query != "" || fs.NArg() > 0) {
+		return fmt.Errorf("-worker cannot be combined with other operations")
+	}
 	// The installer can provision this one well-known session. Explicit
 	// credentials and guest mode always win; no harness config is inspected.
 	if !*guest && !*login && !explicitSession && *sessionFile == "" && os.Getenv("COSIFT_TOKEN") == "" && *email == "" && os.Getenv("COSIFT_PASSWORD") == "" {
@@ -210,6 +221,13 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	}
 	if token != "" && *sessionFile != "" && !*login {
 		return fmt.Errorf("choose COSIFT_TOKEN or a saved session, not both")
+	}
+	if *workerMode {
+		bearer, err := workerBearer(token, *sessionFile, strings.TrimRight(*server, "/"), password != "" || *email != "")
+		if err != nil {
+			return err
+		}
+		return runWorkerMode(ctx, strings.TrimRight(*server, "/"), bearer, workerOptions{MaxPages: *maxPages, Duration: *duration, Concurrency: *concurrency}, os.Stdout, os.Stderr)
 	}
 	if token == "" && !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
 		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest for retrieval")

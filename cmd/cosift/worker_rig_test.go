@@ -21,6 +21,7 @@ type fakeApp struct {
 	submits  []map[string]any
 	onClaim  func(n, max int) (int, http.Header, string)
 	onSubmit func(n int, body map[string]any) (int, http.Header, string)
+	headers  []http.Header
 	srv      *httptest.Server
 }
 
@@ -31,6 +32,7 @@ func newFakeApp(t *testing.T) *fakeApp {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		a.mu.Lock()
+		a.headers = append(a.headers, r.Header.Clone())
 		var status int
 		var header http.Header
 		var out string
@@ -60,6 +62,12 @@ func (a *fakeApp) claimCalls() []int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]int(nil), a.claims...)
+}
+
+func (a *fakeApp) requestHeaders() []http.Header {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]http.Header(nil), a.headers...)
 }
 
 func (a *fakeApp) submitted() []map[string]any {
