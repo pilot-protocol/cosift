@@ -77,4 +77,4 @@ introduced to construct the local gRPC fixture responses.
 
 CI installs the pinned official `govulncheck` v1.8.0 development tool to gate
 vulnerabilities in imported Go packages. It is not a dependency of the shipped binary.
-The minimum Go toolchain is 1.26.8 so builds include current 1.26 security fixes.
+The minimum Go toolchain is 1.26.9 so builds include current 1.26 security fixes.

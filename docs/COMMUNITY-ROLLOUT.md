@@ -41,7 +41,7 @@ part of the release's complete tree. The shared-account integration adds the
 auth/MCP connections and CLI session handoff. Compare the resulting tree and
 representative query behavior against v0.2.5 when accepting the release.
 
-Run with Go 1.26.8 and `GOWORK=off` when a parent workspace uses an older Go version:
+Run with Go 1.26.9 and `GOWORK=off` when a parent workspace uses an older Go version:
 
 ```sh
 GOWORK=off go vet ./...

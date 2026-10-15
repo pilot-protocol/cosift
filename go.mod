@@ -1,6 +1,6 @@
 module github.com/pilot-protocol/cosift
 
-go 1.26.8
+go 1.26.9
 
 require (
 	cloud.google.com/go/firestore v1.25.0
