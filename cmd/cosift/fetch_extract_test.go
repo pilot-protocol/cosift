@@ -65,6 +65,10 @@ func fixtureOrigin(t *testing.T) (*httptest.Server, *headerLog) {
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte("<html><body>Access denied</body></html>"))
 	})
+	mux.HandleFunc("/to-private", func(w http.ResponseWriter, r *http.Request) {
+		log.add(r)
+		http.Redirect(w, r, "http://127.0.0.1/secret", http.StatusFound)
+	})
 	mux.HandleFunc("/partial", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusPartialContent)
