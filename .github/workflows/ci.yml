@@ -50,8 +50,23 @@ jobs:
         # that the host-arch test build would miss.
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/cosift
 
+      - name: Start Firestore emulator
+        # Pinned by digest (emulators tag); the emulator tests skip without it.
+        run: |
+          docker run -d --name firestore-emulator -p 8080:8080 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:45a15cc163d2df13137478856b4b9bb90426100fa8aec542269460c10110b727 \
+            gcloud emulators firestore start --host-port=0.0.0.0:8080
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8080 >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker logs firestore-emulator
+          exit 1
+
       - name: Run tests with coverage
         # cosift's internal/crawler hits ~25s; allow 5m total headroom.
+        env:
+          FIRESTORE_EMULATOR_HOST: localhost:8080
         run: go test -race -coverprofile=coverage.out -covermode=atomic -timeout 10m ./...
 
       - name: Upload coverage to Codecov

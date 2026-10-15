@@ -60,3 +60,16 @@ func TestEngineArticlesClassifyTheEnginesAnswers(t *testing.T) {
 		t.Fatal("a non-ULID id reached the engine")
 	}
 }
+
+func TestEngineArticlesReportAnUnreachableEngineWithoutItsAddress(t *testing.T) {
+	engine := httptest.NewServer(http.NotFoundHandler())
+	client, err := newEngineClient(engine.URL, wikiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Close()
+	_, err = engineArticles{client}.ArticleByID(context.Background(), testRef)
+	if err == nil || errors.Is(err, ErrArticleGone) || strings.Contains(err.Error(), engine.URL) {
+		t.Fatalf("unreachable engine: %v", err)
+	}
+}
