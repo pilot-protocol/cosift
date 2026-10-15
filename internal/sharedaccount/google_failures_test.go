@@ -18,7 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func googleFixtureStore(t *testing.T, fixture *firestoreFixture) googleStore {
+func googleFixtureStore(t *testing.T, fixture pb.FirestoreServer) googleStore {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	server := grpc.NewServer()
