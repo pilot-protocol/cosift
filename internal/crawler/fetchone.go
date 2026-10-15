@@ -83,13 +83,18 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 
 // ExtractBody turns a fetched body into the parsed page FetchOne returns; binary content types are refused.
 func ExtractBody(contentType string, body []byte, finalURL string) (*ParsedDoc, error) {
+	return ExtractBodyWith(contentType, body, finalURL, ParsePDF)
+}
+
+// ExtractBodyWith is ExtractBody with the PDF parser supplied by the caller, so a PDF can be parsed out of process.
+func ExtractBodyWith(contentType string, body []byte, finalURL string, parsePDF func([]byte, string) (*ParsedDoc, error)) (*ParsedDoc, error) {
 	if err := checkContentType(contentType); err != nil {
 		return nil, err
 	}
 	var parsed *ParsedDoc
 	var err error
 	if strings.Contains(contentType, "pdf") {
-		parsed, err = ParsePDF(body, finalURL)
+		parsed, err = parsePDF(body, finalURL)
 	} else {
 		parsed, err = Parse(body, finalURL)
 	}

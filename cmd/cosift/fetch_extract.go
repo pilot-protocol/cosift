@@ -46,7 +46,10 @@ func fetchAndExtract(ctx context.Context, client *http.Client, header http.Heade
 		return nil, err
 	}
 	finalURL := res.Request.URL.String()
-	parsed, err := crawler.ExtractBody(res.Header.Get("Content-Type"), body, finalURL)
+	parsePDF := func(b []byte, u string) (*crawler.ParsedDoc, error) {
+		return crawler.ParsePDFSandboxed(ctx, b, u, "", 0)
+	}
+	parsed, err := crawler.ExtractBodyWith(res.Header.Get("Content-Type"), body, finalURL, parsePDF)
 	if err != nil {
 		return nil, err
 	}
