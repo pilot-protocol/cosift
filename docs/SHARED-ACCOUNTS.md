@@ -90,8 +90,9 @@ preserved. No new ranking change is included.
   including topic tools. Credits do not bypass that cap or buy an article.
 
 Andrei's current MCP uses `NullArticleStore` with articles disabled. This work
-connects article lookup/demand; it does **not** implement article generation,
-Gemini research, a distributed contributor network, or rewards for article views.
+connects article lookup/demand and, with `COSIFT_COMMUNITY_WORK=1`, brokers fetch work
+for joined contributors; it does **not** implement article generation, Gemini
+research, or rewards for article views.
 Lookups can return no coverage while regular source-page search remains usable.
 No local agent history is collected or uploaded by this integration.
 
@@ -139,6 +140,14 @@ The gateway runtime identity requires:
   [`deploy/community-account-role.yaml`](../deploy/community-account-role.yaml);
   it grants reads/query and update, without document creation/deletion. Apply
   the intended project/database scope when binding it to the runtime identity.
+  With `COSIFT_COMMUNITY_WORK=1` the app also adds to `counters.fetch_*` on existing
+  contributor documents (an update) and creates documents in the `alerts` collection
+  when a moderation ceiling is reached. The retained role grants no creation, so those
+  alerts are not written: each attempt is logged as `work_alert_failed` and retried every
+  minute. Firestore IAM cannot grant creation for one collection. Enabling the alerts
+  means adding `datastore.entities.create` for the whole database, which would also let
+  this identity create account and token documents; weigh that against the role's
+  no-creation boundary, or leave the alerts off.
 - Secret accessor on **`cosift-token-pepper` only**, including the active version
   IDs carried by tokens. Never grant this application the OTP or mail secrets.
 - Cloud Run invoker on the chosen auth/MCP services when private. For an
