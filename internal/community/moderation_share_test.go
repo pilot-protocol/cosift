@@ -227,3 +227,16 @@ func TestAnOlderDatabaseGainsTheUsageTable(t *testing.T) {
 		t.Fatalf("reserve on a migrated database: %v %v", ok, err)
 	}
 }
+
+func TestACheckIsNotMadeWhenItCannotBeCounted(t *testing.T) {
+	r := newShareRig(t, 5)
+	if _, err := r.s.db.Exec(`CREATE TRIGGER no_usage BEFORE INSERT ON moderation_usage BEGIN SELECT RAISE(ABORT, 'full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	r.add("alice", "https://example.com/one")
+	r.dispatch(t)
+	status, attempts, next, _ := r.row("https://example.com/one")
+	if len(r.moderate) != 0 || status != "pending" || attempts != 1 || next == nextMidnight.Unix() {
+		t.Fatalf("moderate %v, %s attempts=%d next=%d", r.moderate, status, attempts, next)
+	}
+}
