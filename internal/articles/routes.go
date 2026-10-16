@@ -28,9 +28,10 @@ func (s *Store) Routes() []v1.Route {
 		{Method: http.MethodGet, Path: "/v1/articles/{id}", Scopes: []v1.Scope{read, readAll}, Handler: s.gated(s.handleGet)},
 		{Method: http.MethodGet, Path: "/v1/articles/by-slug/{slug}", Scopes: []v1.Scope{read, readAll}, Handler: s.gated(s.handleBySlug)},
 		{Method: http.MethodGet, Path: "/v1/articles/stats", Scopes: []v1.Scope{readAll}, Handler: s.gated(s.handleStats)},
-		{Method: http.MethodPut, Path: "/v1/articles/{id}", Scopes: []v1.Scope{v1.ScopeArticlesWrite, v1.ScopeArticlesStub}, BodyLimit: limitPut, Handler: s.gated(s.handlePut)},
+		{Method: http.MethodPut, Path: "/v1/articles/{id}", Scopes: []v1.Scope{v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeArticlesContribute}, BodyLimit: limitPut, Handler: s.gated(s.handlePut)},
 		{Method: http.MethodDelete, Path: "/v1/articles/{id}", Scopes: []v1.Scope{v1.ScopeArticlesStub}, Handler: s.gated(s.handleDeleteStub)},
 		{Method: http.MethodPost, Path: "/v1/articles/{id}/status", Scopes: []v1.Scope{v1.ScopeArticlesModerate}, BodyLimit: limitStatus, Handler: s.gated(s.handleStatus)},
+		{Method: http.MethodPost, Path: "/v1/articles/{id}/revert", Scopes: []v1.Scope{v1.ScopeArticlesModerate}, BodyLimit: limitStatus, Handler: s.gated(s.handleRevert)},
 		{Method: http.MethodPost, Path: "/v1/articles/purge-prelive", Scopes: []v1.Scope{v1.ScopeArticlesAdmin}, BodyLimit: limitPurge, Handler: s.gated(s.handlePurge)},
 		{Method: http.MethodGet, Path: "/v1/article-versions/{id}", Scopes: []v1.Scope{readAll}, Handler: s.gated(s.handleVersions)},
 		{Method: http.MethodGet, Path: "/v1/article-versions/{id}/{version}", Scopes: []v1.Scope{readAll}, Handler: s.gated(s.handleVersion)},
@@ -105,7 +106,7 @@ func (s *Store) activeLocked(p v1.Principal, need v1.Scope, write bool) (v1.Prin
 	if write && s.policy.WritesFrozen() {
 		return a, fail(v1.WritesFrozen())
 	}
-	if need == v1.ScopeArticlesWrite || need == v1.ScopeArticlesStub {
+	if need == v1.ScopeArticlesWrite || need == v1.ScopeArticlesStub || need == v1.ScopeArticlesContribute {
 		if _, set := s.policy.GoliveAt(); set && s.idx.golive == nil {
 			return a, fail(errRestorePending())
 		}

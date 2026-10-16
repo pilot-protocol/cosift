@@ -1,0 +1,42 @@
+{
+  "contributions": [
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V2",
+      "kind": "revision",
+      "status": "refused",
+      "status_at": "2026-10-14T09:13:31Z",
+      "title": "Rust async runtimes",
+      "refusals": [
+        {
+          "code": "promotional",
+          "field": "body_md"
+        }
+      ]
+    },
+    {
+      "contribution_id": "01J9A3Q7W4X9M3K5N6P8R0T2V1",
+      "kind": "new",
+      "status": "published",
+      "status_at": "2026-10-14T09:12:31Z",
+      "title": "Tidal power",
+      "article": {
+        "id": "01J9A3Q8B2C3D4E5F6G7H8J9K0",
+        "url": "https://cosift.example/wiki/tidal-power",
+        "version": 1
+      },
+      "credits": 1500
+    }
+  ],
+  "earned": [],
+  "fetch": {
+    "claimed": 12,
+    "credits": 0,
+    "mismatch": 0,
+    "rejected": 0,
+    "submitted": 0,
+    "verified": 8
+  },
+  "handle": "tidal-fan",
+  "joined": true,
+  "more": false
+}

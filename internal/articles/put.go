@@ -10,7 +10,55 @@ import (
 	v1 "github.com/pilot-protocol/cosift/internal/v1"
 )
 
-const keepVersions = 5
+const (
+	keepVersions          = 5
+	keepVersionsCommunity = 20
+	maxContributors       = 64
+)
+
+// keepFor is how many prior versions a record keeps.
+func keepFor(r *Record) int {
+	if r.origin() == originCommunity {
+		return keepVersionsCommunity
+	}
+	return keepVersions
+}
+
+// writeScope is the scope an article PUT runs under; no principal holds both.
+func writeScope(p v1.Principal) v1.Scope {
+	if p.Has(v1.ScopeArticlesContribute) {
+		return v1.ScopeArticlesContribute
+	}
+	return v1.ScopeArticlesWrite
+}
+
+// contributionCid applies the shape rules of a contribution (a write principal may not send a contributor) and returns its cid.
+func contributionCid(p v1.Principal, b *putBody) (string, *v1.Error) {
+	if !p.Has(v1.ScopeArticlesContribute) {
+		if b.Contributor != nil {
+			return "", fail(v1.InvalidField("contributor", "field_not_allowed"))
+		}
+		return "", nil
+	}
+	if len(b.Contributor) == 0 || string(b.Contributor) == "null" {
+		return "", fail(v1.InvalidField("contributor", "required"))
+	}
+	var cid string
+	if json.Unmarshal(b.Contributor, &cid) != nil || !cidPattern.MatchString(cid) {
+		return "", fail(v1.InvalidField("contributor", "pattern"))
+	}
+	switch {
+	case b.Status == nil || *b.Status != StatusPublished:
+		return "", fail(v1.InvalidField("status", "must_be_published"))
+	case b.Sensitivity == nil || b.Sensitivity.Class != "none":
+		return "", fail(v1.InvalidField("sensitivity.class", "must_be_none"))
+	case len(b.TopicIDs) > 0:
+		return "", fail(v1.InvalidField("topic_ids", "field_not_allowed"))
+	case len(b.ClusterIDs) > 0:
+		return "", fail(v1.InvalidField("cluster_ids", "field_not_allowed"))
+	}
+	return cid, nil
+}
 
 type dropped struct {
 	Aliases    int `json:"aliases"`
@@ -151,7 +199,7 @@ func (s *Store) envFirst(w http.ResponseWriter, p v1.Principal, id string) bool 
 }
 
 func (s *Store) putArticle(w http.ResponseWriter, r *http.Request, p v1.Principal, id string, b *putBody) {
-	if !allowed(w, r, v1.ScopeArticlesWrite) || s.refuseRestorePending(w) || !s.chargeWrite(w, p) || !s.envFirst(w, p, id) {
+	if !allowed(w, r, writeScope(p)) || s.refuseRestorePending(w) || !s.chargeWrite(w, p) || !s.envFirst(w, p, id) {
 		return
 	}
 	checked := false
@@ -215,7 +263,7 @@ func (s *Store) putArticle(w http.ResponseWriter, r *http.Request, p v1.Principa
 func (s *Store) commitArticle(p v1.Principal, id string, b *putBody, vecs map[string][]float32, check func() *v1.Error) (*plan, *v1.Error, bool) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	a, e := s.activeLocked(p, v1.ScopeArticlesWrite, true)
+	a, e := s.activeLocked(p, writeScope(p), true)
 	if e != nil {
 		return nil, e, false
 	}
@@ -268,7 +316,7 @@ func (s *Store) commitArticle(p v1.Principal, id string, b *putBody, vecs map[st
 	if pl.result == "updated" && pl.content {
 		prevJSON, _ := pl.prev.MarshalJSON()
 		_ = bt.Set(versionKey(id, pl.prev.Version), prevJSON, nil)
-		if err := s.pruneVersions(bt, id, pl.prev.Version); err != nil {
+		if err := s.pruneVersions(bt, id, pl.prev.Version, keepFor(pl.rec)); err != nil {
 			bt.Close()
 			return nil, fail(v1.InternalError()), false
 		}
@@ -311,9 +359,9 @@ func storedVectors(r *Record, rows []row) map[string][]float32 {
 	return out
 }
 
-// pruneVersions deletes prior versions of id beyond the newest keepVersions,
+// pruneVersions deletes prior versions of id beyond the newest keep,
 // counting newest as one of them.
-func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest int) error {
+func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest, keep int) error {
 	lower, upper := versionPrefix(id)
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
 	if err != nil {
@@ -327,7 +375,7 @@ func (s *Store) pruneVersions(bt *pebble.Batch, id string, newest int) error {
 		}
 	}
 	slices.Sort(versions)
-	for len(versions) > keepVersions {
+	for len(versions) > keep {
 		_ = bt.Delete(versionKey(id, versions[0]), nil)
 		versions = versions[1:]
 	}
@@ -341,16 +389,21 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 	}
 	now := s.nowString()
 	prev := ix.recs[id]
+	contribute := p.Has(v1.ScopeArticlesContribute)
 	if prev != nil {
 		if !p.SameEnv(prev.Prelive) {
 			return nil, fail(v1.EnvMismatch())
 		}
-		if prev.Status == StatusRejected || prev.Status == StatusTombstoned {
+		if prev.Status == StatusRejected || prev.Status == StatusTombstoned || (contribute && prev.Status == StatusHeld) {
 			return nil, fail(errModerationLocked(prev.Status))
 		}
 		if b.Title != prev.Title {
 			return nil, fail(v1.InvalidField("title", "title_immutable"))
 		}
+	}
+	cid, e := contributionCid(p, b)
+	if e != nil {
+		return nil, e
 	}
 	rec := &Record{Schema: 1, ID: id, Title: b.Title, AIGenerated: true}
 	if prev != nil {
@@ -381,6 +434,9 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 		}
 		return pl, nil
 	}
+	if contribute && prev != nil && b.ExpectedVersion == nil {
+		return nil, fail(v1.InvalidField("expected_version", "required"))
+	}
 	if e := check(); e != nil {
 		return nil, e
 	}
@@ -392,6 +448,14 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 		if b.ExpectedVersion != nil && *b.ExpectedVersion != prev.Version {
 			v := prev.Version
 			return nil, fail(errVersionConflict(&v))
+		}
+		if contribute {
+			if tierRank[prev.QualityTier] > tierRank[b.QualityTier] {
+				return nil, fail(errTierRegression())
+			}
+			if len(prev.Contributors) >= maxContributors && !slices.Contains(prev.Contributors, cid) {
+				return nil, fail(errContributorsFull())
+			}
 		}
 		status := requested
 		if prev.Status == StatusHeld {
@@ -430,6 +494,18 @@ func (s *Store) planArticle(ix *index, p v1.Principal, id string, b *putBody, ch
 		if blocker := slugBlocker(ix, id, rec.BaseSlug); blocker != nil {
 			return nil, fail(errBlocked(p, blocker))
 		}
+	}
+	rec.RevertsTo = 0
+	if contribute {
+		rec.Origin, rec.VersionContributor = originCommunity, &cid
+		if !slices.Contains(rec.Contributors, cid) {
+			rec.Contributors = append(rec.Contributors, cid)
+		}
+	} else {
+		if rec.Origin == "" {
+			rec.Origin = originSynth
+		}
+		rec.VersionContributor = nil
 	}
 	pl.claims = newTopics
 	pl.write, pl.content = true, true

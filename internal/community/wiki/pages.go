@@ -71,6 +71,7 @@ type articleView struct {
 	Head                          head
 	Title, Vertical, VerticalSlug string
 	Tier, Updated, UpdatedISO     string
+	Contributors                  []string
 	Body                          template.HTML
 	Sources                       []sourceView
 	ReportHref                    string
@@ -141,7 +142,7 @@ func (w *Wiki) reportHref(canonical string) string {
 	return "mailto:" + w.cfg.ReportMailto + "?subject=" + strings.ReplaceAll(url.QueryEscape("Report: "+canonical), "+", "%20")
 }
 
-func (w *Wiki) renderArticle(rec *engineRecord) []byte {
+func (w *Wiki) renderArticle(rec *engineRecord, contributors []string) []byte {
 	title := cleanLine(rec.Title)
 	canonical := w.canonical("/wiki/" + rec.Slug)
 	desc := summary(rec.Lead)
@@ -178,7 +179,7 @@ func (w *Wiki) renderArticle(rec *engineRecord) []byte {
 		InLanguage: "en", Publisher: ldOrg{Type: "Organization", Name: "Cosift"}}
 	return execute(articleTmpl, articleView{
 		Head: h, Title: title, Vertical: verticals[rec.Vertical], VerticalSlug: rec.Vertical,
-		Tier: tiers[rec.QualityTier], Updated: updated, UpdatedISO: updatedISO,
+		Tier: tiers[rec.QualityTier], Updated: updated, UpdatedISO: updatedISO, Contributors: contributors,
 		Body:    renderBody(rec.Lead+"\n\n"+rec.BodyMD, links, len(rec.Citations)),
 		Sources: sources, ReportHref: w.reportHref(canonical),
 	})

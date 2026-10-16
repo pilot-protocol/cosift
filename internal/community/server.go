@@ -2,6 +2,7 @@ package community
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/sha256"
@@ -53,6 +54,10 @@ type Config struct {
 	BrokerKey                   string // The engine's csk_ key for community delivery and moderation; sent to EngineURL only.
 	EngineURL                   string // The engine's loopback /v1 origin; empty means the default.
 	Awards                      bool   // Apply pending credit awards; needs shared accounts and the article cross-check.
+	Work                        bool   // Serve /api/work/* and run the settled, counter, alert and push loops; needs shared accounts and the broker key.
+	FetchDailyCap               int    // Pages credited per account per UTC day; 0 means the default.
+	ModerationsPerAccount       int    // Content checks one account may use per UTC day; 0 means the default.
+	Environment                 string // "prod" or "staging", the label of the alerts the app raises.
 	Articles                    ArticleReader
 	TrustedProxies              []string
 	GuestInterval               time.Duration
@@ -84,15 +89,21 @@ type Server struct {
 	failLimits       *limiter
 	failLogs         *limiter
 	hashSlots        chan struct{}
+	turns            turnOrder
 	trustedProxies   []netip.Prefix
 	guestSalt        string
 	pageClient       *http.Client
 	moderationRobots *crawler.Robots
 	hostGaps         hostGaps
-	backendDown      atomic.Bool // Set when a round found the backend unreachable; the next round probes it before fetching any page.
+	backendDown      atomic.Bool  // Set when a round found the backend unreachable; the next round probes it before fetching any page.
+	moderateHold     atomic.Int64 // Unix time before which no content check is sent: the engine's daily ceiling answered.
 	wiki             *wiki.Wiki
 	engine           *engineClient
 	awards           *awardPoller
+	articles         ArticleReader
+	slugs            slugCache
+	work             workRuntime
+	now              func() time.Time
 	index            []byte
 }
 
@@ -119,6 +130,10 @@ func Open(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	workSource, err := workSourceFor(cfg)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Backend = strings.TrimRight(cfg.Backend, "/")
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 	db, err := openDB(cfg.DataDir)
@@ -129,6 +144,7 @@ func Open(cfg Config) (*Server, error) {
 		Timeout:       20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
+	s.now = time.Now
 	s.paymentClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.pageClient = newModerationClient()
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
@@ -160,8 +176,24 @@ func Open(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	s.articles = cfg.Articles
+	if s.articles == nil && brokerKeyPattern.MatchString(cfg.Wiki.EngineKey) {
+		if client, err := newEngineClient(cmp.Or(cfg.Wiki.EngineURL, wiki.DefaultEngineURL), cfg.Wiki.EngineKey); err == nil {
+			s.articles = engineArticles{client}
+		}
+	}
+	if cfg.Work {
+		s.work.source = workSource
+		if err := s.initWork(); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	wc := cfg.Wiki
 	wc.PublicURL, wc.GAMeasurementID, wc.GSCVerification, wc.ClientIP = cfg.PublicURL, cfg.GAMeasurementID, cfg.GSCVerification, s.clientIP
+	if src, ok := cfg.Shared.(sharedaccount.HandleSource); ok && wc.Handles == nil {
+		wc.Handles = wikiHandles{src}
+	}
 	if s.wiki, err = wiki.New(wc); err != nil {
 		db.Close()
 		return nil, err
@@ -208,6 +240,9 @@ func Open(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /api/limits", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.limitPolicy()) })
 	mux.HandleFunc("GET /api/credits", s.auth(s.credits))
 	mux.HandleFunc("POST /api/meter", s.meter)
+	mux.HandleFunc("GET /api/contributions", s.auth(s.contributions))
+	mux.HandleFunc("POST /api/work/claim", s.workRoute(s.claimWork))
+	mux.HandleFunc("POST /api/work/submit", s.workRoute(s.submitWork))
 	mux.HandleFunc("GET /api/analytics", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]string{"measurement_id": s.cfg.GAMeasurementID})
 	})
@@ -262,9 +297,17 @@ func (s *Server) protect(next http.Handler) http.Handler {
 				return
 			}
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, bodyLimit(r.URL.Path))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyLimit is the request body cap in bytes: a worker's attestation may carry a page and its vectors.
+func bodyLimit(path string) int64 {
+	if path == "/api/work/submit" {
+		return submitBodyMax
+	}
+	return 1 << 20
 }
 
 func (s *Server) sameOriginClient(r *http.Request) bool {
@@ -799,6 +842,11 @@ func (s *Server) Run(ctx context.Context) {
 		go func() { defer close(awards); s.runAwards(ctx) }()
 		defer func() { <-awards }()
 	}
+	if s.cfg.Work {
+		work := make(chan struct{})
+		go func() { defer close(work); s.runWork(ctx) }()
+		defer func() { <-work }()
+	}
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -817,38 +865,35 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,url,attempts FROM submissions WHERE status IN ('pending','config_error') AND next_attempt<=? ORDER BY next_attempt,created_at,id LIMIT 20`, time.Now().Unix())
-	if err != nil {
+	if _, err = s.db.ExecContext(ctx, `DELETE FROM moderation_usage WHERE day<?`, utcDayStart(s.now()).Unix()); err != nil {
 		return err
 	}
-	jobs := []job{}
-	for rows.Next() {
-		var j job
-		if err := rows.Scan(&j.id, &j.url, &j.attempts); err != nil {
-			rows.Close()
+	down, probed := false, false
+	defer func() {
+		if probed {
+			s.backendDown.Store(down)
+		}
+	}()
+	warned := false
+	for processed := 0; processed < dispatchBatch; processed++ {
+		j, found, err := s.nextJob(ctx)
+		if err != nil {
 			return err
 		}
-		jobs = append(jobs, j)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	down := len(jobs) > 0 && s.backendDown.Load() && !s.backendReachable(ctx)
-	if down {
-		log.Printf("community: backend still unreachable; %d submissions wait without fetching their pages", len(jobs))
-	}
-	if len(jobs) > 0 {
-		defer func() { s.backendDown.Store(down) }()
-	}
-	warned := false
-	for _, j := range jobs {
+		if !found {
+			break
+		}
+		if !probed {
+			probed = true
+			if down = s.backendDown.Load() && !s.backendReachable(ctx); down {
+				log.Printf("community: backend still unreachable; submissions wait without fetching their pages")
+			}
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if down {
-			if err := s.record(ctx, j, statusBackendDown, backendDownReason); err != nil {
+			if err := s.record(ctx, j, statusBackendDown, backendDownReason, ""); err != nil {
 				return err
 			}
 			continue
@@ -858,7 +903,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				log.Printf("community: COSIFT_COMMUNITY_BROKER_KEY is not set; submissions wait as a configuration error")
 				warned = true
 			}
-			if err := s.record(ctx, j, statusConfigError, configErrorReason); err != nil {
+			if err := s.record(ctx, j, statusConfigError, configErrorReason, ""); err != nil {
 				return err
 			}
 			continue
@@ -869,14 +914,26 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			continue
 		}
-		status, reason, approvedContentHash := s.prevalidate(ctx, j.id, j.url)
+		status, reason, approvedContentHash, failClass := s.prevalidate(ctx, j)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
 		down = status == statusBackendDown
+		if status == statusModerationCeiling {
+			if err := s.requeueUntil(ctx, j, s.moderationHold(), reason); err != nil {
+				return err
+			}
+			continue
+		}
+		if status == statusModerationShare {
+			if err := s.requeueUntil(ctx, j, s.nextUTCDay(), reason); err != nil {
+				return err
+			}
+			continue
+		}
 		if status != "allowed" {
 			// Inconclusive/transient checks never fall through to enqueue.
-			if err := s.record(ctx, j, status, reason); err != nil {
+			if err := s.record(ctx, j, status, reason, failClass); err != nil {
 				return err
 			}
 			continue
@@ -960,7 +1017,7 @@ func (s *Server) dispatch(ctx context.Context) error {
 				reason = "Content checks passed and webpage indexed."
 			}
 		}
-		if err := s.record(ctx, j, status, reason); err != nil {
+		if err := s.record(ctx, j, status, reason, ""); err != nil {
 			return err
 		}
 	}
@@ -969,33 +1026,38 @@ func (s *Server) dispatch(ctx context.Context) error {
 
 // requeue schedules a job for later without counting an attempt.
 func (s *Server) requeue(ctx context.Context, j job, wait time.Duration) error {
-	at := time.Now().Add(wait)
+	return s.requeueUntil(ctx, j, s.now().Add(wait), "Waiting to check the webpage.")
+}
+
+func (s *Server) requeueUntil(ctx context.Context, j job, at time.Time, reason string) error {
 	next := at.Unix()
 	if at.Nanosecond() > 0 {
 		next++
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, "Waiting to check the webpage.", next, j.id)
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET reason=?,next_attempt=? WHERE id=?`, reason, next, j.id)
 	return err
 }
 
 type job struct {
 	id, url  string
 	attempts int
+	userID   string
 }
 
 // record stores a job's outcome. A configuration error or an unreachable backend keeps its attempts and retries slowly, since waiting out the backoff cannot fix either.
-func (s *Server) record(ctx context.Context, j job, status, reason string) error {
+func (s *Server) record(ctx context.Context, j job, status, reason, failClass string) error {
 	attempts := j.attempts + 1
-	next := time.Now().Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
+	now := s.now()
+	next := now.Add(time.Duration(1<<min(j.attempts, 9)) * 5 * time.Second)
 	switch status {
 	case statusConfigError:
-		attempts, next = j.attempts, time.Now().Add(configErrorRetry)
+		attempts, next = j.attempts, now.Add(configErrorRetry)
 	case statusBackendDown:
-		status, attempts, next = "pending", j.attempts, time.Now().Add(backendDownRetry)
+		status, attempts, next = "pending", j.attempts, now.Add(backendDownRetry)
 	}
 	if status == "pending" && attempts >= maxSubmissionAttempts {
 		status, reason = "unverified", "The webpage could not be checked or delivered after repeated attempts."
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=? WHERE id=?`, status, reason, attempts, next.Unix(), j.id)
+	_, err := s.db.ExecContext(ctx, `UPDATE submissions SET status=?,reason=?,attempts=?,next_attempt=?,fail_class=? WHERE id=?`, status, reason, attempts, next.Unix(), failClass, j.id)
 	return err
 }

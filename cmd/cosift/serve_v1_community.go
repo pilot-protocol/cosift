@@ -48,17 +48,17 @@ func communityCapsFromEnv() (communityCaps, error) {
 	return c, nil
 }
 
-// v1CommunityRoutes are the community app's two engine calls.
+// v1CommunityRoutes are the community app's engine calls: intake, and the work broker's.
 func (s *pebbleHTTP) v1CommunityRoutes() []v1.Route {
 	intake := []v1.Scope{v1.ScopeCommunityIntake}
 	caps := s.communityCaps
 	if caps == (communityCaps{}) {
 		caps = communityCaps{communityCapMax, communityCapMax}
 	}
-	return []v1.Route{
+	return append([]v1.Route{
 		{Method: http.MethodPost, Path: "/v1/community/enqueue", Scopes: intake, PerMinute: caps.enqueue, BodyLimit: v1EnqueueBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityEnqueue)},
 		{Method: http.MethodPost, Path: "/v1/community/moderate", Scopes: intake, PerMinute: caps.moderate, BodyLimit: v1ModerateBodyLimit, Ungated: true, Handler: http.HandlerFunc(s.handleCommunityModerate)},
-	}
+	}, s.v1WorkRoutes()...)
 }
 
 func v1Problem(status int, code, detail string) v1.Error {

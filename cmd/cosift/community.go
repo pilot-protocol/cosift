@@ -23,6 +23,9 @@ import (
 	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
+// openCommunity opens the community app; tests replace it.
+var openCommunity = community.Open
+
 func runCommunity(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("community", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:7780", "listen address")
@@ -52,6 +55,14 @@ func runCommunity(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	work, fetchCap, environment, err := communityWorkFromEnv()
+	if err != nil {
+		return err
+	}
+	moderationShare, err := communityModerationShareFromEnv()
+	if err != nil {
+		return err
+	}
 	var trusted []string
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
@@ -69,7 +80,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), Awards: awards, TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
+	s, err := openCommunity(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), Awards: awards, Work: work, FetchDailyCap: fetchCap, ModerationsPerAccount: moderationShare, Environment: environment, TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
 	if err != nil {
 		return err
 	}
@@ -109,6 +120,38 @@ func communityAwardsFromEnv() (bool, error) {
 	return false, fmt.Errorf("COSIFT_COMMUNITY_AWARDS must be 0 or 1")
 }
 
+// communityWorkFromEnv reads the work switch (0 by default), the per-account daily page cap (0 = default) and the environment label of the alerts.
+func communityWorkFromEnv() (enabled bool, fetchCap int, environment string, err error) {
+	switch strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_WORK")) {
+	case "", "0":
+	case "1":
+		enabled = true
+	default:
+		return false, 0, "", fmt.Errorf("COSIFT_COMMUNITY_WORK must be 0 or 1")
+	}
+	if v := strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_FETCH_DAILY_CAP")); v != "" {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil || n < 1 || n > 10000 {
+			return false, 0, "", fmt.Errorf("COSIFT_COMMUNITY_FETCH_DAILY_CAP must be an integer from 1 to 10000")
+		}
+		fetchCap = n
+	}
+	return enabled, fetchCap, strings.TrimSpace(os.Getenv("COSIFT_ENV")), nil
+}
+
+// communityModerationShareFromEnv reads the content checks one account may use per UTC day (0 = default).
+func communityModerationShareFromEnv() (int, error) {
+	v := strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT"))
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 10000 {
+		return 0, fmt.Errorf("COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT must be an integer from 1 to 10000")
+	}
+	return n, nil
+}
+
 // communityRewardFromEnv reads the contribution-reward switch (off by default) and the per-account daily cap (0 = default).
 func communityRewardFromEnv() (enabled bool, dailyCap int, err error) {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_CONTRIBUTION_REWARD"))) {
@@ -146,14 +189,25 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	login := fs.Bool("login", false, "save an authenticated CLI session")
 	logout := fs.Bool("logout", false, "revoke and delete the saved CLI session")
 	guest := fs.Bool("guest", false, "perform Search, Answer or Research without login; contributions require login")
+	workerMode := fs.Bool("worker", false, "fetch blocked pages leased by the network and submit them (needs your bearer token)")
+	maxPages := fs.Int("max-pages", 100, "worker: stop after claiming this many pages (0 = no page limit)")
+	duration := fs.Duration("duration", 30*time.Minute, "worker: stop claiming after this long (0 = no time limit)")
+	concurrency := fs.Int("concurrency", 4, "worker: leases in flight at once, 1 to 32")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	var explicitServer, explicitSession bool
+	var explicitServer, explicitSession, workerFlag bool
 	fs.Visit(func(f *flag.Flag) {
 		explicitServer = explicitServer || f.Name == "server"
 		explicitSession = explicitSession || f.Name == "session-file"
+		workerFlag = workerFlag || f.Name == "max-pages" || f.Name == "duration" || f.Name == "concurrency"
 	})
+	if workerFlag && !*workerMode {
+		return fmt.Errorf("-max-pages, -duration and -concurrency require -worker")
+	}
+	if *workerMode && (*login || *logout || *guest || *requestMode || *local || *credits || *file != "" || *query != "" || fs.NArg() > 0) {
+		return fmt.Errorf("-worker cannot be combined with other operations")
+	}
 	// The installer can provision this one well-known session. Explicit
 	// credentials and guest mode always win; no harness config is inspected.
 	if !*guest && !*login && !explicitSession && *sessionFile == "" && os.Getenv("COSIFT_TOKEN") == "" && *email == "" && os.Getenv("COSIFT_PASSWORD") == "" {
@@ -187,6 +241,13 @@ func runContributeConfigured(ctx context.Context, cfg *config.Config, args []str
 	}
 	if token != "" && *sessionFile != "" && !*login {
 		return fmt.Errorf("choose COSIFT_TOKEN or a saved session, not both")
+	}
+	if *workerMode {
+		bearer, err := workerBearer(token, *sessionFile, strings.TrimRight(*server, "/"), password != "" || *email != "")
+		if err != nil {
+			return err
+		}
+		return runWorkerMode(ctx, strings.TrimRight(*server, "/"), bearer, workerOptions{MaxPages: *maxPages, Duration: *duration, Concurrency: *concurrency}, os.Stdout, os.Stderr)
 	}
 	if token == "" && !*guest && (*login || *sessionFile == "") && ((*email == "") != (password == "")) {
 		return fmt.Errorf("set both COSIFT_EMAIL and COSIFT_PASSWORD, or use -guest for retrieval")

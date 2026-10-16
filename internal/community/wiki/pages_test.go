@@ -59,7 +59,7 @@ func textOf(n *html.Node) string {
 	return b.String()
 }
 
-var citeID = regexp.MustCompile(`^cite-[1-9][0-9]*$`)
+var citeID = regexp.MustCompile(`^(cite-[1-9][0-9]*|license|originality|credits|worker-fetching|takedown|synth-attribution)$`)
 
 // structure checks a full page: lang, one h1, landmarks, heading order, link
 // rels, scripts, and no style or event-handler attributes.
@@ -117,10 +117,11 @@ func structure(t *testing.T, name, page string) *html.Node {
 		case "a":
 			href := attr(n, "href")
 			if strings.HasPrefix(href, "http:") || strings.HasPrefix(href, "https:") {
-				if !strings.HasPrefix(href, "https://cosift.example/") && attr(n, "rel") != "nofollow noopener" {
+				licence := href == "https://creativecommons.org/licenses/by-sa/4.0/" && attr(n, "rel") == "license noopener"
+				if !strings.HasPrefix(href, "https://cosift.example/") && !licence && attr(n, "rel") != "nofollow noopener" {
 					fail("outbound link %q without rel=nofollow noopener", href)
 				}
-			} else if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "#cite-") && !strings.HasPrefix(href, "mailto:") {
+			} else if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "#") && !strings.HasPrefix(href, "mailto:") {
 				fail("link %q", href)
 			}
 		}
@@ -489,7 +490,7 @@ func TestNoFieldOutsideTheProjections(t *testing.T) {
 		"sensitivity": map[string]any{"class": "none", "reason": "CANARY-sensitivity"}, "moderation": map[string]any{"action": "approve", "by": "CANARY-moderation"},
 		"models": map[string]any{"triage": "CANARY-models", "writer": "CANARY-models-w"}, "build": map[string]any{"retrieval_params": map[string]any{"k": "CANARY-build"}},
 		"base_slug": "CANARY-base_slug", "residue": "CANARY-residue", "reason_code": "CANARY-reason_code", "content_sha256": "CANARY-content_sha256",
-		"readers_7d": "CANARY-readers_7d", "readers_by_day": map[string]any{"CANARY-readers_by_day": 1}, "has_fingerprint": "CANARY-has_fingerprint"}
+		"readers_7d": "CANARY-readers_7d", "version_contributor": "CANARY-version_contributor", "reverts_to": "CANARY-reverts_to", "readers_by_day": map[string]any{"CANARY-readers_by_day": 1}, "has_fingerprint": "CANARY-has_fingerprint"}
 	for k, v := range extra {
 		rec[k] = v
 	}

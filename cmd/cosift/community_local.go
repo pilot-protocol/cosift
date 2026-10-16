@@ -16,7 +16,7 @@ import (
 )
 
 func indexLocalContributions(ctx context.Context, cfg *config.Config, urls []string) ([]*crawler.LocalArtifact, error) {
-	return indexLocalContributionsWithClient(ctx, cfg, urls, crawler.PublicHTTPClient(30*time.Second))
+	return indexLocalContributionsWithClient(ctx, cfg, urls, crawler.BrowserClient(30*time.Second))
 }
 
 func indexLocalContributionsWithClient(ctx context.Context, cfg *config.Config, urls []string, client *http.Client) ([]*crawler.LocalArtifact, error) {
@@ -51,7 +51,7 @@ func indexLocalContributionsWithClient(ctx context.Context, cfg *config.Config, 
 			case <-timer.C:
 			}
 		}
-		page, err := crawler.FetchOne(ctx, client, "Cosift-Community/1.0", raw, 2<<20)
+		page, err := fetchAndExtract(ctx, client, crawler.BrowserHeaders(), raw, 2<<20)
 		if err != nil {
 			return nil, err
 		}

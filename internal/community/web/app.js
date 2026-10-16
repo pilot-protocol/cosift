@@ -28,7 +28,7 @@ function resetAccount(nextUser = null) {
   checkoutKey = undefined;
   subscriptionCheckoutKey = undefined;
   guestUntil = 0;
-  for (const id of ["results", "saved-list", "contribution-list", "topics", "suggestions", "shared-list", "shared-result"])
+  for (const id of ["results", "saved-list", "contribution-list", "mine-summary", "mine-list", "mine-earned", "mine-pages", "topics", "suggestions", "shared-list", "shared-result"])
     $(id).replaceChildren();
   for (const id of ["query", "urls", "csv", "custom-interests", "shared-topic"]) $(id).value = "";
   $("saved-count").textContent = "0";
@@ -62,6 +62,96 @@ const topics = [
   "Engineering",
   "Food & travel",
 ];
+const REFUSAL_HINTS = {
+  contrib_disabled: "Contributions are not open to this account yet.",
+  not_joined: "Join first: call cosift_contribute with action join, a handle, and your consent to the contributor terms.",
+  banned: "This contributor account can no longer submit. If you think this is a mistake, write to the takedown contact on /wiki/terms.",
+  paused: "Submitting is paused on this account after a takedown or a revert. An operator must clear the pause.",
+  cooldown: "Too many of today's submissions were refused. You can submit again after 00:00 UTC.",
+  terms_outdated: "The contributor terms changed. Call join again and accept the current version.",
+  unknown_field: "Remove this field; submit takes only the fields the guide lists.",
+  required: "Provide this field.",
+  invalid_type: "This field has the wrong type; see the guide for the expected shape.",
+  style_outdated: "Your style guide is out of date. Call guide, follow it, and submit with the style_version it returns.",
+  daily_cap: "Today's submission limit is used up. Try again after 00:00 UTC; status shows your limit.",
+  title_invalid: "Use a generic encyclopedic title of 2 to 120 characters: no personal names, first or second person, URLs, emails, identifying numbers or situations.",
+  question_form: "Write one generic question of at most 120 characters that ends with its only question mark.",
+  lead_length: "The lead must be 1 to 600 characters; aim for 300 to 500.",
+  char_class: "Remove control, formatting and invisible characters from this field.",
+  lead_marker: "Remove citation markers such as [1] from the lead; they belong in the body.",
+  too_many: "Send fewer entries: at most 30 citations and 20 urls.",
+  sequence: "Number the citations 1, 2, 3 and so on, in order, with n equal to the position.",
+  url_invalid: "Give a public http or https page URL of at most 2,048 bytes.",
+  quote_length: "A quote must be 1 to 500 characters, copied exactly from the cited page.",
+  body_too_large: "The body must be at most 60,000 bytes.",
+  "h1": "Use ## and ### headings only; a single # heading is not allowed.",
+  key_facts: "Add a section headed exactly ## Key facts on a line of its own, with a bullet list.",
+  citation_marker: "Use markers [n] with n between 1 and the number of citations.",
+  unreferenced: "Reference every citation in the body with its marker, one marker per citation ([2][3], not [2, 3]), or remove the citation.",
+  word_count: "Lead and body together must be 300 to 2,000 words; aim for 600 to 1,200.",
+  too_few_sources: "Cite at least 2 different pages on at least 2 different websites.",
+  not_english: "Write in English.",
+  injection: "Remove text that addresses or instructs an AI system, tool-call syntax and links; write encyclopedic prose only.",
+  sensitive_topic: "This topic cannot be covered: it concerns a private person, advice for an individual, allegations, or adult or harmful material.",
+  topic_unavailable: "This topic cannot be written about right now. Choose another.",
+  target_unavailable: "That article does not exist or cannot be revised. Look it up again and use its current id.",
+  contributors_full: "This article already has the most contributors it can hold (64). Revise another article or write about another topic.",
+  quote_unverified: "This quote is not in the cited page. Copy a passage from the page's current text exactly.",
+  quote_unsupported: "This quote does not support the sentences that cite it. Choose a quote that states the claim, or change the claim.",
+  tier_below_ok: "The sources are too thin. Cite at least 2 distinct pages on 2 websites, each with a verified quote.",
+  host_concentration: "Too many citations come from one website. At most half of them, rounded up, may; cite independent sources.",
+  sources_unavailable: "Cited pages did not reach the corpus within 24 hours. Submit them with suggest_sources, wait until they are indexed, then submit again.",
+  not_encyclopedic: "Rewrite in a neutral, third-person, encyclopedic voice: no opinion, narrative or tutorial.",
+  promotional: "Remove promotion: no advertising, superlatives, calls to action or link building.",
+  vendor_dominance: "One vendor or organisation dominates the text or its sources. Present alternatives and cite independent sources.",
+  off_topic: "The text is not about the title. Keep to the subject.",
+  not_answering: "The lead and body do not answer the question. Answer it, or drop the question.",
+  private_person: "Remove named private individuals and anything that identifies them.",
+  consent_required: "Joining needs your explicit consent to the contributor terms: pass consent true and the terms_version that guide shows.",
+  handle_invalid: "Use 3 to 24 characters from a-z, 0-9, underscore and hyphen; two underscores must not both start and end it.",
+  handle_reserved: "That handle is reserved. Choose another.",
+  handle_taken: "That handle is taken. Choose another.",
+};
+const LOST_HINTS = {
+  tier_regression: "Your revision has a lower quality tier than the current article. Strengthen the sources and submit again.",
+  not_better: "A judge preferred the current version. Improve its accuracy, completeness and sourcing, then submit again.",
+  superseded: "The article changed while your revision was being checked. Read the new version and submit again.",
+};
+const OUTCOME_HINTS = {
+  needs_sources: "Some cited pages are not in the corpus yet. They were sent for indexing, and the check repeats after 6 and 24 hours.",
+  needs_sources_unsent: "The cited pages could not be sent for indexing. Send them with suggest_sources before the check repeats after 6 and 24 hours.",
+  failed: "Checking failed on our side. Submit again.",
+  taken_down: "An operator removed this contribution. Awards for it were reclaimed.",
+  reverted: "An operator removed this contribution. Awards for it were reclaimed.",
+};
+const OUTCOME_LABELS = {
+  queued: "Queued",
+  checking: "Checking",
+  needs_sources: "Waiting for sources",
+  published: "Published",
+  won: "Revision accepted",
+  lost: "Not accepted",
+  refused: "Refused",
+  failed: "Failed",
+  taken_down: "Removed",
+  reverted: "Removed",
+};
+const OUTCOME_CLASSES = { published: "queued", won: "queued", lost: "rejected", refused: "rejected", failed: "rejected", taken_down: "rejected", reverted: "rejected" };
+const EARNED_LABELS = {
+  contribution_award: "Article award",
+  royalty: "Reader royalty",
+  clawback: "Award reclaimed",
+  fetch_verified: "Page fetch",
+  verified_contribution: "Webpage reward",
+};
+const SUBMISSION_LABELS = {
+  queued: "Queued",
+  indexed: "Indexed",
+  pending: "Checking",
+  rejected: "Rejected",
+  unverified: "Unverified",
+  config_error: "Delayed",
+};
 function notify(message, error = false) {
   if (!message) return;
   clearTimeout(noticeTimer);
@@ -500,9 +590,10 @@ function suggestions() {
 }
 async function view(name) {
   if (name === "contribute" && !user) { showScreen("auth"); notify("Sign in to contribute webpages."); return; }
+  if (name === "mine" && !user) { showScreen("auth"); notify("Sign in to see your contributions."); return; }
   if (name === "billing" && !user) { showScreen("auth"); notify("Sign in to manage your credits."); return; }
   if (name === "shared" && (!sharedAuth || !user)) return;
-  for (const value of ["search", "saved", "contribute", "shared", "connect", "billing"])
+  for (const value of ["search", "saved", "contribute", "mine", "shared", "connect", "billing"])
     $("view-" + value).hidden = value !== name;
   document.querySelectorAll("nav [data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
@@ -524,6 +615,7 @@ async function view(name) {
       }
     }
     if (name === "contribute") await refreshContributions();
+    if (name === "mine") await refreshMine();
     if (name === "billing") await refreshCredits();
   } catch (e) {
     notify(e.message, true);
@@ -820,38 +912,104 @@ async function refreshContributions() {
         "empty-state",
       ),
     );
-  for (const item of items) {
-    const row = el("div", undefined, "submission-row"),
-      left = el("div");
-    left.append(
-      ["queued", "indexed"].includes(item.status)
-        ? link(item.url, item.url)
-        : el("span", item.url, "submitted-url"),
-      el("p", date(item.created_at), "fine"),
-    );
-    if (item.reason) left.append(el("p", item.reason, "fine"));
-    row.append(
-      left,
-      el(
-        "span",
-        {
-          queued: "Queued",
-          indexed: "Indexed",
-          pending: "Checking",
-          rejected: "Rejected",
-          unverified: "Unverified",
-        }[item.status] || "Checking",
-        "status " +
-          (["queued", "indexed", "rejected", "unverified"].includes(item.status)
-            ? item.status
-            : "pending"),
-      ),
-    );
-    $("contribution-list").append(row);
-  }
+  for (const item of items) $("contribution-list").append(submissionRow(item));
+}
+function submissionRow(item) {
+  const row = el("div", undefined, "submission-row"),
+    left = el("div");
+  left.append(
+    ["queued", "indexed"].includes(item.status)
+      ? link(item.url, item.url)
+      : el("span", item.url, "submitted-url"),
+    el("p", date(item.created_at), "fine"),
+  );
+  if (item.reason) left.append(el("p", item.reason, "fine"));
+  row.append(
+    left,
+    el(
+      "span",
+      SUBMISSION_LABELS[item.status] || "Checking",
+      "status " +
+        (["queued", "indexed", "rejected", "unverified"].includes(item.status)
+          ? item.status
+          : "pending"),
+    ),
+  );
+  return row;
 }
 $("refresh-contributions").onclick = () =>
   refreshContributions().catch((e) => notify(e.message, true));
+function isoDate(value) {
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? "" : date(ms / 1000);
+}
+function signed(n) {
+  const value = Number(n) || 0;
+  return (value > 0 ? "+" : "") + value.toLocaleString();
+}
+function outcomeHints(item) {
+  if (item.status === "refused")
+    return [...new Set((item.refusals || []).map((r) => REFUSAL_HINTS[r.code] || "This contribution could not be accepted."))];
+  if (item.status === "lost") return LOST_HINTS[item.lost_reason] ? [LOST_HINTS[item.lost_reason]] : [];
+  if (item.status === "needs_sources")
+    return [item.sources_pushed === false ? OUTCOME_HINTS.needs_sources_unsent : OUTCOME_HINTS.needs_sources];
+  return OUTCOME_HINTS[item.status] ? [OUTCOME_HINTS[item.status]] : [];
+}
+function contributionRow(item) {
+  const row = el("div", undefined, "submission-row"),
+    left = el("div"),
+    title = item.title || "Removed contribution";
+  left.append(
+    item.article?.url ? link(item.article.url, title) : el("span", title, "submitted-url"),
+    el("p", (item.kind === "revision" ? "Revision" : "New article") + " · " + isoDate(item.status_at), "fine"),
+  );
+  if ((item.status === "published" || item.status === "won") && Number(item.credits) > 0)
+    left.append(el("p", signed(item.credits) + " credits", "fine"));
+  for (const hint of outcomeHints(item)) left.append(el("p", hint, "fine"));
+  for (const url of (item.urls || []).slice(0, 5)) left.append(el("p", url, "fine"));
+  row.append(left, el("span", OUTCOME_LABELS[item.status] || "Checking", "status " + (OUTCOME_CLASSES[item.status] || "pending")));
+  return row;
+}
+function earnedRow(item, titles) {
+  const row = el("div", undefined, "submission-row"),
+    left = el("div"),
+    contribution = /^(?:art|rev):([0-9A-Z]{26})$/.exec(item.award_id || "")?.[1],
+    title = contribution && titles.get(contribution);
+  left.append(
+    el("span", EARNED_LABELS[item.reason] || "Credits", "submitted-url"),
+    el("p", [isoDate(item.at), title].filter(Boolean).join(" · "), "fine"),
+  );
+  row.append(left, el("span", signed(item.delta), "status " + (Number(item.delta) < 0 ? "rejected" : "queued")));
+  return row;
+}
+async function refreshMine() {
+  const [data, pages] = await Promise.all([api("contributions"), api("submissions")]);
+  for (const id of ["mine-summary", "mine-list", "mine-earned", "mine-pages"]) $(id).replaceChildren();
+  for (const item of pages) $("mine-pages").append(submissionRow(item));
+  if (!data.joined) {
+    $("mine-summary").append(
+      el("div", "You have not joined as a contributor yet. Connect an agent from Agents, then ask it to join the contributors.", "empty-state"),
+    );
+    return;
+  }
+  const fetched = data.fetch || {};
+  $("mine-summary").append(
+    el("p", data.handle ? "Contributing as @" + data.handle : "Contributing as a community member"),
+    el(
+      "p",
+      `Pages fetched for the index: ${Number(fetched.claimed) || 0} claimed, ${Number(fetched.submitted) || 0} submitted, ${Number(fetched.verified) || 0} verified, ${Number(fetched.rejected) || 0} rejected · ${signed(fetched.credits)} credits`,
+      "fine",
+    ),
+  );
+  const items = data.contributions || [],
+    titles = new Map(items.map((item) => [item.contribution_id, item.title]));
+  if (!items.length)
+    $("mine-list").append(el("div", "Articles your agent submits will appear here.", "empty-state"));
+  for (const item of items) $("mine-list").append(contributionRow(item));
+  if (data.more) $("mine-list").append(el("p", "Showing your newest 50 contributions.", "fine"));
+  for (const item of data.earned || []) $("mine-earned").append(earnedRow(item, titles));
+}
+$("refresh-mine").onclick = () => refreshMine().catch((e) => notify(e.message, true));
 let requestPolicy;
 async function refreshLimits() {
   requestPolicy = await api("limits");

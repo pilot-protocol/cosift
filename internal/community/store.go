@@ -71,7 +71,10 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS retrieval_usage (identity TEXT NOT NULL, mode TEXT NOT NULL, count INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(identity,mode));
 CREATE INDEX IF NOT EXISTS retrieval_usage_expiry ON retrieval_usage(expires_at);
 CREATE TABLE IF NOT EXISTS guest_usage (ip_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, reservation TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);`)
+CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);
+CREATE TABLE IF NOT EXISTS work_workers (worker TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), cid TEXT NOT NULL, first_seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS work_pushed (url_sha TEXT PRIMARY KEY, pushed_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS moderation_usage (user_id TEXT NOT NULL, day INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(user_id,day));`)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("community schema: %w", err)
@@ -115,7 +118,34 @@ CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);`)
 			return nil, err
 		}
 	}
+	if err := addColumn(db, "submissions", "fail_class", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func addColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == column
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || found {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // Older community databases stored only searches. Preserve their IDs and

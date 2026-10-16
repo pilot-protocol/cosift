@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,7 @@ func TestRoutesUnavailableUntilRebuilt(t *testing.T) {
 		{synthProd, http.MethodPut, "/v1/articles/" + ulid(2), articleBody("Go memory model")},
 		{resolverProd, http.MethodDelete, "/v1/articles/" + id, nil},
 		{dashProd, http.MethodPost, "/v1/articles/" + id + "/status", map[string]any{"action": "hold", "by": "op"}},
+		{dashProd, http.MethodPost, "/v1/articles/" + id + "/revert", map[string]any{"to_version": 1, "reason_code": "quality", "by": "op"}},
 		{goliveAdmin, http.MethodPost, "/v1/articles/purge-prelive", map[string]any{}},
 		{dashProd, http.MethodGet, "/v1/article-versions/" + id, nil},
 		{dashProd, http.MethodGet, "/v1/article-versions/" + id + "/1", nil},
@@ -121,11 +123,22 @@ func TestRouteTable(t *testing.T) {
 	mux.Handle("POST /v1/contents", http.NotFoundHandler())
 	limits := map[string]int64{
 		"POST /v1/articles/match": 8 << 10, "PUT /v1/articles/{id}": 512 << 10, "POST /v1/articles/{id}/status": 4 << 10,
+		"POST /v1/articles/{id}/revert":   4 << 10,
 		"POST /v1/articles/purge-prelive": 1 << 10,
 	}
 	for _, rt := range h.s.Routes() {
 		if rt.BodyLimit != limits[rt.Pattern()] {
 			t.Errorf("%s body limit %d", rt.Pattern(), rt.BodyLimit)
+		}
+	}
+	scopes := map[string][]v1.Scope{
+		"PUT /v1/articles/{id}":         {v1.ScopeArticlesWrite, v1.ScopeArticlesStub, v1.ScopeArticlesContribute},
+		"POST /v1/articles/{id}/revert": {v1.ScopeArticlesModerate},
+		"POST /v1/articles/{id}/status": {v1.ScopeArticlesModerate},
+	}
+	for _, rt := range h.s.Routes() {
+		if want, ok := scopes[rt.Pattern()]; ok && !slices.Equal(rt.Scopes, want) {
+			t.Errorf("%s scopes %v, want %v", rt.Pattern(), rt.Scopes, want)
 		}
 	}
 	probes := map[string]string{
@@ -137,6 +150,7 @@ func TestRouteTable(t *testing.T) {
 		"POST /v1/articles/purge-prelive":            "POST /v1/articles/purge-prelive",
 		"POST /v1/articles/match":                    "POST /v1/articles/match",
 		"POST /v1/articles/" + ulid(1) + "/status":   "POST /v1/articles/{id}/status",
+		"POST /v1/articles/" + ulid(1) + "/revert":   "POST /v1/articles/{id}/revert",
 	}
 	for probe, want := range probes {
 		method, path, _ := strings.Cut(probe, " ")

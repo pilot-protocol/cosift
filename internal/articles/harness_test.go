@@ -33,12 +33,14 @@ var (
 	resolverStaging = v1.Principal{ID: "resolver-staging", Kind: v1.KindOIDC, Env: v1.EnvStaging, Scopes: []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesStub, v1.ScopeRetrieveRead}}
 	mcpProd         = v1.Principal{ID: "mcp-prod", Kind: v1.KindOIDC, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesRead}, CountsReads: true}
 	mcpStaging      = v1.Principal{ID: "mcp-staging", Kind: v1.KindOIDC, Env: v1.EnvStaging, Scopes: []v1.Scope{v1.ScopeArticlesRead}}
+	intakeProd      = v1.Principal{ID: "intake-prod", Kind: v1.KindOIDC, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesContribute, v1.ScopeRetrieveRead}}
+	intakeStaging   = v1.Principal{ID: "intake-staging", Kind: v1.KindOIDC, Env: v1.EnvStaging, Scopes: []v1.Scope{v1.ScopeArticlesRead, v1.ScopeArticlesContribute}}
 	wiki            = v1.Principal{ID: "community-wiki", Kind: v1.KindKey, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesRead}}
 	dashProd        = v1.Principal{ID: "dash-prod", Kind: v1.KindKey, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesReadAll, v1.ScopeArticlesModerate}}
 	dashStaging     = v1.Principal{ID: "dash-staging", Kind: v1.KindKey, Env: v1.EnvStaging, Scopes: []v1.Scope{v1.ScopeArticlesReadAll, v1.ScopeArticlesModerate}}
 	goliveAdmin     = v1.Principal{ID: "golive-admin", Kind: v1.KindKey, Env: v1.EnvProd, Scopes: []v1.Scope{v1.ScopeArticlesAdmin}}
 
-	allPrincipals = []v1.Principal{synthProd, synthStaging, resolverProd, resolverStaging, mcpProd, mcpStaging, wiki, dashProd, dashStaging, goliveAdmin}
+	allPrincipals = []v1.Principal{synthProd, synthStaging, resolverProd, resolverStaging, intakeProd, mcpProd, mcpStaging, wiki, dashProd, dashStaging, goliveAdmin}
 )
 
 // fakeEmbedder returns fixed vectors for known texts and a hash-seeded

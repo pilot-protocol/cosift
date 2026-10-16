@@ -50,5 +50,22 @@
   {"name": "attribute break in link text", "text": "[\" onmouseover=\"alert(1)](https://docs.example.org/guide)", "visible": ["\" onmouseover=\"alert(1)"], "links": 1},
   {"name": "list with html", "text": "- <b>item</b>\n  - <i>nested</i>\n1. <u>ordered</u>", "visible": ["<b>item</b>", "<i>nested</i>", "<u>ordered</u>"]},
   {"name": "table and quote", "text": "| a | b |\n|---|---|\n> <script>q</script>", "visible": ["| a | b |", "> <script>q</script>"]},
-  {"name": "backslash escapes", "text": "\\<script\\> \\[1\\] \\*x\\*", "visible": ["<script>", "[1]", "*x*"]}
+  {"name": "backslash escapes", "text": "\\<script\\> \\[1\\] \\*x\\*", "visible": ["<script>", "[1]", "*x*"]},
+  {"name": "setext heading", "text": "Injected title\n==============\n\nSub\n---\n\nAfter", "visible": ["Injected title", "==============", "Sub", "---", "After"]},
+  {"name": "indented reference definition", "text": "  [x]: javascript:alert(1)\n\n[x] and [y][x]", "visible": [": javascript:alert(1)", "[x]", "[y]"]},
+  {"name": "code span across two lines", "text": "Intro `a\nb` [click](https://evil.example/phish) <img src=x onerror=alert(1)> `c`", "visible": ["click", "<img src=x onerror=alert(1)>"]},
+  {"name": "code span across three lines after a closed one", "text": "`ok` x `a\nb\nc` <u>t</u> [go](https://evil.example/g) `d`", "visible": ["ok", "<u>t</u>"]},
+  {"name": "fence inside a list item", "text": "- item\n  ```\n<script>alert(2)</script>\n\n[x](https://evil.example/two)\n```\nafter <b>x</b> [y](https://evil.example/y)", "visible": ["<script>alert(2)</script>", "after", "<b>x</b>"]},
+  {"name": "fence in a list item ended by the next item", "text": "- item\n\n  ```\n  code\n- two\n<img src=x onerror=alert(3)>\n[click](https://evil.example/x)", "visible": ["code", "<img src=x onerror=alert(3)>"]},
+  {"name": "reference definition in a quote", "text": "> [x]: javascript:alert(document.domain)\n\nSee [x] here.", "visible": [": javascript:alert(document.domain)", "See [x] here."]},
+  {"name": "reference definition in a list item", "text": "- [y]: https://evil.example/ref\n\n![z][y]", "visible": ["https://evil.example/ref", "![z][y]"]},
+  {"name": "reference definition with a two-line label", "text": "[\nz]: https://evil.example/ml\n\n[z]", "visible": ["https://evil.example/ml"]},
+  {"name": "reference definition with an escaped bracket", "text": "[a\\]b]: https://evil.example/esc\n\n[a\\]b]", "visible": ["https://evil.example/esc"]},
+  {"name": "reference definition closing inside a code span", "text": "[x`]: https://evil.example/q`\n\n[x`]", "visible": ["https://evil.example/q"]},
+  {"name": "table cell with a pipe in a code span", "text": "| a | b |\n|---|---|\n| `x | <img src=x onerror=alert(4)> `", "visible": ["<img src=x onerror=alert(4)>"]},
+  {"name": "same-line code span with a pipe", "text": "`a|b` <img src=x onerror=alert(5)> `c` [go](https://evil.example/five)", "visible": ["<img src=x onerror=alert(5)>", "go"]},
+  {"name": "same-line code span with a pipe in a list item", "text": "- `a|b` <script>alert(6)</script> `c`", "visible": ["<script>alert(6)</script>"]},
+  {"name": "fence at indent one with a de-indented closer", "text": " ```\n    ```\n<img src=x onerror=alert(7)>\n[go](https://evil.example/seven)\n```", "visible": ["<img src=x onerror=alert(7)>"]},
+  {"name": "fence at indent two with a de-indented closer", "text": "  ~~~\n    ~~~\n<script>alert(8)</script>\n~~~", "visible": ["<script>alert(8)</script>"]},
+  {"name": "fence at indent three with a de-indented closer", "text": "   ```js\n    ```\n<img src=x onerror=alert(9)>\n\n    ```\n<b>after</b>", "visible": ["<img src=x onerror=alert(9)>"]}
 ]

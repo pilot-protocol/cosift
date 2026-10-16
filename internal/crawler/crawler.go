@@ -38,6 +38,8 @@ type Crawler struct {
 	contributionOnce    sync.Once
 	contributionCrawler *Crawler
 	contributionSlots   chan struct{}
+	copyGateOnce        sync.Once
+	copyGate            *hostGate
 	cfg                 config.Crawler
 	store               CrawlerStore
 	idx                 LexicalIndexer
@@ -1231,6 +1233,26 @@ func (c *Crawler) FetchAndIndexNow(ctx context.Context, url string) error {
 }
 
 func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, gate *hostGate) error {
+	page, err := c.fetchParsed(ctx, item, gate, true)
+	if err != nil || page == nil {
+		return err
+	}
+	_, _, err = c.indexParsed(ctx, item, page, indexOpts{})
+	return err
+}
+
+// fetchedPage is a parsed page the fetch half hands to the index half.
+type fetchedPage struct {
+	finalURL     string
+	parsed       *ParsedDoc
+	etag         string
+	lastModified string
+	prior        *store.Document
+}
+
+// fetchParsed is processClaimed up to the adult gate. A nil page with a nil error means the URL
+// needs no indexing. useCache false skips the stored copy: no conditional GET, no staleness skip.
+func (c *Crawler) fetchParsed(ctx context.Context, item store.FrontierItem, gate *hostGate, useCache bool) (*fetchedPage, error) {
 	approvedHash, _ := ctx.Value(approvedContentKey{}).(string)
 	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
 	u, _ := url.Parse(item.URL)
@@ -1248,14 +1270,14 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				log.Printf("crawl: dropping %s (domain not allowlisted; further drops for this host not logged)", item.URL)
 			}
 		}
-		return nil
+		return nil, nil
 	}
 	// After we've tried a host N times
 	// and seen <20% success, fast-skip subsequent claims to that host.
 	// Burning workers on the same dead hosts (auth walls, dead Tumblr,
 	// rate-limited APIs) is the single biggest waste of throughput.
 	if u != nil && c.isHostBlacklisted(u.Host) {
-		return nil
+		return nil, nil
 	}
 	// robots.txt before the gate: Crawl-delay must widen the slot
 	// reservation itself — sleeping after Wait leaves the effective
@@ -1264,10 +1286,10 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if c.robots != nil {
 		allowed, d, err := c.robots.Allowed(ctx, item.URL)
 		if err != nil {
-			return fmt.Errorf("robots: %w", err)
+			return nil, fmt.Errorf("robots: %w", err)
 		}
 		if !allowed {
-			return errors.New("blocked by robots.txt")
+			return nil, errors.New("blocked by robots.txt")
 		}
 		// A misconfigured "Crawl-delay: 86400" must not wedge the host.
 		if maxDelay := c.maxCrawlDelay(); d > maxDelay {
@@ -1281,15 +1303,19 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		// to-thousands of URLs in one batch.
 		c.maybeAutoSitemap(ctx, u)
 		if err := gate.WaitFor(ctx, u.Host, robotsDelay); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	// Look up prior doc once: needed for both conditional GET (validators) and
 	// content-hash dedup later. Missing is fine — empty prior means full fetch.
-	prior, priorErr := c.store.GetDocByURL(ctx, item.URL)
-	if st != nil && priorErr != nil && !docNotFound(priorErr) {
-		return priorErr
+	var prior *store.Document
+	if useCache {
+		var priorErr error
+		prior, priorErr = c.store.GetDocByURL(ctx, item.URL)
+		if st != nil && priorErr != nil && !docNotFound(priorErr) {
+			return nil, priorErr
+		}
 	}
 
 	// If we already have a
@@ -1308,7 +1334,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		if refetchHours > 0 && time.Since(prior.FetchedAt) < time.Duration(refetchHours)*time.Hour {
 			prior.FetchedAt = time.Now()
 			_, _ = c.store.UpsertDocument(ctx, prior)
-			return nil
+			return nil, nil
 		}
 	}
 
@@ -1320,10 +1346,10 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	}
 	res, err := c.fetch(ctx, item.URL, fetchPrior)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if approvedHash != "" && res.notModified {
-		return fmt.Errorf("%w: moderation requires a fresh response body", ErrContributionRejected)
+		return nil, fmt.Errorf("%w: moderation requires a fresh response body", ErrContributionRejected)
 	}
 
 	// 304 Not Modified: server confirmed nothing changed. Update validators
@@ -1337,9 +1363,9 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 			prior.LastModified = res.lastModified
 		}
 		if _, e := c.store.UpsertDocument(ctx, prior); e != nil {
-			return e
+			return nil, e
 		}
-		return nil
+		return nil, nil
 	}
 
 	finalURL := res.finalURL
@@ -1358,34 +1384,54 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		// dies. The parent (crawler) returns a clean error and moves on.
 		// Disable with COSIFT_CRAWL_PDF=false; default is sandboxed-on.
 		if os.Getenv("COSIFT_CRAWL_PDF") == "false" {
-			return errors.New("pdf: parsing disabled (unset COSIFT_CRAWL_PDF=false to re-enable)")
+			return nil, errors.New("pdf: parsing disabled (unset COSIFT_CRAWL_PDF=false to re-enable)")
 		}
 		parsed, perr = ParsePDFSandboxed(ctx, res.body, finalURL, "", 0)
 	} else {
 		parsed, perr = Parse(res.body, finalURL)
 	}
 	if perr != nil {
-		return perr
+		return nil, perr
 	}
 	if approvedHash != "" && ApprovedContentHash(parsed.Title, parsed.Text) != approvedHash {
-		return fmt.Errorf("%w: webpage changed after moderation", ErrContributionRejected)
+		return nil, fmt.Errorf("%w: webpage changed after moderation", ErrContributionRejected)
 	}
 	if strings.TrimSpace(parsed.Text) == "" {
-		return errors.New("empty content")
+		return nil, errors.New("empty content")
 	}
 	// See
 	// config.Crawler.MinTextLen — defaults to 0 (off) so existing
 	// deployments keep current behavior.
 	if c.cfg.MinTextLen > 0 && len(parsed.Text) < c.cfg.MinTextLen {
-		return errors.New("text below min_text_len")
+		return nil, errors.New("text below min_text_len")
 	}
 	// Adult-content gate. High-precision classifier (host + lexical
 	// signals) — refuse to index pornographic pages so they never enter
 	// the corpus. Off by default; enabled via crawler.filter_adult.
 	if c.cfg.FilterAdult && adultfilter.IsAdult(parsed.Title, parsed.Text, finalURL) {
-		return errors.New("adult content filtered")
+		return nil, errors.New("adult content filtered")
 	}
 
+	return &fetchedPage{finalURL: finalURL, parsed: parsed, etag: res.etag, lastModified: res.lastModified, prior: prior}, nil
+}
+
+// indexOpts selects what the index half stores: a crawled page by default, an attested one with attested set.
+type indexOpts struct {
+	attested   bool
+	verifiedBy string
+	embedder   embed.Embedder
+}
+
+// indexParsed is processClaimed from the content-hash dedup on. It reports whether a document was
+// written and, for an attested page, whether its content was new to the index.
+func (c *Crawler) indexParsed(ctx context.Context, item store.FrontierItem, page *fetchedPage, o indexOpts) (indexed, novel bool, err error) {
+	approvedHash, _ := ctx.Value(approvedContentKey{}).(string)
+	st, _ := ctx.Value(contributionStateKey{}).(*contributionState)
+	finalURL, parsed, prior := page.finalURL, page.parsed, page.prior
+	emb := o.embedder
+	if emb == nil {
+		emb = c.embedder
+	}
 	finalU, _ := url.Parse(finalURL)
 	sha := sha256.Sum256([]byte(parsed.Text))
 
@@ -1395,7 +1441,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if st != nil && existing == nil && finalURL != item.URL {
 		var gerr error
 		if existing, gerr = c.store.GetDocByURL(ctx, finalURL); gerr != nil && !docNotFound(gerr) {
-			return gerr
+			return false, false, gerr
 		}
 	}
 
@@ -1404,20 +1450,22 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// Catches servers that don't send ETag/Last-Modified (so 304 isn't available).
 	if existing != nil {
 		if bytes.Equal(existing.ContentSHA, sha[:]) && (approvedHash == "" || existing.Title == parsed.Title) {
-			existing.FetchedAt = time.Now()
-			if res.etag != "" {
-				existing.ETag = res.etag
-			}
-			if res.lastModified != "" {
-				existing.LastModified = res.lastModified
-			}
-			if _, e := c.store.UpsertDocument(ctx, existing); e != nil {
-				return e
+			if !o.attested {
+				existing.FetchedAt = time.Now()
+				if page.etag != "" {
+					existing.ETag = page.etag
+				}
+				if page.lastModified != "" {
+					existing.LastModified = page.lastModified
+				}
+				if _, e := c.store.UpsertDocument(ctx, existing); e != nil {
+					return false, false, e
+				}
 			}
 			if st != nil {
 				st.docURL = existing.URL
 			}
-			return nil
+			return false, false, nil
 		}
 	}
 
@@ -1430,7 +1478,14 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	if st != nil {
 		st.docURL = finalURL
 		if err := c.decideNovelty(ctx, st, existing, finalURL, sha[:]); err != nil {
-			return err
+			return false, false, err
+		}
+	}
+	source := "crawl"
+	if o.attested {
+		source = "attested"
+		if novel, err = c.contentNovel(ctx, finalURL, sha[:]); err != nil {
+			return false, false, err
 		}
 	}
 	doc := &store.Document{
@@ -1439,18 +1494,19 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		Title:         parsed.Title,
 		Text:          parsed.Text,
 		Lang:          parsed.Lang,
-		Source:        "crawl",
+		Source:        source,
 		Quality:       0.5,
 		FetchedAt:     time.Now(),
 		ContentSHA:    sha[:],
-		ETag:          res.etag,
-		LastModified:  res.lastModified,
+		ETag:          page.etag,
+		LastModified:  page.lastModified,
 		ChangeCount:   changeCount + 1,
 		LastChangedAt: time.Now().Unix(),
 		PublishedAt:   parsed.PublishedAt, // JSON-LD datePublished (or zero if absent)
 		Author:        parsed.AuthorName,  // JSON-LD author.name (empty if absent)
 		Image:         parsed.Image,       // og:image / twitter:image / JSON-LD image (empty if absent)
 		Favicon:       parsed.Favicon,     // <link rel="icon"> resolved absolute (empty if absent)
+		VerifiedBy:    o.verifiedBy,
 	}
 	// Prefer the combined-write path when the store supports it: one mu
 	// hop covers Upsert+Index+Complete instead of three separate calls.
@@ -1463,17 +1519,17 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 		var err error
 		id, err = w.WriteCrawlResult(ctx, doc, parsed.Title, parsed.Text, item.URL, index.Tokenize, index.TitleBoost)
 		if err != nil {
-			return err
+			return false, false, err
 		}
 		completedInline = true
 	} else {
 		var err error
 		id, err = c.store.UpsertDocument(ctx, doc)
 		if err != nil {
-			return err
+			return false, false, err
 		}
 		if err := c.idx.IndexDocument(ctx, id, parsed.Title, parsed.Text); err != nil {
-			return err
+			return false, false, err
 		}
 	}
 	// Stash on the context-bound item so the worker loop can skip its
@@ -1486,7 +1542,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// windows (320 words ~= 512 BPE tokens) with 64-word overlap, embed each
 	// chunk, write one row per passage. On embedder failure we log and continue;
 	// the BM25 doc is already indexed.
-	if c.embedder != nil {
+	if emb != nil {
 		// per-host overrides win over global ChunkSize/ChunkOverlap;
 		// both fall through to NewChunker defaults via's NewChunkerWith.
 		// Host matched against the originally-requested URL (item.URL) —
@@ -1518,10 +1574,12 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 				} else {
 					c.embedDropped.Add(1)
 				}
-				c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
-				return nil
+				if !o.attested {
+					c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
+				}
+				return true, novel, nil
 			}
-			vecs, embErr := c.embedder.Embed(ctx, texts)
+			vecs, embErr := emb.Embed(ctx, texts)
 			if embErr != nil {
 				log.Printf("embed %s: %v", item.URL, embErr)
 			} else if len(vecs) == len(chunks) {
@@ -1563,7 +1621,7 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 							DocID:     id,
 							Offset:    ch.Offset,
 							Length:    ch.Length,
-							Model:     c.embedder.Model(),
+							Model:     emb.Model(),
 							Embedding: vecs[i],
 						}
 						if upErr := c.passageWriter.UpsertPassage(ctx, p); upErr != nil {
@@ -1579,8 +1637,10 @@ func (c *Crawler) processClaimed(ctx context.Context, item store.FrontierItem, g
 	// enqueueLinks. Per-host overrides (cfg.PerHostMaxDepth) can exceed OR
 	// undercut the default, so the authoritative check is per-link against
 	// the child URL's host cap.
-	c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
-	return nil
+	if !o.attested {
+		c.enqueueLinks(ctx, parsed.Links, item.Depth+1)
+	}
+	return true, novel, nil
 }
 
 // maxDepthFor returns the depth cap for `host` — override if present in

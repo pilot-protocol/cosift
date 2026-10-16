@@ -1,6 +1,7 @@
 package wiki
 
 import (
+	"context"
 	"net/netip"
 	"slices"
 	"strings"
@@ -23,6 +24,11 @@ const (
 	ipLimit  = 120
 	ipWindow = 60 * time.Second
 	ipCap    = 10000
+
+	handleTTL     = 120 * time.Second
+	handleCap     = 20000
+	handleTimeout = 2 * time.Second
+	anonymous     = "a community member"
 )
 
 // entry is a rendered by-slug outcome, served until fetched+bound.
@@ -30,6 +36,8 @@ type entry struct {
 	kind     outcome
 	status   int
 	body     []byte
+	md       []byte
+	target   string
 	location string
 	fetched  time.Time
 	bound    time.Duration
@@ -200,4 +208,84 @@ type flight struct {
 	done chan struct{}
 	e    *entry
 	code string
+}
+
+// Handle is what the wiki may know about a contributor: the current handle and whether the contributor is banned.
+type Handle struct {
+	Name   string
+	Banned bool
+}
+
+// HandleSource resolves contributor ids; a cid it does not know is absent from the map. It reads only handle and banned.
+type HandleSource interface {
+	Handles(ctx context.Context, cids []string) (map[string]Handle, error)
+}
+
+type handleEntry struct {
+	name  string
+	until time.Time
+}
+
+// handleCache holds the display name of each cid for handleTTL; "" is a banned, unknown or malformed contributor.
+type handleCache struct {
+	mu sync.Mutex
+	m  map[string]handleEntry
+}
+
+func (c *handleCache) get(cid string, now time.Time) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.m[cid]
+	if !ok || !now.Before(e.until) {
+		return "", false
+	}
+	return e.name, true
+}
+
+// oldest is the age of the oldest unexpired entry among cids.
+func (c *handleCache) oldest(cids []string, now time.Time) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var age time.Duration
+	for _, cid := range cids {
+		if e, ok := c.m[cid]; ok && now.Before(e.until) {
+			age = max(age, now.Sub(e.until.Add(-handleTTL)))
+		}
+	}
+	return age
+}
+
+func (c *handleCache) put(names map[string]string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]handleEntry{}
+	}
+	for cid, name := range names {
+		if _, have := c.m[cid]; !have && len(c.m) >= handleCap {
+			c.evict(now)
+		}
+		c.m[cid] = handleEntry{name: name, until: now.Add(handleTTL)}
+	}
+}
+
+// evict drops the expired entries, and one more when none had expired.
+func (c *handleCache) evict(now time.Time) {
+	for cid, e := range c.m {
+		if !now.Before(e.until) {
+			delete(c.m, cid)
+		}
+	}
+	if len(c.m) >= handleCap {
+		for cid := range c.m {
+			delete(c.m, cid)
+			break
+		}
+	}
+}
+
+func (c *handleCache) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
 }

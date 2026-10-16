@@ -3,6 +3,7 @@ package community
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,58 @@ const (
 	backendDownReason = "Waiting for content safety checks."
 )
 
+const (
+	// statusModerationCeiling is the dispatch loop's own outcome, never a stored status: the daily ceiling on content checks is reached.
+	statusModerationCeiling = "moderation_ceiling"
+	ceilingReason           = "Waiting for the daily content-check allowance to renew."
+	// statusModerationShare is likewise never stored: the submitting account has used its own share of the day's content checks.
+	statusModerationShare        = "moderation_share"
+	shareReason                  = "Waiting for your daily content-check allowance to renew."
+	defaultModerationsPerAccount = 100
+)
+
+// moderationCeiling reports the engine's ceiling answer: the same 503 a failing model gives, plus "ceiling": true.
+func moderationCeiling(body []byte) bool {
+	var reply struct {
+		Code    string `json:"code"`
+		Ceiling bool   `json:"ceiling"`
+	}
+	return json.Unmarshal(body, &reply) == nil && reply.Code == "moderation_unavailable" && reply.Ceiling
+}
+
+// holdModeration stops every content check until 00:00 UTC, because the ceiling is shared by all submissions.
+func (s *Server) holdModeration() { s.moderateHold.Store(s.nextUTCDay().Unix()) }
+
+func (s *Server) nextUTCDay() time.Time { return utcDayStart(s.now()).Add(24 * time.Hour) }
+
+// reserveModeration counts one content check for the account today; false once the account has used its share.
+func (s *Server) reserveModeration(ctx context.Context, userID string) (bool, error) {
+	var used int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO moderation_usage(user_id,day,count) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=moderation_usage.count+1 WHERE moderation_usage.count<? RETURNING count`, userID, utcDayStart(s.now()).Unix(), s.cfg.ModerationsPerAccount).Scan(&used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Server) moderationHold() time.Time { return time.Unix(s.moderateHold.Load(), 0) }
+
+// failFetch marks a submission whose page the app could not fetch for a reason a worker's own network may not share.
+const failFetch = "fetch"
+
+var challengeTitles = map[string]bool{"just a moment": true, "attention required": true, "access denied": true, "are you a robot": true, "verify you are human": true, "security check": true, "checking your browser": true}
+
+// challengeTitle spots a bot-check page by a title that is exactly a known one, ignoring case, a trailing "|" site name and closing punctuation.
+func challengeTitle(title string) bool {
+	t, _, _ := strings.Cut(strings.ToLower(title), "|")
+	return challengeTitles[strings.TrimRight(strings.TrimSpace(t), ".…!? ")]
+}
+
+func timedOut(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
 // backendUnreachable is a failure to connect at all, which no page or model reply can cause; it must not use up delivery attempts.
 func backendUnreachable(err error) bool {
 	var op *net.OpError
@@ -126,47 +179,57 @@ func (g *hostGaps) reserve(host string, gap time.Duration, now time.Time) time.D
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
-func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (status, reason, approvedContentHash string) {
+func (s *Server) prevalidate(ctx context.Context, j job) (status, reason, approvedContentHash, failClass string) {
+	submissionID, raw := j.id, j.url
 	if _, err := NormalizeURL(raw); err != nil {
-		return "rejected", "URL is not an eligible public webpage.", ""
+		return "rejected", "URL is not an eligible public webpage.", "", ""
 	}
 	allowed, delay, err := s.moderationRobots.Allowed(ctx, raw)
 	if err != nil {
-		return "pending", "Waiting to check the webpage.", ""
+		return "pending", "Waiting to check the webpage.", "", ""
 	}
 	if !allowed {
-		return "unverified", "The website does not permit automated page checks.", ""
+		return "unverified", "The website does not permit automated page checks.", "", ""
 	}
 	if delay > maxCrawlDelay {
-		return "unverified", "The website requires a longer crawl delay than validation supports.", ""
+		return "unverified", "The website requires a longer crawl delay than validation supports.", "", ""
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
-		return "unverified", "The webpage could not be checked.", ""
+		return "unverified", "The webpage could not be checked.", "", ""
 	}
 	req.Header.Set("User-Agent", "Cosift-Community/1.0")
 	req.Header.Set("Accept", "text/html, application/xhtml+xml")
 	res, err := s.pageClient.Do(req)
 	if err != nil {
-		return "pending", "The webpage could not be reached for validation.", ""
+		if ctx.Err() == nil && timedOut(err) {
+			failClass = failFetch
+		}
+		return "pending", "The webpage could not be reached for validation.", "", failClass
 	}
 	defer res.Body.Close()
 	if res.StatusCode == 429 || res.StatusCode >= 500 {
-		return "pending", "The website is temporarily unavailable for validation.", ""
+		if res.StatusCode == 429 || res.Header.Get("Cf-Mitigated") == "challenge" {
+			failClass = failFetch
+		}
+		return "pending", "The website is temporarily unavailable for validation.", "", failClass
 	}
 	if res.StatusCode != 200 {
-		return "unverified", "The webpage is unavailable or requires a login.", ""
+		if res.StatusCode == 403 {
+			failClass = failFetch
+		}
+		return "unverified", "The webpage is unavailable or requires a login.", "", failClass
 	}
 	finalURL := res.Request.URL.String()
 	if _, err := NormalizeURL(finalURL); err != nil {
-		return "rejected", "The destination URL is not eligible.", ""
+		return "rejected", "The destination URL is not eligible.", "", ""
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
 	if err != nil {
-		return "pending", "The webpage could not be read.", ""
+		return "pending", "The webpage could not be read.", "", ""
 	}
 	if len(body) > 2<<20 {
-		return "unverified", "The webpage exceeds the validation size limit.", ""
+		return "unverified", "The webpage exceeds the validation size limit.", "", ""
 	}
 	kind, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
 	if kind == "" {
@@ -177,29 +240,42 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 	case "text/html", "application/xhtml+xml":
 		parsed, err := crawler.Parse(body, finalURL)
 		if err != nil {
-			return "unverified", "The webpage could not be interpreted.", ""
+			return "unverified", "The webpage could not be interpreted.", "", ""
 		}
 		doc.Title = parsed.Title
 		doc.Text = parsed.Text
 		doc.Signals = pageSignals(body)
 	default:
-		return "unverified", "Only readable HTML webpages can be checked; plain text, media, and downloads are not accepted.", ""
+		return "unverified", "Only readable HTML webpages can be checked; plain text, media, and downloads are not accepted.", "", ""
+	}
+	if challengeTitle(doc.Title) {
+		return "unverified", "The website is blocking automated page checks.", "", failFetch
 	}
 	if adultfilter.IsAdult(doc.Title, doc.Text+" "+doc.Signals, finalURL) || strings.Contains(doc.Signals, "COSIFT_EXPLICIT_RATING") {
-		return "rejected", "Explicit adult content is not accepted.", ""
+		return "rejected", "Explicit adult content is not accepted.", "", ""
 	}
 	if len(strings.TrimSpace(doc.Text)) < 80 {
-		return "unverified", "Not enough readable text to validate this webpage.", ""
+		return "unverified", "Not enough readable text to validate this webpage.", "", ""
 	}
 	if len(doc.Text) > 32000 || len(doc.Title) > 1000 || len(doc.Signals) > 4000 {
-		return "unverified", "The webpage contains more content than can be fully checked in one validation.", ""
+		return "unverified", "The webpage contains more content than can be fully checked in one validation.", "", ""
 	}
 	if status, reason := ObviousQualityProblem(doc); status != "" {
-		return status, reason, ""
+		return status, reason, "", ""
 	}
 	approved := crawler.ApprovedContentHash(doc.Title, doc.Text)
 	if s.approvalRecorded(ctx, submissionID, approved) {
-		return "allowed", "Content checks passed.", approved
+		return "allowed", "Content checks passed.", approved, ""
+	}
+	if s.now().Before(s.moderationHold()) {
+		return statusModerationCeiling, ceilingReason, "", ""
+	}
+	switch reserved, err := s.reserveModeration(ctx, j.userID); {
+	case err != nil:
+		log.Printf("community: could not count a content check: %v", err)
+		return "pending", "Waiting for content safety checks.", "", ""
+	case !reserved:
+		return statusModerationShare, shareReason, "", ""
 	}
 	b, _ := json.Marshal(doc)
 	checkRes, err := s.engine.post(ctx, moderateRoute, b, moderateTimeout)
@@ -207,33 +283,39 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 		if ctx.Err() == nil {
 			log.Printf("community: POST %s failed: backend unreachable", moderateRoute)
 			if backendUnreachable(err) {
-				return statusBackendDown, backendDownReason, ""
+				return statusBackendDown, backendDownReason, "", ""
 			}
 		}
-		return "pending", "Waiting for content safety checks.", ""
+		return "pending", "Waiting for content safety checks.", "", ""
 	}
 	defer checkRes.Body.Close()
 	if checkRes.StatusCode != 200 {
 		log.Printf("community: POST %s returned HTTP %d", moderateRoute, checkRes.StatusCode)
 		if backendRefusedCredentials(checkRes.StatusCode) {
-			return statusConfigError, configErrorReason, ""
+			return statusConfigError, configErrorReason, "", ""
 		}
 	}
+	reply, _ := io.ReadAll(io.LimitReader(checkRes.Body, 4096))
+	if checkRes.StatusCode == http.StatusServiceUnavailable && moderationCeiling(reply) {
+		s.holdModeration()
+		s.noteCeiling(ceilingModerate)
+		return statusModerationCeiling, ceilingReason, "", ""
+	}
 	var verdict ModerationVerdict
-	decision := json.NewDecoder(io.LimitReader(checkRes.Body, 4096))
+	decision := json.NewDecoder(bytes.NewReader(reply))
 	decision.DisallowUnknownFields()
 	if checkRes.StatusCode != 200 || decision.Decode(&verdict) != nil || decision.Decode(new(any)) != io.EOF || !ValidVerdict(verdict) {
-		return "pending", "Waiting for a valid content safety decision.", ""
+		return "pending", "Waiting for a valid content safety decision.", "", ""
 	}
 	switch verdict.Decision {
 	case "allow":
 		s.recordApproval(ctx, submissionID, approved)
-		return "allowed", "Content checks passed.", approved
+		return "allowed", "Content checks passed.", approved, ""
 	case "uncertain":
-		return "unverified", "This webpage could not be confidently validated.", ""
+		return "unverified", "This webpage could not be confidently validated.", "", ""
 	default:
 		labels := map[string]string{"adult": "Explicit adult content", "malware": "Malware distribution or malicious instructions", "phishing": "Phishing or credential theft", "graphic_violence": "Graphic violence or violent abuse", "extremist_promotion": "Extremist promotion or recruitment", "illegal_harm": "Promotion of illegal harm", "spam": "Spam or search manipulation", "low_quality": "Garbage or content without useful information"}
-		return "rejected", labels[verdict.Category] + " is not accepted.", ""
+		return "rejected", labels[verdict.Category] + " is not accepted.", "", ""
 	}
 }
 

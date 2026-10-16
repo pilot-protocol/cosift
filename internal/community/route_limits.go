@@ -8,13 +8,16 @@ import (
 )
 
 const (
-	routeLimiterKeys = 50000
-	meterPerMinute   = 60
+	routeLimiterKeys       = 50000
+	meterPerMinute         = 60
+	workClaimPerMinute     = 6
+	workSubmitPerMinute    = 64
+	contributionsPerMinute = 30
 )
 
 // allowRoute charges a per-user, per-route window; the caller must have authenticated, so anonymous traffic never adds a key.
 func (s *Server) allowRoute(w http.ResponseWriter, route, userID string, n int) bool {
-	now := time.Now()
+	now := s.now()
 	ok, until := s.routeLimits.take(route+":"+userID, n, time.Minute, now)
 	if ok {
 		return true

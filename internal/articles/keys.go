@@ -22,6 +22,7 @@ var (
 	idPattern      = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 	slugPattern    = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	topicPattern   = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	cidPattern     = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	clusterPattern = regexp.MustCompile(`^c[0-9]{6,}$`)
 	readerPattern  = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )

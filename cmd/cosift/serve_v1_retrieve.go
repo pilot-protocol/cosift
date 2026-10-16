@@ -172,6 +172,8 @@ type v1ContentsFound struct {
 	Lang        string     `json:"lang"`
 	PublishedAt *time.Time `json:"published_at,omitempty"`
 	FetchedAt   *time.Time `json:"fetched_at,omitempty"`
+	Source      string     `json:"source"`
+	VerifiedBy  string     `json:"verified_by,omitempty"`
 	Truncated   bool       `json:"truncated"`
 }
 
@@ -216,7 +218,10 @@ func (s *pebbleHTTP) handleV1Contents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		text, truncated := cutUTF8(doc.Text, v1MaxTextBytes)
-		item := v1ContentsFound{URL: u, Found: true, Title: doc.Title, Text: text, Lang: doc.Lang, Truncated: truncated}
+		item := v1ContentsFound{URL: u, Found: true, Title: doc.Title, Text: text, Lang: doc.Lang, Source: "crawl", Truncated: truncated}
+		if doc.Source == "attested" {
+			item.Source, item.VerifiedBy = "attested", doc.VerifiedBy
+		}
 		if !doc.PublishedAt.IsZero() {
 			t := doc.PublishedAt.UTC()
 			item.PublishedAt = &t

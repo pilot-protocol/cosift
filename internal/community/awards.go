@@ -225,7 +225,8 @@ func (s *Server) settleAward(ctx context.Context, a sharedaccount.Award) {
 	default:
 		failures := p.fail(a.ID)
 		log.Printf("community: award_unresolved award=%s class=%s", quoted(a.ID), out.detail)
-		if reason := terminalReason(out.detail); reason != "" && failures >= 2 && p.now().Sub(a.CreatedAt) >= awardTerminalAge {
+		// A clawback stays pending: skipping it would leave the credits spendable.
+		if reason := terminalReason(out.detail); reason != "" && a.Reason != "clawback" && failures >= 2 && p.now().Sub(a.CreatedAt) >= awardTerminalAge {
 			s.expireAward(ctx, a, reason)
 		}
 	}
@@ -312,22 +313,9 @@ func (s *Server) applyAward(ctx context.Context, a sharedaccount.Award) awardOut
 			return awardOutcome{"invalid", "article_mismatch"}
 		}
 	}
-	if err := p.step("account"); err != nil {
-		return retry("account")
-	}
-	identity, err := p.src.Account(ctx, a.UID)
-	switch {
-	case errors.Is(err, sharedaccount.ErrUnauthorized):
-		return s.skipAward(ctx, a, "unknown_account")
-	case err != nil || identity.UID != a.UID:
-		return retry("account")
-	}
-	if err := p.step("link"); err != nil {
-		return retry("link")
-	}
-	userID, err := s.awardUser(ctx, identity)
-	if err != nil {
-		return retry("link")
+	userID, out, ok := s.awardAccount(ctx, a)
+	if !ok {
+		return out
 	}
 	if err := p.step("insert"); err != nil {
 		return retry("ledger")
@@ -340,6 +328,48 @@ func (s *Server) applyAward(ctx context.Context, a sharedaccount.Award) awardOut
 		return retry("mark")
 	}
 	return s.finishAward(ctx, a, sharedaccount.AwardResult{Status: "applied", AppliedDelta: delta, LedgerID: "award:" + a.ID})
+}
+
+// awardAccount finds the community user an award is for; a clawback uses the uid link alone, since a debit needs no verified email.
+func (s *Server) awardAccount(ctx context.Context, a sharedaccount.Award) (string, awardOutcome, bool) {
+	p := s.awards
+	retry := func(class string) (string, awardOutcome, bool) { return "", awardOutcome{"retry", class}, false }
+	clawback := a.Reason == "clawback"
+	if clawback {
+		id, found, err := s.linkedUser(ctx, a.UID)
+		if err != nil {
+			return retry("link")
+		}
+		if found {
+			return id, awardOutcome{}, true
+		}
+	}
+	if err := p.step("account"); err != nil {
+		return retry("account")
+	}
+	identity, err := p.src.Account(ctx, a.UID)
+	switch {
+	case errors.Is(err, sharedaccount.ErrUnauthorized) && !clawback:
+		return "", s.skipAward(ctx, a, "unknown_account"), false
+	case err != nil || identity.UID != a.UID:
+		return retry("account")
+	}
+	if err := p.step("link"); err != nil {
+		return retry("link")
+	}
+	id, err := s.awardUser(ctx, identity)
+	if err != nil {
+		return retry("link")
+	}
+	return id, awardOutcome{}, true
+}
+
+func (s *Server) linkedUser(ctx context.Context, uid string) (id string, found bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT user_id FROM shared_identities WHERE uid=?`, uid).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return id, err == nil, err
 }
 
 func (s *Server) finishAward(ctx context.Context, a sharedaccount.Award, result sharedaccount.AwardResult) awardOutcome {

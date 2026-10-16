@@ -64,6 +64,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	if err != nil {
 		return err
 	}
+	workState, err := loadWorkConfig(cfg)
+	if err != nil {
+		return err
+	}
 
 	ps, err := store.OpenPebble(*dir)
 	if err != nil {
@@ -204,6 +208,10 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	}
 	srv.communityCaps = caps
 	srv.communityModerationsPerDay = &moderationLimit
+	srv.work = workState
+	if err := srv.initWork(ps); err != nil {
+		return fmt.Errorf("work: %w", err)
+	}
 	// Read actual doc count at startup for crawl-rate baseline. Uses
 	// CorpusStats (the atomic-mirror indexed_docs counter) — NOT
 	// Stats.Documents which scans the raw 'd' family. The two diverge
@@ -537,6 +545,7 @@ func runPebbleServe(ctx context.Context, cfg *config.Config, args []string) erro
 	// Creates a hard-linked, consistent
 	// snapshot dir that's safe to tar without racing background compactions.
 	mux.HandleFunc("POST /admin/checkpoint", awrap(srv.handleCheckpoint))
+	srv.registerWorkAdmin(mux, awrap)
 	mux.HandleFunc("GET /search", qwrap(srv.handleSearch))
 	mux.HandleFunc("POST /search", qwrap(srv.handleSearchPOST))
 	mux.HandleFunc("GET /contents", wrap(srv.handleContents))
@@ -1114,6 +1123,7 @@ func (s *pebbleHTTP) startInProcessCrawl(ctx context.Context, ps *store.PebbleSt
 	// already accepting requests while HNSW/crawler initialization runs.
 	s.crawlCommunityFetch = c.FetchContribution
 	s.crawlCommunityReady.Store(true)
+	s.work.attach(ctx, c, wg)
 	for _, u := range seeds {
 		// Only seed locally-owned URLs in cluster mode; the rest get forwarded.
 		if cfg.Cluster.IsClustered() && !cfg.Cluster.OwnsURL(u) {
@@ -1296,6 +1306,7 @@ type pebbleHTTP struct {
 	communityModerationMu      sync.Mutex
 	communityModerations       communityModerationCounts
 	communityNow               func() time.Time
+	work                       *workHooks
 
 	// crawlSeedSitemap wraps Crawler.SeedSitemap so the /admin/
 	// sitemap-import endpoint can push sitemap URLs into the live frontier.

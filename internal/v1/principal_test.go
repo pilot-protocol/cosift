@@ -11,15 +11,16 @@ import (
 
 func TestNames(t *testing.T) {
 	scopes := map[Scope]string{
-		ScopeArticlesRead:     "articles:read",
-		ScopeArticlesReadAll:  "articles:read_all",
-		ScopeArticlesWrite:    "articles:write",
-		ScopeArticlesStub:     "articles:stub",
-		ScopeArticlesModerate: "articles:moderate",
-		ScopeArticlesAdmin:    "articles:admin",
-		ScopeRetrieveRead:     "retrieve:read",
-		ScopeCommunityIntake:  "community:intake",
-		ScopeWorkBroker:       "work:broker",
+		ScopeArticlesRead:       "articles:read",
+		ScopeArticlesReadAll:    "articles:read_all",
+		ScopeArticlesWrite:      "articles:write",
+		ScopeArticlesStub:       "articles:stub",
+		ScopeArticlesContribute: "articles:contribute",
+		ScopeArticlesModerate:   "articles:moderate",
+		ScopeArticlesAdmin:      "articles:admin",
+		ScopeRetrieveRead:       "retrieve:read",
+		ScopeCommunityIntake:    "community:intake",
+		ScopeWorkBroker:         "work:broker",
 	}
 	for s, name := range scopes {
 		if string(s) != name {

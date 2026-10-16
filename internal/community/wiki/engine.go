@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -18,7 +19,7 @@ var (
 	slugPattern   = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	idPattern     = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 	cursorPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,1000}$`)
-	reserved      = map[string]bool{"v": true, "index": true, "sitemap": true, "search": true, "api": true, "admin": true, "random": true, "new": true}
+	reserved      = map[string]bool{"v": true, "index": true, "sitemap": true, "search": true, "api": true, "admin": true, "random": true, "new": true, "style": true, "terms": true, "wanted": true}
 	verticals     = map[string]string{"dev-docs": "Developer docs", "technology-news": "Technology news", "research": "Research", "other": "Other"}
 	verticalOrder = []string{"dev-docs", "technology-news", "research", "other"}
 	tiers         = map[string]string{"strong": "High", "ok": "Medium", "thin": "Low"}
@@ -56,19 +57,21 @@ type engineCitation struct {
 // engineRecord holds only public and stub projection fields, plus prelive
 // to detect an over-scoped key.
 type engineRecord struct {
-	ID          string           `json:"id"`
-	Slug        string           `json:"slug"`
-	Title       string           `json:"title"`
-	Lead        string           `json:"lead"`
-	BodyMD      string           `json:"body_md"`
-	Citations   []engineCitation `json:"citations"`
-	QualityTier string           `json:"quality_tier"`
-	Vertical    string           `json:"vertical"`
-	Status      string           `json:"status"`
-	AIGenerated bool             `json:"ai_generated"`
-	CreatedAt   string           `json:"created_at"`
-	UpdatedAt   string           `json:"updated_at"`
-	Prelive     json.RawMessage  `json:"prelive"`
+	ID           string           `json:"id"`
+	Slug         string           `json:"slug"`
+	Title        string           `json:"title"`
+	Lead         string           `json:"lead"`
+	BodyMD       string           `json:"body_md"`
+	Citations    []engineCitation `json:"citations"`
+	QualityTier  string           `json:"quality_tier"`
+	Vertical     string           `json:"vertical"`
+	Status       string           `json:"status"`
+	AIGenerated  bool             `json:"ai_generated"`
+	Origin       json.RawMessage  `json:"origin"`
+	Contributors json.RawMessage  `json:"contributors"`
+	CreatedAt    string           `json:"created_at"`
+	UpdatedAt    string           `json:"updated_at"`
+	Prelive      json.RawMessage  `json:"prelive"`
 }
 
 type engineItem struct {
@@ -251,6 +254,15 @@ func (e *engine) list(ctx context.Context, cursor string) (engineList, string) {
 		}
 		path += "&cursor=" + url.QueryEscape(cursor)
 	}
+	return e.getList(ctx, path)
+}
+
+// board fetches the newest wantedLimit items of one wanted-board query: pending stubs, or published Low articles.
+func (e *engine) board(ctx context.Context, query string) (engineList, string) {
+	return e.getList(ctx, "/v1/articles?"+query+"&order=updated_at&limit="+strconv.Itoa(wantedLimit))
+}
+
+func (e *engine) getList(ctx context.Context, path string) (engineList, string) {
 	ctx, cancel := context.WithTimeout(ctx, e.listTimeout)
 	defer cancel()
 	status, body, code := e.get(ctx, path, listLimit)

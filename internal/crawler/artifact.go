@@ -26,9 +26,21 @@ type LocalArtifact struct {
 	Chunks []IndexedChunk `json:"chunks"`
 }
 
+// Validate bounds the title and text, and the vectors when the artifact carries any; a text-only artifact is valid.
 func (a *LocalArtifact) Validate() error {
-	if a == nil || len(a.Title) > 1000 || len(a.Text) < 80 || len(a.Text) > 32000 || a.Model == "" || len(a.Model) > 200 || len(a.Chunks) == 0 || len(a.Chunks) > 64 {
-		return fmt.Errorf("expected bounded text, metadata, model and 1–64 embedding chunks")
+	if a == nil || len(a.Title) > 1000 || len(a.Text) < 80 || len(a.Text) > 32000 {
+		return fmt.Errorf("expected bounded title and text")
+	}
+	if a.Model == "" && len(a.Chunks) == 0 {
+		return nil
+	}
+	return a.ValidateVectors()
+}
+
+// ValidateVectors checks the model and embedding chunks alone, whatever the size of the text they cover.
+func (a *LocalArtifact) ValidateVectors() error {
+	if a == nil || a.Model == "" || len(a.Model) > 200 || len(a.Chunks) == 0 || len(a.Chunks) > 64 {
+		return fmt.Errorf("expected a model and 1–64 embedding chunks")
 	}
 	full := a.Title + "\n\n" + a.Text
 	for _, ch := range a.Chunks {
@@ -59,6 +71,18 @@ func VerifyArtifact(ctx context.Context, a *LocalArtifact, title, text string, r
 	if a.Title != title || a.Text != text {
 		return nil, fmt.Errorf("%w: local content does not match the current webpage", ErrContributionRejected)
 	}
+	return verifyVectors(ctx, a, reference)
+}
+
+// VerifyWorkVectors is VerifyArtifact for a worker's vectors, which cover a text of any size.
+func VerifyWorkVectors(ctx context.Context, a *LocalArtifact, reference embed.Embedder) (embed.Embedder, error) {
+	if err := a.ValidateVectors(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrContributionRejected, err)
+	}
+	return verifyVectors(ctx, a, reference)
+}
+
+func verifyVectors(ctx context.Context, a *LocalArtifact, reference embed.Embedder) (embed.Embedder, error) {
 	if reference == nil || a.Model != reference.Model() {
 		return nil, fmt.Errorf("%w: embedding model does not match the index", ErrContributionRejected)
 	}

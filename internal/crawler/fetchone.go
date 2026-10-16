@@ -2,6 +2,8 @@ package crawler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,20 +60,41 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml") && !strings.Contains(ct, "pdf") {
-		return nil, fmt.Errorf("non-html/xml/pdf content-type: %s", ct)
+	if err := checkContentType(resp.Header.Get("Content-Type")); err != nil {
+		return nil, err
 	}
-
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		return nil, err
 	}
 	finalURL := resp.Request.URL.String()
-	// HTML default; PDF when ct contains "pdf".
+	parsed, err := ExtractBody(resp.Header.Get("Content-Type"), body, finalURL)
+	if err != nil {
+		return nil, err
+	}
+	return &FetchResult{
+		URL:   finalURL,
+		Title: parsed.Title,
+		Text:  parsed.Text,
+		Lang:  parsed.Lang,
+		Links: parsed.Links,
+	}, nil
+}
+
+// ExtractBody turns a fetched body into the parsed page FetchOne returns; binary content types are refused.
+func ExtractBody(contentType string, body []byte, finalURL string) (*ParsedDoc, error) {
+	return ExtractBodyWith(contentType, body, finalURL, ParsePDF)
+}
+
+// ExtractBodyWith is ExtractBody with the PDF parser supplied by the caller, so a PDF can be parsed out of process.
+func ExtractBodyWith(contentType string, body []byte, finalURL string, parsePDF func([]byte, string) (*ParsedDoc, error)) (*ParsedDoc, error) {
+	if err := checkContentType(contentType); err != nil {
+		return nil, err
+	}
 	var parsed *ParsedDoc
-	if strings.Contains(ct, "pdf") {
-		parsed, err = ParsePDF(body, finalURL)
+	var err error
+	if strings.Contains(contentType, "pdf") {
+		parsed, err = parsePDF(body, finalURL)
 	} else {
 		parsed, err = Parse(body, finalURL)
 	}
@@ -81,13 +104,20 @@ func FetchOne(ctx context.Context, client *http.Client, userAgent, rawURL string
 	if strings.TrimSpace(parsed.Text) == "" {
 		return nil, errors.New("empty content")
 	}
-	return &FetchResult{
-		URL:   finalURL,
-		Title: parsed.Title,
-		Text:  parsed.Text,
-		Lang:  parsed.Lang,
-		Links: parsed.Links,
-	}, nil
+	return parsed, nil
+}
+
+func checkContentType(ct string) error {
+	if ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml") && !strings.Contains(ct, "pdf") {
+		return fmt.Errorf("non-html/xml/pdf content-type: %s", ct)
+	}
+	return nil
+}
+
+// ContentHash is the lower-case hex SHA-256 of text, the content_hash the server recomputes.
+func ContentHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 // defaultHTTPClient mirrors the crawler worker's transport tuning.

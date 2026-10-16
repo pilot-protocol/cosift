@@ -28,20 +28,21 @@ func (e Env) Valid() bool { return e == EnvProd || e == EnvStaging }
 type Scope string
 
 const (
-	ScopeArticlesRead     Scope = "articles:read"
-	ScopeArticlesReadAll  Scope = "articles:read_all"
-	ScopeArticlesWrite    Scope = "articles:write"
-	ScopeArticlesStub     Scope = "articles:stub"
-	ScopeArticlesModerate Scope = "articles:moderate"
-	ScopeArticlesAdmin    Scope = "articles:admin"
-	ScopeRetrieveRead     Scope = "retrieve:read"
-	ScopeCommunityIntake  Scope = "community:intake"
-	ScopeWorkBroker       Scope = "work:broker"
+	ScopeArticlesRead       Scope = "articles:read"
+	ScopeArticlesReadAll    Scope = "articles:read_all"
+	ScopeArticlesWrite      Scope = "articles:write"
+	ScopeArticlesStub       Scope = "articles:stub"
+	ScopeArticlesContribute Scope = "articles:contribute"
+	ScopeArticlesModerate   Scope = "articles:moderate"
+	ScopeArticlesAdmin      Scope = "articles:admin"
+	ScopeRetrieveRead       Scope = "retrieve:read"
+	ScopeCommunityIntake    Scope = "community:intake"
+	ScopeWorkBroker         Scope = "work:broker"
 )
 
 func (s Scope) Valid() bool {
 	switch s {
-	case ScopeArticlesRead, ScopeArticlesReadAll, ScopeArticlesWrite, ScopeArticlesStub,
+	case ScopeArticlesRead, ScopeArticlesReadAll, ScopeArticlesWrite, ScopeArticlesStub, ScopeArticlesContribute,
 		ScopeArticlesModerate, ScopeArticlesAdmin, ScopeRetrieveRead, ScopeCommunityIntake, ScopeWorkBroker:
 		return true
 	}

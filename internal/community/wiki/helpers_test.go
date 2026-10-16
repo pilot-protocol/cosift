@@ -65,11 +65,12 @@ type fakeV1 struct {
 	slugs map[string]reply
 	items []map[string]any
 	pages map[int]reply
+	query map[string]reply
 	calls []call
 }
 
 func newFakeV1(t *testing.T) *fakeV1 {
-	f := &fakeV1{slugs: map[string]reply{}, pages: map[int]reply{}}
+	f := &fakeV1{slugs: map[string]reply{}, pages: map[int]reply{}, query: map[string]reply{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
@@ -87,7 +88,9 @@ func (f *fakeV1) serve(w http.ResponseWriter, r *http.Request) {
 			rep, ok = errReply(404, "not_found"), true
 		}
 	case r.URL.Path == "/v1/articles":
-		rep, ok = f.listPage(r.URL.Query().Get("cursor"))
+		if rep, ok = f.query[r.URL.RawQuery]; !ok {
+			rep, ok = f.listPage(r.URL.Query().Get("cursor"))
+		}
 	}
 	f.mu.Unlock()
 	if !ok {
@@ -141,6 +144,25 @@ func (f *fakeV1) list(items ...map[string]any) {
 	f.mu.Lock()
 	f.items = items
 	f.mu.Unlock()
+}
+
+// setQuery answers GET /v1/articles with exactly this raw query.
+func (f *fakeV1) setQuery(raw string, rep reply) {
+	f.mu.Lock()
+	f.query[raw] = rep
+	f.mu.Unlock()
+}
+
+func (f *fakeV1) queryCalls(raw string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c.path == "/v1/articles" && c.query == raw {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeV1) failPage(n int, rep reply) {

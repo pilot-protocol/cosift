@@ -118,6 +118,9 @@
             <small id="saved-count">0</small></button
           ><button data-view="contribute" class="nav-item">
             <span aria-hidden="true">＋</span> Contribute
+          </button
+          ><button data-view="mine" class="nav-item">
+            <span aria-hidden="true">✎</span> My contributions
           </button>
         <button id="shared-nav" data-view="shared" class="nav-item" hidden><span aria-hidden="true">◉</span> Topics</button>
         <button data-view="connect" class="nav-item"><span aria-hidden="true">⌘</span> Agents</button>
@@ -300,6 +303,32 @@
             </button>
           </div>
           <div id="contribution-list"></div>
+        </section>
+        <section id="view-mine" class="view" hidden>
+          <h1>My contributions</h1>
+          <p class="muted">
+            Articles written with your agent, the pages you submitted, and the credits they earned.
+          </p>
+          <div id="mine-summary" class="cards"></div>
+          <div class="list-heading">
+            <div>
+              <h2>Articles</h2>
+            </div>
+            <button id="refresh-mine" class="text-button">Refresh ↻</button>
+          </div>
+          <div id="mine-list"></div>
+          <div class="list-heading">
+            <div>
+              <h2>Credits earned</h2>
+            </div>
+          </div>
+          <div id="mine-earned"></div>
+          <div class="list-heading">
+            <div>
+              <h2>Webpages you submitted</h2>
+            </div>
+          </div>
+          <div id="mine-pages"></div>
         </section>
         <section id="view-billing" class="view" hidden>
           <h1>Credits &amp; billing</h1>

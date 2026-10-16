@@ -46,7 +46,7 @@ report that state and respect retry guidance; do not spin on repeated calls.
 
 ## CLI and contributions
 
-Use stable Cosift v0.2.7 or newer. The CLI discovers the installer's private
+Use stable Cosift v0.2.7 or newer (worker mode below needs a release newer than v0.4.2). The CLI discovers the installer's private
 session under `$XDG_CONFIG_HOME/cosift/community-session.json`, defaulting to
 `~/.config/cosift/community-session.json`. A missing or expired login needs setup;
 do not change identities to get around limits.
@@ -68,6 +68,18 @@ per request and 1,000 new URLs per account per rolling 24 hours.
 Flags precede positional URLs. Submission acceptance means queued for checking;
 only verified indexing can earn credits. Check status in the web app.
 
+To fetch pages that sites block for Cosift's own crawler, the CLI has a worker mode:
+
+```sh
+cosift contribute -server https://cosift.pilotprotocol.network -worker -max-pages 50 -duration 20m
+```
+
+It makes requests to third-party sites from the user's network, so run it only when
+the user asks. It needs the user's bearer token (`COSIFT_TOKEN` or a saved session that
+holds one) and an account that has joined the contributor network and accepted the
+current terms; `-max-pages`, `-duration` and `-concurrency` bound the run, and it
+prints one JSON line per event. Verified new pages earn credits up to a daily cap.
+
 For an explicitly requested local-indexing workflow, configure a compatible local
 embedding service and use:
 
@@ -75,8 +87,8 @@ embedding service and use:
 cosift -config local.json contribute -server https://cosift.pilotprotocol.network -index-locally https://go.dev/doc/modules/
 ```
 
-This fetches public content and creates a local index, then uploads text, metadata
-and vectors. Match the destination model/dimensions; production currently uses
+This fetches public content as a browser would and creates a local index, then uploads
+text, metadata and vectors. Match the destination model/dimensions; production currently uses
 `nomic-embed-text`, 768 dimensions. The server checks source content, safety,
 quality and all vectors. Uncertain or unsupported content remains unverified,
 and text/metadata checks do not guarantee image or video moderation. Do not

@@ -1,0 +1,18 @@
+{{define "main"}}<article class="wiki-article wiki-doc wiki-terms">
+<header class="wiki-article-head">
+<h1>{{.Title}}</h1>
+<p class="wiki-meta"><span>Version {{.Version}}</span></p>
+</header>
+<div class="wiki-body">
+{{.Intro}}<nav aria-label="Sections">
+<ul>
+{{range .Sections}}<li><a href="#{{.ID}}">{{.Heading}}</a></li>
+{{end}}</ul>
+</nav>
+{{range .Sections}}<section id="{{.ID}}">
+<h2>{{.Heading}}</h2>
+{{.Body}}{{if .Contact}}<p>Takedown contact: <a href="{{.Contact}}">{{.Address}}</a></p>
+{{end}}</section>
+{{end}}</div>
+</article>
+{{end}}

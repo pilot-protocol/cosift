@@ -127,8 +127,9 @@ func TestFakePolicyStagingWriters(t *testing.T) {
 	}
 	zeta := Principal{ID: "zeta-staging", Env: EnvStaging, Scopes: []Scope{ScopeArticlesStub}}
 	alpha := Principal{ID: "alpha-staging", Env: EnvStaging, Scopes: []Scope{ScopeArticlesWrite}}
-	f.SetPrincipals(zeta, synthProd, synthStaging, mcpStaging, resolverStaging, dashStaging, alpha, resolverProd)
-	want := []string{"alpha-staging", "resolver-staging", "synth-staging", "zeta-staging"}
+	mid := Principal{ID: "mid-staging", Env: EnvStaging, Scopes: []Scope{ScopeArticlesContribute}}
+	f.SetPrincipals(zeta, synthProd, synthStaging, mcpStaging, resolverStaging, dashStaging, alpha, resolverProd, mid)
+	want := []string{"alpha-staging", "mid-staging", "resolver-staging", "synth-staging", "zeta-staging"}
 	if got := f.StagingWriters(); !slices.Equal(got, want) {
 		t.Errorf("StagingWriters = %v, want %v", got, want)
 	}
