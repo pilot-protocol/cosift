@@ -3,6 +3,7 @@ package community
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,6 +77,10 @@ const (
 	// statusModerationCeiling is the dispatch loop's own outcome, never a stored status: the daily ceiling on content checks is reached.
 	statusModerationCeiling = "moderation_ceiling"
 	ceilingReason           = "Waiting for the daily content-check allowance to renew."
+	// statusModerationShare is likewise never stored: the submitting account has used its own share of the day's content checks.
+	statusModerationShare        = "moderation_share"
+	shareReason                  = "Waiting for your daily content-check allowance to renew."
+	defaultModerationsPerAccount = 100
 )
 
 // moderationCeiling reports the engine's ceiling answer: the same 503 a failing model gives, plus "ceiling": true.
@@ -88,8 +93,18 @@ func moderationCeiling(body []byte) bool {
 }
 
 // holdModeration stops every content check until 00:00 UTC, because the ceiling is shared by all submissions.
-func (s *Server) holdModeration() {
-	s.moderateHold.Store(utcDayStart(s.now()).Add(24 * time.Hour).Unix())
+func (s *Server) holdModeration() { s.moderateHold.Store(s.nextUTCDay().Unix()) }
+
+func (s *Server) nextUTCDay() time.Time { return utcDayStart(s.now()).Add(24 * time.Hour) }
+
+// reserveModeration counts one content check for the account today; false once the account has used its share.
+func (s *Server) reserveModeration(ctx context.Context, userID string) (bool, error) {
+	var used int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO moderation_usage(user_id,day,count) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=moderation_usage.count+1 WHERE moderation_usage.count<? RETURNING count`, userID, utcDayStart(s.now()).Unix(), s.cfg.ModerationsPerAccount).Scan(&used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Server) moderationHold() time.Time { return time.Unix(s.moderateHold.Load(), 0) }
@@ -164,7 +179,8 @@ func (g *hostGaps) reserve(host string, gap time.Duration, now time.Time) time.D
 // prevalidate runs before delivery. Only an explicit allow decision may enter
 // the crawl queue. Transient failures retain pending work; unreadable content
 // is unverified, and a positive policy match is rejected.
-func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (status, reason, approvedContentHash, failClass string) {
+func (s *Server) prevalidate(ctx context.Context, j job) (status, reason, approvedContentHash, failClass string) {
+	submissionID, raw := j.id, j.url
 	if _, err := NormalizeURL(raw); err != nil {
 		return "rejected", "URL is not an eligible public webpage.", "", ""
 	}
@@ -253,6 +269,13 @@ func (s *Server) prevalidate(ctx context.Context, submissionID, raw string) (sta
 	}
 	if s.now().Before(s.moderationHold()) {
 		return statusModerationCeiling, ceilingReason, "", ""
+	}
+	switch reserved, err := s.reserveModeration(ctx, j.userID); {
+	case err != nil:
+		log.Printf("community: could not count a content check: %v", err)
+		return "pending", "Waiting for content safety checks.", "", ""
+	case !reserved:
+		return statusModerationShare, shareReason, "", ""
 	}
 	b, _ := json.Marshal(doc)
 	checkRes, err := s.engine.post(ctx, moderateRoute, b, moderateTimeout)

@@ -56,6 +56,7 @@ type Config struct {
 	Awards                      bool   // Apply pending credit awards; needs shared accounts and the article cross-check.
 	Work                        bool   // Serve /api/work/* and run the settled, counter, alert and push loops; needs shared accounts and the broker key.
 	FetchDailyCap               int    // Pages credited per account per UTC day; 0 means the default.
+	ModerationsPerAccount       int    // Content checks one account may use per UTC day; 0 means the default.
 	Environment                 string // "prod" or "staging", the label of the alerts the app raises.
 	Articles                    ArticleReader
 	TrustedProxies              []string
@@ -864,6 +865,9 @@ func (s *Server) dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if _, err = s.db.ExecContext(ctx, `DELETE FROM moderation_usage WHERE day<?`, utcDayStart(s.now()).Unix()); err != nil {
+		return err
+	}
 	down, probed := false, false
 	defer func() {
 		if probed {
@@ -910,13 +914,19 @@ func (s *Server) dispatch(ctx context.Context) error {
 			}
 			continue
 		}
-		status, reason, approvedContentHash, failClass := s.prevalidate(ctx, j.id, j.url)
+		status, reason, approvedContentHash, failClass := s.prevalidate(ctx, j)
 		if status == "allowed" && approvedContentHash == "" {
 			status, reason = "pending", "Waiting for a content-bound safety decision."
 		}
 		down = status == statusBackendDown
 		if status == statusModerationCeiling {
 			if err := s.requeueUntil(ctx, j, s.moderationHold(), reason); err != nil {
+				return err
+			}
+			continue
+		}
+		if status == statusModerationShare {
+			if err := s.requeueUntil(ctx, j, s.nextUTCDay(), reason); err != nil {
 				return err
 			}
 			continue

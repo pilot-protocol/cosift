@@ -76,7 +76,7 @@ func TestPrevalidateClassesOnlyBlockingFailuresAsFetch(t *testing.T) {
 	} {
 		s := testServer(t, nil)
 		pageAnswering(s, tc.status, tc.header, tc.body, tc.err)
-		_, _, _, class := s.prevalidate(context.Background(), "", "https://example.com/page")
+		_, _, _, class := s.prevalidate(context.Background(), job{url: "https://example.com/page"})
 		if class != tc.want {
 			t.Errorf("%s: class %q, want %q", tc.name, class, tc.want)
 		}

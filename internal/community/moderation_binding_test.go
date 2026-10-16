@@ -109,7 +109,7 @@ func TestPlainTextContributionIsUnverified(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})}
 	s.moderationRobots = crawler.NewRobots(s.pageClient, "Cosift-Community/1.0")
-	status, reason, hash, _ := s.prevalidate(context.Background(), "", "https://example.com/readme")
+	status, reason, hash, _ := s.prevalidate(context.Background(), job{url: "https://example.com/readme"})
 	if status != "unverified" || !strings.Contains(reason, "HTML") || hash != "" {
 		t.Fatalf("unsupported plaintext approved: %s %s %s", status, reason, hash)
 	}

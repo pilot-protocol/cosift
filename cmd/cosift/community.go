@@ -23,6 +23,9 @@ import (
 	"github.com/pilot-protocol/cosift/internal/sharedaccount"
 )
 
+// openCommunity opens the community app; tests replace it.
+var openCommunity = community.Open
+
 func runCommunity(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("community", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:7780", "listen address")
@@ -56,6 +59,10 @@ func runCommunity(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	moderationShare, err := communityModerationShareFromEnv()
+	if err != nil {
+		return err
+	}
 	var trusted []string
 	if *proxies != "" {
 		trusted = strings.Split(*proxies, ",")
@@ -73,7 +80,7 @@ func runCommunity(ctx context.Context, args []string) error {
 		defer client.Close()
 		provider = client
 	}
-	s, err := community.Open(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), Awards: awards, Work: work, FetchDailyCap: fetchCap, Environment: environment, TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
+	s, err := openCommunity(community.Config{GAMeasurementID: os.Getenv("COSIFT_GA_MEASUREMENT_ID"), Shared: provider, SharedPasswordEnabled: os.Getenv("COSIFT_SHARED_PASSWORD_ENABLED") == "1", DataDir: *dir, Backend: *backend, PublicURL: *publicURL, BrokerKey: os.Getenv("COSIFT_COMMUNITY_BROKER_KEY"), EngineURL: os.Getenv("COSIFT_COMMUNITY_ENGINE_URL"), Awards: awards, Work: work, FetchDailyCap: fetchCap, ModerationsPerAccount: moderationShare, Environment: environment, TrustedProxies: trusted, GuestInterval: *guestInterval, MemberFreeRPM: *freeRPM, SearchRPM: *searchRPM, AnswerRPM: *answerRPM, ResearchPer10Min: *researchLimit, StripeSecretKey: os.Getenv("STRIPE_SECRET_KEY"), StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"), AllowTestPayments: os.Getenv("COSIFT_ALLOW_TEST_PAYMENTS") == "1", ContributionReward: rewardOn, ContributionRewardDailyCap: rewardCap, StripePortalConfigurationID: os.Getenv("COSIFT_STRIPE_PORTAL_CONFIGURATION_ID"), GSCVerification: os.Getenv("COSIFT_GSC_VERIFICATION"), Wiki: wikiConfig()})
 	if err != nil {
 		return err
 	}
@@ -130,6 +137,19 @@ func communityWorkFromEnv() (enabled bool, fetchCap int, environment string, err
 		fetchCap = n
 	}
 	return enabled, fetchCap, strings.TrimSpace(os.Getenv("COSIFT_ENV")), nil
+}
+
+// communityModerationShareFromEnv reads the content checks one account may use per UTC day (0 = default).
+func communityModerationShareFromEnv() (int, error) {
+	v := strings.TrimSpace(os.Getenv("COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT"))
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 10000 {
+		return 0, fmt.Errorf("COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT must be an integer from 1 to 10000")
+	}
+	return n, nil
 }
 
 // communityRewardFromEnv reads the contribution-reward switch (off by default) and the per-account daily cap (0 = default).

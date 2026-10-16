@@ -73,7 +73,8 @@ CREATE INDEX IF NOT EXISTS retrieval_usage_expiry ON retrieval_usage(expires_at)
 CREATE TABLE IF NOT EXISTS guest_usage (ip_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, reservation TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS guest_usage_expiry ON guest_usage(expires_at);
 CREATE TABLE IF NOT EXISTS work_workers (worker TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), cid TEXT NOT NULL, first_seen INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS work_pushed (url_sha TEXT PRIMARY KEY, pushed_at INTEGER NOT NULL);`)
+CREATE TABLE IF NOT EXISTS work_pushed (url_sha TEXT PRIMARY KEY, pushed_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS moderation_usage (user_id TEXT NOT NULL, day INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(user_id,day));`)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("community schema: %w", err)

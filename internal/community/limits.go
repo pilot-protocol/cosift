@@ -35,6 +35,12 @@ func (c *Config) defaultLimits() error {
 	if c.FetchDailyCap < 1 || c.FetchDailyCap > 10000 {
 		return fmt.Errorf("fetch daily cap must be between 1 and 10000")
 	}
+	if c.ModerationsPerAccount == 0 {
+		c.ModerationsPerAccount = defaultModerationsPerAccount
+	}
+	if c.ModerationsPerAccount < 1 || c.ModerationsPerAccount > 10000 {
+		return fmt.Errorf("moderations per account must be between 1 and 10000")
+	}
 	if c.GuestInterval < time.Second || c.GuestInterval > 24*time.Hour || c.GuestInterval%time.Second != 0 {
 		return fmt.Errorf("guest interval must be whole seconds between 1s and 24h")
 	}
