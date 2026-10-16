@@ -37,7 +37,7 @@ about what each "token/key" var actually does:
 
 | Var | What it really is | Secret? |
 |---|---|---|
-| `COSIFT_ADMIN_TOKEN` | **CLIENT-side** Bearer for the `cosift admin …` subcommands (`cmd_admin.go`) — the value the *CLI* sends to a remote box's `/admin/*`. It is **NOT** the server's auth gate. | Yes (client credential) |
+| `COSIFT_ADMIN_TOKEN` | **CLIENT-side** Bearer for the `cosift admin …` and `cosift work …` subcommands (`cmd_admin.go`, `cmd_work.go`) — the value the *CLI* sends to a remote box's `/admin/*`. It is **NOT** the server's auth gate. | Yes (client credential) |
 | `COSIFT_EMBED_API_KEY` / `COSIFT_CHAT_API_KEY` | Provider API keys for the embed / chat slots (`resolveAPIKey`). Fall back to `OPENAI_API_KEY` → `OPENAI`. | Yes |
 | `OPENAI_API_KEY` / `OPENAI` | OpenAI(-compatible) key; `OPENAI` is the accepted short form. | Yes |
 | `COHERE_API_KEY` / `VOYAGE_API_KEY` | Rerank provider keys (HTTP reranker, when `cfg.Rerank.URL` is set and `cfg.Rerank.APIKey` is empty). | Yes |
@@ -86,7 +86,7 @@ not re-enable them without the confidentiality decision in that section.
 
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
-| `COSIFT_ADMIN_TOKEN` | string (SECRET, client-side) | unset → no Bearer sent | Token the `cosift admin …` CLI subcommands send as the admin Bearer to a remote box. **Not** a server gate. | `cmd/cosift/cmd_admin.go:96,135,332,415,537`; `cmd_maintenance.go:618` |
+| `COSIFT_ADMIN_TOKEN` | string (SECRET, client-side) | unset → no Bearer sent | Token the `cosift admin …` and `cosift work …` CLI subcommands send as the admin Bearer to a remote box. **Not** a server gate. | `cmd/cosift/cmd_admin.go:96,135,332,415,537`; `cmd_maintenance.go:618`; `cmd/cosift/cmd_work.go:48-50` |
 | `COSIFT_EMBED_API_KEY` | string (SECRET) | unset → fall back to `OPENAI_API_KEY` → `OPENAI` → anonymous | API key for the **embed** slot. | `cmd/cosift/main.go:359` (`resolveAPIKey("embed")`) |
 | `COSIFT_CHAT_API_KEY` | string (SECRET) | unset → fall back to `OPENAI_API_KEY` → `OPENAI` → anonymous | API key for the **chat** slot. | `cmd/cosift/main.go:361` (`resolveAPIKey("chat")`) |
 | `OPENAI_API_KEY` | string (SECRET) | unset → try `OPENAI` → anonymous | OpenAI(-compatible) key; common fallback for both embed and chat slots, and read directly by `index` / `eval` / `serve` subcommands. | `main.go:368`; `cmd_index.go:155,612`; `cmd_eval.go:272,335,356,375,1316`; `cmd_serve.go:136`; `cmd_maintenance.go:562,609,610` |
@@ -259,8 +259,11 @@ not re-enable them without the confidentiality decision in that section.
 
 The engine serves the community service's two routes, `POST /v1/community/enqueue`
 and `POST /v1/community/moderate`, on its `/v1` listener, for a key principal with
-the `community:intake` scope. The moderation ceiling is the `work` block of
-`cosift.json`, not an env var (see [docs/COMMUNITY.md](COMMUNITY.md)).
+the `community:intake` scope. With fetch work on (see [Fetch work](#fetch-work)),
+a key principal with the `work:broker` scope also reaches `/v1/work/claim`,
+`/v1/work/submit`, `/v1/work/push` and `GET /v1/work/settled`. The moderation
+ceiling and the fetch-work limits are the `work` block of `cosift.json`, not env
+vars (see [docs/COMMUNITY.md](COMMUNITY.md)).
 
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
@@ -272,12 +275,33 @@ The `cosift community` service reads these (set them in its environment file;
 
 | Variable | Type | Default | Effect | Where read |
 |---|---|---|---|---|
-| `COSIFT_COMMUNITY_BROKER_KEY` | string (SECRET) | unset → submissions wait as a configuration error | The community principal's `csk_` key for the engine's `/v1` routes. Sent only to `COSIFT_COMMUNITY_ENGINE_URL`. Must differ from `COSIFT_WIKI_ENGINE_KEY`. | `cmd/cosift/community.go:72`; `internal/community/engine.go:37` |
-| `COSIFT_COMMUNITY_ENGINE_URL` | string (URL) | `http://127.0.0.1:7779` | The engine's `/v1` listener; must be a loopback `http` origin. | `cmd/cosift/community.go:72`; `internal/community/engine.go:37` |
+| `COSIFT_COMMUNITY_BROKER_KEY` | string (SECRET) | unset → submissions wait as a configuration error | The community principal's `csk_` key for the engine's `/v1` routes. Sent only to `COSIFT_COMMUNITY_ENGINE_URL`. Must differ from `COSIFT_WIKI_ENGINE_KEY`. | `cmd/cosift/community.go:76`; `internal/community/engine.go:37` |
+| `COSIFT_COMMUNITY_ENGINE_URL` | string (URL) | `http://127.0.0.1:7779` | The engine's `/v1` listener; must be a loopback `http` origin. | `cmd/cosift/community.go:76`; `internal/community/engine.go:37` |
 | `COSIFT_COMMUNITY_ADMIN_TOKEN` | — | must be unset | No longer used: the service refuses to start while it is set. | `cmd/cosift/community.go:44` |
-| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD` | `on` / `off` | `off` | Pays the contribution reward for new content. Anything else stops startup. | `cmd/cosift/community.go:113` |
-| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD_DAILY_CAP` | int | `10` | Rewards per account per rolling 24 hours; an integer from 1 to 10000. | `cmd/cosift/community.go:121` |
-| `COSIFT_COMMUNITY_AWARDS` | `0` / `1` | `0` | `1` starts the poller that applies pending credit awards every 30 s. Needs shared mode and `COSIFT_WIKI_ENGINE_KEY`. Anything else stops startup. | `cmd/cosift/community.go:102`; `internal/community/awards.go:403` |
+| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD` | `on` / `off` | `off` | Pays the contribution reward for new content. Anything else stops startup. | `cmd/cosift/community.go:136` |
+| `COSIFT_COMMUNITY_CONTRIBUTION_REWARD_DAILY_CAP` | int | `10` | Rewards per account per rolling 24 hours; an integer from 1 to 10000. | `cmd/cosift/community.go:144` |
+| `COSIFT_COMMUNITY_AWARDS` | `0` / `1` | `0` | `1` starts the poller that applies pending credit awards every 30 s. Needs shared mode and `COSIFT_WIKI_ENGINE_KEY`. Anything else stops startup. | `cmd/cosift/community.go:106`; `internal/community/awards.go:403` |
+| `COSIFT_COMMUNITY_WORK` | `0` / `1` | `0` | `1` serves `POST /api/work/claim` and `POST /api/work/submit` and runs the settled, counter, alert and push loops. Needs shared mode (`COSIFT_AUTH_MODE=shared`), `COSIFT_COMMUNITY_BROKER_KEY` and `COSIFT_ENV`, or startup fails; anything other than `0` or `1` also stops startup. While it is off both routes answer 404. | `cmd/cosift/community.go:117-124`; `internal/community/work_identity.go:84-97`; `internal/community/work_routes.go:39-42` |
+| `COSIFT_COMMUNITY_FETCH_DAILY_CAP` | int | `500` | Pages credited per account per UTC day; an integer from 1 to 10000, anything else stops startup. An account at its cap gets 429 `daily_cap` from the claim route. | `cmd/cosift/community.go:125-131`; `internal/community/limits.go:32-37`; `internal/community/work_routes.go:21,51-56,153-166` |
+| `COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT` | int | `100` | Content checks per account per UTC day; an integer from 1 to 10000, anything else stops startup. An account at its share waits until 00:00 UTC without using attempts; other accounts go on. | `cmd/cosift/community.go:144-150`; `internal/community/limits.go:38-41`; `internal/community/moderation.go:83` |
+| `COSIFT_ENV` | `prod` / `staging` | unset | The environment label on the alerts the app raises. Required, as one of these two values, when `COSIFT_COMMUNITY_WORK=1`; nothing else reads it. | `cmd/cosift/community.go:132`; `internal/community/work_identity.go:94-95`; `internal/community/work_alerts.go:51` |
+
+---
+
+## Fetch work
+
+The engine's work pool leases blocked pages to community workers and indexes what
+they verify. It runs inside the in-process crawler, so `pebble-serve` needs
+`-crawl-seeds-file`; until the crawler is up the `/v1/work/*` routes answer 503. These
+two variables are read at `pebble-serve` startup; any value other than `0` or `1` stops
+it. The limits (lease time, quorum window, daily moderation
+ceiling and the rest) are the `work` block of `cosift.json`, listed in
+[docs/COMMUNITY.md](COMMUNITY.md#fetch-work).
+
+| Variable | Type | Default | Effect | Where read |
+|---|---|---|---|---|
+| `COSIFT_WORK_ENABLED` | `0` / `1` | `0` | `1` starts the pool feeders and the sweeper, serves the `/v1/work/*` routes and adds the `work` block to `/stats` and the `cosift_work_*` series to `/metrics`. While it is `0` the `/v1/work/*` routes answer 503 `work_disabled`; `/admin/work-purge` and `/admin/work-void` still answer. | `internal/config/work.go:118`; `cmd/cosift/serve_v1_work.go:41,58,117-120,284,290`; `cmd/cosift/serve_work_admin.go:69-75`; `cmd/cosift/serve_setup.go:67,722` |
+| `COSIFT_WORK_FRONTIER` | `0` / `1` | `1` | `0` stops the feeder that offers queued frontier rows to workers; pushed URLs and blocked (errored) rows are still offered. Matters only with `COSIFT_WORK_ENABLED=1`. | `internal/config/work.go:121`; `cmd/cosift/serve_v1_work.go:45`; `internal/work/feed.go:101-103` |
 
 ---
 
