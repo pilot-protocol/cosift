@@ -65,7 +65,7 @@ then reload the agent. This does not require uploading a token to the skill file
 ## Authenticated CLI
 
 Use [Cosift v0.2.7 or a newer stable release](https://github.com/pilot-protocol/cosift/releases/latest)
-for your OS and architecture; verify its signature using the [signed CLI guide](https://github.com/pilot-protocol/cosift-install/blob/main/docs/CLI-INSTALL.md). Put the binary on your PATH before running the installer so it can connect the CLI. If you installed the binary later, rerun the installer with `--cli` to save the shared session. After that handoff, the CLI discovers the private `cosift/community-session.json` under
+(the `-worker` flag below needs a release newer than v0.4.2) for your OS and architecture; verify its signature using the [signed CLI guide](https://github.com/pilot-protocol/cosift-install/blob/main/docs/CLI-INSTALL.md). Put the binary on your PATH before running the installer so it can connect the CLI. If you installed the binary later, rerun the installer with `--cli` to save the shared session. After that handoff, the CLI discovers the private `cosift/community-session.json` under
 `$XDG_CONFIG_HOME`, or `~/.config` when unset. An explicit `-session-file` can select
 another saved session. Keep session files private (mode `0600`).
 
@@ -89,6 +89,21 @@ https://go.dev/doc/modules/
 https://www.rust-lang.org/learn
 ```
 
+To fetch pages that sites block for Cosift's own crawler, run the worker (it needs a release newer than v0.4.2):
+
+```sh
+cosift contribute -server https://cosift.pilotprotocol.network -worker -max-pages 50 -duration 20m
+```
+
+It leases pages from the network, fetches them from your machine as a browser would,
+and submits what it extracted; it makes requests to third-party sites from your
+network. `-max-pages` (default 100), `-duration` (default 30m) and `-concurrency`
+(default 4, 1 to 32) bound the run, and it prints one JSON line per event. It needs
+your bearer token (`COSIFT_TOKEN`, or a saved session that holds one; a cookie-only
+session is refused) and an account that has joined the contributor network and
+accepted the current terms. A verified page whose content is new earns 2 credits, up to a daily
+cap. See [Fetch work](COMMUNITY.md#fetch-work).
+
 Submit useful public pages you are authorized to share. URL and content checks
 screen adult material, harmful content, malware/phishing, spam and low-quality
 filler; useful educational, medical and defensive-security material is allowed.
@@ -102,8 +117,9 @@ metadata review does not guarantee moderation of images or video.
 ## Index and embed locally
 
 The CLI can fetch, extract, chunk and embed a page locally, retain its local index,
-then submit its text, metadata and vectors. Configure a local embedding service
-matching the destination model and dimensions. Production currently uses
+then submit its text, metadata and vectors. Pages are fetched with browser request
+headers through a public-only dialer, and every redirect hop is checked. Configure a
+local embedding service matching the destination model and dimensions. Production currently uses
 `nomic-embed-text` with 768 dimensions; confirm compatibility before a large run.
 
 Example `local.json` for an OpenAI-compatible local embedding endpoint:
