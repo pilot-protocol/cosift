@@ -13,6 +13,8 @@ People can:
 - Submit public webpage URLs in a multiline field or a CSV upload after signing in.
 - See their most recent 200 contributions, indexing status and credit balance.
 - Submit the same URLs or CSV files using `cosift contribute`, optionally extracting text and computing embeddings locally.
+- Fetch pages that sites block for the crawler, from their own network, with `cosift contribute -worker` (see [Fetch work](#fetch-work)).
+- Open **My contributions** to see the articles written with their agent, fetched-page counters, credits earned and submitted pages.
 - Follow topics across the web and MCP, check article coverage, and record requests for missing articles.
 - View monthly credits and manage an optional paid subscription or subscriber top-up when live payments are configured.
 
@@ -62,11 +64,12 @@ required for the community service.
 The community service reaches the backend's loopback `/v1` listener (default
 `http://127.0.0.1:7779`) with its own scoped key, not the peer token. Create a
 key principal in the backend's service-auth file with the `community:intake`
-scope alone (community scopes combine only with `work:broker`, and require `"env": "prod"`),
+scope (add `work:broker` when fetch work is on; these two scopes combine only with
+each other, and require `"env": "prod"`),
 then set `COSIFT_COMMUNITY_BROKER_KEY` to its `csk_` key in the community service
 environment. Set `COSIFT_COMMUNITY_ENGINE_URL` only when the listener is elsewhere;
 it must be a loopback `http` origin. The service uses the key only for contribution
-checks and delivery; it never sends it to the browser or with searches. It refuses
+checks and delivery (and, with fetch work on, the work routes); it never sends it to the browser or with searches. It refuses
 to start while `COSIFT_COMMUNITY_ADMIN_TOKEN` is set, and the backend's
 `cluster.peer_auth_token` must never be given to the community service.
 
@@ -92,7 +95,7 @@ not proxy arbitrary backend paths or expose backend administration.
 
 ## Contribution delivery
 
-The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions while a worker checks public page content and calls the engine's `POST /v1/community/moderate`, authenticated with the broker key. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `POST /v1/community/enqueue`.
+The app immediately rejects known adult domains, private/non-web URLs, and executable download links. A durable queue in the community database holds submissions, and the dispatch loop takes them in rotation across accounts, oldest first within an account, so one account's backlog delays another's submission by one job at most. A worker checks public page content and calls the engine's `POST /v1/community/moderate`, authenticated with the broker key. Obvious parked/placeholder domains, error/bot/login pages, and extreme repetitive filler are stopped before model classification. The classifier additionally rejects spam, link farms, SEO doorway pages, incoherent scraps and content without useful information. It must preserve useful code, non-English pages, medical education and academic research; authorship alone is not a rejection signal. These checks reduce junk but do not guarantee perfect classification. Only an explicit safe result permits delivery to `POST /v1/community/enqueue`.
 
 The engine caps the model calls of the moderation route per UTC day. Set
 `work.community_moderations_per_day` in `cosift.json` (default and maximum 1000;
@@ -102,9 +105,16 @@ The engine caps the model calls of the moderation route per UTC day. Set
 { "work": { "community_moderations_per_day": 500 } }
 ```
 
-Past the ceiling the route answers 503 `moderation_unavailable` with `Retry-After`
-set to the next 00:00 UTC. A page decided before the model (adult, obvious junk)
-takes nothing from the allowance. The community app does not wait for the reset: a refused check counts as an attempt, so while the route is halted or past its ceiling, submissions that need the model end as `unverified` after 12 attempts, about two hours. `/metrics` counts the answers as
+Past the ceiling the route answers 503 `moderation_unavailable` with `ceiling: true`
+and `Retry-After` set to the next 00:00 UTC. A page decided before the model (adult,
+obvious junk) takes nothing from the allowance. On that answer the community app sends
+no further content check until 00:00 UTC: submissions that need the model stay
+`pending` with the reason "Waiting for the daily content-check allowance to renew."
+and do not use up attempts. Each account also has a daily share of the content checks,
+`COSIFT_COMMUNITY_MODERATIONS_PER_ACCOUNT` (default 100; an integer from 1 to 10000,
+anything else stops startup): once an account has used it, that account's submissions wait
+until 00:00 UTC without using attempts, while other accounts' submissions go on. Any other
+model failure still counts as an attempt, and a submission ends as `unverified` after 12. `/metrics` counts the answers as
 `cosift_community_moderations_total{result="ok|ceiling|error"}`. Each community
 route also accepts at most 30 calls a minute per principal; lower them with
 `COSIFT_V1_ENQUEUE_PER_MIN` and `COSIFT_V1_MODERATE_PER_MIN` on the engine (an
@@ -129,8 +139,11 @@ Authenticated CLI users can fetch, parse, chunk and embed webpages locally, save
 ./cosift request -server https://cosift.pilotprotocol.network -mode research -query "How does Raft work?"
 ```
 
-`-index-locally` also accepts `-csv`. It requires login, limits an artifact to
-32,000 text bytes and 64 chunks, and retains the total 1 MB request limit.
+`-index-locally` also accepts `-csv`. It fetches each page the way a browser does
+(browser request headers, a public-only dialer, each redirect hop checked)
+and extracts it with the same code as `cosift contribute -worker`. It requires login,
+limits an artifact to 32,000 text bytes and 64 chunks, and retains the total 1 MB
+request limit.
 The backend fetches the source independently, compares title/text, checks the
 model/dimensions, and verifies **every vector** against its own embedding model
 before reuse. Failed verification cannot inject vectors. This first version
@@ -182,7 +195,7 @@ backend. Insufficient credit rejects the request before backend work with HTTP 4
 add credits when billing is available, contribute approved new content when
 rewards are enabled, or wait for the next monthly grant. Reading a balance or
 managing saved requests does not itself spend retrieval credits. In the monthly
-activity, `earned` counts contribution rewards, awards and royalties, and
+activity, `earned` counts contribution rewards, awards, royalties and page-fetch credits, and
 `spent` counts retrieval debits, article reads and clawbacks.
 
 In shared mode, `POST /api/meter` charges a covered article read to the bearer
@@ -195,10 +208,208 @@ account.
 
 `COSIFT_COMMUNITY_AWARDS=1` (default `0`) starts a poller that every 30 seconds
 applies pending credit awards (contribution awards, royalties and clawbacks)
-from the shared account store to the ledger, once per award. It needs shared
+from the shared account store to the ledger, once per award. A clawback is applied
+to the account's linked community user even while the account is suspended or
+unverified, and it is never given up on; other awards that stay unresolvable for 7 days
+are skipped. It needs shared
 mode and `COSIFT_WIKI_ENGINE_KEY`, which it uses to confirm each article with
 the engine, and the service refuses to start when that key equals
 `COSIFT_COMMUNITY_BROKER_KEY`.
+
+## Fetch work
+
+Some sites turn the crawler away: HTTP 403 or 429, a bot-check page, a timeout. Fetch
+work lets signed-in contributors fetch such pages from their own network and has the
+engine index what is verified. It is off until the engine runs with
+`COSIFT_WORK_ENABLED=1` (inside the in-process crawler, so with `-crawl-seeds-file`)
+and the community app with `COSIFT_COMMUNITY_WORK=1`; see
+[ENV.md](ENV.md#fetch-work). While the engine's switch is off its `/v1/work/*` routes
+answer 503 `work_disabled`; while the app's is off its `/api/work/*` routes answer 404.
+
+**The pool.** The engine offers workers URLs from three sources, in this order: URLs the
+community app pushes (`pushed`), crawl-frontier rows whose last error was a block (HTTP
+403 or 429, a rate limit, challenge or captcha, a bot check, a timeout; `errored`), and
+queued frontier rows (`frontier`; off with `COSIFT_WORK_FRONTIER=0`, held to half of
+`pool_max`). Hosts take turns within a source, and a host is leased at most once per
+`host_spacing_ms`. The crawler's domain policy and the adult filter apply to every URL,
+and a URL already in the corpus is never offered. With fetch work on, the app also
+pushes, every 5 minutes, up to 100 pending or unverified submissions whose page its own
+check could not fetch because the site blocked it, none of them offered in the last 24
+hours.
+
+**Leases.** A claim returns up to 32 leases (`max`, default 1). A lease lasts
+`lease_ttl_s`. A URL is leased to at most `distinct_leases_per_url` workers at once, and a
+worker and a network each get a URL once per `attestation_ttl_h`. The app derives the
+worker id from the account, and the network id from the client address (its IPv4 /24 or
+IPv6 /48), with salts kept in the community database; a client never sends either. A URL
+that `max_attempts` worker and network pairs failed to deliver, or that three pairs
+reported as failures, is parked for `attestation_ttl_h`.
+
+**Attestations.** For a 200 the worker submits the page's title, text, language, content
+hash and simhash with the extraction version, and the engine recomputes both hashes. Any
+other `http_status` is a failure report that returns the lease. Two attestations agree
+when their simhashes differ by at most `simhash_max` bits and they come from different
+workers on different networks. A page from an `errored` URL is verified by two agreeing
+attestations that also agree on title, language and enough of the text, and the text
+they agree on is what gets indexed. The engine also fetches the page itself when
+`quorum_window_s` ends, and at the next sweep when two attestations of a `pushed` or
+`frontier` URL agree. If that copy is within `simhash_max` of an attesting group, the page counts as
+verified by the engine; otherwise every attesting worker is a mismatch and the engine's
+own copy is used instead. Either way the page then goes through the checks below. A
+server fetch that fails, or returns an error or bot-check page, is retried after an hour,
+doubling to a day. A record ends after `attestation_ttl_h`.
+
+**Checks and the ceiling.** A verified text passes the adult filter, the quality
+prefilter and the content-safety model before it is indexed. Each model call takes one
+unit of `work_moderations_per_day`. At that ceiling a claim returns no leases and
+`moderation_ceiling: true` with `retry_after_s` (at most an hour), and verified pages
+wait as `deferred` until after it; a page the model fails on `moderation_attempts_max` times is
+rejected. Indexed pages report `source: "attested"` and `verified_by` (`quorum` or
+`server`) in `/v1/contents`; crawled pages report `source: "crawl"`.
+
+**Routes.** All four need a key principal with the `work:broker` scope (add it to the
+community principal; see [Start the services](#start-the-services)):
+
+| Method and path | Body / behavior |
+| --- | --- |
+| `POST /v1/work/claim` | `{worker, net, max}` (ids are 32 hex characters); returns `{leases:[{lease_id,url,source,expires_at,extract_version}], retry_after_s?, moderation_ceiling?}` |
+| `POST /v1/work/submit` | A lease's attestation or failure report, up to 2 MiB; returns `{verdict, agreeing, indexed, window_expires_at?, reason?}` with `verdict` one of `awaiting_quorum`, `verified`, `mismatch`, `deferred`, `rejected`, `released` |
+| `POST /v1/work/push` | `{urls:[...]}`, 1 to 100; returns `{accepted, duplicates, rejected:[{index,rule}]}` with `rule` one of `url`, `policy`, `pool_full` |
+| `GET /v1/work/settled` | `?after=SEQ&limit=1-200` (default 100); returns settled outcomes (`verified`, `mismatch`, `rejected`, `expired`) with the workers each concerns, for the app to credit |
+
+A refusal carries the `/v1` error envelope: 409 `lease_expired`, `lease_not_owner` or
+`extract_version_mismatch` (with the engine's `extract_version`), 422 `invalid_field`
+with the `field` and `rule`.
+
+**The `work` block of `cosift.json`.** Every key is optional; a value outside its range
+stops `pebble-serve` at startup naming the key.
+
+| Key | Default | Range | Effect |
+| --- | --- | --- | --- |
+| `lease_ttl_s` | 600 | 60-3600 | Seconds a lease lasts |
+| `max_leases_per_worker` | 32 | 1-32 | Leases one worker holds at once |
+| `max_leases_total` | 2048 | 32-8192 | Leases held across all workers |
+| `distinct_leases_per_url` | 3 | 2-3 | Workers a URL is leased to at once |
+| `host_spacing_ms` | 2000 | 0-60000 | Minimum gap between leases of one host |
+| `quorum_window_s` | 1800 | 60-86400 | Wait after the first attestation before the engine fetches the page itself |
+| `simhash_max` | 6 | 0-14 | Largest simhash distance that counts as agreement |
+| `attestation_ttl_h` | 168 | 24-168 | Hours a record, a park and a worker or network exclusion last |
+| `work_moderations_per_day` | 1000 | 0-1000 | Daily model calls for fetched pages; 0 halts them |
+| `community_moderations_per_day` | 1000 | 0-1000 | The community moderation ceiling above |
+| `max_attempts` | 6 | 1-20 | Failed worker and network pairs before a URL is parked |
+| `moderation_attempts_max` | 5 | 1-10 | Failed model checks before a page is rejected |
+| `pool_max` | 20000 | 100-200000 | URLs in the pool |
+| `errored_scan_interval_s` | 60 | 5-3600 | Seconds between feeder passes |
+| `errored_scan_batch` | 500 | 10-5000 | Frontier rows read per feeder pass |
+| `refetch_concurrency` | 2 | 1-8 | Server fetches at once |
+| `moderation_concurrency` | 2 | 1-4 | Model checks at once |
+| `moderation_queue_max` | 256 | 8-2048 | Verified texts waiting for a check; at the limit, new verifications pause |
+| `sweep_interval_s` | 30 | 5-600 | Seconds between sweeps of leases, records and due work |
+
+**The app.** `POST /api/work/claim` (`{max}`, 1 to 32) and `POST /api/work/submit` take
+only a bearer token (`Authorization: Bearer ck_...`; no header answers 401
+`bearer_required`) and, like every bearer POST, `X-Cosift-Client: community`. The account
+must have joined the contributor network and accepted the current
+[contributor terms](#public-article-pages): otherwise 403 `not_joined`, `banned` or
+`terms_outdated`. An account is limited to 6 claims and 64 submissions a minute and to
+`COSIFT_COMMUNITY_FETCH_DAILY_CAP` credited pages per UTC day (429 `daily_cap`, with
+`Retry-After` to 00:00 UTC). The submit body may carry only the attestation members; it is
+capped at 2 MiB. A verified page whose content was new earns the account 2 credits, once
+per page, until its daily cap. The app reads the settled feed every 10 seconds, writes
+each contributor's claimed, submitted, verified, mismatch, rejected and credit counters
+every 60 seconds (they show under **My contributions**), and raises a
+`work_moderation_ceiling` alert, labelled with `COSIFT_ENV`, the first time in a UTC day
+that the engine reports each ceiling (fetch work, community moderation).
+
+**The CLI worker.**
+
+```sh
+cosift contribute -server https://cosift.pilotprotocol.network -worker -max-pages 100 -duration 30m -concurrency 4
+```
+
+`-max-pages` (default 100) and `-duration` (default 30m) stop the run; 0 removes a limit
+but at least one must remain. `-concurrency` (default 4, 1 to 32) is the number of leases
+in flight. These three flags need `-worker`, and `-worker` cannot be combined with
+another operation. It authenticates with the bearer token from `COSIFT_TOKEN` or a saved
+session (the installer's, or `-session-file`) that holds one; a cookie-only session or a
+password login is refused before any request. Each leased page is fetched as a browser
+would (browser request headers, a public-only dialer, each redirect hop checked) and extracted with the same code as
+`-index-locally`; a non-200 answer is reported as a failure, and a page too short, too
+long or unreadable is skipped. The worker prints one JSON object per line on stdout (events
+`claimed`, `submitted`, `reported`, `skipped`, `abandoned`, `waiting`, `lease_lost` and
+`stopped`, then a `summary`) and stops at its limits, when no work is offered after 10 polls, at a
+moderation ceiling or the daily cap, or on a refusal it cannot get past (a rejected
+token, an account that has not joined, is suspended or has outdated terms, or an
+extraction version the server does not share, which needs a newer `cosift`). A stop for
+a refusal exits non-zero, and so does `unavailable` (a network error or a 5xx answer,
+including `work_disabled` when the engine's work switch is off, that persists through 5
+tries) and `not_available` (a server without worker mode); the other stops exit normally.
+
+**Operator commands.** `cosift work purge --url URL` and `cosift work void --worker ID`
+call the engine's `POST /admin/work-purge` and `POST /admin/work-void`, behind the admin
+gate (`cluster.peer_auth_token`). Both are dry runs until `-y`; `-server`, `-token` (default
+`COSIFT_ADMIN_TOKEN`) and `-json` are as for `cosift admin`. Purge deletes the attested
+document stored under the URL and its final URL (a crawled document is kept and
+counted), the URL's record and text, parks the URL for `attestation_ttl_h` and settles every
+attesting worker as rejected. Void takes one worker's attestations out of every record
+still awaiting, regroups the rest, and parks a URL left without an agreeing pair; the
+worker id is the one in the app's `work_workers` table. The engine's `/stats` gains a
+`work` block (pool by source, leased, awaiting, verified, mismatch, rejected, expired,
+deferred, parked, `moderations_today`, `moderation_ceiling`, `settled_seq`) and
+`/metrics` the `cosift_work_*` series, while work is on.
+
+## Article contributions
+
+The engine takes article writes from a contributing service principal. Give an OIDC
+principal in the service-auth file the `articles:contribute` scope in place of
+`articles:write`; it cannot be combined with `articles:write` or `articles:stub`, and a
+key principal cannot hold it. Its `PUT /v1/articles/{id}` calls draw on the same
+`writes_per_hour`, `writes_burst` and `writes_per_day` budget as any writer (defaults 30,
+10 and 150). A contribution must carry `contributor` (the 16-hex contributor id), have
+`status` `published` and `sensitivity.class` `none`, and carry no `topic_ids` or
+`cluster_ids`. Updating an existing article also needs `expected_version` and a quality
+tier no lower than the stored one (409 `tier_regression`); an article that is held,
+rejected or tombstoned refuses it, and one article takes at most 64 contributors (409
+`contributors_full`).
+
+Article records and their public view carry `origin` (`synth`, or `community` once a
+contribution has been written), `contributors` (the ids, in the order they first
+contributed) and, in the full record, `version_contributor` (who wrote the current
+version). A community article keeps its last 20 versions, other articles 5, and
+`GET /v1/article-versions/{id}` adds `status`, `sensitivity_class`, `version_contributor`
+and `reverts_to` to each version.
+
+A principal with `articles:moderate` can call `POST /v1/articles/{id}/revert` with
+`{to_version, reason_code, by, request_id?}`. It writes the content of an earlier,
+published, sensitivity-`none` version as a new version of a published article, and
+answers `{result, article, to_version, reverted_versions, reverted_contributors}` with
+`result` `reverted` or, when the content is already current, `unchanged`; repeating a
+`request_id` replays the answer with `replayed: true`. A `tombstone` through
+`POST /v1/articles/{id}/status` returns the article's `contributors`.
+`GET /v1/articles` accepts `tier=` (comma-separated `strong`, `ok`, `thin`) and, for
+`articles:read`, `status=pending` to list stubs (`status` takes a comma-separated list;
+`articles:read` may name only `published` and `pending`).
+
+## Public article pages
+
+With `COSIFT_WIKI_PUBLIC=1` (see `deploy/community.env.example`) the app serves the
+engine's published articles under `/wiki`, with the sitemaps and `robots.txt`, and:
+
+- `/wiki/<slug>.md`: the article as Markdown. Only published articles have one.
+- `/llms.txt`: the promoted articles as links to their Markdown form, with links to the
+  style guide, the terms and the wanted list.
+- `/wiki/style` and `/wiki/style.md`: the contributor style guide; `/wiki/terms`: the
+  contributor terms, which a contributor must have accepted (see [Fetch work](#fetch-work));
+  `/wiki/wanted`: up to 200 pending stubs (generic title and vertical only) and up to 200
+  published articles of `thin` quality, cached for 5 minutes. The slugs `style`,
+  `terms` and `wanted` are reserved.
+
+Every article page and Markdown file carries the CC BY-SA 4.0 licence line. A
+community-origin article also names its contributors, as `@handle` from the shared
+account service; a banned contributor, one the service does not know, and every
+contributor when handles cannot be read (local mode, or the lookup failing) appear as
+"a community member". A page built while the lookup failed is cached only briefly.
+`deploy/Caddyfile.community` routes `/llms.txt` to the app with the other public pages.
 
 ## Plans and payments
 
@@ -326,6 +537,9 @@ enabled. CLI clients may omit Origin. Login returns an HttpOnly session cookie n
 | `POST /api/payments/checkout` | Member | `{kind:"subscription"\|"topup",idempotency_key}`; returns a hosted Stripe Checkout URL |
 | `POST /api/payments/portal` | Member | `{}`; returns an existing subscriber's restricted billing portal URL |
 | `POST /api/payments/webhook` | Stripe signature | Paid invoice/top-up fulfillment, subscription state, and refund reconciliation |
+| `GET /api/contributions` | Member | `{joined}`; for a contributor also `handle`, the newest 50 `contributions` (articles with status, credits and article link, refusals, lost reason, sources to fetch), `more`, the `fetch` counters and the `earned` credit rows; 30 calls a minute |
+| `POST /api/work/claim` | Bearer token, fetch work on | `{max}`; leases pages to fetch ([Fetch work](#fetch-work)); 6 calls a minute |
+| `POST /api/work/submit` | Bearer token, fetch work on | A lease's attestation or failure report, up to 2 MiB; 64 calls a minute |
 | `POST /api/meter` | Bearer token, shared mode | `{kind:"article",ref,request_id}`; charges one covered article read, once per `request_id` |
 | `POST /api/shared` | Member, shared mode | Allowlisted topic, article lookup, or article request tool; search uses the gateway retrieval routes |
 | `GET /api/submissions` | Member | Own recent contributions |
@@ -350,16 +564,16 @@ and 600,000 iterations; local sessions store only token hashes and expire after
 Account queries scope saved searches and submissions to their owner. Guest
 allowance records use a salted hash of the client network (the IP address, or the /64
 for IPv6) rather than a raw IP. Unauthenticated limits are counted per client
-network; limits on submissions, checkout, the billing portal, shared tools and
-metering are counted per account, in a bounded store that evicts its oldest
+network; limits on submissions, checkout, the billing portal, shared tools, metering,
+work claims, work submissions and the contributions list are counted per account, in a bounded store that evicts its oldest
 entry instead of refusing new ones. Failed bearer tokens are throttled per /24
 (IPv4) or /64 (IPv6) network after 30 a minute; a token that authenticates is
 never throttled. Interests provide
 clickable search suggestions and shared topic follows; they do not alter retrieval
 ranking. Queries go to the configured backend, whose logging policy applies.
 Shared production verifies email with a code; standalone mode has no email
-verification or self-service password reset. Automatic article authoring and the
-distributed contributor network remain separate, unfinished work.
+verification or self-service password reset. Automatic article authoring remains
+separate, unfinished work.
 
 Search returns ordinary result cards; Answer and Research render the returned answer, source citations, and research plan. Their synchronous backend timeout is three minutes; configure reverse proxies to allow at least four minutes. Missing LLM configuration is reported clearly and does not consume the guest allowance.
 
@@ -374,8 +588,9 @@ See [the operator rollout and rollback record](COMMUNITY-ROLLOUT.md) for the con
 Create its private data directory before starting it and supply
 `COSIFT_COMMUNITY_BROKER_KEY` through root-owned `/etc/cosift/community.env`;
 `deploy/community.env.example` lists the variables.
-`deploy/Caddyfile.community` routes the root, static assets and `/api/*` to the
-portal, and routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. `/v1/*` goes to the engine's service listener, but a `csk_` bearer is answered 403 at the edge, so the broker key works only over loopback. It trusts only loopback and
+`deploy/Caddyfile.community` routes the root, static assets, `/api/*` and the public
+article pages (`/wiki`, `/sitemap.xml`, `/robots.txt`, `/llms.txt`) to the portal, and
+routes public `/search`, `/answer`, and `/research` through the same quotas. All unlisted routes, including `/query`, `/find_similar` and `/contents`, return 404. `/v1/*` goes to the engine's service listener, but a `csk_` bearer is answered 403 at the edge, so the broker key works only over loopback. It trusts only loopback and
 Cloudflare networks, then overwrites the forwarded client IP.
 
 The community backup timer snapshots SQLite consistently into the existing GCS
