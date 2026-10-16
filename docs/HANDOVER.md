@@ -337,17 +337,20 @@ What "the agency gets SSH" actually grants.
 These are the user-facing API (`cmd/cosift/pebble_serve.go`). Note `/search?q=` and `/answer?q=`
 carry queries in the URL — the reason §2.5 forbids any front-proxy `log` directive on the box.
 
-### Admin endpoints (24, localhost-only, Bearer-gated by `peer_auth_token`)
+### Admin endpoints (26, localhost-only, Bearer-gated by `peer_auth_token`)
 
 All under `/admin/*` on `pebble-serve`, e.g.:
 `crawl-enqueue`, `allow-domain`, `frontier-purge-host`, `frontier-clear`, `frontier-demote-host`,
 `frontier-purge-stale-inflight`, `rss-import`, `crawl-now`, `wet-import`, `wet-import-bulk`,
 `site-pack`, `site-submit`, `embed-backfill`, `host-backfill`, `eval-quick`, `hnsw-compact`,
 `sitemap-import`, `recrawl-sitemap`, `pq-train`, `pq-encode`, `checkpoint`, `query-log`, `feedback`,
-`domains-audit`. Plus `/debug/pprof/*`. **Public access to all of these is 404'd by Caddy** (§2.6);
-local access is gated by `peer_auth_token` (§3). The community app's two intake routes are not
+`domains-audit`, `work-purge`, `work-void` (the last two back `cosift work purge|void`; both are dry runs
+unless the body says `"apply": true`). Plus `/debug/pprof/*`. **Public access to all of these is 404'd by Caddy** (§2.6);
+local access is gated by `peer_auth_token` (§3). The community app's intake routes are not
 admin endpoints: they are `POST /v1/community/{enqueue,moderate}` on the loopback `/v1` listener,
-gated by a scoped service key (`community:intake`), and a `POST` to any other `/admin/` path is a 404.
+gated by a scoped service key (`community:intake`), and its fetch-work routes
+(`POST /v1/work/{claim,submit,push}`, `GET /v1/work/settled`, served only with `COSIFT_WORK_ENABLED=1`)
+are gated by `work:broker` on the same listener. A `POST` to any other `/admin/` path is a 404.
 
 ### Offline subcommands bypass HTTP auth entirely
 
