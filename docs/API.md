@@ -63,9 +63,11 @@ curl http://127.0.0.1:7777/stats
 
 `reranker`, `rerank_candidate_k`, and `chat_model` only appear when the matching capability is configured. `retrievers` lists what actually works on this server right now — `bm25` and `bm25-mlt` always; `dense`/`hybrid` only when the HNSW graph is loaded and an embedder is configured. When the graph is loaded but no embedder, `dense:find_similar_url_only` indicates that only URL-mode `/find_similar?retriever=dense` is available (it reuses the source's persisted vector and doesn't need an embedder).
 
+With fetch work on (`COSIFT_WORK_ENABLED=1`), the body also carries a `work` block: `enabled`, `extract_version`, `pool` (`total`, `pushed`, `errored`, `frontier`), `leased`, `awaiting`, `verified`, `mismatch`, `rejected`, `expired`, `deferred`, `parked`, `moderations_today`, `moderation_ceiling` and `settled_seq`. See [COMMUNITY.md](COMMUNITY.md#fetch-work).
+
 ## `GET /metrics`
 
-Prometheus exposition format. Hand-rolled, no client_golang dep. Covers index counters, HyDE cache, rerank attempts/failures, chat attempts/failures/duration, per-endpoint request count + duration sum.
+Prometheus exposition format. Hand-rolled, no client_golang dep. Covers index counters, HyDE cache, rerank attempts/failures, chat attempts/failures/duration, per-endpoint request count + duration sum. With fetch work on it adds `cosift_work_leases_total{source}`, `cosift_work_submissions_total{verdict}`, `cosift_work_settled_total{verdict}`, `cosift_work_moderations_total{result}`, `cosift_work_refetch_total{result}` and the gauge `cosift_work_pool{class}`.
 
 ```bash
 curl http://127.0.0.1:7777/metrics
