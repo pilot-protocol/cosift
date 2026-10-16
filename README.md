@@ -238,6 +238,12 @@ cosift contents <url...> [-server URL] [-file PATH] [-text] [-json]
                                               hit /contents — single GET or batch POST
 cosift admin <stats|config|recrawl|recrawl-domain|reembed> [-server URL] [-token TOKEN] [-json]
                                               admin-protected operator endpoints
+cosift contribute -worker [-max-pages N] [-duration D] [-concurrency C] [-server URL]
+                                              fetch pages leased by the network and submit them
+                                              (bearer token required; see docs/COMMUNITY.md)
+cosift work purge --url URL | void --worker ID [-y] [-server URL] [-token TOKEN] [-json]
+                                              remove a forged page, or one worker's pending
+                                              attestations; a dry run without -y
 cosift stats [-backend sqlite|pebble]         doc / term counts + data dir (per-backend)
 cosift crawl-status [-hosts N] [-errors N] [-target N]
                                               live operator snapshot of an ongoing crawl: counts, frontier
